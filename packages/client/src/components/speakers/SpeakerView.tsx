@@ -45,6 +45,8 @@ interface Props {
 	onMerge: (from: string, into: string) => void;
 	emptyMessage?: string;
 	animateEmpty?: boolean;
+ playbackTime?: number|null;
+ onSeek?: (seconds:number)=>void;
 }
 
 export function SpeakerView({
@@ -56,6 +58,8 @@ export function SpeakerView({
 	onMerge,
 	emptyMessage = "Listening...",
 	animateEmpty = true,
+ playbackTime,
+ onSeek,
 }: Props) {
 	const showToast = useUIStore((s) => s.showToast);
 	const [mergeMenu, setMergeMenu] = useState<{ x: number; y: number; speaker: string } | null>(null);
@@ -70,8 +74,21 @@ export function SpeakerView({
 	};
 	useEffect(() => {
 		const el = containerRef.current;
-		if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
-	}, [segments]);
+		if (el && stickToBottom.current && !onSeek) el.scrollTop = el.scrollHeight;
+	}, [segments,onSeek]);
+ const activeSegments=segments.map((segment,index)=>playbackTime != null &&
+  Number.isFinite(segment.start) && Number.isFinite(segment.end) &&
+  segment.start<=playbackTime && playbackTime<segment.end ? index : -1).filter(index=>index>=0);
+ const activeKey=activeSegments.join(',');
+ useEffect(()=>{
+  const container=containerRef.current;
+  const active=container?.querySelector<HTMLElement>('[aria-current="true"]');
+  if(!container || !active)return;
+  const viewport=container.getBoundingClientRect();const bounds=active.getBoundingClientRect();
+  if(bounds.top<viewport.top || bounds.bottom>viewport.bottom) {
+   container.scrollTop+=bounds.top-viewport.top-container.clientHeight/3;
+  }
+ },[activeKey]);
 
 	const colorMap = useMemo(() => {
 		const map: Record<string, string> = {};
@@ -164,6 +181,9 @@ export function SpeakerView({
 				const displayName = speakerNames[seg.speaker] || seg.speaker;
 				const color = colorMap[seg.speaker] || "#94A3B8";
 				const isLast = i === segments.length - 1;
+    const isActive=activeSegments.includes(i);
+    const canSeek=!!onSeek && Number.isFinite(seg.start) && seg.start>=0;
+    const animateLast=isLast && animateEmpty && !onSeek;
 				return (
 					<div key={i}>
 						{showHeader && (
@@ -172,9 +192,16 @@ export function SpeakerView({
 								{seg.auto && <span className={styles.autoBadge} title="Voz reconocida automáticamente — clic en el chip para corregir">auto</span>}
 							</div>
 						)}
-						<div className={`${styles.speakerLine} ${isLast ? styles.speakerLineTyping : ""}`}>
-							{isLast ? <TypewriterText text={seg.text} speed={25} /> : seg.text}
-							{isLast && <span className={styles.cursor} />}
+						<div className={`${styles.speakerLine} ${animateLast ? styles.speakerLineTyping : ""} ${canSeek ? styles.seekable : ""} ${isActive ? styles.activeSegment : ""}`}
+       role={canSeek ? 'button' : undefined} tabIndex={canSeek ? 0 : undefined}
+       aria-current={isActive ? 'true' : undefined}
+       title={canSeek ? 'Ouvir este trecho' : undefined}
+       onClick={canSeek ? ()=>onSeek?.(seg.start) : undefined}
+       onKeyDown={canSeek ? event=>{
+        if(event.key==='Enter'||event.key===' '){event.preventDefault();onSeek?.(seg.start);}
+       } : undefined}>
+							{animateLast ? <TypewriterText text={seg.text} speed={25} /> : seg.text}
+							{animateLast && <span className={styles.cursor} />}
 						</div>
 					</div>
 				);

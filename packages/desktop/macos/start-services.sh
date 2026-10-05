@@ -50,10 +50,10 @@ fi
 if ! listening 5001 && ! listening 5170 && ! listening 5002 && ! /usr/bin/pgrep -f '[/]doctor.py' >/dev/null && ! /usr/bin/pgrep -f 'bun run dev$' >/dev/null; then
     nohup bun run dev >>"$HEED_LOG/services.log" 2>&1 </dev/null &
 else
-    if ! listening 5001 && ! /usr/bin/pgrep -f 'bun run dev:server' >/dev/null; then
+    if ! listening 5001 && ! /usr/bin/pgrep -f '^bun run dev:server$' >/dev/null; then
         nohup bun run dev:server >>"$HEED_LOG/server.log" 2>&1 </dev/null &
     fi
-    if ! listening 5170 && ! /usr/bin/pgrep -f 'bun run dev:client' >/dev/null; then
+    if ! listening 5170 && ! /usr/bin/pgrep -f '^bun run dev:client$' >/dev/null; then
         nohup bun run dev:client >>"$HEED_LOG/client.log" 2>&1 </dev/null &
     fi
     # Installer doctor warms/downloads models; never race its model work.

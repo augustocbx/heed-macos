@@ -35,3 +35,9 @@ bun run doctor
 ```
 
 O limite é de 2.000.000.000 bytes por máquina. O Heed reserva espaço para as cópias temporárias de processamento; uma gravação contínua muito longa pode ser encerrada antes de atingir 2 GB sozinha. O limite de saída por gravação é de aproximadamente 990 MB, para que os dois canais possam ser processados dentro do orçamento.
+
+## Ouvir uma reunião com transcrição sincronizada
+
+Abra **Sessions**, escolha a reunião e use o player de áudio acima da transcrição. O trecho correspondente ao tempo do áudio fica destacado e visível durante a reprodução. Clique em um trecho (ou use Enter/Espaço) para ouvir a partir dele. Falas simultâneas podem ficar destacadas juntas. A sincronização é por trecho, usando os timestamps da transcrição, não palavra por palavra.
+
+O player usa a duração real do arquivo de áudio, que pode diferir do tempo indicado pelo cronômetro da captura. Não é aplicado ajuste artificial nos timestamps. Se o áudio tiver sido excluído pela retenção de 2 GB, a transcrição permanece disponível e a tela informa que o áudio não está mais disponível.

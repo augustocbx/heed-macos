@@ -6,6 +6,7 @@ import { APP_DIR, CONFIG_PATH, SESSIONS_DIR, TEMPLATES_DIR, type TrxConfig, ensu
 import { TRANSCRIPTION_SERVER, pyPost as postJSON } from "./lib/transcription-client.ts";
 import { track, gracefulStop, installShutdownHooks } from "./lib/process.ts";
 import { sseResponse } from "./lib/sse.ts";
+import { sessionAudioResponse } from "./lib/session-audio.ts";
 import { DesktopControl } from "./lib/desktop-control.ts";
 import { AUDIO_LIMIT_BYTES, enforceAudioRetention, removeChannelCopies } from "./lib/audio-retention.ts";
 const desktopControl = new DesktopControl();
@@ -2375,6 +2376,13 @@ const server = Bun.serve({
 		if (method === "POST" && url.pathname === "/api/summarize") return handleSummarize(req);
 		if (method === "POST" && url.pathname === "/api/summary-line") return handleSummaryLine(req);
 		// /api/diarize removed — finalize handles speaker identification now
+        const audioRoute = /^\/api\/sessions\/([^/]+)\/audio$/.exec(url.pathname);
+        if (audioRoute && (method === "GET" || method === "HEAD")) {
+            if (!desktopRequestAllowed(req)) return new Response(null, {status:403});
+            let sessionId: string;
+            try { sessionId = decodeURIComponent(audioRoute[1]!); } catch { return new Response(null, {status:403}); }
+            return sessionAudioResponse(req, sessionId, SESSIONS_DIR, UPLOAD_DIR);
+        }
 		if (method === "GET" && url.pathname === "/api/sessions") return handleListSessions();
 		if (method === "POST" && url.pathname === "/api/sessions") return handleCreateSession(req);
 		if (method === "PATCH" && url.pathname === "/api/sessions") return handlePatchSession(req, url);
