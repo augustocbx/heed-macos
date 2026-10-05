@@ -117,7 +117,7 @@ def main():
             tot_ph += s["phantom"]
             print(f"{s['rec'][:34]:34}  GT={s['gt']} live={s['live']} phantom={s['phantom']} "
                   f"churn={s['churn']}/{s['ticks']}  names={s['names']}")
-        print(f"\nTOTAL phantom across 3: {tot_ph}   (objetivo: 0)")
+        print(f"\nTOTAL phantom across 3: {tot_ph}   (target: 0)")
     sc.close()
 
 

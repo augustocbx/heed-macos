@@ -60,5 +60,5 @@ for src, _ in RECS:
     ph = max(0, live - gt)
     total_ph += ph
     print(f"{os.path.basename(src)[:34]:34} GT={gt} live={live} phantom={ph} churn={churn}/{n} {kept}")
-print(f"\nTOTAL phantom: {total_ph}  (objetivo 0) — {'PORT OK' if total_ph == 0 else 'MISMATCH'}")
+print(f"\nTOTAL phantom: {total_ph}  (target 0) — {'PORT OK' if total_ph == 0 else 'MISMATCH'}")
 sc.close()
