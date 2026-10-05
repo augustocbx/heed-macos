@@ -147,6 +147,10 @@ bash install-macos.sh
 
 The installer checks for active capture, commands, or processing and refuses to restart in that state. It preserves local files and reinstalls the app. If you move the checkout, run it again to update the project path used by the menu app.
 
+## Meeting tags
+
+Create, rename and delete tags inline in meeting cards and detail. Removing a tag from one meeting is separate from deleting it everywhere. See [meeting tags](docs/meeting-tags.md) for controls, naming rules and save recovery.
+
 ## Diagnostics and tests
 
 Services are local: interface **5170**, Bun API **5001**, Python transcription **5002**, and Ollama **11434**. Logs are stored in `~/Library/Logs/Heed/`.
