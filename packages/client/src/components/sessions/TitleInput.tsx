@@ -1,3 +1,4 @@
+import { tagKey, uniqueTags } from "@heed/shared";
 import { tr, useLocale } from "@/lib/i18n.ts";
 import { useState, useRef, useEffect, useMemo } from "react";
 import { useSessionsStore } from "@/stores/sessions.ts";
@@ -27,6 +28,9 @@ export function TitleInput({ sessionId, value, tags, className }: Props) {
 	const showToast = useUIStore((s) => s.showToast);
 	const inputRef = useRef<HTMLInputElement>(null);
 	const [text, setText] = useState(value);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
 	const [suggest, setSuggest] = useState<SuggestState>({ items: [], activeIdx: 0, visible: false, x: 0, y: 0 });
 
 	useEffect(() => { setText(value); }, [value, sessionId]);
@@ -40,7 +44,7 @@ export function TitleInput({ sessionId, value, tags, className }: Props) {
 	const getCurrentTagFragment = (input: HTMLInputElement) => {
 		const pos = input.selectionStart || 0;
 		const before = input.value.slice(0, pos);
-		const m = before.match(/#([\w-]*)$/);
+		const m = before.match(/#([\p{L}\p{M}\p{N}_-]*)$/u);
 		return m ? { fragment: m[1], start: pos - m[0].length, end: pos } : null;
 	};
 
@@ -53,8 +57,8 @@ export function TitleInput({ sessionId, value, tags, className }: Props) {
 			return;
 		}
 		const q = fragment.fragment.toLowerCase();
-		const matches = [...allKnownTags].filter((t) => t.startsWith(q)).sort();
-		const isExact = matches.includes(q);
+		const matches = [...allKnownTags].filter((t) => !/\s/u.test(t) && tagKey(t).startsWith(tagKey(q))).sort();
+		const isExact = matches.some(tag => tagKey(tag) === tagKey(q));
 		const items = matches.map((t) => ({ tag: t, isNew: false }));
 		if (q && !isExact) items.unshift({ tag: q, isNew: true });
 		if (items.length === 0) {
@@ -99,22 +103,28 @@ export function TitleInput({ sessionId, value, tags, className }: Props) {
 	};
 
 	const handleCommit = async () => {
-		const raw = text.trim();
+		if (savingRef.current) return;
+    const raw = text.trim();
+    const currentTags = useSessionsStore.getState().sessions.find(s => s.id === sessionId)?.tags ?? tags;
 		const newTags = extractTags(raw);
 		const cleanTitle = stripTagsFromText(raw) || tr("Untitled meeting");
-		const merged = [...new Set([...(tags || []), ...newTags])];
-		const added = newTags.filter((t) => !(tags || []).includes(t));
-		const trulyNew = added.filter((t) => !allKnownTags.has(t));
-		const reused = added.filter((t) => allKnownTags.has(t));
+		const merged = uniqueTags([...(currentTags || []), ...newTags], [...allKnownTags, ...(currentTags || [])]);
+		const added = newTags.filter((t) => !(currentTags || []).some(tag => tagKey(tag) === tagKey(t)));
+		const trulyNew = added.filter((t) => ![...allKnownTags].some(tag => tagKey(tag) === tagKey(t)));
+		const reused = added.filter((t) => [...allKnownTags].some(tag => tagKey(tag) === tagKey(t)));
 
-		if (cleanTitle === value && merged.length === (tags || []).length) return;
+		if (cleanTitle === value && JSON.stringify(merged) === JSON.stringify(currentTags || [])) return;
 
-		await update(sessionId, { title: cleanTitle, tags: merged });
+		savingRef.current = true; setSaving(true); setError("");
+    try {
+      await update(sessionId, newTags.length ? { title: cleanTitle, tags: merged } : { title: cleanTitle });
 		setText(cleanTitle);
 
 		if (trulyNew.length) showToast(tr(trulyNew.length===1 ? "Created new tag: {tags}" : "Created new tags: {tags}", undefined, {tags:trulyNew.map(t=>"#"+t).join(", ")}));
 		else if (reused.length) showToast(tr(reused.length===1 ? "Added to existing tag: {tags}" : "Added to existing tags: {tags}", undefined, {tags:reused.map(t=>"#"+t).join(", ")}));
 		else showToast(tr("Title updated"));
+    } catch (e) { setError(e instanceof Error ? e.message : "Failed to save meeting"); }
+    finally { savingRef.current = false; setSaving(false); }
 	};
 
 	return (
@@ -126,11 +136,13 @@ export function TitleInput({ sessionId, value, tags, className }: Props) {
 				placeholder={tr("Untitled meeting (use #tags)")}
 				autoComplete="off"
 				value={text}
+        disabled={saving}
 				onChange={(e) => { setText(e.target.value); showSuggest(); }}
 				onKeyDown={handleKeyDown}
-				onBlur={() => { setTimeout(() => setSuggest((s) => ({ ...s, visible: false })), 150); handleCommit(); }}
+				onBlur={() => { setTimeout(() => setSuggest((s) => ({ ...s, visible: false })), 150); void handleCommit(); }}
 			/>
-			{suggest.visible && (
+			{error && <div role="alert">{tr(error)}</div>}
+      {suggest.visible && (
 				<div
 					style={{
 						position: "fixed",

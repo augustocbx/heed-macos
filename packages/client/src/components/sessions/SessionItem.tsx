@@ -2,6 +2,7 @@ import { tr, useLocale } from "@/lib/i18n.ts";
 import type { Session } from "@heed/shared";
 import { fmtDate, fmtDuration } from "@/lib/format.ts";
 import { sessionLanguageLabel, sessionModelLabels } from "@/lib/sessionMetadata";
+import { TagEditor } from "./TagEditor";
 import styles from "./SessionItem.module.css";
 
 interface Props {
@@ -29,24 +30,13 @@ export function SessionItem({ session, onOpen, onMenu, onTagClick, onDelete }: P
 				<div className={styles.title}>
 					{session.pinned && <span className={styles.pin}>📌</span>}
 					{session.title || tr("Untitled")}
-					{session.tags && session.tags.length > 0 && (
-						<span className={styles.tags}>
-							{session.tags.map((t) => (
-								<span
-									key={t}
-									className={styles.tag}
-									onClick={(e) => { e.stopPropagation(); onTagClick(t); }}
-								>
-									#{t}
-								</span>
-							))}
-						</span>
-					)}
+
 				</div>
 				{session.summary && session.summary !== session.title && (
 					<div className={styles.summary}>{session.summary}</div>
 				)}
 				<div className={styles.meta}>{meta}</div>
+        <TagEditor session={session} onTagClick={onTagClick} />
 			</div>
 			<div className={styles.actions}>
 				<button
