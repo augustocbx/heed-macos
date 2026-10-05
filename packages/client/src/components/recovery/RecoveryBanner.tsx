@@ -33,7 +33,7 @@ export function RecoveryBanner() {
 		showToast("Recovering recording...");
 		try {
 			await transcribe(
-				{ url: rec.path, language: "auto", diarize: rec.is_dual },
+				{ url: rec.path, language: "auto", diarize: rec.is_dual, recording_finalize: true },
 				{
 					onStep: () => {},
 					onProgress: () => {},
@@ -41,8 +41,9 @@ export function RecoveryBanner() {
 						await sessionsApi.create({
 							title: `Recovered ${fmtDate(rec.created)}`,
 							createdAt: rec.created,
-							duration: rec.duration_estimate_s,
+							duration: result.duration ?? rec.duration_estimate_s,
 							language: result.metadata?.language || "auto",
+       transcriptionModel: result.metadata?.model,
 							transcript: result.text,
 							speakers: result.speakers || [],
 							segments: result.segments || [],

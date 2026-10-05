@@ -14,6 +14,9 @@ import { Spinner } from "@/components/shared/Spinner.tsx";
 import { TitleInput } from "./TitleInput.tsx";
 import { SessionAudioPlayer } from "./SessionAudioPlayer.tsx";
 import { applySpeakerNames } from "@/lib/speakerNames.ts";
+import { RetranscribeDialog } from "./RetranscribeDialog";
+import { useRecordingStore } from "@/stores/recording";
+import { sessionLanguageLabel, sessionModelLabels } from "@/lib/sessionMetadata";
 import styles from "./SessionDetail.module.css";
 
 interface Props {
@@ -24,7 +27,10 @@ interface Props {
 type TabId = "speakers" | "notes";
 
 export function SessionDetail({ session, onBack }: Props) {
-	const update = useSessionsStore((s) => s.update);
+	const [showTranscribe,setShowTranscribe] = useState(false);
+ const [transcribing,setTranscribing] = useState(false);
+ const recordingBusy = useRecordingStore(s=>s.recording || s.processing);
+ const update = useSessionsStore((s) => s.update);
 	const showToast = useUIStore((s) => s.showToast);
 	const { templates, load: loadTemplates } = useTemplatesStore();
 	const modelsData = useModelsStore((s) => s.data);
@@ -59,7 +65,8 @@ export function SessionDetail({ session, onBack }: Props) {
 	const meta = [
 		fmtDate(session.createdAt),
 		(audioDuration ?? session.duration) ? fmtDuration(Math.floor(audioDuration ?? session.duration)) : null,
-		session.language ? `lang: ${session.language}` : null,
+		session.language ? sessionLanguageLabel(session.language) : null,
+  sessionModelLabels(session) || null,
 		session.speakers?.length ? `${session.speakers.length} speaker${session.speakers.length > 1 ? "s" : ""}` : null,
 	].filter(Boolean).join(" · ");
 
@@ -153,11 +160,13 @@ export function SessionDetail({ session, onBack }: Props) {
 			<div className={styles.header}>
 				<TitleInput sessionId={session.id} value={session.title || ""} tags={session.tags || []} />
 				<div className={styles.actions}>
-					<button className={styles.btn} onClick={onBack}>← Back</button>
+					<button className={styles.btn} onClick={()=>setShowTranscribe(true)} disabled={!session.files?.wav || recordingBusy || generating}>Transcribe</button>
+     <button className={styles.btn} disabled={transcribing} onClick={onBack}>← Back</button>
 				</div>
 			</div>
 
-			<div className={styles.meta}>{meta}</div>
+			{showTranscribe && <RetranscribeDialog session={session} onClose={()=>setShowTranscribe(false)} onBusy={setTranscribing}/>}
+   <div className={styles.meta}>{meta}</div>
    <SessionAudioPlayer sessionId={session.id} available={!!session.files?.wav}
     audioRef={audioRef} onTime={setPlaybackTime} onDuration={setAudioDuration}/>
 

@@ -6,13 +6,10 @@ import {
 	useIsRecording, useIsProcessing, useProcessStep, useSegments,
 	useTranscript, useLiveQuality, useCurrentSessionId, useSeconds,
 } from "@/stores/selectors.ts";
-import { useLocalStorage } from "@/hooks/useLocalStorage.ts";
-import { pickLanguageDefault } from "@/lib/languages.ts";
 import { RecordButton } from "./RecordButton.tsx";
 import { Timer } from "./Timer.tsx";
 import { Visualizer } from "./Visualizer.tsx";
 import vizStyles from "./Visualizer.module.css";
-import { LanguageSelect } from "./LanguageSelect.tsx";
 import { ResultCard } from "./ResultCard.tsx";
 import { ErrorBoundary } from "@/components/ErrorBoundary.tsx";
 import styles from "./RecordPage.module.css";
@@ -29,10 +26,7 @@ const FAST_PROCESS_MESSAGES_EN = [
 export function RecordPage() {
 	const micBars = useRef<HTMLDivElement[]>([]);
 	const systemBars = useRef<HTMLDivElement[]>([]);
-	// Default to the browser's language (English browser → "en"), not a hardcoded "es". Parakeet has no
-	// auto-detect: a wrong hint visibly degrades transcription (function words flip), so a fresh Mac in
-	// English must start in "en". A stored choice always wins over this default.
-	const [language, setLanguage] = useLocalStorage<string>("heed-language", pickLanguageDefault(undefined));
+	const [language, setLanguage] = useState("en");
 
 	const { start, stop } = useRecording({
 		micBars,
@@ -123,7 +117,7 @@ export function RecordPage() {
 				)}
 				{!processing && (
 					<div className={styles.options}>
-						<LanguageSelect value={language} onChange={setLanguage} />
+						<span>Live preview starts in English. The final transcript automatically detects English or Portuguese.</span>
 					</div>
 				)}
 			</div>

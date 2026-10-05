@@ -190,6 +190,20 @@ class ParakeetEngine:
                     continue
             return {"ok": False, "error": "bad sidecar response"}
 
+    def close(self):
+        """Release this worker's CoreML models after a completed offline pass."""
+        with self.lock:
+            if self.proc.poll() is None:
+                self.proc.terminate()
+                try:
+                    self.proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+                    self.proc.wait(timeout=5)
+            for pipe in (self.proc.stdin, self.proc.stdout):
+                if pipe:
+                    pipe.close()
+
     def transcribe(self, wav_path, language=None, **opts):
         lang = language if language else "auto"
         r = self._request({"cmd": "transcribe", "wav": wav_path, "language": lang})
@@ -205,7 +219,7 @@ class ParakeetEngine:
         # A long file can emit noisy E5RT lines before the (single) JSON response; give it headroom.
         r = self._request({"cmd": "transcribe-ts", "wav": wav_path, "language": lang}, timeout_lines=2000)
         if not r.get("ok"):
-            return {"text": "", "tokens": []}
+            raise RuntimeError(r.get("error") or "Final native transcription failed")
         return {"text": r.get("text", ""), "tokens": r.get("tokens", [])}
 
     def diarize(self, wav_path):

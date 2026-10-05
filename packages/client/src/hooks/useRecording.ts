@@ -1,13 +1,10 @@
 import { useEffect, useRef } from "react";
 import { recordingApi } from "@/api/recording.ts";
 import { createRecordingSession } from "@/lib/recordingSession.ts";
-import { sessionsApi } from "@/api/sessions.ts";
-import { notesApi } from "@/api/notes.ts";
 import { useRecordingStore } from "@/stores/recording.ts";
 import { useSessionsStore } from "@/stores/sessions.ts";
 import { useUIStore } from "@/stores/ui.ts";
 import { useHealthStore } from "@/stores/health.ts";
-import { fmtDate } from "@/lib/format.ts";
 import { resolveLanguage } from "@/lib/languages.ts";
 import { subscribeLiveEvents } from "@/lib/liveEvents.ts";
 
@@ -42,9 +39,11 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 	const animFrameRef = useRef<number | null>(null);
 
 	const captureLanguage = useRef<string | null>(null);
+ const liveModel = useRef<string | undefined>(undefined);
  const recordingLanguage = () => captureLanguage.current || getLanguage();
  const start = async (language?:string) => {
-  captureLanguage.current = language || getLanguage();
+  captureLanguage.current = "en";
+  liveModel.current = useHealthStore.getState().health.whisper_info?.live_model || undefined;
 		try {
 			const data = await recordingApi.start("both", effectiveLanguage(recordingLanguage()));
 			// System audio (ScreenCaptureKit) needs Screen Recording permission. If it's not
@@ -63,14 +62,19 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 
 			tickInterval.current = window.setInterval(() => useRecordingStore.getState().tick(), 1000);
 
-			// Mic stream for visualizer
-			try {
-				micStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
-				audioCtxRef.current = new AudioContext();
-				analyserRef.current = audioCtxRef.current.createAnalyser();
-				analyserRef.current.fftSize = 64;
-				audioCtxRef.current.createMediaStreamSource(micStreamRef.current).connect(analyserRef.current);
-			} catch {}
+   // Browser microphone access is optional visualization only. A pending permission
+   // prompt must never hold the start command or prevent the native capture stopping.
+   void (async () => {
+    try {
+     const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+     if (!useRecordingStore.getState().recording) {stream.getTracks().forEach(t => t.stop());return;}
+     micStreamRef.current = stream;
+     audioCtxRef.current = new AudioContext();
+     analyserRef.current = audioCtxRef.current.createAnalyser();
+     analyserRef.current.fftSize = 64;
+     audioCtxRef.current.createMediaStreamSource(stream).connect(analyserRef.current);
+    } catch { /* Native microphone capture does not depend on the browser meter. */ }
+   })();
 
 			// System levels via SSE
 			sysLevelsRef.current = new Array(24).fill(0);
@@ -155,7 +159,7 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 	};
 
 	const stop = async (language?:string) => {
-  if (!captureLanguage.current) captureLanguage.current = language || getLanguage();
+  if (!captureLanguage.current) captureLanguage.current = "en";
 		if (tickInterval.current) {
 			clearInterval(tickInterval.current);
 			tickInterval.current = null;
@@ -178,11 +182,14 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 		micCurrentRef.current = new Array(VIZ_BARS).fill(0);
 		sysCurrentRef.current = new Array(VIZ_BARS).fill(0);
 
+  const recordingSeconds = useRecordingStore.getState().seconds;
 		store.stopRecording();
 
 		try {
-			const { path, streaming, streamText, turns, embeddings, autoNamed } = await recordingApi.stop(effectiveLanguage(recordingLanguage()));
-			await finalizeRecording(path, streaming, streamText, turns, embeddings, autoNamed);
+			const { path, finalized, language: finalLanguage, model, duration, liveModel: actualLiveModel, turns, embeddings, autoNamed } = await recordingApi.stop();
+   if (!finalized || !finalLanguage || !turns) throw new Error("The final transcript is unavailable. The audio remains available in recovery.");
+			if (actualLiveModel) liveModel.current = actualLiveModel;
+			await finalizeRecording(path, finalized, finalLanguage, model, duration ?? recordingSeconds, turns, embeddings, autoNamed);
    const result = useRecordingStore.getState();
    if (result.transcript.trim() && !result.currentSessionId) throw new Error("The transcript could not be saved. The audio remains available in recovery.");
 			return true;
@@ -195,18 +202,20 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 
 	const finalizeRecording = async (
 		audioPath: string,
-		streaming?: boolean,
-		streamText?: string,
+		finalized: boolean,
+		finalLanguage: string,
+  model: string | undefined,
+  durationSeconds: number,
 		turns?: Array<{ id: number; speaker: string; channel: "mic" | "sys"; text: string; start?: number; end?: number; auto?: boolean }>,
 		embeddings?: Record<string, number[]>,
 		_autoNamed?: Record<string, { name: string; score: number }>,
 	) => {
-		const lang = effectiveLanguage(recordingLanguage());
-		const seconds = useRecordingStore.getState().seconds;
+		const lang = finalLanguage;
+		const seconds = durationSeconds;
 
 		// AUTHORITATIVE stop: the server re-transcribed the whole recording via /finalize, so each
 		// turn now carries REAL start/end timestamps + coherent segmentation + echo-free attribution.
-		if (streaming && turns && turns.length) {
+		if (finalized && turns) {
 			const segments = turns.map((t) => ({ id: t.id, speaker: t.speaker, channel: t.channel, text: t.text, start: t.start ?? 0, end: t.end ?? 0, auto: t.auto }));
 			const text = turns.map((t) => t.text).join("\n");
 			const words = text.split(/\s+/).filter(Boolean);
@@ -220,13 +229,14 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 			useRecordingStore.getState().setResult({
 				success: true, text,
 				files: { wav: audioPath, srt: "", txt: "" },
-				metadata: { language: lang, model: "parakeet-stream" },
+				metadata: { language: lang, model: model || "parakeet-v3" },
 				speakers, segments, embeddings: emb, wordCount: words.length,
 			});
 			try {
 				const created = await createRecordingSession({
 					title: words.slice(0, 8).join(" ") + (words.length > 8 ? "..." : ""),
 					createdAt: new Date().toISOString(), duration: seconds, language: lang,
+     transcriptionModel: model || "parakeet-v3", liveModel: liveModel.current,
 					transcript: text, speakers, segments, embeddings: emb,
 					files: { wav: audioPath, srt: "", txt: "" }, aiNotes: "", summary: "", tags: [], pinned: false,
 				});
@@ -236,147 +246,7 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 			return;
 		}
 
-		// Fallback seamless (streaming mic-only without turns): the streamed text IS the final.
-		const isDual = audioPath.includes("dual-capture-");
-		if (streaming && !isDual) {
-			const text = (streamText || useRecordingStore.getState().transcript || "").trim();
-			const words = text.split(/\s+/).filter(Boolean);
-			if (words.length === 0) {
-				useRecordingStore.getState().reset();
-				showToast("No speech detected in the recording — nothing to save");
-				return;
-			}
-			const seg = { speaker: "Me", start: 0, end: seconds, text, channel: "mic" as const };
-			useRecordingStore.getState().setResult({
-				success: true, text,
-				files: { wav: audioPath, srt: "", txt: "" },
-				metadata: { language: lang, model: "parakeet-stream" },
-				speakers: ["Me"], segments: [seg], embeddings: {},
-				wordCount: words.length,
-			});
-			try {
-				const created = await createRecordingSession({
-					title: words.slice(0, 8).join(" ") + (words.length > 8 ? "..." : ""),
-					createdAt: new Date().toISOString(), duration: seconds, language: lang,
-					transcript: text, speakers: ["Me"], segments: [seg], embeddings: {},
-					files: { wav: audioPath, srt: "", txt: "" }, aiNotes: "", summary: "", tags: [], pinned: false,
-				});
-				useRecordingStore.getState().setSessionId(created.id);
-				reloadSessions();
-			} catch { /* keep the on-screen result even if persistence fails */ }
-			return;
-		}
-		// DON'T clear live segments — they stay visible in Speakers.
-		// We only need to: 1) transcribe remaining chunks, 2) run pyannote.
-		useRecordingStore.getState().setProcessing("Finishing transcription...", 30);
-
-		// Send live segments + WAV to the server. It transcribes the remaining
-		// audio (what live missed) and runs pyannote for speaker reveal.
-		const res = await fetch("/api/transcribe", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ url: audioPath, language: lang, diarize: true }),
-		});
-
-		if (!res.ok) throw new Error(`Finalize failed (HTTP ${res.status})`);
-		if (!res.body) throw new Error("Finalize failed: missing transcript stream");
-
-		const reader = res.body.getReader();
-		const decoder = new TextDecoder();
-		let buffer = "";
-		let currentEvent = "";
-  let finalized = false;
-  let finalizeError: string | null = null;
-
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			buffer += decoder.decode(value, { stream: true });
-			const lines = buffer.split("\n");
-			buffer = lines.pop() || "";
-			for (const line of lines) {
-				if (line.startsWith("event: ")) {
-					currentEvent = line.slice(7).trim();
-				} else if (line.startsWith("data: ")) {
-					try {
-						const data = JSON.parse(line.slice(6));
-						switch (currentEvent) {
-							case "step":
-								useRecordingStore.getState().setProcessing(data.message, useRecordingStore.getState().processProgress);
-								break;
-							case "segment":
-								// Append NEW segments from the full processing
-								// (these fill in what live missed)
-								useRecordingStore.getState().appendSegment(data);
-								break;
-							case "speakers":
-								// Pyannote finished — replace "???" with real names
-								useRecordingStore.getState().revealSpeakers(
-									data.speakers || [],
-									data.segments || [],
-									data.embeddings || {},
-								);
-								break;
-							case "result": {
-								useRecordingStore.getState().setResult(data);
-								const words = (data.text || "").split(/\s+/).filter(Boolean);
-								// Guard: don't persist a phantom session when nothing was captured
-								// (no transcript and no segments) — tell the user instead of saving
-								// an empty "Meeting ..." card.
-								const hasSegs = Array.isArray(data.segments) && data.segments.length > 0;
-								if (words.length === 0 && !hasSegs) {
-									showToast("No speech detected in the recording — nothing to save");
-         useRecordingStore.getState().reset();
-         finalized = true;
-									break;
-								}
-								const heuristicTitle = words.length > 0
-									? words.slice(0, 8).join(" ") + (words.length > 8 ? "..." : "")
-									: `Meeting ${fmtDate(new Date().toISOString())}`;
-
-								const created = await createRecordingSession({
-									title: heuristicTitle,
-									createdAt: new Date().toISOString(),
-									duration: seconds,
-									language: lang,
-									transcript: data.text,
-									speakers: data.speakers || [],
-									segments: data.segments || [],
-									embeddings: data.embeddings || {},
-									files: data.files,
-									aiNotes: "",
-									summary: "",
-									tags: [],
-									pinned: false,
-								});
-								useRecordingStore.getState().setSessionId(created.id);
-        finalized = true;
-								reloadSessions();
-								if (data.text && data.text.length > 30) {
-									notesApi.summaryLine(data.text)
-										.then((d) => {
-											if (d.summary) {
-												sessionsApi.patch(created.id, {
-													title: d.summary,
-													summary: d.summary,
-												}).then(() => reloadSessions());
-											}
-										})
-										.catch(() => {});
-								}
-								break;
-							}
-							case "error":
-								finalizeError = data.message || "Transcription failed";
-								showToast(`Error: ${data.message}`);
-								break;
-						}
-					} catch (e) { finalizeError = (e as Error).message; }
-				}
-			}
-		}
-  if (finalizeError) throw new Error(finalizeError);
-  if (!finalized) throw new Error("Transcription ended without a final result. The audio is available in recovery.");
+		throw new Error("Final transcription ended without an authoritative result. The audio remains available in recovery.");
 	};
 
 	useEffect(() => {

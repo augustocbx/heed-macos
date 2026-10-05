@@ -6,6 +6,8 @@ export interface TranscribeOptions {
 	file?: File;
 	language: string;
 	diarize: boolean;
+ recording_finalize?: boolean;
+ final_model?: "parakeet-v3" | "base" | "small" | "medium" | "large-v3";
 }
 
 export interface TranscribeHandlers {
@@ -15,7 +17,7 @@ export interface TranscribeHandlers {
 	onSegment?: (segment: { speaker: string; start: number; end: number; text: string; channel: string }) => void;
 	/** Speaker reveal: pyannote finished, here are the real names + final segments */
 	onSpeakers?: (data: { speakers: string[]; segments: unknown[]; embeddings: Record<string, unknown> }) => void;
-	onResult?: (result: TranscribeResult) => void;
+	onResult?: (result: TranscribeResult) => void | Promise<void>;
 	onError?: (msg: string) => void;
 }
 
@@ -28,14 +30,23 @@ export async function transcribe(opts: TranscribeOptions, handlers: TranscribeHa
 	if (opts.url) form.append("url", opts.url);
 	form.append("language", opts.language);
 	form.append("diarize", String(opts.diarize));
+ if (opts.recording_finalize) form.append("recording_finalize", "true");
+ if (opts.final_model) form.append("final_model", opts.final_model);
 
 	const res = await fetch(buildUrl("/api/transcribe"), { method: "POST", body: form });
-	if (!res.body) throw new Error("No response body");
+	if (!res.ok) {
+  let message = `Transcription failed (HTTP ${res.status})`;
+  try {const body = await res.json(); message = body.error || message;} catch {}
+  throw new Error(message);
+ }
+ if (!res.body) throw new Error("No response body");
 
 	const reader = res.body.getReader();
 	const decoder = new TextDecoder();
 	let buffer = "";
 	let currentEvent = "";
+ let resultReceived = false;
+ let finalError: Error | null = null;
 
 	while (true) {
 		const { done, value } = await reader.read();
@@ -63,14 +74,18 @@ export async function transcribe(opts: TranscribeOptions, handlers: TranscribeHa
 							handlers.onSpeakers?.(data);
 							break;
 						case "result":
-							handlers.onResult?.(data as TranscribeResult);
+							await handlers.onResult?.(data as TranscribeResult);
+       resultReceived = true;
 							break;
 						case "error":
-							handlers.onError?.(data.message);
+							finalError = new Error(data.message || "Transcription failed");
+       handlers.onError?.(data.message);
 							break;
 					}
-				} catch {}
+				} catch (error) { finalError = error as Error; }
 			}
 		}
 	}
+ if (finalError) throw finalError;
+ if (opts.recording_finalize && !resultReceived) throw new Error("Recovery ended without a final transcript. The audio remains available.");
 }

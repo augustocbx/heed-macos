@@ -6,6 +6,11 @@ export const recordingApi = {
 		apiClient.post<SystemRecordStartResponse>("/api/sysrecord/start", { mode, language }),
 	stop: (language?: string) => apiClient.post<{
 		path: string;
+  finalized: boolean;
+  duration?: number;
+  liveModel?: string;
+  language?: "en" | "pt";
+  model?: string;
 		streaming?: boolean;
 		streamText?: string;
 		turns?: Array<{ id: number; speaker: string; channel: "mic" | "sys"; text: string; start?: number; end?: number; auto?: boolean }>;

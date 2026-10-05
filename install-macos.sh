@@ -47,6 +47,8 @@ cd "$HEED_INSTALL_ROOT"
 HEED_PYTHON="$(brew --prefix python@3.14)/bin/python3.14"
 if [ ! -x .venv/bin/python3 ]; then "$HEED_PYTHON" -m venv .venv; fi
 .venv/bin/python3 -m pip install -r packages/transcription/requirements-core.txt
+# Cache the small live model and language detector before the first meeting.
+.venv/bin/python3 packages/transcription/meeting_language.py warmup
 bun install --frozen-lockfile
 swift build --package-path packages/transcription/native/heed-parakeet -c release --product heed-parakeet
 swift build --package-path packages/transcription/native/heed-parakeet -c release --product heed-syscap

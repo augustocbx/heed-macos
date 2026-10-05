@@ -31,6 +31,7 @@ export interface HealthResponse {
 
 export interface TranscribeResult {
 	success: true;
+ duration?: number;
 	text: string;
 	files: { wav: string; srt: string; txt: string };
 	metadata: { language: string; model: string };

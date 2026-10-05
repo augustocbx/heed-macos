@@ -89,7 +89,7 @@ def plan(caps) -> ModelPlan:
     final_model = largest(FINAL_MIN_RTF, cap_i)
     # Live can't be bigger than final; demands a higher RTF margin.
     final_i = TIERS.index(final_model)
-    live_model = largest(LIVE_MIN_RTF, final_i)
+    live_model = largest(LIVE_MIN_RTF, min(final_i, TIERS.index("base")))
 
     reason = (
         f"final={final_model} (rtf~{caps.estimated_rtf(final_model):.1f}x), "

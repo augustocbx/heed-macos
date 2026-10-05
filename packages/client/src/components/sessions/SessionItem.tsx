@@ -1,5 +1,6 @@
 import type { Session } from "@heed/shared";
 import { fmtDate, fmtDuration } from "@/lib/format.ts";
+import { sessionLanguageLabel, sessionModelLabels } from "@/lib/sessionMetadata";
 import styles from "./SessionItem.module.css";
 
 interface Props {
@@ -16,6 +17,8 @@ export function SessionItem({ session, onOpen, onMenu, onTagClick, onDelete }: P
 		speakers > 0 ? `${speakers} speaker${speakers > 1 ? "s" : ""}` : null,
 		session.duration ? fmtDuration(session.duration) : null,
 		fmtDate(session.createdAt),
+  sessionLanguageLabel(session.language) || null,
+  sessionModelLabels(session) || null,
 	].filter(Boolean).join(" · ");
 
 	return (
