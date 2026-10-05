@@ -22,7 +22,9 @@ Execute novamente para atualizar dependências e reinstalar o aplicativo após a
 
 ## Usar
 
-O aplicativo fica em `~/Applications/Heed.app` e inicia com o login pelo LaunchAgent `local.heed.menubar`. O ícone oferece iniciar, parar, escolher o idioma e abrir [a interface](http://localhost:5170). Mantenha a aba da interface aberta durante a gravação e o salvamento; ela pode ficar minimizada. Não inicia gravações automaticamente.
+O aplicativo fica em `~/Applications/Heed.app` e inicia com o login pelo LaunchAgent `local.heed.menubar`. O ícone oferece iniciar, parar, escolher o idioma e abrir [a interface](http://localhost:5170). Mantenha a aba da interface aberta durante a gravação e o salvamento; ela pode ficar minimizada.
+
+O menu **Gravar automaticamente reuniões do Slack** vem habilitado: novas reuniões/huddles no aplicativo Slack instalado iniciam a gravação após alguns segundos, com o idioma selecionado. O Heed abre a interface se necessário e aguarda sua conexão. Pare pelo menu do Heed; sair do Slack não encerra a captura. Uma parada manual não reinicia a mesma reunião. O monitor acompanha novos estados nos registros locais, sem guardar mensagens; não inicia reuniões anteriores à abertura do Heed. Slack no navegador, Google Meet, Teams e Zoom não têm início automático. O estado aparece no menu e o diagnóstico em `~/Library/Logs/Heed/slack-auto.log`. Mudanças nos registros internos do Slack podem exigir atualização do detector.
 
 Em Ajustes do Sistema → Privacidade e Segurança, autorize **Gravação de Tela e Áudio do Sistema** e **Microfone** para o componente solicitado pelo macOS. Se o pedido não aparecer, consulte essas telas manualmente. O capturador de áudio do sistema fica em `packages/transcription/native/heed-parakeet/.build/release/heed-syscap`. As permissões são concedidas individualmente em cada Mac. A captura do sistema funciona independentemente do uso de fones de ouvido.
 

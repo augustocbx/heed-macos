@@ -4,7 +4,7 @@ HEED_DESKTOP="$(cd "$(dirname "$0")" && pwd)"
 HEED_PROJECT_ROOT="$(cd "$HEED_DESKTOP/../.." && pwd)"
 HEED_BUILD="${TMPDIR:-/tmp}/heed-menubar-build"
 mkdir -p "$HEED_BUILD"
-swiftc -O "$HEED_DESKTOP/macos/main.swift" -o "$HEED_BUILD/Heed" -framework AppKit
+swiftc -O "$HEED_DESKTOP"/macos/*.swift -o "$HEED_BUILD/Heed" -framework AppKit
 "$HEED_BUILD/Heed" --self-test
 if [ "${1:-}" = "--build-only" ]; then
     printf 'Build verified: %s\n' "$HEED_BUILD/Heed"

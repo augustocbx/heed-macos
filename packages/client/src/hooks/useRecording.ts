@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { recordingApi } from "@/api/recording.ts";
+import { createRecordingSession } from "@/lib/recordingSession.ts";
 import { sessionsApi } from "@/api/sessions.ts";
 import { notesApi } from "@/api/notes.ts";
 import { useRecordingStore } from "@/stores/recording.ts";
@@ -223,7 +224,7 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 				speakers, segments, embeddings: emb, wordCount: words.length,
 			});
 			try {
-				const created = await sessionsApi.create({
+				const created = await createRecordingSession({
 					title: words.slice(0, 8).join(" ") + (words.length > 8 ? "..." : ""),
 					createdAt: new Date().toISOString(), duration: seconds, language: lang,
 					transcript: text, speakers, segments, embeddings: emb,
@@ -254,7 +255,7 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 				wordCount: words.length,
 			});
 			try {
-				const created = await sessionsApi.create({
+				const created = await createRecordingSession({
 					title: words.slice(0, 8).join(" ") + (words.length > 8 ? "..." : ""),
 					createdAt: new Date().toISOString(), duration: seconds, language: lang,
 					transcript: text, speakers: ["Me"], segments: [seg], embeddings: {},
@@ -333,7 +334,7 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 									? words.slice(0, 8).join(" ") + (words.length > 8 ? "..." : "")
 									: `Meeting ${fmtDate(new Date().toISOString())}`;
 
-								const created = await sessionsApi.create({
+								const created = await createRecordingSession({
 									title: heuristicTitle,
 									createdAt: new Date().toISOString(),
 									duration: seconds,

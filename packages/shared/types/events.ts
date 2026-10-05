@@ -22,6 +22,8 @@ export type LiveEventName = "segment" | "live" | "turn" | "quality" | "error" | 
 
 /** A chronological karaoke turn (stream mode). `id` identifies a contiguous speaker turn. */
 export interface LiveTurn {
+	start?: number;
+	end?: number;
 	id: number;
 	speaker: string;
 	channel?: "mic" | "sys";

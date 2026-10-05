@@ -12,13 +12,14 @@ import { NotesView } from "@/components/ai-notes/NotesView.tsx";
 import { NotesHardwareHint } from "@/components/ai-notes/NotesHardwareHint.tsx";
 import { Spinner } from "@/components/shared/Spinner.tsx";
 import { cpuFallbackWarning, estimateNotesSeconds } from "@/lib/format.ts";
+import { applySpeakerNames } from "@/lib/speakerNames.ts";
 import styles from "./ResultCard.module.css";
 
 type Tab = "speakers" | "notes";
 
 export function ResultCard() {
 	const {
-		transcript, segments, speakers, embeddings, currentSessionId, notesText, setNotes,
+		transcript, segments, speakers, embeddings, currentSessionId, notesText, setNotes, speakerNames, renameSpeaker,
 	} = useRecordingStore();
 	const showToast = useUIStore((s) => s.showToast);
 	const reloadSessions = useSessionsStore((s) => s.load);
@@ -28,7 +29,6 @@ export function ResultCard() {
 	const openPicker = useModelsStore((s) => s.openPicker);
 
 	const [activeTab, setActiveTab] = useState<Tab>("speakers");
-	const [speakerNames, setSpeakerNames] = useState<Record<string, string>>({});
 	const [generating, setGenerating] = useState(false);
 	const [streamingNotes, setStreamingNotes] = useState("");
 	const [templateId, setTemplateId] = useState<string>("general");
@@ -39,11 +39,6 @@ export function ResultCard() {
 	// Check if the current model fits in free VRAM right now
 	const currentModel = modelsData?.models.find((m) => m.id === modelsData.current?.id);
 	const fitsGpu = currentModel?.gpu_runtime_ok !== false; // true if ok or undefined (no data yet)
-
-	// Reset speaker names when speakers change (new recording)
-	useEffect(() => {
-		setSpeakerNames({});
-	}, [segments]);
 
 	const tabs = [
 		{ id: "speakers", label: "Speakers" },
@@ -105,8 +100,25 @@ export function ResultCard() {
 		}
 	};
 
-	const handleRename = (original: string, newName: string) => {
-		setSpeakerNames((prev) => ({ ...prev, [original]: newName }));
+	const handleRename = async (original: string, newName: string) => {
+		const previousName = useRecordingStore.getState().speakerNames[original];
+		renameSpeaker(original, newName);
+		const state = useRecordingStore.getState();
+		if (state.currentSessionId) {
+			try {
+				await sessionsApi.patch(state.currentSessionId, applySpeakerNames(state.segments, state.speakers, state.embeddings, state.speakerNames));
+				await reloadSessions();
+			} catch {
+				useRecordingStore.setState((latest) => {
+					if (latest.speakerNames[original] !== newName) return {};
+					const names = { ...latest.speakerNames };
+					if (previousName) names[original] = previousName;
+					else delete names[original];
+					return { speakerNames: names };
+				});
+				showToast("Não foi possível salvar o nome do participante. Tente novamente.");
+			}
+		}
 	};
 
 	const handleMerge = async (from: string, into: string) => {
@@ -116,13 +128,14 @@ export function ResultCard() {
 		const newSpeakers = speakers.filter((s) => s !== from);
 		// Update store via direct update
 		useRecordingStore.setState({ segments: newSegments, speakers: newSpeakers });
-		setSpeakerNames((prev) => {
+		useRecordingStore.setState((state) => {
+			const prev = state.speakerNames;
 			const copy = { ...prev };
 			delete copy[from];
-			return copy;
+			return { speakerNames: copy };
 		});
 		if (currentSessionId) {
-			await sessionsApi.patch(currentSessionId, { segments: newSegments, speakers: newSpeakers });
+			await sessionsApi.patch(currentSessionId, applySpeakerNames(newSegments, newSpeakers, embeddings, useRecordingStore.getState().speakerNames));
 			reloadSessions();
 		}
 		showToast("Merged");
