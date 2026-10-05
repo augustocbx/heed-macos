@@ -9,6 +9,8 @@ import { TRANSCRIPTION_SERVER, pyPost as postJSON } from "./lib/transcription-cl
 import { track, gracefulStop, installShutdownHooks } from "./lib/process.ts";
 import { sseResponse } from "./lib/sse.ts";
 import { sessionAudioResponse } from "./lib/session-audio.ts";
+import { SessionTags, sessionResponse, tagResponse } from "./lib/session-tags.ts";
+const sessionTags = new SessionTags(SESSIONS_DIR);
 import { DesktopControl } from "./lib/desktop-control.ts";
 import { DesktopPermissions, desktopRequestAllowed as permissionRequestAllowed, permissionAction, permissionReport } from "./lib/desktop-permissions.ts";
 import { AUDIO_LIMIT_BYTES, enforceAudioRetention, removeChannelCopies } from "./lib/audio-retention.ts";
@@ -22,6 +24,7 @@ let quotaStopResult: any = null;
 let recordingFinalizationRunning = false;
 function protectAudio(path: string) { retainedProcessing.set(path, Date.now() + 120_000); }
 function pruneAudio(limit = AUDIO_LIMIT_BYTES) {
+ sessionTags.recover();
  for (const [path, until] of retainedProcessing) if (until < Date.now()) retainedProcessing.delete(path);
  const protectedPaths = [...retainedProcessing.keys()];
  if (recorderPath) protectedPaths.push(recorderPath);
@@ -1062,55 +1065,13 @@ async function handleDesktopFloat(): Promise<Response> {
 }
 
 // --- Sessions CRUD ---
-function handleListSessions(): Response {
-	const files = readdirSync(SESSIONS_DIR).filter((f) => f.endsWith(".json"));
-	const sessions = files
-		.map((f) => {
-			try {
-				return JSON.parse(readFileSync(join(SESSIONS_DIR, f), "utf-8"));
-			} catch {
-				return null;
-			}
-		})
-		.filter(Boolean)
-		.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-	return Response.json(sessions);
-}
-
 async function handleCreateSession(req: Request): Promise<Response> {
-	const session = await req.json();
-	const id = session.id || `session-${Date.now()}`;
-	const data = {
-		...session,
-		id,
-		createdAt: session.createdAt || new Date().toISOString(),
-		updatedAt: new Date().toISOString(),
-	};
-	writeFileSync(join(SESSIONS_DIR, `${id}.json`), JSON.stringify(data, null, 2));
+ const response = await sessionResponse(req, sessionTags);
+ if (!response.ok) return response;
+ const data = await response.clone().json();
  if (data.files?.wav) { retainedProcessing.delete(data.files.wav); removeChannelCopies(data.files.wav); }
  pruneAudio();
- return Response.json(JSON.parse(readFileSync(join(SESSIONS_DIR, `${id}.json`), "utf8")));
-}
-
-async function handlePatchSession(req: Request, url: URL): Promise<Response> {
-	const id = url.searchParams.get("id");
-	if (!id) return Response.json({ error: "No id" }, { status: 400 });
-	const filePath = join(SESSIONS_DIR, `${id}.json`);
-	if (!existsSync(filePath)) return Response.json({ error: "Not found" }, { status: 404 });
-
-	const existing = JSON.parse(readFileSync(filePath, "utf-8"));
-	const patch = await req.json();
-	const merged = { ...existing, ...patch, updatedAt: new Date().toISOString() };
-	writeFileSync(filePath, JSON.stringify(merged, null, 2));
-	return Response.json(merged);
-}
-
-function handleDeleteSession(url: URL): Response {
-	const id = url.searchParams.get("id");
-	if (!id) return Response.json({ error: "No id" }, { status: 400 });
-	const filePath = join(SESSIONS_DIR, `${id}.json`);
-	if (existsSync(filePath)) unlinkSync(filePath);
-	return Response.json({ ok: true });
+ return Response.json(sessionTags.read(data.id));
 }
 
 // --- One-line summary via Ollama (for sessions list preview) ---
@@ -2438,10 +2399,14 @@ const server = Bun.serve({
             try { sessionId = decodeURIComponent(audioRoute[1]!); } catch { return new Response(null, {status:403}); }
             return sessionAudioResponse(req, sessionId, SESSIONS_DIR, UPLOAD_DIR);
         }
-		if (method === "GET" && url.pathname === "/api/sessions") return handleListSessions();
+		if ((method === "GET" || method === "POST") && url.pathname === "/api/tags") {
+      if (!desktopRequestAllowed(req)) return new Response(null, { status: 403 });
+      return tagResponse(req, sessionTags);
+    }
+		if (method === "GET" && url.pathname === "/api/sessions") return sessionResponse(req, sessionTags);
 		if (method === "POST" && url.pathname === "/api/sessions") return handleCreateSession(req);
-		if (method === "PATCH" && url.pathname === "/api/sessions") return handlePatchSession(req, url);
-		if (method === "DELETE" && url.pathname === "/api/sessions") return handleDeleteSession(url);
+		if (method === "PATCH" && url.pathname === "/api/sessions") return sessionResponse(req, sessionTags);
+		if (method === "DELETE" && url.pathname === "/api/sessions") return sessionResponse(req, sessionTags);
 		if (method === "GET" && url.pathname === "/api/templates") return handleListTemplates();
 		if (method === "POST" && url.pathname === "/api/templates") return handleSaveTemplate(req);
 		if (method === "DELETE" && url.pathname === "/api/templates") return handleDeleteTemplate(url);

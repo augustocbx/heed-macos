@@ -6,3 +6,4 @@ export * from "./api.ts";
 export * from "./model.ts";
 export * from "./events.ts";
 export * from "./recording-state.ts";
+export * from "../lib/tags.ts";
