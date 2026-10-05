@@ -2,8 +2,9 @@
 # On Mac, MLX Whisper base provides lightweight live previews. Parakeet final ASR and FluidAudio
 # diarization run through the native Swift sidecar
 # (packages/transcription/native/heed-parakeet). Tiny multilingual Whisper is loaded only in a
-# short-lived worker at stop for acoustic English/Portuguese detection. Torch, pyannote and
-# faster-whisper remain optional fallback dependencies.
+# short-lived worker at stop for acoustic English/Portuguese detection. mlx-whisper installs
+# its declared Torch dependency; live inference uses MLX. Pyannote and faster-whisper remain
+# optional fallback dependencies.
 # Keep the default dependencies separate from the optional Python diarization stack.
 livekit   # WebRTC AEC3 for mic echo cancellation (Layer 2 — lazy import, graceful if absent)
 numpy     # used by the AEC path (_aec_clean); declared explicitly since it was transitive via torch
