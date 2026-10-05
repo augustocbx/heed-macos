@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import { reconcileSpeakerNames } from "@/lib/speakerNames.ts";
 import { create } from "zustand";
 import type { Segment, TranscribeResult } from "@heed/shared";
@@ -77,7 +78,7 @@ export const useRecordingStore = create<RecordingState>((set) => ({
 
 	tick: () => set((s) => ({ seconds: s.seconds + 1 })),
 
-	stopRecording: () => set({ recording: false, processing: true, processStep: "Processing...", processProgress: 0 }),
+	stopRecording: () => set({ recording: false, processing: true, processStep: tr("Processing..."), processProgress: 0 }),
 
 	setProcessing: (step, percent) => set({ processStep: step, processProgress: percent }),
 

@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import { useState, useEffect, useRef } from "react";
 import type { Session } from "@heed/shared";
 import { useSessionsStore } from "@/stores/sessions.ts";
@@ -27,6 +28,7 @@ interface Props {
 type TabId = "speakers" | "notes";
 
 export function SessionDetail({ session, onBack }: Props) {
+	useLocale();
 	const [showTranscribe,setShowTranscribe] = useState(false);
  const [transcribing,setTranscribing] = useState(false);
  const recordingBusy = useRecordingStore(s=>s.recording || s.processing);
@@ -50,11 +52,11 @@ export function SessionDetail({ session, onBack }: Props) {
   const audio=audioRef.current;
   if(!audio || audio.error || !Number.isFinite(seconds) || seconds<0)return;
   if(Number.isFinite(audio.duration)&&seconds>=audio.duration) {
-   showToast('This segment is outside the available audio duration.');return;
+   showToast(tr("This segment is outside the available audio duration."));return;
   }
   audio.currentTime=seconds;
   setPlaybackTime(seconds);
-  void audio.play().catch(()=>showToast('Click Play to start audio playback.'));
+  void audio.play().catch(()=>showToast(tr("Click Play to start audio playback.")));
  };
 
 	useEffect(() => { loadTemplates(); loadModels(); }, [loadTemplates, loadModels]);
@@ -67,12 +69,12 @@ export function SessionDetail({ session, onBack }: Props) {
 		(audioDuration ?? session.duration) ? fmtDuration(Math.floor(audioDuration ?? session.duration)) : null,
 		session.language ? sessionLanguageLabel(session.language) : null,
   sessionModelLabels(session) || null,
-		session.speakers?.length ? `${session.speakers.length} speaker${session.speakers.length > 1 ? "s" : ""}` : null,
+		session.speakers?.length ? tr(session.speakers.length===1 ? "{count} speaker" : "{count} speakers", undefined, {count:session.speakers.length}) : null,
 	].filter(Boolean).join(" · ");
 
 	const tabs = [
-		{ id: "speakers", label: "Speakers" },
-		{ id: "notes", label: "AI Notes" },
+		{ id: "speakers", label: tr("Speakers") },
+		{ id: "notes", label: tr("AI Notes") },
 	];
 
 	const handleRemoveTag = async (tag: string) => {
@@ -87,12 +89,12 @@ export function SessionDetail({ session, onBack }: Props) {
 			const text = session.segments.map((s) => `${speakerNames[s.speaker] || s.speaker}: ${s.text}`).join("\n");
 			navigator.clipboard.writeText(text);
 		}
-		showToast("Copied");
+		showToast(tr("Copied"));
 	};
 
 	const handleCopyPlain = () => {
 		navigator.clipboard.writeText(session.transcript || "");
-		showToast("Copied plain text");
+		showToast(tr("Copied plain text"));
 	};
 
 	const handleGenerate = async (forceCpu = false) => {
@@ -116,10 +118,10 @@ export function SessionDetail({ session, onBack }: Props) {
 			);
 		} catch (e) {
 			if ((e as { needsModelSelection?: boolean }).needsModelSelection) {
-				showToast("Choose a notes model before generating notes");
+				showToast(tr("Choose a notes model before generating notes"));
 				openPicker();
 			} else {
-				showToast(`Error: ${(e as Error).message}`);
+				showToast(tr("Error: {message}", undefined, {message:tr((e as Error).message)}));
 			}
 		} finally {
 			setGenerating(false);
@@ -139,7 +141,7 @@ export function SessionDetail({ session, onBack }: Props) {
 				else delete restored[original];
 				return restored;
 			});
-			showToast("Could not save the speaker name. Please try again.");
+			showToast(tr("Could not save the speaker name. Please try again."));
 		}
 	};
 
@@ -149,7 +151,7 @@ export function SessionDetail({ session, onBack }: Props) {
 		);
 		const newSpeakers = (session.speakers || []).filter((s) => s !== from);
 		await update(session.id, { segments: newSegments, speakers: newSpeakers });
-		showToast("Merged");
+		showToast(tr("Merged"));
 	};
 
 	const displayNotes = streamingNotes || session.aiNotes || "";
@@ -160,8 +162,8 @@ export function SessionDetail({ session, onBack }: Props) {
 			<div className={styles.header}>
 				<TitleInput sessionId={session.id} value={session.title || ""} tags={session.tags || []} />
 				<div className={styles.actions}>
-					<button className={styles.btn} onClick={()=>setShowTranscribe(true)} disabled={!session.files?.wav || recordingBusy || generating}>Transcribe</button>
-     <button className={styles.btn} disabled={transcribing} onClick={onBack}>← Back</button>
+					<button className={styles.btn} onClick={()=>setShowTranscribe(true)} disabled={!session.files?.wav || recordingBusy || generating}>{tr("Transcribe")}</button>
+     <button className={styles.btn} disabled={transcribing} onClick={onBack}>{tr("← Back")}</button>
 				</div>
 			</div>
 
@@ -191,7 +193,7 @@ export function SessionDetail({ session, onBack }: Props) {
 					speakerNames={speakerNames}
 					onRename={handleSpeakerRename}
 					onMerge={handleSpeakerMerge}
-					emptyMessage="No speaker segments in this session yet."
+					emptyMessage={tr("No speaker segments in this session yet.")}
 					animateEmpty={false}
      playbackTime={playbackTime}
      onSeek={session.files?.wav ? seekAudio : undefined}
@@ -202,7 +204,7 @@ export function SessionDetail({ session, onBack }: Props) {
 				<NotesView
 					notes={displayNotes}
 					streaming={isStreaming}
-					placeholder='Click "Generate AI notes" below'
+					placeholder={tr("Click \"Generate AI notes\" below")}
 				/>
 			)}
 
@@ -219,9 +221,9 @@ export function SessionDetail({ session, onBack }: Props) {
 			)}
 
 			<div className={styles.actionsRow} style={{ marginTop: "12px" }}>
-				<button className={styles.btn} onClick={handleCopy}>Copy</button>
+				<button className={styles.btn} onClick={handleCopy}>{tr("Copy")}</button>
 				{activeTab === "speakers" && (
-					<button className={styles.btn} onClick={handleCopyPlain}>Copy plain text</button>
+					<button className={styles.btn} onClick={handleCopyPlain}>{tr("Copy plain text")}</button>
 				)}
 				{activeTab === "notes" && (
 					<>
@@ -231,16 +233,16 @@ export function SessionDetail({ session, onBack }: Props) {
 							onChange={(e) => setTemplateId(e.target.value)}
 						>
 							{templates.map((t) => (
-								<option key={t.id} value={t.id}>{t.name}</option>
+								<option key={t.id} value={t.id}>{tr(t.name)}</option>
 							))}
 						</select>
 						{fitsGpu ? (
 							<button className={styles.btn} onClick={() => handleGenerate(false)} disabled={generating}>
-								{generating ? <><Spinner />Generating…</> : `Generate AI notes · ~${estimateNotesSeconds(currentModel?.vram_mb, true)}s`}
+								{generating ? <><Spinner />{tr("Generating…")}</> : tr("Generate AI notes · ~{seconds}s", undefined, {seconds: estimateNotesSeconds(currentModel?.vram_mb, true)})}
 							</button>
 						) : (
 							<button className={styles.btnCpu} onClick={() => handleGenerate(true)} disabled={generating}>
-								{generating ? <><Spinner />Generating on CPU…</> : `Generate on CPU · ~${estimateNotesSeconds(currentModel?.vram_mb, false)}s`}
+								{generating ? <><Spinner />{tr("Generating on CPU…")}</> : tr("Generate on CPU · ~{seconds}s", undefined, {seconds:estimateNotesSeconds(currentModel?.vram_mb, false)})}
 							</button>
 						)}
 					</>

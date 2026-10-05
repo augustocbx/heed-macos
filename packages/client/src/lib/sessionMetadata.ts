@@ -1,6 +1,7 @@
+import { tr } from "./i18n.ts";
 import type { Session } from '@heed/shared';
 export function sessionLanguageLabel(language: string) {
- return language === 'en' ? 'English' : language === 'pt' || language === 'pt-BR' ? 'Portuguese (Brazil)' : language || '';
+ return language === 'en' ? tr("English") : language === 'pt' || language === 'pt-BR' ? tr("Portuguese (Brazil)") : language || '';
 }
 export function transcriptionModelLabel(model: string) {
  if (model === 'parakeet-v3' || model === 'parakeet') return 'Parakeet v3';
@@ -8,6 +9,6 @@ export function transcriptionModelLabel(model: string) {
  return model;
 }
 export function sessionModelLabels(session: Session) {
- return [session.liveModel ? `Live: ${transcriptionModelLabel(session.liveModel)}` : null,
-  session.transcriptionModel ? `Final: ${transcriptionModelLabel(session.transcriptionModel)}` : null].filter(Boolean).join(' · ');
+ return [session.liveModel ? tr("Live: {model}", undefined, {model:transcriptionModelLabel(session.liveModel)}) : null,
+  session.transcriptionModel ? tr("Final: {model}", undefined, {model:transcriptionModelLabel(session.transcriptionModel)}) : null].filter(Boolean).join(' · ');
 }

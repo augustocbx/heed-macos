@@ -7,7 +7,7 @@ import { memoryWord } from "@/lib/format.ts";
 import { useModelsStore } from "@/stores/models.ts";
 import { useSetup } from "@/hooks/useSetup.ts";
 import { useUIStore } from "@/stores/ui.ts";
-import { detectLocale, t, type Locale } from "@/lib/i18n.ts";
+import { detectLocale, t, type Locale, tr, useLocale } from "@/lib/i18n.ts";
 import styles from "./SetupWizard.module.css";
 
 type StepId = "ollama" | "ffmpeg" | "model";
@@ -25,6 +25,7 @@ interface CommandBoxProps {
 }
 
 function CommandBox({ command, locale }: CommandBoxProps) {
+	useLocale();
 	const [copied, setCopied] = useState(false);
 	const handleCopy = async () => {
 		try {
@@ -48,6 +49,7 @@ interface InstallStreamProps {
 }
 
 function InstallStream({ progress }: InstallStreamProps) {
+	useLocale();
 	if (progress.length === 0) return null;
 	return (
 		<div className={styles.streamBox}>
@@ -72,6 +74,7 @@ interface StepOllamaProps {
 }
 
 function StepOllama({ check, locale, onComplete, forced }: StepOllamaProps) {
+	useLocale();
 	const showToast = useUIStore((s) => s.showToast);
 	const [installing, setInstalling] = useState(false);
 	const [progress, setProgress] = useState<InstallProgress[]>([]);
@@ -164,6 +167,7 @@ function ffmpegCommandFor(os: SetupCheckResult["os"]): string {
 }
 
 function StepFfmpeg({ check, locale, onComplete, forced }: StepFfmpegProps) {
+	useLocale();
 	const showToast = useUIStore((s) => s.showToast);
 	const [installing, setInstalling] = useState(false);
 	const [progress, setProgress] = useState<InstallProgress[]>([]);
@@ -244,6 +248,7 @@ interface StepModelProps {
 }
 
 function StepModel({ check, locale, onComplete, forced, onFinish }: StepModelProps & { onFinish: () => void }) {
+	useLocale();
 	const showToast = useUIStore((s) => s.showToast);
 	const modelsData = useModelsStore((s) => s.data);
 	const loadModels = useModelsStore((s) => s.load);
@@ -331,7 +336,7 @@ function StepModel({ check, locale, onComplete, forced, onFinish }: StepModelPro
 				<div className={styles.modelHead}>
 					<span className={styles.modelName}>{m.name}</span>
 					{isRecommended && <span className={styles.modelRecBadge}>★</span>}
-					{m.new && <span className={styles.modelNewBadge}>NEW</span>}
+					{m.new && <span className={styles.modelNewBadge}>{tr("NEW")}</span>}
 					{!m.gpu_compatible && <span className={styles.modelCpuBadge}>CPU</span>}
 				</div>
 				<div className={styles.modelMeta}>
@@ -389,7 +394,7 @@ function StepModel({ check, locale, onComplete, forced, onFinish }: StepModelPro
 						<>
 							<div className={styles.hardwareName}>
 								{modelsData.gpu_name} · {totalGb} GB {memoryWord(modelsData.gpu_name)}
-								<span className={styles.hardwareFree}> ({freeGb} GB free now)</span>
+								<span className={styles.hardwareFree}> ({freeGb} {tr("GB free now)")}</span>
 							</div>
 							<div className={styles.hardwareExplain}>
 								{t("setup.model.hardwareExplain", locale, { total: totalGb })}
@@ -436,8 +441,9 @@ function StepModel({ check, locale, onComplete, forced, onFinish }: StepModelPro
 
 // --- Wizard shell ---
 export function SetupWizard() {
+	useLocale();
 	const { check, needsWizard, refresh, skip } = useSetup();
-	const locale = detectLocale();
+	const { locale } = useLocale();
 	const [activeStep, setActiveStep] = useState<StepId>("ollama");
 	const [dismissed, setDismissed] = useState(false);
 	const forced = typeof window !== "undefined" && window.location.search.includes("wizard=force");

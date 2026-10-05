@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import { useEffect, useMemo } from "react";
 import { useLocalStorage } from "@/hooks/useLocalStorage.ts";
 import { WHISPER_LANGUAGES, pickLanguageDefault } from "@/lib/languages.ts";
@@ -10,6 +11,7 @@ interface Props {
 }
 
 export function LanguageSelect({ value, onChange }: Props) {
+ const {locale} = useLocale();
 	const [stored, setStored] = useLocalStorage<string>("heed-language", pickLanguageDefault(undefined));
 	const langs = useHealthStore((s) => s.health.languages);
 	const current = value ?? stored;
@@ -52,7 +54,7 @@ export function LanguageSelect({ value, onChange }: Props) {
 		<select className={styles.select} value={safeValue} onChange={handleChange}>
 			{available.map(([code, name]) => (
 				<option key={code} value={code}>
-					{name}
+					{code==="auto" ? tr(name) : new Intl.DisplayNames([locale], {type:"language"}).of(code) || name}
 				</option>
 			))}
 		</select>

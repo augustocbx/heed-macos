@@ -1,13 +1,23 @@
-/** English interface strings. Meeting language selection is independent. */
-
-export type Locale = "en";
-
-export function detectLocale(): Locale {
-	return "en";
+/** Interface language is independent of transcription language. Missing translations use English. */
+import { useLocaleStore } from "@/stores/locale.ts";
+import { normalizeLocale, storedLocale, type Locale } from "./locale.ts";
+import { SHELL_TRANSLATIONS } from "./translations-shell.ts";
+import { CONTENT_TRANSLATIONS } from "./translations-content.ts";
+export type { Locale } from "./locale.ts";
+export function detectLocale(): Locale {return storedLocale();}
+export function setLocale(locale: Locale): void {useLocaleStore.getState().sync(locale);}
+export function useLocale() {
+ const locale=useLocaleStore(s=>s.locale);
+ return {locale,tr:(text:string,vars?:Record<string,string|number>)=>tr(text,locale,vars)};
 }
-
-export function setLocale(locale: Locale): void {
-	localStorage.setItem("heed-locale", locale);
+const TRANSLATIONS={...SHELL_TRANSLATIONS,...CONTENT_TRANSLATIONS};
+export function tr(text:string,locale:Locale=useLocaleStore.getState().locale,vars?:Record<string,string|number>):string {
+ const chosen=normalizeLocale(locale);
+ const key=text.trim();
+ const translated=chosen === "en" ? undefined : TRANSLATIONS[key]?.[chosen];
+ let result=translated ? text.slice(0,text.indexOf(key))+translated+text.slice(text.indexOf(key)+key.length) : text;
+ if(vars) for(const [key,value] of Object.entries(vars)) result=result.replaceAll(`{${key}}`,String(value));
+ return result;
 }
 
 type StringMap = Record<string, { en: string }>;
@@ -137,13 +147,5 @@ const STRINGS: StringMap = {
 };
 
 export function t(key: string, locale: Locale, vars?: Record<string, string | number>): string {
-	const entry = STRINGS[key];
-	if (!entry) return key;
-	let str = entry[locale] || entry.en || key;
-	if (vars) {
-		for (const [k, v] of Object.entries(vars)) {
-			str = str.replace(`{${k}}`, String(v));
-		}
-	}
-	return str;
+ return tr(STRINGS[key]?.en || key,locale,vars);
 }

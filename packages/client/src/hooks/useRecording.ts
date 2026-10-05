@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import { useEffect, useRef } from "react";
 import { recordingApi } from "@/api/recording.ts";
 import { createRecordingSession } from "@/lib/recordingSession.ts";
@@ -50,11 +51,11 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 			// granted yet, the server does NOT start recording — we ask the user to grant it and
 			// press record again. The timer never starts until the permission is resolved.
 			if ((data as { permissionNeeded?: boolean }).permissionNeeded) {
-				showToast("Allow Screen Recording in the Settings window, then try recording again");
+				showToast(tr("Allow Screen Recording in the Settings window, then try recording again"));
 				return false;
 			}
 			if ((data as { error?: string }).error) {
-				showToast((data as { error?: string }).error || "Failed to start");
+				showToast((data as { error?: string }).error || tr("Failed to start"));
 				return false;
 			}
 
@@ -107,7 +108,7 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 			startVisualizerLoop();
 			return true;
 		} catch (e) {
-			showToast(`Error: ${(e as Error).message}`);
+			showToast(tr("Error: {message}", undefined, {message:tr((e as Error).message)}));
 			return false;
 		}
 	};
@@ -187,14 +188,14 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 
 		try {
 			const { path, finalized, language: finalLanguage, model, duration, liveModel: actualLiveModel, turns, embeddings, autoNamed } = await recordingApi.stop();
-   if (!finalized || !finalLanguage || !turns) throw new Error("The final transcript is unavailable. The audio remains available in recovery.");
+   if (!finalized || !finalLanguage || !turns) throw new Error(tr("The final transcript is unavailable. The audio remains available in recovery."));
 			if (actualLiveModel) liveModel.current = actualLiveModel;
 			await finalizeRecording(path, finalized, finalLanguage, model, duration ?? recordingSeconds, turns, embeddings, autoNamed);
    const result = useRecordingStore.getState();
-   if (result.transcript.trim() && !result.currentSessionId) throw new Error("The transcript could not be saved. The audio remains available in recovery.");
+   if (result.transcript.trim() && !result.currentSessionId) throw new Error(tr("The transcript could not be saved. The audio remains available in recovery."));
 			return true;
 		} catch (e) {
-			showToast(`Stop failed: ${(e as Error).message}`);
+			showToast(tr("Stop failed: {message}", undefined, {message:tr((e as Error).message)}));
 			useRecordingStore.setState({processing:false});
 			return false;
 		}
@@ -221,7 +222,7 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 			const words = text.split(/\s+/).filter(Boolean);
 			if (words.length === 0) {
 				useRecordingStore.getState().reset();
-				showToast("No speech detected in the recording — nothing to save");
+				showToast(tr("No speech detected in the recording — nothing to save"));
 				return;
 			}
 			const speakers = [...new Set(turns.map((t) => t.speaker))];
@@ -246,7 +247,7 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 			return;
 		}
 
-		throw new Error("Final transcription ended without an authoritative result. The audio remains available in recovery.");
+		throw new Error(tr("Final transcription ended without an authoritative result. The audio remains available in recovery."));
 	};
 
 	useEffect(() => {

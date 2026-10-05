@@ -14,6 +14,7 @@ struct ControlStatus: Decodable {
     let error: String?
     let pending: Bool
     let starting: Bool?
+    var uiLocale: String? = nil
     var permissionRequest: PermissionRequest? = nil
     var canStart: Bool { ready && !recording && !processing && !pending && starting != true }
     var canStop: Bool { recording && !pending }
@@ -24,9 +25,9 @@ func responseError(_ data: Data?, status: Int) -> String {
     return "Communication failed (HTTP \(status))"
 }
 
-func recordingStatusImage(_ recording: Bool) -> NSImage? {
+func recordingStatusImage(_ recording: Bool, locale: String = "en") -> NSImage? {
     guard let image = NSImage(systemSymbolName: recording ? "record.circle.fill" : "waveform.circle",
-                              accessibilityDescription: recording ? "Heed recording" : "Heed") else { return nil }
+                              accessibilityDescription: recording ? MenuLocalization.text("Heed recording", locale: locale) : "Heed") else { return nil }
     guard recording else { image.isTemplate = true; return image }
     // Bake the red palette into the symbol; a non-template image must not rely
     // on NSStatusBarButton applying contentTintColor.
@@ -40,6 +41,10 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private let statusMenu = NSMenuItem(title: "Preparing services…", action: nil, keyEquivalent: "")
     private let startMenu = NSMenuItem(title: "Start recording", action: #selector(startRecording), keyEquivalent: "")
     private let stopMenu = NSMenuItem(title: "Stop recording", action: #selector(stopRecording), keyEquivalent: "")
+    private var locale = "en"
+    private var localizedItems: [(NSMenuItem, String)] = []
+    private var localeItems: [NSMenuItem] = []
+    private func text(_ key: String) -> String { MenuLocalization.text(key, locale: locale) }
     private var state: ControlStatus?
     private var sending = false
     private var polling = false
@@ -79,6 +84,19 @@ final class MenuController: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
         let quit = NSMenuItem(title: "Quit menu app", action: #selector(quitApp), keyEquivalent: "")
         quit.target = self; menu.addItem(quit)
+        localizedItems = [(startMenu, "Start recording"), (stopMenu, "Stop recording"),
+            (open, "Open interface"), (settings, "Settings and permissions…"),
+            (slackAutoMenu, "Automatically record Slack meetings"),
+            (slackAccessMenu, "Allow Slack log access…"), (quit, "Quit menu app")]
+        let languageMenu = NSMenu()
+        for (title, code) in [("English", "en"), ("Português (Brasil)", "pt-BR"), ("Français", "fr"), ("Deutsch", "de")] {
+            let entry = NSMenuItem(title: title, action: #selector(selectLocale(_:)), keyEquivalent: "")
+            entry.target = self; entry.representedObject = code
+            languageMenu.addItem(entry); localeItems.append(entry)
+        }
+        let language = NSMenuItem(title: "Interface language", action: nil, keyEquivalent: "")
+        language.submenu = languageMenu; menu.insertItem(language, at: 6)
+        localizedItems.append((language, "Interface language"))
         item.menu = menu
         if let folder = slackLogAccess.restore() { slackDetector.setAuthorizedLogRoot(folder) }
         _ = slackDetector.poll(slackRunning: NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.tinyspeck.slackmacgap" })
@@ -103,10 +121,11 @@ final class MenuController: NSObject, NSApplicationDelegate {
                 if let data = data, (response as? HTTPURLResponse)?.statusCode == 200,
                    let state = try? JSONDecoder().decode(ControlStatus.self, from: data) {
                     self.state = state
-                    self.statusMenu.title = state.error ?? (state.recording ? "Recording • \(state.seconds / 60):\(String(format: "%02d", state.seconds % 60))" : state.processing ? "Processing meeting…" : state.pending ? "Waiting for the interface…" : state.ready ? "Ready to record" : "Preparing services…")
+                    self.locale = MenuLocalization.normalize(state.uiLocale)
+                    self.statusMenu.title = state.error.map { MenuLocalization.message($0, locale: self.locale) } ?? (state.recording ? "\(self.text("Recording")) • \(state.seconds / 60):\(String(format: "%02d", state.seconds % 60))" : state.processing ? self.text("Processing meeting…") : state.pending ? self.text("Waiting for the interface…") : state.ready ? self.text("Ready to record") : self.text("Preparing services…"))
                 } else {
                     self.state = nil
-                    self.statusMenu.title = "Service unavailable — open the interface"
+                    self.statusMenu.title = self.text("Service unavailable — open the interface")
                 }
                 self.updateMenu()
                 if let request = self.state?.permissionRequest { self.executePermissionRequest(request) }
@@ -116,11 +135,13 @@ final class MenuController: NSObject, NSApplicationDelegate {
         }.resume()
     }
     private func updateMenu() {
+        for (entry, key) in localizedItems { entry.title = text(key) }
+        for entry in localeItems { entry.state = (entry.representedObject as? String) == locale ? .on : .off }
         slackAutoMenu.state = slackAutoEnabled ? .on : .off
         startMenu.isEnabled = !sending && (state?.canStart ?? false) && captureAuthorized
         stopMenu.isEnabled = !sending && (state?.canStop ?? false)
         let recording = state?.recording ?? false
-        item.button?.image = recordingStatusImage(recording)
+        item.button?.image = recordingStatusImage(recording, locale: locale)
         item.button?.contentTintColor = recording ? .systemRed : nil
         item.button?.toolTip = "Heed — \(statusMenu.title)"
     }
@@ -135,7 +156,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         let slackRunning = NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.tinyspeck.slackmacgap" }
         let signal = slackDetector.poll(slackRunning: slackRunning)
         let observation = !slackAutoEnabled ? "disabled" : !slackRunning ? "closed" : signal == nil ? "unavailable" : signal == true ? "meeting detected" : "waiting for the next meeting"
-        slackStateMenu.title = "Slack: \(observation)"
+        slackStateMenu.title = "Slack: \(text(observation))"
         if lastSlackObservation != observation { logSlack(observation); lastSlackObservation = observation }
         let effects = slackPolicy.evaluate(signal: signal, status: status, now: ProcessInfo.processInfo.systemUptime)
         if slackAutoEnabled && slackRunning && signal == nil && !promptedForSlackAccess { authorizeSlackLogs() }
@@ -184,7 +205,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         case "microphone":
             if microphonePermission == "notDetermined" {
                 AVCaptureDevice.requestAccess(for: .audio) { granted in
-                    DispatchQueue.main.async { finish(granted ? nil : "Allow microphone access for Heed in System Settings.") }
+                    DispatchQueue.main.async { finish(granted ? nil : self.text("Allow microphone access for Heed in System Settings.")) }
                 }
             } else { openPrivacyPane("Privacy_Microphone"); finish(nil) }
         case "screenCapture":
@@ -192,7 +213,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
             openPrivacyPane("Privacy_ScreenCapture"); finish(nil)
         case "slackLogs":
             requestSlackLogFolder(completion: finish)
-        default: finish("Unknown authorization request.")
+        default: finish(text("Unknown authorization request."))
         }
     }
     private func openPrivacyPane(_ pane: String) {
@@ -234,9 +255,25 @@ final class MenuController: NSObject, NSApplicationDelegate {
                     if slackCallID == nil { self.openInterface() }
                     self.poll()
                 } else {
-                    self.statusMenu.title = error?.localizedDescription ?? responseError(data, status: (response as? HTTPURLResponse)?.statusCode ?? 0)
+                    self.statusMenu.title = MenuLocalization.message(error?.localizedDescription ?? responseError(data, status: (response as? HTTPURLResponse)?.statusCode ?? 0), locale: self.locale)
                     self.updateMenu()
                 }
+            }
+        }.resume()
+    }
+    @objc private func selectLocale(_ sender: NSMenuItem) {
+        guard let selected = sender.representedObject as? String, MenuLocalization.locales.contains(selected) else { return }
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:5001/api/ui-locale")!)
+        request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["locale": selected])
+        session.dataTask(with: request) { [weak self] data, response, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if (response as? HTTPURLResponse)?.statusCode == 200,
+                   let data = data, let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let saved = body["locale"] as? String {
+                    self.locale = MenuLocalization.normalize(saved); self.updateMenu(); self.poll()
+                } else { self.statusMenu.title = self.text("Could not save the interface language. Try again.") }
             }
         }.resume()
     }
@@ -247,16 +284,16 @@ final class MenuController: NSObject, NSApplicationDelegate {
     @objc private func toggleSlackAuto() { UserDefaults.standard.set(!slackAutoEnabled, forKey: "HeedSlackAutoRecord"); updateMenu() }
     @objc private func authorizeSlackLogs() { requestSlackLogFolder(completion: nil) }
     private func requestSlackLogFolder(completion: ((String?) -> Void)?) {
-        guard !requestingSlackAccess else { completion?("The Slack log authorization dialog is already open."); return }
+        guard !requestingSlackAccess else { completion?(text("The Slack log authorization dialog is already open.")); return }
         requestingSlackAccess = true; promptedForSlackAccess = true
         slackAccessMenu.isEnabled = false
-        slackLogAccess.request { [weak self] folder in
+        slackLogAccess.request(locale: locale) { [weak self] folder in
             guard let self = self else { return }
             self.requestingSlackAccess = false; self.slackAccessMenu.isEnabled = true
             if let folder = folder { self.slackDetector.setAuthorizedLogRoot(folder); self.logSlack("log folder authorized") }
             else { self.logSlack("folder authorization was not completed") }
             if let diagnostic = self.slackLogAccess.diagnostic { self.logSlack(diagnostic) }
-            completion?(folder == nil ? self.slackLogAccess.diagnostic : nil)
+            completion?(folder == nil ? self.slackLogAccess.diagnostic.map { MenuLocalization.message($0, locale: self.locale) } : nil)
             self.poll()
         }
     }
@@ -288,14 +325,24 @@ if CommandLine.arguments.contains("--self-test") {
     precondition(!status(true, false, true, true).canStop)
     precondition(responseError(Data("{\"error\":\"Permission required\"}".utf8), status: 409) == "Permission required")
     precondition(responseError(nil, status: 500).contains("500"))
+    menuInstanceLockSelfTests()
+    menuLocalizationSelfTests()
     try slackRecordingPolicySelfTest()
     try slackHuddleDetectorSelfTests()
     try slackLogAccessSelfTests()
     print("Heed menubar self-tests passed")
 } else {
+    let lockURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/Heed/menubar.lock")
+    guard let instanceLock = MenuInstanceLock(url: lockURL) else { exit(0) }
+    // During an upgrade an older app may not yet hold this lock. Retain the
+    // earliest process rather than creating another menu icon beside it.
+    if let bundleID = Bundle.main.bundleIdentifier,
+       NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+        .contains(where: { $0.processIdentifier < getpid() && !$0.isTerminated }) { exit(0) }
     let app = NSApplication.shared
     let controller = MenuController()
     app.delegate = controller
     app.setActivationPolicy(.accessory)
-    app.run()
+    withExtendedLifetime(instanceLock) { app.run() }
 }

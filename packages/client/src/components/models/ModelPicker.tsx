@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import type { CatalogModel, PullProgress } from "@heed/shared";
@@ -32,6 +33,7 @@ function fmtMb(mb: number) {
 }
 
 export function ModelPicker({ open, onClose }: Props) {
+	useLocale();
 	const data = useModelsStore((s) => s.data);
 	const load = useModelsStore((s) => s.load);
 	const select = useModelsStore((s) => s.select);
@@ -60,10 +62,10 @@ export function ModelPicker({ open, onClose }: Props) {
 	const handleSelectInstalled = async (m: CatalogModel) => {
 		try {
 			await select(m.id);
-			showToast(`Switched to ${m.name}`);
+			showToast(tr("Switched to {model}", undefined, {model:m.name}));
 			onClose();
 		} catch (e) {
-			showToast(`Switch failed: ${(e as Error).message}`);
+			showToast(tr("Switch failed: {message}", undefined, {message:tr((e as Error).message)}));
 		}
 	};
 
@@ -75,7 +77,7 @@ export function ModelPicker({ open, onClose }: Props) {
 		modelsApi.pullStream(m.id, async (evt) => {
 			setPullProgress(evt);
 			if (evt.error) {
-				showToast(`Pull failed: ${evt.error}`);
+				showToast(tr("Pull failed: {message}", undefined, {message:tr(evt.error || "")}));
 				setPullingId(null);
 				setPullProgress(null);
 				return;
@@ -83,9 +85,9 @@ export function ModelPicker({ open, onClose }: Props) {
 			if (evt.done) {
 				try {
 					await select(m.id);
-					showToast(`Downloaded and switched to ${m.name}`);
+					showToast(tr("Downloaded and switched to {model}", undefined, {model:m.name}));
 				} catch (err) {
-					showToast(`Switch failed: ${(err as Error).message}`);
+					showToast(tr("Switch failed: {message}", undefined, {message:tr((err as Error).message)}));
 				}
 				setPullingId(null);
 				setPullProgress(null);
@@ -110,22 +112,22 @@ export function ModelPicker({ open, onClose }: Props) {
 			>
 				<div className={styles.cardHead}>
 					<span className={styles.name}>{m.name}</span>
-					{m.new && <span className={styles.badgeNew}>NEW</span>}
-					{isCurrent && <span className={styles.badgeCurrent}>ACTIVE</span>}
-					{m.installed && !isCurrent && <span className={styles.badgeInstalled}>installed</span>}
+					{m.new && <span className={styles.badgeNew}>{tr("NEW")}</span>}
+					{isCurrent && <span className={styles.badgeCurrent}>{tr("ACTIVE")}</span>}
+					{m.installed && !isCurrent && <span className={styles.badgeInstalled}>{tr("installed")}</span>}
 				</div>
 				<div className={styles.meta}>
 					<span>{m.vendor}</span>
 					<span>·</span>
-					<span title="Download size">{fmtMb(m.size_mb)} download</span>
+					<span title={tr("Download size")}>{fmtMb(m.size_mb)} {tr("download")}</span>
 					<span>·</span>
-					<span title={`${memoryWord(data?.gpu_name)} when loaded`}>{m.vram_mb === 0 ? "CPU only" : `${fmtMb(m.vram_mb)} ${memoryWord(data?.gpu_name)}`}</span>
+					<span title={tr("{memory} when loaded", undefined, {memory:memoryWord(data?.gpu_name)})}>{m.vram_mb === 0 ? tr("CPU only") : `${fmtMb(m.vram_mb)} ${memoryWord(data?.gpu_name)}`}</span>
 				</div>
 				<div className={styles.tags}>
-					<span className={`${styles.tag} ${styles[`q_${m.quality}`]}`}>{QUALITY_LABEL[m.quality]}</span>
-					<span className={styles.tag}>{SPEED_LABEL[m.speed]}</span>
+					<span className={`${styles.tag} ${styles[`q_${m.quality}`]}`}>{tr(QUALITY_LABEL[m.quality])}</span>
+					<span className={styles.tag}>{tr(SPEED_LABEL[m.speed])}</span>
 					<span className={`${styles.tag} ${m.gpu_compatible ? styles.gpuOk : styles.gpuOff}`}>
-						{m.gpu_compatible ? "fits GPU" : "CPU only on your hardware"}
+						{m.gpu_compatible ? tr("fits GPU") : tr("CPU only on your hardware")}
 					</span>
 				</div>
 				{m.description && <div className={styles.desc}>{m.description}</div>}
@@ -143,7 +145,7 @@ export function ModelPicker({ open, onClose }: Props) {
 						onClick={(e) => handleDownload(m, e)}
 						disabled={!!pullingId}
 					>
-						Download {fmtMb(m.size_mb)}
+						{tr("Download")} {fmtMb(m.size_mb)}
 					</button>
 				) : null}
 			</div>
@@ -155,21 +157,21 @@ export function ModelPicker({ open, onClose }: Props) {
 			<div className={styles.modal} onClick={(e) => e.stopPropagation()}>
 				<div className={styles.head}>
 					<div>
-						<h2 className={styles.title}>Pick your AI model</h2>
+						<h2 className={styles.title}>{tr("Pick your AI model")}</h2>
 						<p className={styles.subtitle}>
 							{data?.gpu_name
-								? `${data.gpu_name} · ${fmtMb(data.total_vram_mb)} ${memoryWord(data.gpu_name)} · ${fmtMb(data.free_vram_mb)} free · tier ${data.tier}`
-								: "Detecting hardware..."}
+								? tr("{gpu} · {total} {memory} · {free} free · tier {tier}", undefined, {gpu:data.gpu_name,total:fmtMb(data.total_vram_mb),memory:memoryWord(data.gpu_name),free:fmtMb(data.free_vram_mb),tier:data.tier})
+								: tr("Detecting hardware...")}
 						</p>
 					</div>
 					<button className={styles.closeBtn} onClick={onClose}>×</button>
 				</div>
 
-				{!data && <div className={styles.loading}>Loading catalog...</div>}
+				{!data && <div className={styles.loading}>{tr("Loading catalog...")}</div>}
 
 				{data && grouped.gpu.length > 0 && (
 					<>
-						<div className={styles.section}>Recommended for your GPU</div>
+						<div className={styles.section}>{tr("Recommended for your GPU")}</div>
 						<div className={styles.grid}>{grouped.gpu.map(renderModel)}</div>
 					</>
 				)}
@@ -177,11 +179,10 @@ export function ModelPicker({ open, onClose }: Props) {
 				{data && grouped.cpu.length > 0 && (
 					<>
 						<div className={styles.section}>
-							CPU only on your hardware
-							<span className={styles.sectionHint}>
+							{tr("CPU only on your hardware")}<span className={styles.sectionHint}>
 								{data.pyannote_reserve_mb > 0
-									? `(slower, but won't crash diarization — keeps ${fmtMb(data.pyannote_reserve_mb)} VRAM free for speaker diarization)`
-									: `(slower — these models are larger than your ${data.gpu_name || "hardware"} runs comfortably)`}
+									? tr("(slower, but won't crash diarization — keeps {memory} VRAM free for speaker diarization)", undefined, {memory:fmtMb(data.pyannote_reserve_mb)})
+									: `(slower — these models are larger than your ${data.gpu_name || tr("hardware")} runs comfortably)`}
 							</span>
 						</div>
 						<div className={styles.grid}>{grouped.cpu.map(renderModel)}</div>

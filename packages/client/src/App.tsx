@@ -1,3 +1,4 @@
+import { useLocaleStore } from "@/stores/locale.ts";
 import { useEffect } from "react";
 import { PermissionsPage } from "@/components/settings/PermissionsPage.tsx";
 import { useUIStore } from "@/stores/ui.ts";
@@ -12,6 +13,16 @@ import { AppTour } from "@/components/tour/AppTour.tsx";
 import styles from "./App.module.css";
 
 export function App() {
+ const refreshLocale = useLocaleStore(s=>s.refresh);
+ const syncLocale = useLocaleStore(s=>s.sync);
+ useEffect(() => {
+  void refreshLocale();
+  const interval=window.setInterval(()=>void refreshLocale(),3000);
+  const focus=()=>void refreshLocale();
+  const storage=(event:StorageEvent)=>{if(event.key === "heed-locale") syncLocale(event.newValue);};
+  window.addEventListener("focus",focus);window.addEventListener("storage",storage);
+  return()=>{window.clearInterval(interval);window.removeEventListener("focus",focus);window.removeEventListener("storage",storage);};
+ },[refreshLocale,syncLocale]);
 	const currentPage = useUIStore((s) => s.currentPage);
 	useEffect(() => {
 		const onHash = () => { if (window.location.hash === "#settings") useUIStore.getState().setPage("settings"); };

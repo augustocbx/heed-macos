@@ -1,6 +1,6 @@
 # Heed on macOS
 
-Local installation for Apple Silicon Macs running macOS 14 or later. Transcription supports Brazilian Portuguese (`pt`) and English (`en`), detected automatically after recording. The app interface and installation instructions are in English.
+Local installation for Apple Silicon Macs running macOS 14 or later. Transcription supports Brazilian Portuguese (`pt`) and English (`en`), detected automatically after recording. The interface and menu support English, Brazilian Portuguese, French, and German, with English as the fallback. Installation instructions remain in English.
 
 ## Install or update
 
@@ -64,3 +64,7 @@ Every recording starts with an English live preview using a smaller, bounded-win
 To retranscribe a saved session manually, open **Sessions**, select the session, and click **Transcribe**. Choose **Parakeet v3** (the default), **Whisper base**, **small**, **medium**, or **large-v3**, and select automatic English/Portuguese detection, English, or Portuguese (Brazil). A selected model downloads locally on first use when needed. Larger models require more memory and time. Heed shows progress and blocks new recordings while transcription runs; it replaces the session transcript only after the complete result is saved, preserving the original audio and unambiguously matched speaker names, and correcting duration from the complete audio when available. If transcription or saving fails, the existing session stays available.
 
 Session cards and details show the meeting language and the live/final transcription models recorded for the session. Older sessions without model metadata do not display an assumed model. Manual transcription updates the final model while retaining the original live model.
+
+## Interface language
+
+Choose **Interface language** in Settings or in the menu bar to switch between English, Portuguese (Brazil), French, and German. The preference is stored on each Mac and shared between its menu and open interface tabs. Unsupported locales and untranslated strings fall back to English. This setting affects app labels, not recorded speech: live transcription still starts in English, and the final pass detects English or Portuguese. Installation documentation and technical logs remain in English.

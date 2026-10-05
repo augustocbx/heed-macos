@@ -1,3 +1,4 @@
+import { configuredUiLocale, supportedUiLocale } from "./lib/ui-locale.ts";
 import { finalRecordingResult, recordingFinalizationOptions } from "./lib/final-recording.ts";
 import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, statSync } from "node:fs";
 import { join, resolve, extname } from "node:path";
@@ -2315,7 +2316,7 @@ function desktopRecordingStatus() {
   desktopControl.error = "Audio capture stopped unexpectedly. Check microphone permission and recover the audio in the interface.";
  }
  const state = desktopControl.status();
- return {...state, recording: !!recorderProc, seconds: recorderProc ? Math.floor((Date.now()-recorderStartedAt)/1000) : state.seconds, ready: state.ready, language:recordingLanguage, processing:state.processing || recorderStopping || recordingFinalizationRunning, starting:recorderStarting, storage:{limitBytes:AUDIO_LIMIT_BYTES, bytes:pruneAudio().bytes}, quotaStopped:!!quotaStopResult};
+ return {...state, recording: !!recorderProc, seconds: recorderProc ? Math.floor((Date.now()-recorderStartedAt)/1000) : state.seconds, ready: state.ready, language:recordingLanguage, uiLocale:configuredUiLocale(loadConfig()), processing:state.processing || recorderStopping || recordingFinalizationRunning, starting:recorderStarting, storage:{limitBytes:AUDIO_LIMIT_BYTES, bytes:pruneAudio().bytes}, quotaStopped:!!quotaStopResult};
 }
 async function handleDesktopControl(req:Request, pathname:string): Promise<Response> {
  if (!desktopRequestAllowed(req)) return Response.json({error:"Desktop control is available only on localhost"}, {status:403});
@@ -2347,6 +2348,17 @@ async function handleDesktopControl(req:Request, pathname:string): Promise<Respo
   }
   return Response.json({error:"Unknown desktop control endpoint"},{status:404});
  } catch (e) { return Response.json({error:(e as Error).message},{status:409}); }
+}
+
+async function handleUiLocale(req:Request):Promise<Response> {
+ if (!desktopRequestAllowed(req)) return Response.json({error:"Interface preferences are available only on localhost"},{status:403});
+ if (req.method === "GET") return Response.json({locale:configuredUiLocale(loadConfig())});
+ try {
+  const body=await req.json();
+  if (!supportedUiLocale(body.locale)) return Response.json({error:"Choose en, pt-BR, fr or de"},{status:400});
+  saveConfig({ui_locale:body.locale});
+  return Response.json({locale:body.locale});
+ } catch {return Response.json({error:"Could not save interface language"},{status:400});}
 }
 
 async function handleDesktopPermissions(req: Request, pathname: string): Promise<Response> {
@@ -2413,6 +2425,7 @@ const server = Bun.serve({
 		const url = new URL(req.url);
 		const method = req.method;
 
+  if ((method === "GET" || method === "POST") && url.pathname === "/api/ui-locale") return handleUiLocale(req);
 		if (method === "POST" && url.pathname === "/api/transcribe") { httpServer.timeout(req, 0); return handleTranscribe(req); }
 		// Stop and recording recovery use the authoritative full-audio /finalize sidecar pass.
 		if (method === "POST" && url.pathname === "/api/summarize") return handleSummarize(req);

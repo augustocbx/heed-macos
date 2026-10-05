@@ -1,8 +1,34 @@
 # Heed macOS
 
-A macOS adaptation of [Heed](https://github.com/isjunrod/heed), by Junior Rodriguez, for recording and transcribing meetings locally in **Brazilian Portuguese (`pt`) and English (`en`)**. It includes menu bar controls, a 2 GB audio retention limit, and audio playback synchronized with the transcript. The interface, documentation, and installation messages are in English; the final meeting language is detected automatically.
+A macOS adaptation of [Heed](https://github.com/isjunrod/heed), by Junior Rodriguez, for recording and transcribing meetings locally in **Brazilian Portuguese (`pt`) and English (`en`)**. It includes menu bar controls, a 2 GB audio retention limit, and audio playback synchronized with the transcript. The interface and menu support English, Brazilian Portuguese, French, and German, with an English fallback. Documentation and installation messages remain in English; the final meeting language is detected automatically.
 
 Each Mac keeps its own audio, models, and sessions. Installing this project on two machines provides the same features, but **does not synchronize files between them or upload meetings to the cloud**.
+
+## Credits and upstream
+
+This project is based on **[Heed](https://github.com/isjunrod/heed)**, created by **[Junior Rodriguez (@isjunrod)](https://github.com/isjunrod)**. Heed provides the original local transcription, speaker diarization, meeting sessions, and AI notes foundation.
+
+This repository maintains additional macOS controls, Slack automation, audio retention, permission guidance, transcript playback, and interface localization. The original MIT license and copyright notice are preserved in [LICENSE](LICENSE). See [CREDITS.md](CREDITS.md) for attribution and project links.
+
+## Screenshots
+
+The screenshots below use demonstration meeting data.
+
+### Recording
+
+![Recording interface](docs/screenshots/recording.jpg)
+
+### Sessions
+
+![Saved meeting sessions](docs/screenshots/sessions.jpg)
+
+### Settings
+
+![Settings and macOS permissions](docs/screenshots/settings.jpg)
+
+## Contributing
+
+Contributions through forks and pull requests are welcome. Only @augustocbx can merge into the default branch. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Installation
 
@@ -136,3 +162,7 @@ Based on [isjunrod/heed](https://github.com/isjunrod/heed), by Junior Rodriguez.
 ### Live preview and final transcript
 
 Every recording starts with an English live preview using a smaller, bounded-window model to reduce processing and memory use. The preview is provisional. When recording stops, Heed detects English or Portuguese from sampled speech in the saved audio and always retranscribes the entire recording with the accurate final model. The saved session uses the detected language and full-audio timestamps, and preserves manually assigned speaker names where matching is unambiguous. If the final pass fails, the audio stays available for recovery; recovery uses the same language detection and full-audio pass instead of saving the live preview.
+
+## Interface localization
+
+Use **Settings → Interface language** or the menu bar language submenu. English, Portuguese (Brazil), French, and German are available. Unsupported locales and missing translations fall back to English. The per-Mac preference is shared by the menu and interface tabs and remains independent of the English/Portuguese transcription language.

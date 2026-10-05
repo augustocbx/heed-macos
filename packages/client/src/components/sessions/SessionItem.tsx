@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import type { Session } from "@heed/shared";
 import { fmtDate, fmtDuration } from "@/lib/format.ts";
 import { sessionLanguageLabel, sessionModelLabels } from "@/lib/sessionMetadata";
@@ -12,9 +13,10 @@ interface Props {
 }
 
 export function SessionItem({ session, onOpen, onMenu, onTagClick, onDelete }: Props) {
+	useLocale();
 	const speakers = session.speakers?.length || 0;
 	const meta = [
-		speakers > 0 ? `${speakers} speaker${speakers > 1 ? "s" : ""}` : null,
+		speakers > 0 ? tr(speakers===1 ? "{count} speaker" : "{count} speakers", undefined, {count:speakers}) : null,
 		session.duration ? fmtDuration(session.duration) : null,
 		fmtDate(session.createdAt),
   sessionLanguageLabel(session.language) || null,
@@ -26,7 +28,7 @@ export function SessionItem({ session, onOpen, onMenu, onTagClick, onDelete }: P
 			<div className={styles.info}>
 				<div className={styles.title}>
 					{session.pinned && <span className={styles.pin}>📌</span>}
-					{session.title || "Untitled"}
+					{session.title || tr("Untitled")}
 					{session.tags && session.tags.length > 0 && (
 						<span className={styles.tags}>
 							{session.tags.map((t) => (
@@ -50,14 +52,13 @@ export function SessionItem({ session, onOpen, onMenu, onTagClick, onDelete }: P
 				<button
 					className={`${styles.actionBtn} ${styles.actionBtnDanger}`}
 					onClick={(e) => { e.stopPropagation(); onDelete(); }}
-					aria-label="Delete session"
+					aria-label={tr("Delete session")}
 				>
-					Delete
-				</button>
+					{tr("Delete")}</button>
 				<button
 					className={styles.actionBtn}
 					onClick={(e) => { e.stopPropagation(); onMenu(e, session); }}
-					aria-label="More options"
+					aria-label={tr("More options")}
 				>
 					⋯
 				</button>

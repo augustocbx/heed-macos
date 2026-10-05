@@ -52,11 +52,11 @@ final class SlackLogAccess {
         }
     }
 
-    func request(completion: @escaping (URL?) -> Void) {
+    func request(locale: String = "en", completion: @escaping (URL?) -> Void) {
         let panel = NSOpenPanel()
-        panel.title = "Allow Slack meeting detection"
-        panel.message = "Select the Slack logs folder. Heed only reads logs to detect when a meeting starts."
-        panel.prompt = "Allow log access"
+        panel.title = MenuLocalization.text("Allow Slack meeting detection", locale: locale)
+        panel.message = MenuLocalization.text("Select the Slack logs folder. Heed only reads logs to detect when a meeting starts or ends.", locale: locale)
+        panel.prompt = MenuLocalization.text("Allow log access", locale: locale)
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.canCreateDirectories = false

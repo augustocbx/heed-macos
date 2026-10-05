@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import { mdToHtml } from "@/lib/markdown.ts";
 import styles from "./NotesView.module.css";
 
@@ -7,7 +8,8 @@ interface Props {
 	placeholder?: string;
 }
 
-export function NotesView({ notes, streaming = false, placeholder = "No AI notes generated" }: Props) {
+export function NotesView({ notes, streaming = false, placeholder = tr("No AI notes generated") }: Props) {
+	useLocale();
 	if (!notes) {
 		return <div className={styles.notes}><span className={styles.placeholder}>{placeholder}</span></div>;
 	}

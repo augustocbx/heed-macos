@@ -1,8 +1,16 @@
+import { useLocale } from "@/lib/i18n.ts";
+import { UI_LOCALES, type Locale } from "@/lib/locale.ts";
+import { useLocaleStore } from "@/stores/locale.ts";
 import { useCallback, useEffect, useState } from 'react';
 import { permissionsApi, type PermissionAction, type PermissionSnapshot } from '@/api/permissions.ts';
 import styles from './PermissionsPage.module.css';
 
 export function PermissionsPage() {
+ const {locale,tr}=useLocale();
+ const selectLocale=useLocaleStore(s=>s.select);
+ const [savingLocale,setSavingLocale]=useState(false);
+ const [localeError,setLocaleError]=useState(false);
+ const changeLocale=async(value:Locale)=>{setSavingLocale(true);setLocaleError(false);try{await selectLocale(value);}catch{setLocaleError(true);}finally{setSavingLocale(false);}};
  const [snapshot, setSnapshot] = useState<PermissionSnapshot | null>(null);
  const [loadError, setLoadError] = useState(false);
  const [actionError, setActionError] = useState<string | null>(null);
@@ -42,15 +50,24 @@ export function PermissionsPage() {
   { id: 'slackLogs' as const, title: 'Slack meeting detection', description: 'Detects when you join a meeting in the Slack app.', status: slackOptional ? 'Optional — automatic recording disabled' : boolStatus(slack), allowed: slack === true, button: 'Authorize Slack logs', help: 'In the folder picker, authorize the Slack logs folder selected by Heed. Enable “Automatically record Slack meetings” from the menu bar icon.' },
  ];
  return <section className={styles.page} aria-labelledby="settings-title">
-  <header><h1 id="settings-title">Settings</h1><p>Permissions on this Mac</p></header>
-  <div className={`${styles.summary} ${ready ? styles.ready : styles.attention}`} role="status"><strong>{title}</strong><p>{!connected ? 'Open the Heed app from the menu bar icon to check and authorize access.' : ready ? 'The required permissions are authorized.' : 'Complete the authorizations below before starting a meeting.'}</p><button onClick={() => void refresh()}>Check again</button></div>
-  {(actionError || snapshot?.error) && <p className={styles.error} role="alert">{actionError || snapshot?.error}</p>}
-  {notice && <p className={styles.notice} role="status">{notice}</p>}
+  <header><h1 id="settings-title">{tr('Settings')}</h1><p>{tr('Permissions on this Mac')}</p></header>
+  <article className={styles.card}>
+   <label htmlFor="interface-language">{tr("Interface language")}</label>
+   <select id="interface-language" value={locale} disabled={savingLocale} onChange={event=>void changeLocale(event.target.value as Locale)}>
+    {UI_LOCALES.map(value=><option key={value} value={value}>{({en:"English","pt-BR":"Português (Brasil)",fr:"Français",de:"Deutsch"})[value]}</option>)}
+   </select>
+   <p>{tr("Interface language does not change the meeting transcription language.")}</p>
+   {savingLocale && <p role="status">{tr("Saving…")}</p>}
+   {localeError && <p role="alert">{tr("Could not save interface language. Check that Heed is running and try again.")}</p>}
+  </article>
+  <div className={`${styles.summary} ${ready ? styles.ready : styles.attention}`} role="status"><strong>{tr(title)}</strong><p>{tr(!connected ? 'Open the Heed app from the menu bar icon to check and authorize access.' : ready ? 'The required permissions are authorized.' : 'Complete the authorizations below before starting a meeting.')}</p><button onClick={() => void refresh()}>{tr('Check again')}</button></div>
+  {(actionError || snapshot?.error) && <p className={styles.error} role="alert">{tr(actionError || snapshot?.error || "")}</p>}
+  {notice && <p className={styles.notice} role="status">{tr(notice)}</p>}
   <div className={styles.cards}>{rows.map(row => <article key={row.id} className={styles.card} aria-labelledby={`permission-${row.id}`}>
-   <div className={styles.cardHeading}><h2 id={`permission-${row.id}`}>{row.title}</h2><span className={row.allowed ? styles.authorized : styles.pending}>{row.status}</span></div>
-   <p>{row.description}</p>
-   {(!row.allowed || row.id !== 'slackLogs') && <><p className={styles.help}>{row.help}</p><button disabled={disabled} onClick={() => void authorize(row.id)}>{action === row.id ? 'Opening authorization…' : row.button}</button></>}
+   <div className={styles.cardHeading}><h2 id={`permission-${row.id}`}>{tr(row.title)}</h2><span className={row.allowed ? styles.authorized : styles.pending}>{tr(row.status)}</span></div>
+   <p>{tr(row.description)}</p>
+   {(!row.allowed || row.id !== 'slackLogs') && <><p className={styles.help}>{tr(row.help)}</p><button disabled={disabled} onClick={() => void authorize(row.id)}>{tr(action === row.id ? 'Opening authorization…' : row.button)}</button></>}
   </article>)}</div>
-  <aside className={styles.tip}><strong>Already authorized, but recording still fails?</strong><p>After an update, macOS may require renewed authorization. In Settings, turn Heed off and on for the indicated permission. If macOS asks, choose “Quit & Reopen”. Return to this page and check the status before testing.</p><p>Keep the Heed interface open during automatic recording.</p></aside>
+  <aside className={styles.tip}><strong>{tr('Already authorized, but recording still fails?')}</strong><p>{tr('After an update, macOS may require renewed authorization. In Settings, turn Heed off and on for the indicated permission. If macOS asks, choose “Quit & Reopen”. Return to this page and check the status before testing.')}</p><p>{tr('Keep the Heed interface open during automatic recording.')}</p></aside>
  </section>;
 }

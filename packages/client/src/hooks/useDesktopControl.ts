@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import { useEffect, useRef } from 'react';
 import { useRecordingStore } from '@/stores/recording.ts';
 import { useHealthStore } from '@/stores/health.ts';
@@ -16,7 +17,7 @@ export function useDesktopControl(controls:{start:(language?:string)=>Promise<bo
   async function post(path:string, body:unknown) {
    const response = await fetch(`/api/desktop/control/${path}`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
    const data = await response.json();
-   if (!response.ok) throw new Error(data.error || 'Desktop control failed');
+   if (!response.ok) throw new Error(data.error || tr("Desktop control failed"));
    return data;
   }
   async function poll() {
