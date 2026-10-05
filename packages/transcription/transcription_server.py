@@ -1931,7 +1931,7 @@ def _dominant_diar_speaker(seg, diar_segs):
 OWNER_ECHO_COS = 0.65
 
 
-def finalize_recording(wav_path, language="auto", is_dual=True):
+def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None):
     """Post-stop pipeline (the real 'brilliant' one): re-transcribe BOTH channels with REAL Parakeet
     timestamps, diarize the system channel (remote speakers), and — crucially for no-headphone setups —
     acoustically strip the mic's echo by keeping only the mic voice that does NOT match any system
@@ -2014,6 +2014,16 @@ def finalize_recording(wav_path, language="auto", is_dual=True):
         for seg in pool:
             cl_ch[seg["cid"]][seg["ch"]] += seg["end"] - seg["start"]
         sys_based = {cid for cid in clusters if cl_ch[cid]["sys"] >= 1.0}
+
+        # Preserva nomes reconhecidos ao vivo por voz, nunca pela numeração dos clusters.
+        from voice_identity import reconcile_names
+        live_voices = [{"name": sp.get("name"), "emb": sp.get("emb"),
+                        "backend": _diar_session.backend} for sp in _diar_session.speakers]
+        channels = {cid: {ch for ch, duration in durations.items() if duration > 0}
+                    for cid, durations in cl_ch.items()}
+        matched_name.update(reconcile_names(
+            {cid: c["emb"] for cid, c in clusters.items()}, matched_name,
+            live_voices, backend, channels, mic_name))
 
         # "Speaker N" for the unmatched clusters, in first-appearance order.
         first_start = {cid: min(pool[j]["start"] for j in clusters[cid]["idxs"]) for cid in clusters}
@@ -2609,6 +2619,7 @@ class Handler(BaseHTTPRequestHandler):
                     body["wav_path"],
                     body.get("language", "auto"),
                     bool(body.get("dual", True)),
+                    body.get("mic_name"),
                 )
             except Exception as e:
                 self._json({"error": str(e)[:200], "turns": []}, 200)

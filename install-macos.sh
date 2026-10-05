@@ -17,7 +17,7 @@ if ! command -v brew >/dev/null 2>&1; then
     printf 'Instale Homebrew em https://brew.sh e execute novamente. O instalador não usa sudo.\n' >&2; exit 1
 fi
 HEED_BREW_PACKAGES=()
-for HEED_PACKAGE in ffmpeg python@3.14 ollama; do
+for HEED_PACKAGE in ffmpeg python@3.14 ollama node; do
     if ! brew list --versions "$HEED_PACKAGE" >/dev/null 2>&1; then HEED_BREW_PACKAGES+=("$HEED_PACKAGE"); fi
 done
 if [ "${#HEED_BREW_PACKAGES[@]}" -gt 0 ]; then

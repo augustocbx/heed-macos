@@ -2034,7 +2034,7 @@ async function finishSysRecording(req: Request): Promise<Response> {
 				try { await postJSON("/diar/finish", {}); } catch {}
 			}
 
-			const fin = await postJSON("/finalize", { wav_path: path, language: stopLang, dual: isDual });
+			const fin = await postJSON("/finalize", { wav_path: path, language: stopLang, dual: isDual, mic_name: micLabel() });
 			const finTurns: Array<{ start: number; end: number; speaker: string; text: string; channel?: "mic" | "sys" }> = fin?.turns || [];
 			speakerEmbeddings = fin?.embeddings || {};
 			autoNamed = fin?.auto_named || {};
