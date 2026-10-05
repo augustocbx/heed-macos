@@ -53,7 +53,7 @@ bun run doctor
 
 ## Playback synchronized with the transcript
 
-Open **Sessions**, choose a meeting, and use the audio player above its transcript. The segment matching the audio time is highlighted and kept visible. Click a segment, or use Enter/Space, to play from that point. Overlapping speech can highlight multiple segments. Synchronization uses segment timestamps, not individual words.
+Abra **Meetings** (ou **Reuniões**, na interface em português), escolha uma reunião e pressione Play no reprodutor acima da transcrição. O trecho correspondente é destacado e mantido visível. Clique em um trecho, ou use Enter/Espaço, para reproduzir daquele ponto. Falas sobrepostas podem destacar vários trechos. A sincronização segue os tempos dos trechos, sem precisão por palavra.
 
 The player uses the audio file's actual duration, which may differ from the recording timer. It does not artificially rescale timestamps. If audio has expired under the 2 GB retention policy, the transcript remains available and the interface reports that the audio is unavailable.
 
@@ -61,11 +61,11 @@ See [README.md](README.md) for the native capture architecture, storage paths, t
 
 ### Live preview and final transcript
 
-Every recording starts with an English live preview using a smaller, bounded-window model to reduce processing and memory use. The preview is provisional. When recording stops, Heed detects English or Portuguese from sampled speech in the saved audio and always retranscribes the entire recording with the accurate final model. The saved session uses the detected language and full-audio timestamps, and preserves manually assigned speaker names where matching is unambiguous. If the final pass fails, the audio stays available for recovery; recovery uses the same language detection and full-audio pass instead of saving the live preview.
+Cada gravação começa com uma prévia em inglês usando um modelo menor e janelas limitadas para reduzir o processamento e a memória. A prévia é provisória. Ao parar, o Heed detecta inglês ou português em amostras do áudio salvo e sempre retranscreve a gravação inteira com o modelo final de maior precisão. A reunião salva usa o idioma detectado e os tempos do áudio completo, preservando nomes atribuídos manualmente quando a correspondência é inequívoca. Se a etapa final falhar, o áudio continua disponível para recuperação; a recuperação também detecta o idioma e processa o áudio completo, em vez de salvar a prévia.
 
-To retranscribe a saved session manually, open **Sessions**, select the session, and click **Transcribe**. Choose **Parakeet v3** (the default), **Whisper base**, **small**, **medium**, or **large-v3**, and select automatic English/Portuguese detection, English, or Portuguese (Brazil). A selected model downloads locally on first use when needed. Larger models require more memory and time. Heed shows progress and blocks new recordings while transcription runs; it replaces the session transcript only after the complete result is saved, preserving the original audio and unambiguously matched speaker names, and correcting duration from the complete audio when available. If transcription or saving fails, the existing session stays available.
+Para retranscrever uma reunião salva, abra **Meetings / Reuniões**, escolha a reunião e clique em **Transcribe / Transcrever**. Selecione **Parakeet v3** (padrão), **Whisper base**, **small**, **medium** ou **large-v3**, e detecção automática de inglês/português, inglês ou português (Brasil). O modelo selecionado é baixado localmente no primeiro uso quando necessário. Modelos maiores exigem mais memória e tempo. O Heed mostra o progresso e bloqueia novas gravações durante a transcrição; substitui a transcrição somente após salvar o resultado completo, preservando o áudio original e os nomes com correspondência inequívoca, e corrigindo a duração a partir do áudio completo quando disponível. Se a transcrição ou o salvamento falhar, a reunião anterior continua disponível.
 
-Session cards and details show the meeting language and the live/final transcription models recorded for the session. Older sessions without model metadata do not display an assumed model. Manual transcription updates the final model while retaining the original live model.
+Os cartões e detalhes mostram o idioma da reunião e os modelos de transcrição ao vivo e final registrados. Reuniões antigas sem esses metadados não exibem um modelo presumido. A transcrição manual atualiza o modelo final e mantém o modelo ao vivo original.
 
 ## Interface language
 
