@@ -8,16 +8,26 @@ final class SlackHuddleDetector {
         var offset: UInt64
         var partial = Data()
     }
-    private let roots: [URL]
+    private let defaultRoots: [URL]
+    private var authorizedLogRoot: URL?
+    private var roots: [URL] { authorizedLogRoot.map { [$0] } ?? defaultRoots }
     private var cursors: [String: Cursor] = [:]
     private var states: [String: Bool] = [:]
     private(set) var available = false
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
-        roots = [
+        defaultRoots = [
             home.appendingPathComponent("Library/Containers/com.tinyspeck.slackmacgap/Data/Library/Application Support/Slack/logs"),
             home.appendingPathComponent("Library/Application Support/Slack/logs")
         ]
+    }
+
+    func setAuthorizedLogRoot(_ url: URL?) {
+        authorizedLogRoot = url
+        cursors.removeAll()
+        states.removeAll()
+        available = false
+        // A consulta seguinte estabelece novo EOF, sem ler reuniões antigas.
     }
 
     static func transition(_ line: String) -> Bool? {
@@ -141,5 +151,9 @@ func slackHuddleDetectorSelfTests() throws {
     try otherHandle.close()
     try append(stop)
     try check(detector.poll(slackRunning: true) == true, "Stop de outra origem não deve encerrar origem ativa")
+    detector.setAuthorizedLogRoot(dir.deletingLastPathComponent())
+    try check(detector.poll(slackRunning: true) == false, "Nova autorização deve recomeçar no EOF")
+    try append(start)
+    try check(detector.poll(slackRunning: true) == true, "Ler novos eventos da raiz autorizada")
     try check(detector.poll(slackRunning: false) == false, "Slack fechado deve encerrar")
 }

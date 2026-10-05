@@ -34,6 +34,10 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private let slackAutoMenu = NSMenuItem(title: "Gravar automaticamente reuniões do Slack", action: #selector(toggleSlackAuto), keyEquivalent: "")
     private let slackStateMenu = NSMenuItem(title: "Slack: aguardando próxima reunião", action: nil, keyEquivalent: "")
     private var lastSlackObservation: String?
+    private let slackLogAccess = SlackLogAccess()
+    private var requestingSlackAccess = false
+    private var promptedForSlackAccess = false
+    private let slackAccessMenu = NSMenuItem(title: "Autorizar registros do Slack…", action: #selector(authorizeSlackLogs), keyEquivalent: "")
     private let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 6
@@ -60,10 +64,12 @@ final class MenuController: NSObject, NSApplicationDelegate {
         languageEntry.submenu = languageMenu; menu.addItem(languageEntry)
         slackAutoMenu.target = self; menu.addItem(slackAutoMenu)
         slackStateMenu.isEnabled = false; menu.addItem(slackStateMenu)
+        slackAccessMenu.target = self; menu.addItem(slackAccessMenu)
         menu.addItem(NSMenuItem.separator())
         let quit = NSMenuItem(title: "Sair do ícone", action: #selector(quitApp), keyEquivalent: "")
         quit.target = self; menu.addItem(quit)
         item.menu = menu
+        if let folder = slackLogAccess.restore() { slackDetector.setAuthorizedLogRoot(folder) }
         _ = slackDetector.poll(slackRunning: NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.tinyspeck.slackmacgap" })
         updateMenu(); bootServices(); poll()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.poll() }
@@ -121,6 +127,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         slackStateMenu.title = "Slack: \(observation)"
         if lastSlackObservation != observation { logSlack(observation); lastSlackObservation = observation }
         let effects = slackPolicy.evaluate(signal: signal, status: status, now: ProcessInfo.processInfo.systemUptime)
+        if slackAutoEnabled && slackRunning && signal == nil && !promptedForSlackAccess { authorizeSlackLogs() }
         for effect in effects {
             switch effect {
             case .openInterface: openInterface()
@@ -171,6 +178,19 @@ final class MenuController: NSObject, NSApplicationDelegate {
     @objc private func openInterface() { bootServices(); NSWorkspace.shared.open(URL(string: "http://localhost:5170")!) }
     @objc private func selectLanguage(_ sender: NSMenuItem) { UserDefaults.standard.set(sender.representedObject as? String, forKey: "HeedLanguage"); updateMenu() }
     @objc private func toggleSlackAuto() { UserDefaults.standard.set(!slackAutoEnabled, forKey: "HeedSlackAutoRecord"); updateMenu() }
+    @objc private func authorizeSlackLogs() {
+        guard !requestingSlackAccess else { return }
+        requestingSlackAccess = true; promptedForSlackAccess = true
+        slackAccessMenu.isEnabled = false
+        slackLogAccess.request { [weak self] folder in
+            guard let self = self else { return }
+            self.requestingSlackAccess = false; self.slackAccessMenu.isEnabled = true
+            if let folder = folder { self.slackDetector.setAuthorizedLogRoot(folder); self.logSlack("pasta de registros autorizada") }
+            else { self.logSlack("autorização da pasta não concluída") }
+            if let diagnostic = self.slackLogAccess.diagnostic { self.logSlack(diagnostic) }
+            self.poll()
+        }
+    }
     @objc private func quitApp() { NSApplication.shared.terminate(nil) }
 }
 
@@ -187,6 +207,7 @@ if CommandLine.arguments.contains("--self-test") {
     precondition(responseError(nil, status: 500).contains("500"))
     try slackRecordingPolicySelfTest()
     try slackHuddleDetectorSelfTests()
+    try slackLogAccessSelfTests()
     print("Heed menubar self-tests passed")
 } else {
     let app = NSApplication.shared
