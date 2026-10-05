@@ -1,0 +1,65 @@
+:root {
+	/* Brand */
+	--blue: #2563EB;
+	--blue-light: #60A5FA;
+	--blue-pale: #DBEAFE;
+
+	/* Backgrounds */
+	--bg: #F8FAFC;
+	--bg-alt: #EFF6FF;
+	--bg-dark: #0F172A;
+	--bg-dark-2: #1E293B;
+
+	/* Borders */
+	--border: #CBD5E1;
+	--border-light: #E2E8F0;
+
+	/* Text */
+	--text: #0F172A;
+	--text-2: #475569;
+	--text-3: #94A3B8;
+	--white: #FFFFFF;
+
+	/* Status */
+	--red: #EF4444;
+	--green: #22C55E;
+	--yellow: #F59E0B;
+
+	/* Speaker palette */
+	--speaker-1: #2563EB;
+	--speaker-2: #22C55E;
+	--speaker-3: #EF4444;
+	--speaker-4: #F59E0B;
+	--speaker-5: #8B5CF6;
+	--speaker-6: #EC4899;
+
+	/* Fonts */
+	--mono: "Geist Mono", "JetBrains Mono", monospace;
+	--sans: "Inter", system-ui, sans-serif;
+
+	/* Spacing scale */
+	--space-1: 4px;
+	--space-2: 8px;
+	--space-3: 12px;
+	--space-4: 16px;
+	--space-5: 20px;
+	--space-6: 24px;
+	--space-8: 32px;
+	--space-10: 40px;
+	--space-12: 48px;
+
+	/* Radius */
+	--radius-sm: 6px;
+	--radius-md: 8px;
+	--radius-lg: 12px;
+	--radius-full: 999px;
+
+	/* Shadows */
+	--shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.06);
+	--shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
+	--shadow-lg: 0 8px 24px rgba(15, 23, 42, 0.12);
+	--shadow-blue: 0 4px 12px rgba(37, 99, 235, 0.08);
+
+	/* Container */
+	--container-max: 960px;
+}

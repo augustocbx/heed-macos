@@ -1,0 +1,7 @@
+# heed CORE runtime — macOS Apple Silicon (the DEFAULT install).
+# On Mac the engine is Parakeet + FluidAudio diarization, running on the ANE via the Swift sidecar
+# (packages/transcription/native/heed-parakeet) — NO Python ML deps. The heavy stack (torch, pyannote,
+# faster-whisper, mlx = ~1.6GB) is ONLY the fallback and installs on-demand via requirements-fallback.txt.
+# Keep this tiny: it's what "press record and it works" depends on.
+livekit   # WebRTC AEC3 for mic echo cancellation (Layer 2 — lazy import, graceful if absent)
+numpy     # used by the AEC path (_aec_clean); declared explicitly since it was transitive via torch

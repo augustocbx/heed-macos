@@ -1,0 +1,20 @@
+{
+	"name": "heed",
+	"private": true,
+	"workspaces": ["packages/*"],
+	"scripts": {
+		"dev": "concurrently -n server,client,python -c blue,green,yellow \"bun run dev:server\" \"bun run dev:client\" \"bun run dev:python\"",
+		"dev:server": "cd packages/server && bun run dev",
+		"dev:client": "cd packages/client && bun run dev",
+		"dev:python": ".venv/bin/python3 -u packages/transcription/transcription_server.py",
+		"build": "cd packages/client && bun run build",
+		"doctor": ".venv/bin/python3 packages/transcription/doctor.py",
+		"update": "node scripts/update.mjs",
+		"desktop": "python3 packages/desktop/main.py",
+		"desktop:prod": "python3 packages/desktop/main.py --prod"
+	},
+	"devDependencies": {
+		"concurrently": "^9.2.1",
+		"playwright": "^1.59.1"
+	}
+}

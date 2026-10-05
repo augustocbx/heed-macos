@@ -1,0 +1,12 @@
+{"label": "baseline", "dedup": false, "echo_in_mic": 0.111, "junior_kept": 0.798, "score": 0.685, "n_echo_samples": 8, "n_jun_samples": 11}
+{"label": "gate", "dedup": false, "echo_in_mic": 0.051, "junior_kept": 0.612, "score": 0.627, "n_echo_samples": 8, "n_jun_samples": 11}
+{"label": "gate+aec-adaptive", "dedup": false, "echo_in_mic": 0.057, "junior_kept": 0.522, "score": 0.607, "n_echo_samples": 8, "n_jun_samples": 11}
+{"label": "gate+aec-always", "dedup": false, "echo_in_mic": 0.058, "junior_kept": 0.513, "score": 0.595, "n_echo_samples": 8, "n_jun_samples": 11}
+{"label": "baseline+dedup", "dedup": true, "echo_in_mic": 0.0, "junior_kept": 0.77, "score": 0.73, "n_echo_samples": 8, "n_jun_samples": 11}
+{"label": "baseline", "dedup": false, "echo_in_mic": 0.111, "junior_kept": 0.798, "score": 0.685, "n_echo_samples": 8, "n_jun_samples": 11}
+{"label": "produccion-final", "dedup": true, "echo_in_mic": 0.0, "junior_kept": 0.77, "score": 0.73, "n_echo_samples": 8, "n_jun_samples": 11}
+{"label": "gate0.008+dedup", "dedup": true, "echo_in_mic": 0.0, "junior_kept": 0.747, "score": 0.708, "n_echo_samples": 8, "n_jun_samples": 11}
+{"label": "gate0.012+dedup", "dedup": true, "echo_in_mic": 0.0, "junior_kept": 0.705, "score": 0.67, "n_echo_samples": 8, "n_jun_samples": 11}
+{"label": "relgate+dedup", "dedup": true, "echo_in_mic": 0.0, "junior_kept": 0.706, "score": 0.642, "n_echo_samples": 8, "n_jun_samples": 11}
+{"label": "relgate0.25+dedup", "dedup": true, "echo_in_mic": 0.0, "junior_kept": 0.733, "score": 0.679, "n_echo_samples": 8, "n_jun_samples": 11}
+{"label": "final-v2", "dedup": true, "echo_in_mic": 0.0, "junior_kept": 0.747, "score": 0.698, "n_echo_samples": 8, "n_jun_samples": 11}

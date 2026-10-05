@@ -1,0 +1,46 @@
+.group {
+	text-align: center;
+	min-width: 100px;
+}
+
+.visualizer {
+	display: flex;
+	align-items: flex-end;
+	gap: 2px;
+	height: 48px;
+	padding: 0 4px;
+}
+
+.bar {
+	width: 3px;
+	min-height: 2px;
+	background: var(--blue);
+	border-radius: 2px 2px 0 0;
+	transition: height 60ms ease-out;
+}
+
+.barSystem {
+	background: var(--green);
+}
+
+.label {
+	font-family: var(--mono);
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	margin-top: 10px;
+}
+
+.labelMic {
+	color: var(--text-3);
+}
+
+.labelSystem {
+	color: var(--green);
+}
+
+.dualWrap {
+	display: flex;
+	gap: 40px;
+	justify-content: center;
+}
