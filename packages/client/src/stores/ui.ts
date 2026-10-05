@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type Page = "record" | "sessions";
+export type Page = "record" | "sessions" | "settings";
 
 interface UIState {
 	currentPage: Page;
@@ -10,7 +10,7 @@ interface UIState {
 }
 
 export const useUIStore = create<UIState>((set) => ({
-	currentPage: "record",
+	currentPage: typeof window !== "undefined" && window.location.hash === "#settings" ? "settings" : "record",
 	toast: null,
 	setPage: (page) => set({ currentPage: page }),
 	showToast: (message) => {

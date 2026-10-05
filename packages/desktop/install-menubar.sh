@@ -11,8 +11,35 @@ if [ "${1:-}" = "--build-only" ]; then
     exit 0
 fi
 HEED_APP="$HOME/Applications/Heed.app"
+HEED_AGENT="$HOME/Library/LaunchAgents/local.heed.menubar.plist"
+# O aplicativo também pode ter sido aberto pelo Finder. Encerrar somente o
+# LaunchAgent deixaria uma instância antiga usando a assinatura anterior.
+launchctl bootout "gui/$(id -u)/local.heed.menubar" 2>/dev/null || true
+/usr/bin/python3 - "$HEED_APP/Contents/MacOS/Heed" <<'PYSTOP'
+import os, signal, subprocess, sys, time
+executable = sys.argv[1]
+def belongs(pid):
+    command = subprocess.run(['ps', '-p', str(pid), '-o', 'command='], capture_output=True, text=True).stdout.strip()
+    return command == executable or command.startswith(executable + ' ')
+result = subprocess.run(['pgrep', '-x', 'Heed'], capture_output=True, text=True)
+for pid in map(int, result.stdout.split()):
+    if not belongs(pid):
+        continue
+    try:
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(30):
+            if not belongs(pid):
+                break
+            time.sleep(0.1)
+        else:
+            if belongs(pid):
+                os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+PYSTOP
 mkdir -p "$HEED_APP/Contents/MacOS" "$HEED_APP/Contents/Resources"
-cp "$HEED_BUILD/Heed" "$HEED_APP/Contents/MacOS/Heed"
+cp "$HEED_BUILD/Heed" "$HEED_APP/Contents/MacOS/Heed.new"
+mv -f "$HEED_APP/Contents/MacOS/Heed.new" "$HEED_APP/Contents/MacOS/Heed"
 cp "$HEED_DESKTOP/macos/start-services.sh" "$HEED_APP/Contents/Resources/start-services.sh"
 printf '%s\n' "$HEED_PROJECT_ROOT" > "$HEED_APP/Contents/Resources/heed-root.txt"
 cat > "$HEED_APP/Contents/Info.plist" <<'PLIST'
@@ -32,12 +59,10 @@ cat > "$HEED_APP/Contents/Info.plist" <<'PLIST'
 PLIST
 codesign --force --sign - "$HEED_APP"
 mkdir -p "$HOME/Library/LaunchAgents"
-HEED_AGENT="$HOME/Library/LaunchAgents/local.heed.menubar.plist"
 HEED_APP_EXEC="$HEED_APP/Contents/MacOS/Heed" /usr/bin/python3 - "$HEED_AGENT" <<'PY'
 import os, plistlib, sys
 with open(sys.argv[1], 'wb') as file:
     plistlib.dump({'Label': 'local.heed.menubar', 'ProgramArguments': [os.environ['HEED_APP_EXEC']], 'RunAtLoad': True}, file)
 PY
-launchctl bootout "gui/$(id -u)/local.heed.menubar" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$HEED_AGENT"
 printf 'Installed and launched: %s\n' "$HEED_APP"

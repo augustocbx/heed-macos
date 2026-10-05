@@ -30,6 +30,8 @@ Se aparecer o seletor de autorização, escolha a pasta **logs** do Slack e cliq
 
 Em Ajustes do Sistema → Privacidade e Segurança, autorize **Gravação de Tela e Áudio do Sistema** e **Microfone** para o componente solicitado pelo macOS. Se o pedido não aparecer, consulte essas telas manualmente. O capturador de áudio do sistema fica em `packages/transcription/native/heed-parakeet/.build/release/heed-syscap`. As permissões são concedidas individualmente em cada Mac. A captura do sistema funciona independentemente do uso de fones de ouvido.
 
+Use **Configurações** na interface ou **Configurações e permissões…** no menu para consultar as autorizações deste Mac e abrir os Ajustes correspondentes. A tela também informa se o aplicativo nativo está desconectado. Depois de uma atualização, pode ser necessário desligar e ligar novamente a permissão de gravação do Heed, mesmo quando ela aparece habilitada, e aceitar o reinício solicitado pelo macOS.
+
 Os áudios ficam localmente em `recordings/`. A política de retenção limita o total a 2 GB, remove primeiro os áudios das reuniões mais antigas e preserva suas transcrições. Uma gravação que atingir o limite individual é encerrada e salva. O limite de áudio e a transcrição nos dois idiomas devem ser usados igualmente em ambos os Macs.
 
 Os serviços atendem somente na máquina local: interface na porta 5170, API na 5001, transcrição na 5002 e Ollama na 11434. Logs ficam em `~/Library/Logs/Heed/`. Para verificar instalação e modelos:

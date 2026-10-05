@@ -30,6 +30,20 @@ final class SlackHuddleDetector {
         // A consulta seguinte estabelece novo EOF, sem ler reuniões antigas.
     }
 
+    /// Verifica a leitura mesmo com o Slack fechado; estado do processo não é permissão.
+    var canReadLogs: Bool {
+        for root in roots {
+            guard let children = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { continue }
+            for child in children {
+                if let handle = try? FileHandle(forReadingFrom: child.appendingPathComponent("webapp-console.log")) {
+                    defer { try? handle.close() }
+                    if (try? handle.read(upToCount: 1)) != nil { return true }
+                }
+            }
+        }
+        return false
+    }
+
     static func transition(_ line: String) -> Bool? {
         let pattern = #"^(?:\[[0-9/:, .]+\]\s*)?(?:info:\s*)?\[HUDDLES\]\s+updateActiveHuddleReference huddleState ([A-Z_]+)(?:,|\s|$)"#
         guard let match = line.range(of: pattern, options: .regularExpression),
@@ -124,6 +138,7 @@ func slackHuddleDetectorSelfTests() throws {
     let stop = "[HUDDLES] updateActiveHuddleReference huddleState NOT_STARTED, substate undefined\n"
     try Data(start.utf8).write(to: file)
     let detector = SlackHuddleDetector(home: home)
+    try check(detector.canReadLogs, "Configurações devem verificar leitura real")
     try check(detector.poll(slackRunning: true) == false, "Histórico deve começar no EOF")
     func append(_ text: String) throws {
         let handle = try FileHandle(forWritingTo: file)
@@ -156,4 +171,7 @@ func slackHuddleDetectorSelfTests() throws {
     try append(start)
     try check(detector.poll(slackRunning: true) == true, "Ler novos eventos da raiz autorizada")
     try check(detector.poll(slackRunning: false) == false, "Slack fechado deve encerrar")
+    let missing = SlackHuddleDetector(home: home.appendingPathComponent("missing"))
+    _ = missing.poll(slackRunning: false)
+    try check(!missing.canReadLogs, "Slack fechado não deve inventar autorização")
 }

@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+import { PermissionsPage } from "@/components/settings/PermissionsPage.tsx";
 import { useUIStore } from "@/stores/ui.ts";
 import { Nav } from "@/components/layout/Nav.tsx";
 import { Toast } from "@/components/layout/Toast.tsx";
@@ -11,6 +13,11 @@ import styles from "./App.module.css";
 
 export function App() {
 	const currentPage = useUIStore((s) => s.currentPage);
+	useEffect(() => {
+		const onHash = () => { if (window.location.hash === "#settings") useUIStore.getState().setPage("settings"); };
+		window.addEventListener("hashchange", onHash);
+		return () => window.removeEventListener("hashchange", onHash);
+	}, []);
 
 	return (
 		<>
@@ -19,6 +26,7 @@ export function App() {
 				<RecoveryBanner />
 				<div hidden={currentPage !== "record"}><RecordPage /></div>
 				{currentPage === "sessions" && <SessionsPage />}
+				{currentPage === "settings" && <PermissionsPage />}
 			</main>
 			<Footer />
 			<Toast />

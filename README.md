@@ -35,12 +35,16 @@ A detecção acompanha apenas novos estados de reunião dos registros locais do 
 
 **Mantenha a aba da interface aberta durante a captura e o salvamento.** Ela pode ficar minimizada. O navegador executa o controle da gravação, acompanha a transcrição e salva a sessão quando a captura termina.
 
+Abra **Configurações** na interface ou **Configurações e permissões…** pelo ícone. A tela consulta o aplicativo nativo e mostra o estado do microfone, do áudio do sistema e da leitura dos registros do Slack. Os botões solicitam a autorização ou abrem a seção correspondente dos Ajustes. A verificação se atualiza ao voltar à tela e a cada três segundos; sem conexão com o ícone, o estado fica desconhecido. Os botões de Ajustes continuam disponíveis quando a permissão aparece habilitada, para renovar uma autorização invalidada pelo macOS.
+
 Em **Ajustes do Sistema → Privacidade e Segurança**, autorize:
 
 - **Gravação de Tela e Áudio do Sistema**, para capturar os outros participantes.
 - **Microfone**, para capturar sua voz.
 
 O nome apresentado pelo macOS pode ser Heed, Bun ou o componente de captura. Se não surgir um pedido, confira essas telas manualmente. O capturador está em `<pasta-do-projeto>/packages/transcription/native/heed-parakeet/.build/release/heed-syscap`. Cada Mac precisa de suas próprias autorizações.
+
+Uma atualização do aplicativo assinado localmente pode invalidar a autorização anterior. Se a captura for recusada apesar de Heed aparecer habilitado, desligue e ligue novamente sua permissão de **Gravação de Tela e Áudio do Sistema** e aceite o reinício solicitado pelo macOS. Isso renova a autorização já existente; a leitura dos registros do Slack continua sendo autorizada separadamente pelo seletor de pasta.
 
 A captura do som do sistema usa ScreenCaptureKit e funciona com fones de ouvido. O microfone usa a entrada padrão do macOS: confira **Ajustes do Sistema → Som → Entrada** antes da reunião.
 

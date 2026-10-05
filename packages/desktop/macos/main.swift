@@ -1,5 +1,9 @@
 import AppKit
 import Foundation
+import AVFoundation
+import CoreGraphics
+
+struct PermissionRequest: Decodable { let id: String; let action: String }
 
 struct ControlStatus: Decodable {
     let recording: Bool
@@ -10,6 +14,7 @@ struct ControlStatus: Decodable {
     let error: String?
     let pending: Bool
     let starting: Bool?
+    var permissionRequest: PermissionRequest? = nil
     var canStart: Bool { ready && !recording && !processing && !pending && starting != true }
     var canStop: Bool { recording && !pending }
 }
@@ -37,6 +42,9 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private let slackLogAccess = SlackLogAccess()
     private var requestingSlackAccess = false
     private var promptedForSlackAccess = false
+    private var permissionCommandID: String?
+    private var lastPermissionCommandID: String?
+    private var reportingPermissions = false
     private let slackAccessMenu = NSMenuItem(title: "Autorizar registros do Slack…", action: #selector(authorizeSlackLogs), keyEquivalent: "")
     private let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
@@ -54,6 +62,8 @@ final class MenuController: NSObject, NSApplicationDelegate {
         for entry in [startMenu, stopMenu] { entry.target = self; entry.isEnabled = false; menu.addItem(entry) }
         let open = NSMenuItem(title: "Abrir interface", action: #selector(openInterface), keyEquivalent: "")
         open.target = self; menu.addItem(open)
+        let settings = NSMenuItem(title: "Configurações e permissões…", action: #selector(openSettings), keyEquivalent: "")
+        settings.target = self; menu.addItem(settings)
         let languageMenu = NSMenu()
         for (title, code) in [("Português", "pt"), ("English", "en")] {
             let entry = NSMenuItem(title: title, action: #selector(selectLanguage(_:)), keyEquivalent: "")
@@ -98,13 +108,15 @@ final class MenuController: NSObject, NSApplicationDelegate {
                     self.statusMenu.title = "Serviço indisponível — abra a interface"
                 }
                 self.updateMenu()
+                if let request = self.state?.permissionRequest { self.executePermissionRequest(request) }
                 self.checkSlackMeeting()
+                self.reportPermissions()
             }
         }.resume()
     }
     private func updateMenu() {
         slackAutoMenu.state = slackAutoEnabled ? .on : .off
-        startMenu.isEnabled = !sending && (state?.canStart ?? false)
+        startMenu.isEnabled = !sending && (state?.canStart ?? false) && captureAuthorized
         stopMenu.isEnabled = !sending && (state?.canStop ?? false)
         for entry in languages { entry.state = (entry.representedObject as? String) == language ? .on : .off; entry.isEnabled = !sending && !(state?.recording ?? false) && !(state?.pending ?? false) }
         let recording = state?.recording ?? false
@@ -120,7 +132,8 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private func checkSlackMeeting() {
         slackPolicy.enabled = slackAutoEnabled
         let status = state.map { SlackRecordingPolicy.Status(recording: $0.recording, processing: $0.processing,
-            pending: $0.pending || sending, starting: $0.starting == true, ready: $0.ready, clientConnected: $0.clientConnected) }
+            pending: $0.pending || sending || permissionCommandID != nil, starting: $0.starting == true,
+            ready: $0.ready && captureAuthorized, clientConnected: $0.clientConnected) }
         let slackRunning = NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.tinyspeck.slackmacgap" }
         let signal = slackDetector.poll(slackRunning: slackRunning)
         let observation = !slackAutoEnabled ? "desabilitado" : !slackRunning ? "fechado" : signal == nil ? "indisponível" : signal == true ? "reunião detectada" : "aguardando próxima reunião"
@@ -134,6 +147,57 @@ final class MenuController: NSObject, NSApplicationDelegate {
             case .start(let callID): command("start", slackCallID: callID)
             }
         }
+    }
+    private var microphonePermission: String {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: return "authorized"
+        case .denied: return "denied"
+        case .restricted: return "restricted"
+        case .notDetermined: return "notDetermined"
+        @unknown default: return "unknown"
+        }
+    }
+    private var captureAuthorized: Bool { microphonePermission == "authorized" && CGPreflightScreenCaptureAccess() }
+    private func reportPermissions(commandID: String? = nil, error: String? = nil) {
+        guard !reportingPermissions || commandID != nil else { return }
+        reportingPermissions = true
+        var payload: [String: Any] = ["permissions": ["microphone": microphonePermission,
+            "screenCapture": CGPreflightScreenCaptureAccess(), "slackLogs": slackDetector.canReadLogs,
+            "slackAutoRecord": slackAutoEnabled]]
+        if let commandID = commandID { payload["commandId"] = commandID }
+        if let error = error { payload["error"] = error }
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:5001/api/desktop/permissions/report")!)
+        request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        session.dataTask(with: request) { [weak self] _, _, _ in
+            DispatchQueue.main.async { self?.reportingPermissions = false }
+        }.resume()
+    }
+    private func executePermissionRequest(_ request: PermissionRequest) {
+        guard permissionCommandID == nil, lastPermissionCommandID != request.id else { return }
+        permissionCommandID = request.id; lastPermissionCommandID = request.id
+        let finish: (String?) -> Void = { [weak self] error in
+            guard let self = self else { return }
+            self.permissionCommandID = nil
+            self.reportPermissions(commandID: request.id, error: error)
+        }
+        switch request.action {
+        case "microphone":
+            if microphonePermission == "notDetermined" {
+                AVCaptureDevice.requestAccess(for: .audio) { granted in
+                    DispatchQueue.main.async { finish(granted ? nil : "Autorize o microfone do Heed nos Ajustes do Sistema.") }
+                }
+            } else { openPrivacyPane("Privacy_Microphone"); finish(nil) }
+        case "screenCapture":
+            if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
+            openPrivacyPane("Privacy_ScreenCapture"); finish(nil)
+        case "slackLogs":
+            requestSlackLogFolder(completion: finish)
+        default: finish("Autorização desconhecida.")
+        }
+    }
+    private func openPrivacyPane(_ pane: String) {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!)
     }
     private func logSlack(_ message: String) {
         let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Heed")
@@ -176,10 +240,12 @@ final class MenuController: NSObject, NSApplicationDelegate {
     @objc private func startRecording() { command("start") }
     @objc private func stopRecording() { command("stop") }
     @objc private func openInterface() { bootServices(); NSWorkspace.shared.open(URL(string: "http://localhost:5170")!) }
+    @objc private func openSettings() { bootServices(); NSWorkspace.shared.open(URL(string: "http://localhost:5170/#settings")!) }
     @objc private func selectLanguage(_ sender: NSMenuItem) { UserDefaults.standard.set(sender.representedObject as? String, forKey: "HeedLanguage"); updateMenu() }
     @objc private func toggleSlackAuto() { UserDefaults.standard.set(!slackAutoEnabled, forKey: "HeedSlackAutoRecord"); updateMenu() }
-    @objc private func authorizeSlackLogs() {
-        guard !requestingSlackAccess else { return }
+    @objc private func authorizeSlackLogs() { requestSlackLogFolder(completion: nil) }
+    private func requestSlackLogFolder(completion: ((String?) -> Void)?) {
+        guard !requestingSlackAccess else { completion?("A autorização dos registros do Slack já está aberta."); return }
         requestingSlackAccess = true; promptedForSlackAccess = true
         slackAccessMenu.isEnabled = false
         slackLogAccess.request { [weak self] folder in
@@ -188,6 +254,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
             if let folder = folder { self.slackDetector.setAuthorizedLogRoot(folder); self.logSlack("pasta de registros autorizada") }
             else { self.logSlack("autorização da pasta não concluída") }
             if let diagnostic = self.slackLogAccess.diagnostic { self.logSlack(diagnostic) }
+            completion?(folder == nil ? self.slackLogAccess.diagnostic : nil)
             self.poll()
         }
     }
