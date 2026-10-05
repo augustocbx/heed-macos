@@ -4,14 +4,33 @@ import { useRecordingStore } from "@/stores/recording.ts";
 import { applySpeakerNames } from "./speakerNames.ts";
 
 export async function createRecordingSession(session: Partial<Session>) {
- const fields = () => applySpeakerNames(session.segments || [], session.speakers || [], session.embeddings || {}, useRecordingStore.getState().speakerNames);
+ const fields = () => {
+  const state = useRecordingStore.getState();
+  const source = session.transcript && session.transcript === state.transcript ? state : session;
+  return applySpeakerNames(source.segments || [], source.speakers || [], source.embeddings || {}, state.speakerNames);
+ };
  const initial = fields();
- const created = await sessionsApi.create({ ...session, ...initial });
- useRecordingStore.getState().setSessionId(created.id);
- // An edit made while the POST was pending also needs to be saved.
- const latest = fields();
- if (JSON.stringify(initial) !== JSON.stringify(latest)) {
-  return await sessionsApi.patch(created.id, latest);
+ let saved = await sessionsApi.create({ ...session, ...initial, ...(session.transcriptFinalized ? { transcriptFinalized: false } : {}) });
+ if (saved.transcriptFinalized) {
+  useRecordingStore.getState().setSessionId(saved.id);
+  return saved;
  }
- return created;
+ let previous = initial;
+ // Keep the ID unpublished while final speaker writes are pending. An edit made
+ // during any save must be included before the final recording is acknowledged.
+ while (true) {
+  const latest = fields();
+  if (JSON.stringify(previous) === JSON.stringify(latest)) break;
+  saved = await sessionsApi.patch(saved.id, { ...latest, expectedTranscriptRevision:saved.transcriptRevision, ...(session.transcriptFinalized ? { transcriptFinalized: false } : {}) });
+  previous = latest;
+ }
+ if (session.transcriptFinalized) {
+  // Close participant editing across the last commit. No eligible notes job can
+  // appear during the reconciliation loop or use an in-flight speaker mapping.
+  useRecordingStore.setState({finalSavePending:true});
+  try { saved = await sessionsApi.patch(saved.id,{...fields(),transcriptFinalized:true,expectedTranscriptRevision:saved.transcriptRevision}); }
+  finally { useRecordingStore.setState({finalSavePending:false}); }
+ }
+ useRecordingStore.getState().setSessionId(saved.id);
+ return saved;
 }

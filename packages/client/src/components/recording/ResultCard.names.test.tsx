@@ -22,3 +22,10 @@ test("edited speaker name does not revert when another live segment arrives", ()
  act(() => useRecordingStore.getState().upsertLiveTurn({ id: 1, speaker: "Speaker 1", text: "hello again", channel: "sys", start: 1, end: 3 }));
  expect(screen.getByTestId("name")).toHaveTextContent("Ana");
 });
+
+test("speaker edits are held across the final save acknowledgement", () => {
+ useRecordingStore.setState({finalSavePending:true});
+ render(<ResultCard />);
+ fireEvent.click(screen.getByText("Set name"));
+ expect(screen.getByTestId("name")).toHaveTextContent("Speaker 1");
+});

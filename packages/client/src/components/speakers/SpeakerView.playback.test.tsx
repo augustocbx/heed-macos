@@ -18,4 +18,13 @@ describe('synchronized transcript',()=>{
   fireEvent.click(screen.getByRole('button',{name:/Last segment/}));expect(seek).toHaveBeenLastCalledWith(5);
   fireEvent.keyDown(screen.getByRole('button',{name:/First segment/}),{key:'Enter'});expect(seek).toHaveBeenLastCalledWith(1);
  });
+ it('disables speaker rename and merge while the final save is committing',()=>{
+  const prompt=vi.spyOn(window,'prompt');
+  render(<SpeakerView {...props} editingDisabled={true}/>);
+  const chip=screen.getAllByTitle('Click to rename · Right-click to merge')[0];
+  fireEvent.click(chip);fireEvent.contextMenu(chip);
+  expect(prompt).not.toHaveBeenCalled();
+  expect(screen.queryByText('Merge "A" into:')).not.toBeInTheDocument();
+  prompt.mockRestore();
+ });
 });

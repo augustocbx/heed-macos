@@ -2,6 +2,7 @@ import { tr, useLocale } from "@/lib/i18n.ts";
 import type { Session } from "@heed/shared";
 import { fmtDate, fmtDuration } from "@/lib/format.ts";
 import { sessionLanguageLabel, sessionModelLabels } from "@/lib/sessionMetadata";
+import { NotesJobStatus } from "@/components/ai-notes/NotesJobStatus";
 import styles from "./SessionItem.module.css";
 
 interface Props {
@@ -47,6 +48,7 @@ export function SessionItem({ session, onOpen, onMenu, onTagClick, onDelete }: P
 					<div className={styles.summary}>{session.summary}</div>
 				)}
 				<div className={styles.meta}>{meta}</div>
+    <NotesJobStatus session={session} compact />
 			</div>
 			<div className={styles.actions}>
 				<button

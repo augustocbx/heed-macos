@@ -10,6 +10,7 @@ import { sessionsApi } from "@/api/sessions.ts";
 import { Tabs } from "@/components/shared/Tabs.tsx";
 import { SpeakerView } from "@/components/speakers/SpeakerView.tsx";
 import { NotesView } from "@/components/ai-notes/NotesView.tsx";
+import { NotesJobStatus, automaticNotesBusy, replacementPrompt } from "@/components/ai-notes/NotesJobStatus";
 import { NotesHardwareHint } from "@/components/ai-notes/NotesHardwareHint.tsx";
 import { Spinner } from "@/components/shared/Spinner.tsx";
 import { cpuFallbackWarning, estimateNotesSeconds } from "@/lib/format.ts";
@@ -23,7 +24,12 @@ export function ResultCard() {
 	const {
 		transcript, segments, speakers, embeddings, currentSessionId, notesText, setNotes, speakerNames, renameSpeaker,
 	} = useRecordingStore();
-	const showToast = useUIStore((s) => s.showToast);
+	const savedSession = useSessionsStore(state => state.sessions.find(session => session.id === currentSessionId));
+ const notesBusy = automaticNotesBusy(savedSession);
+ const recordingBusy = useRecordingStore(state => state.recording || state.processing);
+ const finalSavePending = useRecordingStore(state => state.finalSavePending);
+ const acceptSession = useSessionsStore(state => state.accept);
+ const showToast = useUIStore((s) => s.showToast);
 	const reloadSessions = useSessionsStore((s) => s.load);
 	const { templates, load: loadTemplates } = useTemplatesStore();
 	const modelsData = useModelsStore((s) => s.data);
@@ -49,7 +55,7 @@ export function ResultCard() {
 
 	const handleCopy = () => {
 		if (activeTab === "notes") {
-			navigator.clipboard.writeText(notesText);
+			navigator.clipboard.writeText(savedSession?.aiNotes ?? notesText);
 		} else {
 			// Copy with speaker labels
 			const text = segments.map((s) => `${speakerNames[s.speaker] || s.speaker}: ${s.text}`).join("\n");
@@ -64,15 +70,16 @@ export function ResultCard() {
 	};
 
 	const handleGenerate = async (forceCpu = false) => {
-		if (!transcript || generating) return;
+		if (!savedSession?.transcript || generating || notesBusy || recordingBusy) return;
+  if (savedSession.aiNotes && !window.confirm(tr(replacementPrompt))) return;
 		setGenerating(true);
 		setStreamingNotes("");
 		setActiveTab("notes");
 		try {
 			let acc = "";
 			await generateNotes(
-				transcript,
-				"es",
+				savedSession.segments?.length ? savedSession.segments.map(segment => `${segment.speaker}: ${segment.text}`).join("\n") : savedSession.transcript,
+				savedSession.language || useRecordingStore.getState().resultLanguage || "en",
 				templateId,
 				{
 					onToken: (tok) => {
@@ -80,12 +87,10 @@ export function ResultCard() {
 						setStreamingNotes(acc);
 					},
 					onDone: async (full) => {
-						setNotes(full);
-						setStreamingNotes("");
-						if (currentSessionId) {
-							await sessionsApi.patch(currentSessionId, { aiNotes: full });
-							reloadSessions();
-						}
+						const updated = await sessionsApi.patch(savedSession.id, { aiNotes: full, expectedNotes: savedSession.aiNotes || "", expectedTranscriptRevision: savedSession.transcriptRevision });
+      acceptSession(updated);
+      if (useRecordingStore.getState().currentSessionId === savedSession.id) setNotes(updated.aiNotes);
+      setStreamingNotes("");
 					},
 				},
 				forceCpu,
@@ -99,10 +104,12 @@ export function ResultCard() {
 			}
 		} finally {
 			setGenerating(false);
+   setStreamingNotes("");
 		}
 	};
 
 	const handleRename = async (original: string, newName: string) => {
+  if (useRecordingStore.getState().finalSavePending) return;
 		const previousName = useRecordingStore.getState().speakerNames[original];
 		renameSpeaker(original, newName);
 		const state = useRecordingStore.getState();
@@ -124,6 +131,7 @@ export function ResultCard() {
 	};
 
 	const handleMerge = async (from: string, into: string) => {
+  if (useRecordingStore.getState().finalSavePending) return;
 		const newSegments = segments.map((s) =>
 			s.speaker === from ? { ...s, speaker: into } : s,
 		);
@@ -143,15 +151,17 @@ export function ResultCard() {
 		showToast(tr("Merged"));
 	};
 
-	const displayNotes = streamingNotes || notesText;
+	const displayNotes = streamingNotes || (savedSession?.aiNotes ?? notesText);
 	const isStreaming = !!streamingNotes && generating;
 
 	return (
 		<div className={styles.card}>
-			<Tabs tabs={tabs} active={activeTab} onChange={(id) => setActiveTab(id as Tab)} />
+			{savedSession && <NotesJobStatus session={savedSession} />}
+   <Tabs tabs={tabs} active={activeTab} onChange={(id) => setActiveTab(id as Tab)} />
 
 			{activeTab === "speakers" && (
 				<SpeakerView
+     editingDisabled={finalSavePending}
 					segments={segments}
 					speakers={speakers}
 					embeddings={embeddings}
@@ -198,11 +208,11 @@ export function ResultCard() {
 							))}
 						</select>
 						{fitsGpu ? (
-							<button className={styles.btn} onClick={() => handleGenerate(false)} disabled={generating}>
+							<button className={styles.btn} onClick={() => handleGenerate(false)} disabled={generating || notesBusy || recordingBusy || !savedSession}>
 								{generating ? <><Spinner />{tr("Generating…")}</> : tr("Generate AI notes · ~{seconds}s", undefined, {seconds: estimateNotesSeconds(currentModel?.vram_mb, true)})}
 							</button>
 						) : (
-							<button className={styles.btnCpu} onClick={() => handleGenerate(true)} disabled={generating}>
+							<button className={styles.btnCpu} onClick={() => handleGenerate(true)} disabled={generating || notesBusy || recordingBusy || !savedSession}>
 								{generating ? <><Spinner />{tr("Generating on CPU…")}</> : tr("Generate on CPU · ~{seconds}s", undefined, {seconds:estimateNotesSeconds(currentModel?.vram_mb, false)})}
 							</button>
 						)}
