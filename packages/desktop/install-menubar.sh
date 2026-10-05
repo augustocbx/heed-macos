@@ -4,7 +4,7 @@ HEED_DESKTOP="$(cd "$(dirname "$0")" && pwd)"
 HEED_PROJECT_ROOT="$(cd "$HEED_DESKTOP/../.." && pwd)"
 HEED_BUILD="${TMPDIR:-/tmp}/heed-menubar-build"
 mkdir -p "$HEED_BUILD"
-swiftc -O "$HEED_DESKTOP"/macos/*.swift -o "$HEED_BUILD/Heed" -framework AppKit
+swiftc -O -target arm64-apple-macosx14.0 "$HEED_DESKTOP"/macos/*.swift -o "$HEED_BUILD/Heed" -framework AppKit
 "$HEED_BUILD/Heed" --self-test
 if [ "${1:-}" = "--build-only" ]; then
     printf 'Build verified: %s\n' "$HEED_BUILD/Heed"
@@ -54,7 +54,7 @@ cat > "$HEED_APP/Contents/Info.plist" <<'PLIST'
 <key>LSUIElement</key><true/>
 <key>NSMicrophoneUsageDescription</key><string>Heed uses the microphone to record your voice during meetings.</string>
 <key>NSAppDataUsageDescription</key><string>Heed reads only meeting states from local Slack logs to start recording automatically.</string>
-<key>LSMinimumSystemVersion</key><string>12.0</string>
+<key>LSMinimumSystemVersion</key><string>14.0</string>
 </dict></plist>
 PLIST
 codesign --force --sign - "$HEED_APP"
