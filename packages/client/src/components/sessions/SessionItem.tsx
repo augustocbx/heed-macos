@@ -3,6 +3,7 @@ import type { Session } from "@heed/shared";
 import { fmtDate, fmtDuration } from "@/lib/format.ts";
 import { sessionLanguageLabel, sessionModelLabels } from "@/lib/sessionMetadata";
 import { TagEditor } from "./TagEditor";
+import { NotesJobStatus } from "@/components/ai-notes/NotesJobStatus";
 import styles from "./SessionItem.module.css";
 
 interface Props {
@@ -37,6 +38,7 @@ export function SessionItem({ session, onOpen, onMenu, onTagClick, onDelete }: P
 				)}
 				<div className={styles.meta}>{meta}</div>
         <TagEditor session={session} onTagClick={onTagClick} />
+    <NotesJobStatus session={session} compact />
 			</div>
 			<div className={styles.actions}>
 				<button

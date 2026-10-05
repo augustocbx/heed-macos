@@ -1,0 +1,15 @@
+.settings { background: var(--white); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 16px 0 20px; }
+.settings h2 { margin: 0 0 8px; font-size: 17px; }
+.settings p, .status p { color: var(--text-2); font-size: 13px; line-height: 1.5; }
+.toggle { display: flex; gap: 8px; align-items: center; margin: 16px 0; }
+.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.fields label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.fields select { width: 100%; padding: 8px; background: var(--white); color: var(--text); border: 1px solid var(--border); border-radius: 6px; font: inherit; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.actions button { padding: 7px 12px; border: 1px solid var(--border); border-radius: 6px; color: white; background: var(--blue); border-color: var(--blue); font: inherit; font-weight: 600; cursor: pointer; }
+.actions button:disabled { opacity: .5; cursor: default; }
+.status { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+.provenance { overflow-wrap: anywhere; }
+.compact { color: var(--text-2); font-size: 12px; margin-top: 6px; }
+
+.fields select:focus-visible, .actions button:focus-visible { outline: 3px solid var(--blue-light); outline-offset: 3px; }

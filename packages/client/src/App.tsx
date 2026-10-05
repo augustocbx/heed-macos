@@ -1,5 +1,6 @@
 import { useLocaleStore } from "@/stores/locale.ts";
 import { useEffect } from "react";
+import { useAutomaticNotesPolling } from "@/hooks/useAutomaticNotesPolling";
 import { PermissionsPage } from "@/components/settings/PermissionsPage.tsx";
 import { useUIStore } from "@/stores/ui.ts";
 import { Nav } from "@/components/layout/Nav.tsx";
@@ -13,6 +14,7 @@ import { AppTour } from "@/components/tour/AppTour.tsx";
 import styles from "./App.module.css";
 
 export function App() {
+ useAutomaticNotesPolling();
  const refreshLocale = useLocaleStore(s=>s.refresh);
  const syncLocale = useLocaleStore(s=>s.sync);
  useEffect(() => {

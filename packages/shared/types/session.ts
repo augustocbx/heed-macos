@@ -1,4 +1,5 @@
 import type { Segment } from "./speaker.ts";
+import type { NotesJob, NotesMetadata } from "./notes.ts";
 
 export interface SessionFiles {
 	wav?: string;
@@ -26,9 +27,16 @@ export interface Session {
   tagsRevision?: string;
 	pinned: boolean;
 	files?: SessionFiles;
+ transcriptFinalized?: boolean;
+ transcriptRevision?: string;
+ notesMetadata?: NotesMetadata;
+ notesJobs?: Record<string, NotesJob>;
 }
 
-export type SessionPatch = Partial<Omit<Session, "id" | "createdAt">>;
+export type SessionPatch = Partial<Omit<Session, "id" | "createdAt">> & {
+ expectedTranscriptRevision?: string;
+ expectedNotes?: string;
+};
 
 export interface SessionListResponse {
 	sessions: Session[];

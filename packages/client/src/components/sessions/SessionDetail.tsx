@@ -10,6 +10,7 @@ import { fmtDate, fmtDuration, cpuFallbackWarning, estimateNotesSeconds } from "
 import { Tabs } from "@/components/shared/Tabs.tsx";
 import { SpeakerView } from "@/components/speakers/SpeakerView.tsx";
 import { NotesView } from "@/components/ai-notes/NotesView.tsx";
+import { NotesJobStatus, automaticNotesBusy, replacementPrompt } from "@/components/ai-notes/NotesJobStatus";
 import { NotesHardwareHint } from "@/components/ai-notes/NotesHardwareHint.tsx";
 import { Spinner } from "@/components/shared/Spinner.tsx";
 import { TagEditor } from "./TagEditor";
@@ -30,6 +31,7 @@ interface Props {
 type TabId = "speakers" | "notes";
 
 export function SessionDetail({ session, onBack, onTagClick }: Props) {
+ const notesBusy = automaticNotesBusy(session);
 	useLocale();
 	const [showTranscribe,setShowTranscribe] = useState(false);
  const [transcribing,setTranscribing] = useState(false);
@@ -96,23 +98,25 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 	};
 
 	const handleGenerate = async (forceCpu = false) => {
-		if (!session.transcript || generating) return;
+		if (!session.transcript || generating || notesBusy || recordingBusy || transcribing) return;
+  if (session.aiNotes && !window.confirm(tr(replacementPrompt))) return;
 		setGenerating(true);
 		setStreamingNotes("");
 		setActiveTab("notes");
 		try {
 			let acc = "";
 			await generateNotes(
-				session.transcript,
-				session.language || "es",
+				session.segments?.length ? session.segments.map(segment => `${segment.speaker}: ${segment.text}`).join("\n") : session.transcript,
+				session.language || "en",
 				templateId,
 				{
 					onToken: (tok) => { acc += tok; setStreamingNotes(acc); },
 					onDone: async (full) => {
-						setStreamingNotes("");
-						await update(session.id, { aiNotes: full });
+						await update(session.id, { aiNotes: full, expectedNotes: session.aiNotes || "", expectedTranscriptRevision: session.transcriptRevision });
+      setStreamingNotes("");
 					},
 				},
+    forceCpu,
 			);
 		} catch (e) {
 			if ((e as { needsModelSelection?: boolean }).needsModelSelection) {
@@ -123,6 +127,7 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 			}
 		} finally {
 			setGenerating(false);
+   setStreamingNotes("");
 		}
 	};
 
@@ -172,7 +177,8 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 
       <TagEditor session={session} onTagClick={onTagClick} />
 
-			<Tabs tabs={tabs} active={activeTab} onChange={(id) => setActiveTab(id as TabId)} />
+			<NotesJobStatus session={session} />
+   <Tabs tabs={tabs} active={activeTab} onChange={(id) => setActiveTab(id as TabId)} />
 
 			{activeTab === "speakers" && (
 				<SpeakerView
@@ -226,11 +232,11 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 							))}
 						</select>
 						{fitsGpu ? (
-							<button className={styles.btn} onClick={() => handleGenerate(false)} disabled={generating}>
+							<button className={styles.btn} onClick={() => handleGenerate(false)} disabled={generating || notesBusy || recordingBusy || transcribing}>
 								{generating ? <><Spinner />{tr("Generating…")}</> : tr("Generate AI notes · ~{seconds}s", undefined, {seconds: estimateNotesSeconds(currentModel?.vram_mb, true)})}
 							</button>
 						) : (
-							<button className={styles.btnCpu} onClick={() => handleGenerate(true)} disabled={generating}>
+							<button className={styles.btnCpu} onClick={() => handleGenerate(true)} disabled={generating || notesBusy || recordingBusy || transcribing}>
 								{generating ? <><Spinner />{tr("Generating on CPU…")}</> : tr("Generate on CPU · ~{seconds}s", undefined, {seconds:estimateNotesSeconds(currentModel?.vram_mb, false)})}
 							</button>
 						)}

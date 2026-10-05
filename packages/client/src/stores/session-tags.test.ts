@@ -8,7 +8,7 @@ vi.mock("@/api/sessions", () => ({ sessionsApi: { patch: vi.fn(), list: vi.fn(),
 const session = { id: "a", title: "Meeting", tags: ["Planning"], tagsRevision: "old" } as Session;
 beforeEach(() => {
   vi.resetAllMocks();
-  useSessionsStore.setState({ sessions: [session], viewing: session, tagsBusy: false, tagsError: "", tagRevision: "1", tagCatalog: [{ name: "Planning", meetingCount: 1 }], lastTagChange: null });
+  useSessionsStore.setState({ sessions: [session], viewing: session, loading: false, tagsBusy: false, tagsError: "", tagRevision: "1", tagCatalog: [{ name: "Planning", meetingCount: 1 }], lastTagChange: null });
 });
 test("a late load cannot revert a committed tag edit", async () => {
   let finish!: (snapshot: TagSnapshot) => void;
@@ -91,4 +91,27 @@ test("inline mutations wait for a pending hashtag save and saving state clears a
   reject(new Error("disk full"));
   await expect(pending).rejects.toThrow("disk full");
   expect(useSessionsStore.getState().tagsBusy).toBe(false);
+});
+test("late notes-job responses preserve tags committed after the request", async () => {
+  vi.mocked(tagsApi.mutate).mockResolvedValue({ sessions: [{ ...session, tags: ["Renamed"], tagsRevision: "new" }], tags: [{ name: "Renamed", meetingCount: 1 }], revision: "2" });
+  await useSessionsStore.getState().mutateTag({ action: "rename", tag: "Planning", name: "Renamed" });
+  useSessionsStore.getState().accept({ ...session, aiNotes: "Saved notes", notesJobs: {} });
+  expect(useSessionsStore.getState().viewing).toMatchObject({ aiNotes: "Saved notes", tags: ["Renamed"], tagsRevision: "new" });
+});
+test("silent polling refreshes notes while preserving tag suggestions and guards", async () => {
+  vi.mocked(tagsApi.list).mockResolvedValue({ sessions: [{ ...session, aiNotes: "Generated notes" }], tags: [{ name: "Planning", meetingCount: 1 }], revision: "1" });
+  const polling = useSessionsStore.getState().load(true);
+  expect(useSessionsStore.getState().loading).toBe(false);
+  await polling;
+  expect(useSessionsStore.getState().viewing?.aiNotes).toBe("Generated notes");
+  expect(useSessionsStore.getState().tagCatalog).toEqual([{ name: "Planning", meetingCount: 1 }]);
+});
+test("a late hashtag save cannot revert a newer manual-note provenance or transcript guard", async () => {
+  let finishTags!: (saved: Session) => void;
+  vi.mocked(sessionsApi.patch).mockImplementation((_id, patch) => patch.tags ? new Promise(resolve => { finishTags = resolve; }) : Promise.resolve({ ...session, aiNotes: "Manual", transcriptRevision: "new-source", notesMetadata: { origin: "manual", stale: false, sourceRevision: "new-source" } }));
+  const tagging = useSessionsStore.getState().update("a", { tags: ["Planning", "New"] });
+  await useSessionsStore.getState().update("a", { aiNotes: "Manual" });
+  finishTags({ ...session, tags: ["Planning", "New"], transcriptRevision: "old-source", notesMetadata: { origin: "automatic", stale: false, sourceRevision: "old-source" } });
+  await tagging;
+  expect(useSessionsStore.getState().viewing).toMatchObject({ aiNotes: "Manual", transcriptRevision: "new-source", notesMetadata: { origin: "manual" } });
 });

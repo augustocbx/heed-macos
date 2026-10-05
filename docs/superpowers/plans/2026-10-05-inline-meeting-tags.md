@@ -86,11 +86,11 @@
 - Create `docs/meeting-tags.md` describing inline controls, global versus assignment-only scope, normalization, duplicate/collision rules and failure recovery.
 - Update the relevant README link and this plan's execution status.
 
-- [ ] Run `bun test packages/server/lib`, `NODE_OPTIONS=--no-experimental-webstorage bun run --cwd packages/client test`, and `bun run build` with Bun on PATH.
-- [ ] Run the Python policy tests and installer syntax checks from `.github/workflows/ci.yml`; report any pre-existing failure explicitly.
-- [ ] Use only synthetic meetings for a browser smoke test on separate ports and isolated application data. Verify create/reuse, rename/delete across several meetings, assignment removal, reload, text-plus-tag filtering and localization. Do not start capture, model downloads or the installed application's services.
-- [ ] Review the complete branch diff and obtain an independent review of persistence, concurrency and keyboard accessibility. Resolve findings and rerun the checks affected by fixes.
-- [ ] Record physical-machine and OS coverage honestly; automated checks on one host do not satisfy both-Mac acceptance.
+- [x] Run `bun test packages/server/lib`, `NODE_OPTIONS=--no-experimental-webstorage bun run --cwd packages/client test`, and `bun run build` with Bun on PATH.
+- [x] Run the Python policy tests and installer syntax checks from `.github/workflows/ci.yml`; report any pre-existing failure explicitly.
+- [x] Use only synthetic meetings for a browser smoke test on separate ports and isolated application data. Verify create/reuse, rename/delete across several meetings, assignment removal, reload, text-plus-tag filtering and localization. Do not start capture, model downloads or the installed application's services.
+- [x] Review the complete branch diff and obtain an independent review of persistence, concurrency and keyboard accessibility. Resolve findings and rerun the checks affected by fixes.
+- [x] Record physical-machine and OS coverage honestly; automated checks on one host do not satisfy both-Mac acceptance.
 - [ ] Review status, staged/unstaged diffs and outgoing commits; commit and push all issue-related repository work. Open an English PR referencing #3 and describe validation and remaining manual checks.
 - [ ] Fetch the PR branch and verify remote SHA equals local HEAD, with a clean issue worktree and no outgoing commits.
 - [ ] Stop and verify only services started for this worktree. Preserve any retained local evidence outside it.
@@ -98,4 +98,4 @@
 
 ## Execution status
 
-Implementation and local verification are complete. The independent review identified four client regressions; each received a failing regression test and a verified correction. Final validation covers 52 server tests, 99 client tests, 18 Python policy tests, the production interface build, installer syntax and a synthetic Chrome smoke test. The installed application was not changed. Physical acceptance on both target Macs remains pending. The final remote-branch and cleanup handoff is recorded in the pull request.
+Implementation and local verification are complete. The independent review identified four client regressions and two integration regressions after automatic notes landed in main; each received a failing regression test and a verified correction. Final validation covers 99 server tests, 129 client tests, 18 Python policy tests, the production interface build, installer syntax and a synthetic Chrome smoke test. The installed application was not changed. Physical acceptance on both target Macs remains pending. The final remote-branch and cleanup handoff is recorded in the pull request.

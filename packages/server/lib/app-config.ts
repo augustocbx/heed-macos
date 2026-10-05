@@ -5,11 +5,13 @@
  * duplicate sat in lib/config.ts (different shape) — exactly the kind of drift the audit flagged.
  * This module owns it; the dead duplicate was deleted.
  */
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { AutomaticNotesSettings } from "@heed/shared";
+import { atomicWriteJson } from "./atomic-json";
 
-export const APP_DIR = join(homedir(), ".heed-app");
+export const APP_DIR = process.env.HEED_APP_DIR || join(homedir(), ".heed-app");
 export const CONFIG_PATH = join(APP_DIR, "config.json");
 export const SESSIONS_DIR = join(APP_DIR, "sessions");
 export const TEMPLATES_DIR = join(APP_DIR, "templates");
@@ -23,6 +25,7 @@ export interface TrxConfig {
 	ollama_model?: string;
 	ollama_num_gpu?: number; // 0 = CPU-only, undefined = let Ollama decide, 999 = all layers on GPU
 	user_name?: string; // label for the user's own (mic) channel; defaults to "Me"
+ automatic_notes?: AutomaticNotesSettings;
 	[k: string]: unknown; // forward-compat for legacy keys
 }
 
@@ -44,7 +47,7 @@ export function loadConfig(): TrxConfig {
 
 export function saveConfig(patch: Partial<TrxConfig>): void {
 	const merged = { ...loadConfig(), ...patch };
-	writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2));
+	atomicWriteJson(CONFIG_PATH, merged);
 }
 
 /** The mic channel is always the user; let them put their real name on it instead of "Me". */

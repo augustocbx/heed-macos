@@ -96,18 +96,29 @@ export class SessionTags {
     return this.read(session.id)!;
   }
 
-  patch(id: string, patch: SessionPatch): Session {
-    const existing = this.read(id);
-    if (!existing) throw new TagError("Meeting not found", 404);
+  /** Validate the raw client patch before merging so missing revisions cannot be inherited. */
+  preparePatch(existing: Session, patch: SessionPatch): SessionPatch {
     const { tagsRevision, ...fields } = patch;
     if (fields.tags !== undefined) {
       if (tagsRevision !== existing.tagsRevision) throw new TagError("Tags changed. Reload and try again.", 409);
       if (!Array.isArray(fields.tags) || fields.tags.some(t => typeof t !== "string" || !normalizeTag(t))) throw new TagError("Enter a tag name");
       fields.tags = uniqueTags(fields.tags, this.snapshot().tags.map(t => t.name));
     }
-    const merged = { ...existing, ...fields, id: existing.id, createdAt: existing.createdAt, tagsRevision: undefined, updatedAt: new Date().toISOString() };
-    this.io.writeAtomic(this.path(id), JSON.stringify(merged, null, 2));
-    return this.read(id)!;
+    return fields;
+  }
+
+  /** Trusted synchronous metadata writes preserve assignments exactly. */
+  save(session: Session): Session {
+    this.recover();
+    this.io.writeAtomic(this.path(session.id), JSON.stringify({ ...session, tagsRevision: undefined }, null, 2));
+    return this.read(session.id)!;
+  }
+
+  patch(id: string, patch: SessionPatch): Session {
+    const existing = this.read(id);
+    if (!existing) throw new TagError("Meeting not found", 404);
+    const fields = this.preparePatch(existing, patch);
+    return this.save({ ...existing, ...fields, id: existing.id, createdAt: existing.createdAt, updatedAt: new Date().toISOString() });
   }
 
   remove(id: string): void {
@@ -159,9 +170,10 @@ export class SessionTags {
   }
 }
 
-export async function tagResponse(req: Request, store: SessionTags): Promise<Response> {
+export async function tagResponse(req: Request, store: SessionTags, normalize: (session: Session) => Session = session => session): Promise<Response> {
   try {
-    return Response.json(req.method === "GET" ? store.snapshot() : store.mutate(await req.json()));
+    const snapshot = req.method === "GET" ? store.snapshot() : store.mutate(await req.json());
+    return Response.json({ ...snapshot, sessions: snapshot.sessions.map(normalize) });
   } catch (error) {
     const message = error instanceof TagError ? error.message : "Failed to save tags";
     return Response.json({ error: message }, { status: error instanceof TagError ? error.status : 500 });

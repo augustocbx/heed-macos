@@ -66,3 +66,9 @@ describe('permission settings', () => {
   expect(await screen.findByText('Permissions authorized')).toBeInTheDocument();
  });
 });
+
+vi.mock('@/api/automaticNotes', () => ({ automaticNotesApi: {
+ settings: vi.fn(async () => ({ enabled: false, model: null, templateId: 'general', language: 'meeting' })),
+ models: vi.fn(async () => ({ models: [] })),
+} }));
+vi.mock('@/api/templates', () => ({ templatesApi: { list: vi.fn(async () => [{ id: 'general', name: 'General', prompt: '' }]) } }));

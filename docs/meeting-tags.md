@@ -24,7 +24,7 @@ Saved tags change only after the server confirms the operation. Failed saves sho
 
 Assignment replacements carry an assignment-only revision. Global operations carry a library tag revision. Unrelated notes, speaker and transcription edits do not invalidate a tag revision and write only their intended metadata.
 
-Global edits stage all original and replacement JSON in a hidden `.tag-transaction` journal before changing any meeting file. Synchronous commits cannot interleave within the server process. A failed or interrupted uncommitted transaction restores originals before session CRUD continues. If recovery cannot finish, requests fail instead of exposing partially updated tags. Keep a single Heed server process per local library.
+Global edits stage all original and replacement JSON in a hidden `.tag-transaction` journal before changing any meeting file. Synchronous commits cannot interleave within the server process. A failed or interrupted uncommitted transaction restores originals before session CRUD continues. If recovery cannot finish, requests fail instead of exposing partially updated tags. Automatic notes use the same persistence layer and reread current assignments for progress and completion. If a storage failure interrupts generation, the idle worker resumes the same job after recovery. Keep a single Heed server process per local library.
 
 ## Validation
 

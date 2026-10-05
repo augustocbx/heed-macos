@@ -188,9 +188,9 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 
 		try {
 			const { path, finalized, language: finalLanguage, model, duration, liveModel: actualLiveModel, turns, embeddings, autoNamed } = await recordingApi.stop();
-   if (!finalized || !finalLanguage || !turns) throw new Error(tr("The final transcript is unavailable. The audio remains available in recovery."));
+   if (!finalized || !["en", "pt"].includes(finalLanguage || "") || !turns) throw new Error(tr("The final transcript is unavailable. The audio remains available in recovery."));
 			if (actualLiveModel) liveModel.current = actualLiveModel;
-			await finalizeRecording(path, finalized, finalLanguage, model, duration ?? recordingSeconds, turns, embeddings, autoNamed);
+			await finalizeRecording(path, finalized, finalLanguage!, model, duration ?? recordingSeconds, turns, embeddings, autoNamed);
    const result = useRecordingStore.getState();
    if (result.transcript.trim() && !result.currentSessionId) throw new Error(tr("The transcript could not be saved. The audio remains available in recovery."));
 			return true;
@@ -234,16 +234,18 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 				speakers, segments, embeddings: emb, wordCount: words.length,
 			});
 			try {
+				useRecordingStore.setState({ processing: true });
 				const created = await createRecordingSession({
 					title: words.slice(0, 8).join(" ") + (words.length > 8 ? "..." : ""),
 					createdAt: new Date().toISOString(), duration: seconds, language: lang,
      transcriptionModel: model || "parakeet-v3", liveModel: liveModel.current,
 					transcript: text, speakers, segments, embeddings: emb,
+     transcriptFinalized: true,
 					files: { wav: audioPath, srt: "", txt: "" }, aiNotes: "", summary: "", tags: [], pinned: false,
 				});
 				useRecordingStore.getState().setSessionId(created.id);
 				reloadSessions();
-			} catch { /* keep the on-screen result even if persistence fails */ }
+			} finally { useRecordingStore.setState({ processing: false }); }
 			return;
 		}
 

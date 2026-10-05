@@ -5,6 +5,7 @@ import type { Segment, TranscribeResult } from "@heed/shared";
 
 interface RecordingState {
 	speakerNames: Record<string, string>;
+ finalSavePending: boolean;
 	renameSpeaker: (original: string, name: string) => void;
 	recording: boolean;
 	processing: boolean;
@@ -14,6 +15,7 @@ interface RecordingState {
 
 	// Result of last recording
 	transcript: string;
+ resultLanguage: string;
 	segments: Segment[];
 	speakers: string[];
 	embeddings: Record<string, number[]>;
@@ -45,7 +47,8 @@ interface RecordingState {
 
 export const useRecordingStore = create<RecordingState>((set) => ({
 	speakerNames: {},
-	renameSpeaker: (original, name) => set((s) => ({ speakerNames: { ...s.speakerNames, [original]: name } })),
+ finalSavePending: false,
+	renameSpeaker: (original, name) => set((s) => s.finalSavePending ? {} : ({ speakerNames: { ...s.speakerNames, [original]: name } })),
 	recording: false,
 	processing: false,
 	seconds: 0,
@@ -53,6 +56,7 @@ export const useRecordingStore = create<RecordingState>((set) => ({
 	processProgress: 0,
 
 	transcript: "",
+ resultLanguage: "en",
 	segments: [],
 	speakers: [],
 	embeddings: {},
@@ -65,7 +69,8 @@ export const useRecordingStore = create<RecordingState>((set) => ({
 			recording: true,
 			seconds: 0,
 			processing: false,
-			transcript: "",
+				transcript: "",
+    resultLanguage: "en",
 			segments: [],
 			speakers: [],
 			embeddings: {},
@@ -73,7 +78,8 @@ export const useRecordingStore = create<RecordingState>((set) => ({
 			notesText: "",
 			liveQuality: null,
 			currentSessionId: null,
-			speakerNames: {},
+				speakerNames: {},
+    finalSavePending: false,
 		}),
 
 	tick: () => set((s) => ({ seconds: s.seconds + 1 })),
@@ -132,6 +138,7 @@ export const useRecordingStore = create<RecordingState>((set) => ({
 			speakerNames: reconcileSpeakerNames(s.segments, result.segments || [], s.speakerNames),
 			processing: false,
 			transcript: result.text,
+   resultLanguage: result.metadata.language,
 			segments: result.segments || [],
 			speakers: result.speakers || [],
 			embeddings: result.embeddings || {},
@@ -149,12 +156,14 @@ export const useRecordingStore = create<RecordingState>((set) => ({
 			processing: false,
 			seconds: 0,
 			transcript: "",
+   resultLanguage: "en",
 			segments: [],
 			speakers: [],
 			embeddings: {},
 			files: null,
 			notesText: "",
 			currentSessionId: null,
-			speakerNames: {},
+				speakerNames: {},
+    finalSavePending: false,
 		}),
 }));

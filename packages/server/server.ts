@@ -1,3 +1,6 @@
+import { AutomaticNotesService, notesHash, renderNotesTranscript } from "./lib/automatic-notes.ts";
+import { automaticNotesSettings, validateNotesSettings } from "./lib/notes-settings.ts";
+import { generateLocalNotes, listLocalNotesModels } from "./lib/ollama-notes.ts";
 import { configuredUiLocale, supportedUiLocale } from "./lib/ui-locale.ts";
 import { finalRecordingResult, recordingFinalizationOptions } from "./lib/final-recording.ts";
 import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, statSync } from "node:fs";
@@ -9,7 +12,7 @@ import { TRANSCRIPTION_SERVER, pyPost as postJSON } from "./lib/transcription-cl
 import { track, gracefulStop, installShutdownHooks } from "./lib/process.ts";
 import { sseResponse } from "./lib/sse.ts";
 import { sessionAudioResponse } from "./lib/session-audio.ts";
-import { SessionTags, sessionResponse, tagResponse } from "./lib/session-tags.ts";
+import { SessionTags, TagError, tagResponse } from "./lib/session-tags.ts";
 const sessionTags = new SessionTags(SESSIONS_DIR);
 import { DesktopControl } from "./lib/desktop-control.ts";
 import { DesktopPermissions, desktopRequestAllowed as permissionRequestAllowed, permissionAction, permissionReport } from "./lib/desktop-permissions.ts";
@@ -22,6 +25,17 @@ const CAPTURE_LIMIT_BYTES = Math.floor(AUDIO_LIMIT_BYTES / 2) - 10_000_000;
 let quotaReachedAt = 0;
 let quotaStopResult: any = null;
 let recordingFinalizationRunning = false;
+let transcriptionRequests = 0;
+let manualNotesController: AbortController | null = null;
+let manualNotesDone: Promise<void> | null = null;
+function audioWorkBusy() {
+ return !!(recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning || transcriptionRequests
+  || desktopControl.status().processing);
+}
+async function preemptNotes() {
+ manualNotesController?.abort();
+ await Promise.all([notesService.preempt(), manualNotesDone]);
+}
 function protectAudio(path: string) { retainedProcessing.set(path, Date.now() + 120_000); }
 function pruneAudio(limit = AUDIO_LIMIT_BYTES) {
  sessionTags.recover();
@@ -33,19 +47,6 @@ function pruneAudio(limit = AUDIO_LIMIT_BYTES) {
 
 const PORT = Number(process.env.PORT) || 5001;
 
-// Code → language name used to instruct Ollama to write the NOTES in the user's chosen
-// language. Covers the 28 Parakeet languages + common Whisper ones; an unmapped code just
-// falls back to the template's "match the transcript" (no hard-fail).
-const LANGUAGE_NAMES: Record<string, string> = {
-	en: "English", es: "Spanish", fr: "French", de: "German", it: "Italian",
-	pt: "Portuguese", ro: "Romanian", nl: "Dutch", da: "Danish", sv: "Swedish",
-	fi: "Finnish", hu: "Hungarian", et: "Estonian", lv: "Latvian", lt: "Lithuanian",
-	mt: "Maltese", pl: "Polish", cs: "Czech", sk: "Slovak", sl: "Slovenian",
-	hr: "Croatian", bs: "Bosnian", ru: "Russian", uk: "Ukrainian", be: "Belarusian",
-	bg: "Bulgarian", sr: "Serbian", el: "Greek", ja: "Japanese", ko: "Korean",
-	zh: "Chinese", ar: "Arabic", hi: "Hindi", tr: "Turkish", vi: "Vietnamese",
-	id: "Indonesian", th: "Thai", he: "Hebrew", ca: "Catalan", gl: "Galician",
-};
 const STATIC_ROOT = join(import.meta.dir, "..", "client", "dist");
 // Recordings stored in the project root
 const UPLOAD_DIR = join(import.meta.dir, "..", "..", "recordings");
@@ -322,6 +323,12 @@ async function handleTranscribe(req: Request): Promise<Response> {
 	const isUrl = /^https?:\/\//i.test(input);
 
  if (recordingFinalize) recordingFinalizationRunning = true;
+ transcriptionRequests++;
+ try { await preemptNotes(); } catch (error) {
+  transcriptionRequests--;
+  if (recordingFinalize) recordingFinalizationRunning = false;
+  return Response.json({error:"Could not release the notes model. Please try again."},{status:503});
+ }
 	retainedProcessing.set(wavPath, Infinity);
 	const encoder = new TextEncoder();
 	const stream = new ReadableStream({
@@ -455,6 +462,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 			} finally {
     removeChannelCopies(wavPath); protectAudio(wavPath);
     if (recordingFinalize) recordingFinalizationRunning = false;
+    transcriptionRequests--;
 				controller.close();
 			}
 		},
@@ -467,6 +475,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 
 // --- Templates CRUD ---
 function loadTemplate(id: string): any | null {
+ if (!/^[a-zA-Z0-9_-]{1,180}$/.test(id)) return null;
 	const filePath = join(TEMPLATES_DIR, `${id}.json`);
 	if (!existsSync(filePath)) return null;
 	try {
@@ -522,118 +531,43 @@ function handleDeleteTemplate(url: URL): Response {
 
 // --- Ollama summarization (SSE) ---
 async function handleSummarize(req: Request): Promise<Response> {
-	const { transcript, language, templateId, force_cpu } = await req.json();
-	if (!transcript) return Response.json({ error: "No transcript provided" }, { status: 400 });
-
-	// Gate: the user must have explicitly chosen a notes model. If none is selected we
-	// signal the client to open the model picker — we never silently pick/install one.
-	const model = getCurrentModel();
-	if (!model) {
-		return Response.json(
-			{ needsModelSelection: true, error: "No notes model selected yet. Pick one to generate notes." },
-			{ status: 409 },
-		);
-	}
-
-	// Load template (default to "general" if not specified)
-	const template = loadTemplate(templateId || "general") || loadTemplate("general");
-
-	let systemPrompt = template?.prompt;
-
-	// Add language directive: force the NOTES into the language the user picked for the
-	// transcript (not just Spanish). "auto" (Whisper auto-detect) is left to the template's
-	// "match the language of the transcript", since we don't know it until transcription runs.
-	const langName = language && language !== "auto" ? LANGUAGE_NAMES[language] : undefined;
-	if (langName) {
-		systemPrompt = `Respond ONLY in ${langName}. Write every section and heading in ${langName}.\n\n${systemPrompt}`;
-	}
-
-	if (!systemPrompt) {
-		systemPrompt = `You are a meeting notes assistant. Generate structured notes with sections: Summary, Key Points, Action Items, Decisions.`;
-	}
-
-	// force_cpu comes from the UI when the user explicitly acknowledged the warning
-	// and chose "Generate on CPU". Otherwise we use the config value.
-	const numGpu = force_cpu ? 0 : (getCurrentNumGpu() ?? undefined);
-	// When running on CPU, limit threads to half the available cores so the OS,
-	// Chrome, and the rest of the system don't freeze. Without this, Ollama
-	// saturates ALL cores and the desktop becomes unresponsive for 30-60 seconds.
-	const cpuCores = cpus().length || 4;
-	const cpuThreadLimit = Math.max(2, Math.floor(cpuCores / 2));
-	const ollamaOptions: Record<string, number> = {};
-	if (numGpu !== undefined) ollamaOptions.num_gpu = numGpu;
-	if (numGpu === 0) ollamaOptions.num_thread = cpuThreadLimit;
-	// Retry logic: if Ollama's runner crashed (OOM, VRAM contention, etc.),
-	// wait a beat and retry once. This recovers silently — the user never sees
-	// a raw 500 error for a transient Ollama failure.
-	const ollamaBody = JSON.stringify({
-		model: getCurrentModel(),
-		stream: true,
-		keep_alive: 0,
-		...(Object.keys(ollamaOptions).length > 0 ? { options: ollamaOptions } : {}),
-		messages: [
-			{ role: "system", content: systemPrompt },
-			{ role: "user", content: `Generate meeting notes from this transcript:\n\n${transcript}` },
-		],
-	});
-
-	let res = await fetch(`${OLLAMA_HOST}/api/chat`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: ollamaBody,
-	});
-
-	// Retry once on failure (runner crash, OOM, etc.)
-	if (!res.ok) {
-		const errBody = await res.text();
-		console.log(`[heed] Ollama failed (${res.status}), retrying in 3s... ${errBody.slice(0, 80)}`);
-		await new Promise(r => setTimeout(r, 3000));
-		res = await fetch(`${OLLAMA_HOST}/api/chat`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: ollamaBody,
-		});
-	}
-
-	if (!res.ok) {
-		const errText = await res.text();
-		return Response.json({ error: `Ollama error: ${errText}` }, { status: 500 });
-	}
-
-	// Stream Ollama response as SSE
-	const encoder = new TextEncoder();
-	const reader = res.body!.getReader();
-	const decoder = new TextDecoder();
-
-	const stream = new ReadableStream({
-		async start(controller) {
-			let buffer = "";
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) break;
-				buffer += decoder.decode(value, { stream: true });
-				const lines = buffer.split("\n");
-				buffer = lines.pop() || "";
-				for (const line of lines) {
-					if (!line.trim()) continue;
-					try {
-						const json = JSON.parse(line);
-						if (json.message?.content) {
-							controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: json.message.content })}\n\n`));
-						}
-						if (json.done) {
-							controller.enqueue(encoder.encode(`data: ${JSON.stringify({ done: true })}\n\n`));
-						}
-					} catch {}
-				}
-			}
-			controller.close();
-		},
-	});
-
-	return new Response(stream, {
-		headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" },
-	});
+ const { transcript, language, templateId, force_cpu } = await req.json();
+ if (typeof transcript !== "string" || !transcript.trim()) return Response.json({error:"No transcript provided"},{status:400});
+ const model = getCurrentModel();
+ if (!model) return Response.json({error:"Choose a notes model before generating notes",needsModelSelection:true},{status:409});
+ const template = loadTemplate(templateId || "general");
+ if (!template?.prompt) return Response.json({error:"The selected notes template is unavailable."},{status:400});
+ if (audioWorkBusy() || manualNotesController) return Response.json({error:"Wait for the current recording or transcription to finish."},{status:409});
+ const abort = new AbortController();
+ manualNotesController = abort;
+ let finish!: () => void;
+ const finished = new Promise<void>(resolve => { finish = resolve; });
+ manualNotesDone = finished;
+ const cancel = () => abort.abort();
+ req.signal.addEventListener("abort", cancel, {once:true});
+ const encoder = new TextEncoder();
+ let closed = false;
+ const stream = new ReadableStream({
+  async start(controller) {
+   const send = (data: unknown) => { if (!closed) controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`)); };
+   try {
+    await notesService.preempt();
+    await generateLocalNotes({baseUrl:OLLAMA_HOST,model,templatePrompt:template.prompt,transcript,
+     language:language || "en",signal:abort.signal,numGpu:force_cpu ? 0 : getCurrentNumGpu(),
+     numThread:Math.max(2,Math.floor(cpus().length / 2)),onToken:token => send({token})});
+    send({done:true});
+   } catch {
+    if (!closed) send({error:abort.signal.aborted ? "Notes generation was interrupted. Please try again." : "Could not generate complete notes. Check the local model and Ollama, then try again."});
+   } finally {
+    req.signal.removeEventListener("abort",cancel);
+    if (!closed) { closed = true; controller.close(); }
+    if (manualNotesController === abort) { manualNotesController = null; manualNotesDone = null; }
+    finish();
+   }
+  },
+  cancel() { closed = true; abort.abort(); },
+ });
+ return new Response(stream,{headers:{"Content-Type":"text/event-stream","Cache-Control":"no-cache",Connection:"keep-alive"}});
 }
 
 // --- Speaker voice memory (proxy to Python server) ---
@@ -1065,72 +999,82 @@ async function handleDesktopFloat(): Promise<Response> {
 }
 
 // --- Sessions CRUD ---
+function sessionError(error: unknown): Response {
+ const message = error instanceof Error ? error.message : "Could not save the meeting.";
+ const status = error instanceof TagError ? error.status : (error as { code?: string })?.code || error instanceof SyntaxError ? 500 : /not found/i.test(message) ? 404 : /changed|replacement|already running/i.test(message) ? 409 : 400;
+ return Response.json({error:message},{status});
+}
+function handleListSessions(): Response { try { return Response.json(notesService.list()); } catch (error) { return sessionError(error); } }
 async function handleCreateSession(req: Request): Promise<Response> {
- const response = await sessionResponse(req, sessionTags);
- if (!response.ok) return response;
- const data = await response.clone().json();
- if (data.files?.wav) { retainedProcessing.delete(data.files.wav); removeChannelCopies(data.files.wav); }
- pruneAudio();
- return Response.json(sessionTags.read(data.id));
+ try {
+  const data = notesService.create(await req.json());
+  if (data.files?.wav) { retainedProcessing.delete(data.files.wav); removeChannelCopies(data.files.wav); }
+  pruneAudio();
+  return Response.json(notesService.get(data.id));
+ } catch (error) { return sessionError(error); }
+}
+async function handlePatchSession(req: Request, url: URL): Promise<Response> {
+ try {
+  const id = url.searchParams.get("id");
+  if (!id) return Response.json({error:"No id"},{status:400});
+  const patch = await req.json();
+  return Response.json(notesService.patch(id,patch));
+ } catch (error) { return sessionError(error); }
+}
+function handleDeleteSession(url: URL): Response {
+ try {
+  const id = url.searchParams.get("id");
+  if (!id) return Response.json({error:"No id"},{status:400});
+  notesService.delete(id);
+  return Response.json({ok:true});
+ } catch (error) { return sessionError(error); }
+}
+async function handleNotesSettings(req: Request): Promise<Response> {
+ if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
+ if (req.method === "GET") return Response.json(automaticNotesSettings(loadConfig()));
+ if (req.method !== "PATCH") return new Response(null,{status:405});
+ try {
+  const input = await req.json();
+  const models = input?.enabled === true ? await listLocalNotesModels(OLLAMA_HOST) : [];
+  const settings = validateNotesSettings(input,loadTemplate(input?.templateId),models);
+  saveConfig({automatic_notes:settings});
+  if (!settings.enabled) await notesService.preempt();
+  return Response.json(settings);
+ } catch (error) { return sessionError(error); }
+}
+async function handleNotesModels(req: Request): Promise<Response> {
+ if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
+ try { return Response.json({models:await listLocalNotesModels(OLLAMA_HOST)}); }
+ catch { return Response.json({error:"Could not list local notes models. Start Ollama and try again."},{status:503}); }
+}
+async function handleNotesJob(req: Request): Promise<Response> {
+ if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
+ try {
+  const {sessionId,jobId,action,replaceExisting,expectedNotes} = await req.json();
+  if (typeof sessionId !== "string" || typeof jobId !== "string") return Response.json({error:"Choose a notes job."},{status:400});
+  if (action === "cancel") return Response.json(notesService.cancel(sessionId,jobId));
+  if (action === "retry") return Response.json(notesService.retry(sessionId,{jobId,replaceExisting:replaceExisting === true,
+   expectedNotesHash:typeof expectedNotes === "string" ? notesHash(expectedNotes) : undefined}));
+  return Response.json({error:"Choose cancel or retry."},{status:400});
+ } catch (error) { return sessionError(error); }
 }
 
 // --- One-line summary via Ollama (for sessions list preview) ---
 async function handleSummaryLine(req: Request): Promise<Response> {
-	const { transcript } = await req.json();
-	if (!transcript || transcript.length < 30) {
-		return Response.json({ summary: "" });
-	}
-
-	// Auto-title is a nice-to-have — if the user hasn't picked a notes model yet, just
-	// skip it silently (the heuristic title is used instead). Never auto-select a model.
-	const model = getCurrentModel();
-	if (!model) return Response.json({ summary: "" });
-
-	// Truncate transcript to first 1500 chars to keep it fast
-	const text = transcript.slice(0, 1500);
-
-	try {
-		// Smart titles are tiny (12 words) — always force CPU to avoid fighting
-		// pyannote for VRAM and to prevent the GPU-load crash we hit in production.
-		const cores = cpus().length || 4;
-		const summaryOpts: Record<string, number> = {
-			num_gpu: 0,
-			num_thread: Math.max(2, Math.floor(cores / 2)),
-		};
-		const summaryBody = JSON.stringify({
-			model: getCurrentModel(),
-			stream: false,
-			keep_alive: 0,
-			...(Object.keys(summaryOpts).length > 0 ? { options: summaryOpts } : {}),
-			messages: [
-				{
-					role: "system",
-					content: "You generate ONE single sentence (max 12 words) that captures the main topic of a meeting transcript. Output ONLY the sentence, no quotes, no prefixes, no explanation. Be concrete and specific. IMPORTANT: respond in the SAME language as the transcript — if it's in Spanish, your sentence must be in Spanish. If English, respond in English.",
-				},
-				{ role: "user", content: text },
-			],
-		});
-		let res = await fetch(`${OLLAMA_HOST}/api/chat`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: summaryBody,
-		});
-		// Retry once on failure
-		if (!res.ok) {
-			await new Promise(r => setTimeout(r, 3000));
-			res = await fetch(`${OLLAMA_HOST}/api/chat`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: summaryBody,
-			});
-		}
-		if (!res.ok) return Response.json({ summary: "" });
-		const data = await res.json() as { message?: { content?: string } };
-		const summary = (data.message?.content || "").trim().replace(/^["']|["']$/g, "").split("\n")[0];
-		return Response.json({ summary });
-	} catch {
-		return Response.json({ summary: "" });
-	}
+ const {transcript} = await req.json();
+ const model = getCurrentModel();
+ if (typeof transcript !== "string" || transcript.length < 30 || !model || audioWorkBusy() || manualNotesController) return Response.json({summary:""});
+ const abort = new AbortController();
+ manualNotesController = abort;
+ let finish!: () => void;
+ manualNotesDone = new Promise<void>(resolve => { finish = resolve; });
+ try {
+  await notesService.preempt();
+  const text = await generateLocalNotes({baseUrl:OLLAMA_HOST,model,transcript:transcript.slice(0,1500),language:"meeting",signal:abort.signal,
+   templatePrompt:"Write one sentence of at most 12 words describing the main meeting topic. Output only the sentence in the same language as the transcript.",numGpu:0,numThread:Math.max(2,Math.floor(cpus().length / 2))});
+  return Response.json({summary:text.trim().split("\n")[0]});
+ } catch { return Response.json({summary:""}); }
+ finally { if (manualNotesController === abort) {manualNotesController=null;manualNotesDone=null;} finish(); }
 }
 
 // --- Audio recording via ffmpeg + PipeWire/PulseAudio ---
@@ -1260,9 +1204,9 @@ function getMicSource(): string | null {
 const AUDIO_FMT = IS_MAC ? "avfoundation" : "pulse";
 
 async function handleSysRecordStart(req: Request): Promise<Response> {
- if (recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning) return Response.json({error:"Heed is already recording or finalizing audio"}, {status:409});
+ if (recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning || transcriptionRequests) return Response.json({error:"Heed is already recording or finalizing audio"}, {status:409});
  recorderStarting = true;
- try { return await beginSysRecording(req); } finally { recorderStarting = false; }
+ try { await preemptNotes(); return await beginSysRecording(req); } finally { recorderStarting = false; }
 }
 
 async function beginSysRecording(req: Request): Promise<Response> {
@@ -2368,7 +2312,7 @@ setInterval(async () => {
      if(response.ok){
       quotaStopResult=await response.json();
       if(!desktopControl.status().clientConnected) {
-       await handleCreateSession(new Request('http://localhost/api/sessions',{method:'POST',body:JSON.stringify({title:'Recording stopped — 2 GB limit',duration,language:quotaStopResult.language || "en",transcript:quotaStopResult.streamText||'',segments:quotaStopResult.turns||[],files:{wav:quotaStopResult.path,srt:'',txt:''},tags:[],speakers:[],aiNotes:'',summary:''})}));
+       await handleCreateSession(new Request('http://localhost/api/sessions',{method:'POST',body:JSON.stringify({title:'Recording stopped — 2 GB limit',duration,language:quotaStopResult.language || "en",transcriptFinalized:true,transcript:quotaStopResult.streamText||'',segments:quotaStopResult.turns||[],files:{wav:quotaStopResult.path,srt:'',txt:''},tags:[],speakers:[...new Set((quotaStopResult.turns||[]).map((turn:any)=>turn.speaker))],aiNotes:'',summary:''})}));
       }
      }
     }
@@ -2378,6 +2322,19 @@ setInterval(async () => {
  finally{retentionBusy=false;}
 },1000);
 
+const notesService = new AutomaticNotesService({
+ sessionsDir:SESSIONS_DIR,
+ sessionStore:sessionTags,
+ getSettings:() => automaticNotesSettings(loadConfig()),
+ loadTemplate:id => loadTemplate(id) || undefined,
+ isBusy:() => audioWorkBusy() || !!manualNotesController,
+ generate:({session,job,signal,onProgress}) => generateLocalNotes({baseUrl:OLLAMA_HOST,model:job.model,templatePrompt:job.templatePrompt,
+  transcript:renderNotesTranscript(session),language:job.language,signal,onProgress,numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))}),
+});
+notesService.recover();
+const notesTimer = setInterval(() => { void notesService.tick().catch(error => console.error("Automatic notes queue failed:", error)); },1000);
+notesTimer.unref();
+
 const server = Bun.serve({
 	hostname: "127.0.0.1",
 	port: PORT,
@@ -2386,6 +2343,11 @@ const server = Bun.serve({
 		const url = new URL(req.url);
 		const method = req.method;
 
+  if (url.pathname === "/api/notes/settings") return handleNotesSettings(req);
+  if (method === "GET" && url.pathname === "/api/notes/models") return handleNotesModels(req);
+  if (method === "POST" && url.pathname === "/api/notes/jobs") return handleNotesJob(req);
+  if ((method === "POST" || method === "PATCH" || method === "DELETE") && ["/api/sessions", "/api/summarize", "/api/summary-line"].includes(url.pathname)
+   && !desktopRequestAllowed(req)) return new Response(null,{status:403});
   if ((method === "GET" || method === "POST") && url.pathname === "/api/ui-locale") return handleUiLocale(req);
 		if (method === "POST" && url.pathname === "/api/transcribe") { httpServer.timeout(req, 0); return handleTranscribe(req); }
 		// Stop and recording recovery use the authoritative full-audio /finalize sidecar pass.
@@ -2401,12 +2363,12 @@ const server = Bun.serve({
         }
 		if ((method === "GET" || method === "POST") && url.pathname === "/api/tags") {
       if (!desktopRequestAllowed(req)) return new Response(null, { status: 403 });
-      return tagResponse(req, sessionTags);
+      return tagResponse(req, sessionTags, session => notesService.normalize(session));
     }
-		if (method === "GET" && url.pathname === "/api/sessions") return sessionResponse(req, sessionTags);
+		if (method === "GET" && url.pathname === "/api/sessions") return handleListSessions();
 		if (method === "POST" && url.pathname === "/api/sessions") return handleCreateSession(req);
-		if (method === "PATCH" && url.pathname === "/api/sessions") return sessionResponse(req, sessionTags);
-		if (method === "DELETE" && url.pathname === "/api/sessions") return sessionResponse(req, sessionTags);
+		if (method === "PATCH" && url.pathname === "/api/sessions") return handlePatchSession(req, url);
+		if (method === "DELETE" && url.pathname === "/api/sessions") return handleDeleteSession(url);
 		if (method === "GET" && url.pathname === "/api/templates") return handleListTemplates();
 		if (method === "POST" && url.pathname === "/api/templates") return handleSaveTemplate(req);
 		if (method === "DELETE" && url.pathname === "/api/templates") return handleDeleteTemplate(url);
@@ -2442,7 +2404,7 @@ const server = Bun.serve({
 // Never leave an orphaned ffmpeg/syscap holding the mic: on SIGINT/SIGTERM/exit, gracefully reap
 // every tracked child (the recorder, the system-audio capture, the level meter). Previously there
 // was NO signal handler — a server crash/exit left ffmpeg running and the mic "stuck busy".
-installShutdownHooks(() => { stopLiveTranscribe(); });
+installShutdownHooks(() => { clearInterval(notesTimer); manualNotesController?.abort(); void notesService.preempt(); stopLiveTranscribe(); });
 
 console.log(`
   ┌──────────────────────────────────┐

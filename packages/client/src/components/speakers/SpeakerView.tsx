@@ -47,6 +47,7 @@ interface Props {
 	onMerge: (from: string, into: string) => void;
 	emptyMessage?: string;
 	animateEmpty?: boolean;
+ editingDisabled?: boolean;
  playbackTime?: number|null;
  onSeek?: (seconds:number)=>void;
 }
@@ -60,6 +61,7 @@ export function SpeakerView({
 	onMerge,
 	emptyMessage = tr("Listening..."),
 	animateEmpty = true,
+ editingDisabled = false,
  playbackTime,
  onSeek,
 }: Props) {
@@ -116,6 +118,7 @@ export function SpeakerView({
 	}
 
 	const handleRename = async (speaker: string) => {
+  if (editingDisabled) return;
 		const current = speakerNames[speaker] || speaker;
 		const newName = window.prompt(tr('Rename "{name}" to:', undefined, {name:current}), current);
 		if (!newName?.trim()) return;
@@ -164,9 +167,11 @@ export function SpeakerView({
 						key={s}
 						className={styles.chip}
 						title={tr("Click to rename · Right-click to merge")}
+      aria-disabled={editingDisabled || undefined}
 						onClick={() => handleRename(s)}
 						onContextMenu={(e) => {
 							e.preventDefault();
+       if (editingDisabled) return;
 							setMergeMenu({ x: e.clientX, y: e.clientY, speaker: s });
 						}}
 					>
@@ -210,7 +215,7 @@ export function SpeakerView({
 				);
 			})}
 
-			{mergeMenu && (
+			{mergeMenu && !editingDisabled && (
 				<SpeakerMergeMenu
 					x={mergeMenu.x}
 					y={mergeMenu.y}
