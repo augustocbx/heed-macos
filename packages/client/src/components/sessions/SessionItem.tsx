@@ -52,7 +52,7 @@ export function SessionItem({ session, onOpen, onMenu, onTagClick, onDelete }: P
 				<button
 					className={`${styles.actionBtn} ${styles.actionBtnDanger}`}
 					onClick={(e) => { e.stopPropagation(); onDelete(); }}
-					aria-label={tr("Delete session")}
+					aria-label={tr("Delete meeting")}
 				>
 					{tr("Delete")}</button>
 				<button

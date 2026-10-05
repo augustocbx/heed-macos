@@ -65,10 +65,10 @@ export function SessionsPage() {
 		setDeleting(true);
 		try {
 			await remove(deleteTarget.id);
-			showToast(tr("Session deleted"));
+			showToast(tr("Meeting deleted"));
 			setDeleteTarget(null);
 		} catch {
-			showToast(tr("Failed to delete session"));
+			showToast(tr("Failed to delete meeting"));
 		} finally {
 			setDeleting(false);
 		}
@@ -79,7 +79,7 @@ export function SessionsPage() {
 			<div className={styles.header}>
 				<input
 					type="search"
-					placeholder={tr("Search sessions...")}
+					placeholder={tr("Search meetings...")}
 					value={search}
 					onChange={(e) => setSearch(e.target.value)}
 				/>
@@ -106,8 +106,8 @@ export function SessionsPage() {
 			{filtered.length === 0 ? (
 				<div className={styles.empty}>
 					{sessions.length === 0
-						? tr("No sessions yet. Record something to get started.")
-						: tr("No sessions match your search.")}
+						? tr("No meetings yet. Record something to get started.")
+						: tr("No meetings match your search.")}
 				</div>
 			) : (
 				filtered.map((s) => (
@@ -142,7 +142,7 @@ export function SessionsPage() {
 			{deleteTarget && (
 				<div className={styles.confirmOverlay} onClick={() => !deleting && setDeleteTarget(null)}>
 					<div className={styles.confirmPanel} onClick={(e) => e.stopPropagation()}>
-						<div className={styles.confirmTitle}>{tr("Delete session?")}</div>
+						<div className={styles.confirmTitle}>{tr("Delete meeting?")}</div>
 						<div className={styles.confirmBody}>
 							{tr('"{title}" will be permanently removed. This cannot be undone.', undefined, {title:deleteTarget.title || tr("Untitled")})}
 						</div>
