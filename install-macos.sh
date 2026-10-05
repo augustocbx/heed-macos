@@ -50,6 +50,7 @@ if [ ! -x .venv/bin/python3 ]; then "$HEED_PYTHON" -m venv .venv; fi
 bun install --frozen-lockfile
 swift build --package-path packages/transcription/native/heed-parakeet -c release --product heed-parakeet
 swift build --package-path packages/transcription/native/heed-parakeet -c release --product heed-syscap
+packages/transcription/native/heed-parakeet/.build/release/heed-syscap --self-test
 bun run build
 bun run doctor
 # Reinicia somente serviços deste checkout, após confirmar que permanecem ociosos.
