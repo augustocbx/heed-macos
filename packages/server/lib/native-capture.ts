@@ -7,9 +7,9 @@ export function nativeRecordingCommand(mode: CaptureMode, output: string): strin
 }
 export function verifyNativeHandshake(line: string, mode: CaptureMode): { ready: boolean; permissionNeeded: boolean; error?: string } {
  let data: any;
- try { data = JSON.parse(line); } catch { return { ready: false, permissionNeeded: false, error: "A captura nativa não respondeu corretamente." }; }
+ try { data = JSON.parse(line); } catch { return { ready: false, permissionNeeded: false, error: "Native capture did not respond correctly." }; }
  if (data.ready === true && data.sample_rate === 16000 && data.channels === captureChannels(mode) && data.mode === mode) return { ready: true, permissionNeeded: false };
- const error = String(data.error || "Formato incompatível na captura nativa. Atualize o Heed.");
+ const error = String(data.error || "Incompatible native capture format. Update Heed.");
  return { ready: false, permissionNeeded: /-3801|declined|TCC|permission|denied|autoriz|permiss/i.test(error), error };
 }
 

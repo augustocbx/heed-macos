@@ -1,7 +1,7 @@
 import Foundation
 
-/// Observa apenas transições de estado do cliente nativo; não guarda conteúdo do Slack.
-/// Os registros são uma implementação privada do Slack e podem mudar entre versões.
+/// Observes only native client state transitions; does not store Slack content.
+/// These logs are a private Slack implementation and may change between versions.
 final class SlackHuddleDetector {
     private struct Cursor {
         var inode: UInt64
@@ -27,10 +27,10 @@ final class SlackHuddleDetector {
         cursors.removeAll()
         states.removeAll()
         available = false
-        // A consulta seguinte estabelece novo EOF, sem ler reuniões antigas.
+        // The next poll establishes a new EOF without reading older meetings.
     }
 
-    /// Verifica a leitura mesmo com o Slack fechado; estado do processo não é permissão.
+    /// Checks readability even when Slack is closed; process state is not permission.
     var canReadLogs: Bool {
         for root in roots {
             guard let children = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { continue }
@@ -52,12 +52,12 @@ final class SlackHuddleDetector {
         switch state {
         case "STARTED": return true
         case "ENDING", "NOT_STARTED": return false
-        default: return nil // PENDING/PRE_JOINED são apenas preparação.
+        default: return nil // PENDING/PRE_JOINED are only preparation.
         }
     }
 
-    /// nil significa que nenhum registro suportado está disponível. No primeiro
-    /// acesso começa no EOF: reuniões anteriores não disparam gravação retroativa.
+    /// nil means no supported log is available. The first
+    /// access starts at EOF: earlier meetings do not trigger retroactive recording.
     func poll(slackRunning: Bool) -> Bool? {
         guard slackRunning else {
             states.removeAll()
@@ -90,7 +90,7 @@ final class SlackHuddleDetector {
             if cursor.inode != inode || size < cursor.offset {
                 cursor = Cursor(inode: inode, offset: 0)
             }
-            // Limita trabalho/memória por consulta; não busca históricos antigos.
+            // Bounds work and memory per poll; does not read older history.
             if size > cursor.offset + 262_144 {
                 cursor.offset = size - 262_144
                 cursor.partial.removeAll()
@@ -119,16 +119,16 @@ func slackHuddleDetectorSelfTests() throws {
     func check(_ condition: @autoclosure () -> Bool, _ message: String) throws {
         if !condition() { throw NSError(domain: "SlackHuddleDetector", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
     }
-    try check(SlackHuddleDetector.transition("[HUDDLES] updateActiveHuddleReference huddleState STARTED, substate undefined") == true, "STARTED deve iniciar")
-    try check(SlackHuddleDetector.transition("[HUDDLES] updateActiveHuddleReference huddleState ENDING, substate undefined") == false, "ENDING deve encerrar")
-    try check(SlackHuddleDetector.transition("[HUDDLES] updateActiveHuddleReference huddleState NOT_STARTED, substate undefined") == false, "NOT_STARTED deve encerrar")
+    try check(SlackHuddleDetector.transition("[HUDDLES] updateActiveHuddleReference huddleState STARTED, substate undefined") == true, "STARTED must start")
+    try check(SlackHuddleDetector.transition("[HUDDLES] updateActiveHuddleReference huddleState ENDING, substate undefined") == false, "ENDING must end")
+    try check(SlackHuddleDetector.transition("[HUDDLES] updateActiveHuddleReference huddleState NOT_STARTED, substate undefined") == false, "NOT_STARTED must end")
     for state in ["PRE_JOINED", "PENDING", "COMPLETING_PRE_JOIN", "STARTED_OTHER"] {
-        try check(SlackHuddleDetector.transition("[HUDDLES] updateActiveHuddleReference huddleState \(state), substate undefined") == nil, "Preparação não deve iniciar")
+        try check(SlackHuddleDetector.transition("[HUDDLES] updateActiveHuddleReference huddleState \(state), substate undefined") == nil, "Preparation must not start")
     }
-    try check(SlackHuddleDetector.transition("[HUDDLE-CLIENT-MIDDLEW] User started huddle") == nil, "Intenção não deve iniciar")
-    try check(SlackHuddleDetector.transition("[HUDDLE-SDK] Received meeting event: audioInputSelected") == nil, "Teste de microfone não deve iniciar")
-    try check(SlackHuddleDetector.transition("[10/05/26, 14:00:29:836] info: [HUDDLES] updateActiveHuddleReference huddleState STARTED, substate undefined") == true, "Formato real deve iniciar")
-    try check(SlackHuddleDetector.transition("[OTHER] updateActiveHuddleReference huddleState STARTED") == nil, "Logger diferente deve ser ignorado")
+    try check(SlackHuddleDetector.transition("[HUDDLE-CLIENT-MIDDLEW] User started huddle") == nil, "Intent must not start")
+    try check(SlackHuddleDetector.transition("[HUDDLE-SDK] Received meeting event: audioInputSelected") == nil, "Microphone testing must not start")
+    try check(SlackHuddleDetector.transition("[10/05/26, 14:00:29:836] info: [HUDDLES] updateActiveHuddleReference huddleState STARTED, substate undefined") == true, "The actual log format must start")
+    try check(SlackHuddleDetector.transition("[OTHER] updateActiveHuddleReference huddleState STARTED") == nil, "A different logger must be ignored")
     let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: home) }
     let dir = home.appendingPathComponent("Library/Application Support/Slack/logs/default")
@@ -138,8 +138,8 @@ func slackHuddleDetectorSelfTests() throws {
     let stop = "[HUDDLES] updateActiveHuddleReference huddleState NOT_STARTED, substate undefined\n"
     try Data(start.utf8).write(to: file)
     let detector = SlackHuddleDetector(home: home)
-    try check(detector.canReadLogs, "Configurações devem verificar leitura real")
-    try check(detector.poll(slackRunning: true) == false, "Histórico deve começar no EOF")
+    try check(detector.canReadLogs, "Settings must check actual readability")
+    try check(detector.poll(slackRunning: true) == false, "History must start at EOF")
     func append(_ text: String) throws {
         let handle = try FileHandle(forWritingTo: file)
         defer { try? handle.close() }
@@ -147,31 +147,31 @@ func slackHuddleDetectorSelfTests() throws {
         try handle.write(contentsOf: Data(text.utf8))
     }
     try append(String(start.dropLast()))
-    try check(detector.poll(slackRunning: true) == false, "Linha parcial deve aguardar newline")
+    try check(detector.poll(slackRunning: true) == false, "A partial line must wait for a newline")
     try append("\n")
-    try check(detector.poll(slackRunning: true) == true, "Novo STARTED deve iniciar")
+    try check(detector.poll(slackRunning: true) == true, "A new STARTED must start")
     try append(stop)
-    try check(detector.poll(slackRunning: true) == false, "Novo NOT_STARTED deve encerrar")
+    try check(detector.poll(slackRunning: true) == false, "A new NOT_STARTED must end")
     try Data(start.utf8).write(to: file, options: .atomic)
-    try check(detector.poll(slackRunning: true) == true, "Rotação deve seguir arquivo novo")
+    try check(detector.poll(slackRunning: true) == true, "Rotation must follow the new file")
     let otherDir = dir.deletingLastPathComponent().appendingPathComponent("another")
     try FileManager.default.createDirectory(at: otherDir, withIntermediateDirectories: true)
     let otherFile = otherDir.appendingPathComponent("webapp-console.log")
     try Data(start.utf8).write(to: otherFile)
     try append(stop)
-    try check(detector.poll(slackRunning: true) == false, "Arquivo novo deve ignorar histórico")
+    try check(detector.poll(slackRunning: true) == false, "A new file must ignore earlier history")
     let otherHandle = try FileHandle(forWritingTo: otherFile)
     try otherHandle.seekToEnd()
     try otherHandle.write(contentsOf: Data(start.utf8))
     try otherHandle.close()
     try append(stop)
-    try check(detector.poll(slackRunning: true) == true, "Stop de outra origem não deve encerrar origem ativa")
+    try check(detector.poll(slackRunning: true) == true, "A stop from another source must not end the active source")
     detector.setAuthorizedLogRoot(dir.deletingLastPathComponent())
-    try check(detector.poll(slackRunning: true) == false, "Nova autorização deve recomeçar no EOF")
+    try check(detector.poll(slackRunning: true) == false, "New authorization must restart at EOF")
     try append(start)
     try check(detector.poll(slackRunning: true) == true, "Ler novos eventos da raiz autorizada")
-    try check(detector.poll(slackRunning: false) == false, "Slack fechado deve encerrar")
+    try check(detector.poll(slackRunning: false) == false, "Closing Slack must end detection")
     let missing = SlackHuddleDetector(home: home.appendingPathComponent("missing"))
     _ = missing.poll(slackRunning: false)
-    try check(!missing.canReadLogs, "Slack fechado não deve inventar autorização")
+    try check(!missing.canReadLogs, "Closing Slack must not invent permission")
 }

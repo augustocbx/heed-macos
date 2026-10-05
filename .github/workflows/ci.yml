@@ -1,4 +1,4 @@
-name: Verificação
+name: Verification
 on:
   push:
     branches: [main]
@@ -13,21 +13,21 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
-      - name: Testes do servidor
+      - name: Server tests
         run: bun test packages/server/lib
-      - name: Testes da interface
+      - name: Interface tests
         run: NODE_OPTIONS=--no-experimental-webstorage bun run --cwd packages/client test --run
-      - name: Testes de preservação dos participantes
+      - name: Speaker identity preservation tests
         run: python3 -m unittest discover -s packages/transcription -p voice_identity_test.py
-      - name: Verificar sintaxe Python
+      - name: Check Python syntax
         run: python3 -m py_compile packages/transcription/transcription_server.py packages/transcription/voice_identity.py
-      - name: Compilar interface
+      - name: Build interface
         run: bun run build
-      - name: Verificar instaladores
+      - name: Check installers
         run: bash -n install-macos.sh packages/desktop/install-menubar.sh packages/desktop/macos/start-services.sh
-      - name: Validar captura nativa sem dispositivos físicos
+      - name: Validate native capture without physical devices
         run: |
           swiftc -O -target "$(uname -m)-apple-macos14.0" packages/transcription/native/heed-parakeet/Sources/heed-syscap/*.swift -o "$RUNNER_TEMP/heed-syscap-check"
           "$RUNNER_TEMP/heed-syscap-check" --self-test
-      - name: Compilar ícone
+      - name: Build menu app
         run: bash packages/desktop/install-menubar.sh --build-only

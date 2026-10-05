@@ -2,15 +2,15 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useRecordingStore } from "@/stores/recording.ts";
 import { useUIStore } from "@/stores/ui.ts";
-import { detectLocale, type Locale } from "@/lib/i18n.ts";
+import { detectLocale } from "@/lib/i18n.ts";
 import styles from "./AppTour.module.css";
 
 const TOUR_KEY = "heed-tour-done";
 
 interface TourStep {
 	target: string; // CSS selector for the element to spotlight
-	title: { es: string; en: string };
-	body: { es: string; en: string };
+	title: { en: string };
+	body: { en: string };
 	position: "bottom" | "top" | "left" | "right";
 }
 
@@ -18,11 +18,9 @@ const STEPS: TourStep[] = [
 	{
 		target: "[data-tour='record']",
 		title: {
-			es: "Graba cualquier reunion",
 			en: "Record any meeting",
 		},
 		body: {
-			es: "Un click y heed captura tu microfono y el audio de tu sistema al mismo tiempo. Zoom, Meet, Teams, Discord, un video de YouTube... lo que sea que suene en tu computadora, heed lo escucha.",
 			en: "One click and heed captures your microphone and system audio simultaneously. Zoom, Meet, Teams, Discord, a YouTube video... whatever plays on your computer, heed hears it.",
 		},
 		position: "bottom",
@@ -30,11 +28,9 @@ const STEPS: TourStep[] = [
 	{
 		target: "[data-tour='model-chip']",
 		title: {
-			es: "Tu modelo de IA, tu eleccion",
 			en: "Your AI model, your choice",
 		},
 		body: {
-			es: "heed detecta tu hardware y te muestra solo los modelos que caben. Llama, Qwen, Gemma... elige el que quieras. Todo corre en tu maquina, nada sale a la nube.",
 			en: "heed detects your hardware and shows only the models that fit. Llama, Qwen, Gemma... pick any. Everything runs on your machine, nothing goes to the cloud.",
 		},
 		position: "bottom",
@@ -42,11 +38,9 @@ const STEPS: TourStep[] = [
 	{
 		target: "[data-tour='speakers-tab']",
 		title: {
-			es: "Voces separadas automaticamente",
 			en: "Voices separated automatically",
 		},
 		body: {
-			es: "heed identifica quien dijo que, incluso cuando hablan al mismo tiempo. Tu voz aparece como \"Me\" y las demas se separan por timbre.",
 			en: "heed identifies who said what, even when people talk over each other. Your voice appears as \"Me\" and others are separated by timbre.",
 		},
 		position: "top",
@@ -54,11 +48,9 @@ const STEPS: TourStep[] = [
 	{
 		target: "[data-tour='speaker-chips']",
 		title: {
-			es: "Renombra y heed recuerda",
 			en: "Rename and heed remembers",
 		},
 		body: {
-			es: "Click en un nombre de speaker para cambiarlo. La proxima vez que esa persona hable, heed la reconoce automaticamente. Tu equipo, tus voces, sin configurar nada.",
 			en: "Click a speaker name to change it. Next time that person speaks, heed recognizes them automatically. Your team, your voices, zero configuration.",
 		},
 		position: "top",
@@ -66,11 +58,9 @@ const STEPS: TourStep[] = [
 	{
 		target: "[data-tour='sessions-tab']",
 		title: {
-			es: "Todas tus reuniones, siempre accesibles",
 			en: "All your meetings, always accessible",
 		},
 		body: {
-			es: "Cada grabacion se guarda automaticamente con titulo inteligente, speakers identificados y la transcripcion completa. Busca, revisa o genera notas con IA cuando quieras. Todo queda en tu maquina.",
 			en: "Every recording is saved automatically with a smart title, identified speakers and the full transcript. Search, review or generate AI notes anytime. Everything stays on your machine.",
 		},
 		position: "bottom",
@@ -227,16 +217,16 @@ export function AppTour() {
 				<div className={styles.actions}>
 					{step > 0 && (
 						<button className={styles.btnGhost} onClick={prev}>
-							{locale === "es" ? "Atras" : "Back"}
+							{"Back"}
 						</button>
 					)}
 					<button className={styles.btnPrimary} onClick={next}>
 						{step === STEPS.length - 1
-							? (locale === "es" ? "Empezar" : "Get started")
-							: (locale === "es" ? "Siguiente" : "Next")}
+							? ("Get started")
+							: ("Next")}
 					</button>
 					<button className={styles.btnSkip} onClick={finish}>
-						{locale === "es" ? "Saltar" : "Skip"}
+						{"Skip"}
 					</button>
 				</div>
 			</div>

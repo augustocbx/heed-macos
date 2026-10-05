@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-/// Permissão limitada à pasta de registros, concedida pelo seletor do macOS.
+/// Permission limited to the log folder, granted through the macOS folder picker.
 final class SlackLogAccess {
     private let home: URL
     private let defaults: UserDefaults
@@ -29,8 +29,8 @@ final class SlackLogAccess {
         if scopeStarted { scopedURL?.stopAccessingSecurityScopedResource() }
         scopedURL = url
         scopeStarted = url.startAccessingSecurityScopedResource()
-        // Aplicativos sem sandbox podem receber false mesmo com acesso concedido
-        // pelo seletor. O detector verifica a leitura efetiva, sem negar por isso.
+        // Apps without a sandbox may receive false even when access was granted
+        // through the picker. The detector checks actual readability instead of rejecting access.
     }
 
     func restore() -> URL? {
@@ -38,7 +38,7 @@ final class SlackLogAccess {
         do {
             var stale = false
             let url = try URL(resolvingBookmarkData: data, options: [.withSecurityScope, .withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale)
-            guard isAllowed(url) else { diagnostic = "A autorização salva não corresponde à pasta de registros do Slack."; return nil }
+            guard isAllowed(url) else { diagnostic = "The saved authorization does not match the Slack log folder."; return nil }
             retainScope(url)
             if stale {
                 let renewed = try url.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess], includingResourceValuesForKeys: nil, relativeTo: nil)
@@ -47,16 +47,16 @@ final class SlackLogAccess {
             diagnostic = nil
             return url
         } catch {
-            diagnostic = "Não foi possível restaurar a autorização dos registros do Slack (código \((error as NSError).code))."
+            diagnostic = "Could not restore Slack log authorization (code \((error as NSError).code))."
             return nil
         }
     }
 
     func request(completion: @escaping (URL?) -> Void) {
         let panel = NSOpenPanel()
-        panel.title = "Autorizar detecção de reuniões do Slack"
-        panel.message = "Selecione a pasta logs do Slack. O Heed lê somente os registros para detectar quando uma reunião começa."
-        panel.prompt = "Autorizar registros"
+        panel.title = "Allow Slack meeting detection"
+        panel.message = "Select the Slack logs folder. Heed only reads logs to detect when a meeting starts."
+        panel.prompt = "Allow log access"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.canCreateDirectories = false
@@ -67,12 +67,12 @@ final class SlackLogAccess {
         panel.begin { [weak self] response in
             guard let self = self else { completion(nil); return }
             guard response == .OK, let url = panel.url else {
-                self.diagnostic = "Autorização dos registros do Slack cancelada."
+                self.diagnostic = "Slack log authorization was canceled."
                 completion(nil)
                 return
             }
             guard self.isAllowed(url) else {
-                self.diagnostic = "Selecione exatamente a pasta logs do Slack; outras pastas não serão autorizadas."
+                self.diagnostic = "Select the exact Slack logs folder; access to other folders will not be granted."
                 completion(nil)
                 return
             }
@@ -83,9 +83,9 @@ final class SlackLogAccess {
                 self.diagnostic = nil
                 completion(url)
             } catch {
-                // A seleção já concedeu acesso nesta execução, mesmo que não
-                // seja possível persistir o bookmark para a próxima abertura.
-                self.diagnostic = "Acesso autorizado nesta execução; não foi possível salvar a autorização (código \((error as NSError).code))."
+                // The selection already granted access for this launch, even if the
+                // bookmark cannot be saved for the next launch.
+                self.diagnostic = "Access is allowed for this launch; could not save the authorization (code \((error as NSError).code))."
                 completion(url)
             }
         }
@@ -101,10 +101,10 @@ func slackLogAccessSelfTests() throws {
     func check(_ value: Bool, _ message: String) throws {
         if !value { throw NSError(domain: "SlackLogAccess", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
     }
-    try check(access.expectedRoots.allSatisfy { access.isAllowed($0) }, "Aceitar somente raízes previstas")
-    try check(!access.isAllowed(home), "Não autorizar home")
-    try check(!access.isAllowed(access.expectedRoots[0].deletingLastPathComponent()), "Não autorizar todos os dados do Slack")
-    try check(!access.isAllowed(access.expectedRoots[0].appendingPathComponent("default")), "Selecionar exatamente logs")
-    try check(!access.isAllowed(home.appendingPathComponent("Library/Application Support/Other/logs")), "Não autorizar outro aplicativo")
-    try check(access.restore() == nil, "Sem bookmark não restaurar")
+    try check(access.expectedRoots.allSatisfy { access.isAllowed($0) }, "Accept only the expected roots")
+    try check(!access.isAllowed(home), "Do not authorize the home folder")
+    try check(!access.isAllowed(access.expectedRoots[0].deletingLastPathComponent()), "Do not authorize all Slack data")
+    try check(!access.isAllowed(access.expectedRoots[0].appendingPathComponent("default")), "Select the exact logs folder")
+    try check(!access.isAllowed(home.appendingPathComponent("Library/Application Support/Other/logs")), "Do not authorize another app")
+    try check(access.restore() == nil, "Do not restore without a bookmark")
 }

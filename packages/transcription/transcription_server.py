@@ -1091,7 +1091,7 @@ def load_models():
 # transcribe() call (final + live + dual mic/sys channels) behaves identically.
 # condition_on_previous_text=False stops repetition cascades (the "y y y..." loops) without
 # touching real speech. NOTE: vad_filter was tried and REMOVED — on quiet mic audio Silero VAD
-# chopped out real words ("uno dos tres probando..." → "dos, ando, hit"). The empty/garbage
+# chopped out real spoken words during microphone checks. The empty/garbage
 # sessions were NOT a Whisper-params problem; root cause is the process-stream crash (libavdevice).
 WHISPER_OPTS = {
     "condition_on_previous_text": False,
@@ -1102,7 +1102,7 @@ def is_degenerate_repetition(text):
     """Detect Whisper repetition-loop hallucinations.
 
     Covers single-token loops ('ya ya ya ya...', 'y y y') AND short-cycle loops
-    ('o elementos o elementos o elementos...'). Heuristic: a real sentence has diverse
+    ('or items or items or items...'). Heuristic: a real sentence has diverse
     words, so if a chunk of >=6 words has a very LOW unique-token ratio (<0.35) it's a
     degenerate loop, not speech. The accurate final pass re-transcribes regardless.
     """
@@ -1116,8 +1116,8 @@ def is_degenerate_repetition(text):
 # robustness differentiator: instead of silently showing garbage on bad audio, we tell the
 # user WHY (mic too quiet, echo, unclear) so they can fix it. Engine-agnostic, mac + Linux.
 QUALITY_HINTS = {
-    "low_volume": "Tu microfono se escucha muy bajo — acercate o subi el volumen de entrada.",
-    "unclear": "Audio poco claro (eco o ruido). Usa auriculares para la salida y un buen microfono.",
+    "low_volume": "Your microphone is too quiet — move closer or increase the input volume.",
+    "unclear": "Unclear audio (echo or noise). Use headphones for output and a good microphone.",
 }
 
 
@@ -2015,7 +2015,7 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None):
             cl_ch[seg["cid"]][seg["ch"]] += seg["end"] - seg["start"]
         sys_based = {cid for cid in clusters if cl_ch[cid]["sys"] >= 1.0}
 
-        # Preserva nomes reconhecidos ao vivo por voz, nunca pela numeração dos clusters.
+        # Preserve names recognized live by voice, never by cluster numbering.
         from voice_identity import reconcile_names
         live_voices = [{"name": sp.get("name"), "emb": sp.get("emb"),
                         "backend": _diar_session.backend} for sp in _diar_session.speakers]

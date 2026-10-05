@@ -15,8 +15,8 @@ export function SessionAudioPlayer({sessionId,available,audioRef,onTime,onDurati
  useEffect(()=>{setError(false);},[sessionId,available]);
  useEffect(()=>()=>{void graph.current?.close();graph.current=null;},[sessionId,available]);
  const playAudio = (audio:HTMLAudioElement) => {
-  // O arquivo separa microfone/esquerda e sistema/direita para diarização.
-  // Na reprodução, a mistura mono envia ambas as vozes aos dois lados do fone.
+  // The recording separates microphone/left and system/right for diarization.
+  // During playback, the mono mix sends both voices to both headphone channels.
   if(!graph.current && typeof AudioContext!=='undefined') {
    const context=new AudioContext();
    try {
@@ -29,9 +29,9 @@ export function SessionAudioPlayer({sessionId,available,audioRef,onTime,onDurati
   void graph.current?.resume().catch(()=>setError(true));
   onTime(audio.currentTime);
  };
- if(!available)return <p className={styles.audioMessage}>Áudio indisponível nesta sessão. A transcrição continua disponível.</p>;
+ if(!available)return <p className={styles.audioMessage}>Audio is unavailable for this session. The transcript remains available.</p>;
  return <div className={styles.audioPlayer}>
-  <audio key={sessionId} ref={audioRef} controls preload="metadata" aria-label="Áudio da reunião"
+  <audio key={sessionId} ref={audioRef} controls preload="metadata" aria-label="Meeting audio"
    src={`/api/sessions/${encodeURIComponent(sessionId)}/audio`}
    onTimeUpdate={event=>onTime(event.currentTarget.currentTime)}
    onSeeked={event=>onTime(event.currentTarget.currentTime)}
@@ -42,7 +42,7 @@ export function SessionAudioPlayer({sessionId,available,audioRef,onTime,onDurati
    }}
    onError={()=>{setError(true);onTime(null);}}
   />
-  {error ? <p className={styles.audioMessage} role="status">Não foi possível carregar o áudio. Ele pode ter sido removido pelo limite de armazenamento.</p>
-   : <p className={styles.audioMessage}>Clique em um trecho da transcrição para ouvir a partir dele.</p>}
+  {error ? <p className={styles.audioMessage} role="status">Could not load audio. It may have been removed by the storage limit.</p>
+   : <p className={styles.audioMessage}>Click a transcript segment to play from that point.</p>}
  </div>;
 }

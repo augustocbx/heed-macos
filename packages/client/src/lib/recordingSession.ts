@@ -8,7 +8,7 @@ export async function createRecordingSession(session: Partial<Session>) {
  const initial = fields();
  const created = await sessionsApi.create({ ...session, ...initial });
  useRecordingStore.getState().setSessionId(created.id);
- // Uma edição feita enquanto o POST estava em andamento também precisa ser salva.
+ // An edit made while the POST was pending also needs to be saved.
  const latest = fields();
  if (JSON.stringify(initial) !== JSON.stringify(latest)) {
   return await sessionsApi.patch(created.id, latest);

@@ -51,7 +51,7 @@ export function permissionReport(body: unknown): PermissionReport | null {
  ...(body.error === undefined ? {} : { error: body.error as string | null }) };
 }
 
-/** Ponte independente dos comandos de gravação; o aplicativo confirma por ID. */
+/** Bridge independent of recording commands; the app acknowledges requests by ID. */
 export class DesktopPermissions {
  private command: PermissionCommand | null = null;
  private permissions: DesktopPermissionSnapshot | null = null;
@@ -60,7 +60,7 @@ export class DesktopPermissions {
  private expire(now: number) {
   if (this.command && now - this.command.createdAt >= 90_000) {
    this.command = null;
-   this.error = 'O pedido de permissão expirou. Abra o ícone do Heed e tente novamente.';
+   this.error = 'The permission request expired. Open the Heed menu bar app and try again.';
   }
  }
  status(now = Date.now()) {
@@ -76,7 +76,7 @@ export class DesktopPermissions {
  }
  enqueue(action: PermissionAction, now = Date.now()) {
   this.expire(now);
-  if (this.command) throw new Error('Já existe um pedido de permissão em andamento.');
+  if (this.command) throw new Error('A permission request is already pending.');
   this.command = { id: crypto.randomUUID(), action, createdAt: now };
   this.error = null;
   return this.command.id;
@@ -89,7 +89,7 @@ export class DesktopPermissions {
    this.command = null;
    this.error = report.error ?? null;
   } else if (report.error !== undefined && !report.commandId) {
-   // Heartbeats atualizam o diagnóstico, mas não consomem pedidos ainda abertos.
+   // Heartbeats update diagnostics without consuming open requests.
    if (!this.command) this.error = report.error;
   }
  }

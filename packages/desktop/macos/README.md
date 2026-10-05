@@ -1,9 +1,11 @@
-# Controle do Heed na barra superior
+# Heed menu bar controls
 
-Execute `bash packages/desktop/install-menubar.sh` para instalar o aplicativo em `~/Applications/Heed.app`. O LaunchAgent `local.heed.menubar` inicia o ícone no login, sem iniciar gravações.
+Run `bash packages/desktop/install-menubar.sh` to install the app at `~/Applications/Heed.app`. The `local.heed.menubar` LaunchAgent starts the icon at login without starting a recording. Use `--build-only` to compile and run self-tests without installing or launching it.
 
-O menu permite escolher português ou inglês, iniciar, parar e abrir `http://localhost:5170`. Mantenha a interface aberta durante a gravação e o salvamento. O ícone fica vermelho quando o servidor informa captura ativa.
+The menu lets you choose **Portuguese (Brazil)** or **English**, start or stop recording, and open `http://localhost:5170`. Keep the interface open during recording and saving. The icon turns red when the server reports active capture.
 
-A instalação registra o caminho do projeto em `Contents/Resources/heed-root.txt`, permitindo outros usuários e diretórios. Modelos opcionais de notas por IA são escolhidos na interface.
+**Automatically record Slack meetings** watches newly joined meetings in the installed Slack app. It only starts recording; stop through the Heed menu. Slack log access is granted through a read-only folder picker, separately from microphone and system audio permissions. **Settings and permissions…** opens their status and authorization controls.
 
-Consulte [a documentação de instalação](../../../README-macos.md).
+Installation stores the checkout path in `Contents/Resources/heed-root.txt`, supporting different users and project directories. Optional AI notes models are selected in the interface.
+
+See [the installation documentation](../../../README-macos.md).

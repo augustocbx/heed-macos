@@ -9,25 +9,25 @@ beforeEach(() => useRecordingStore.getState().reset());
 
 test("appendSegment (chunk mode) accumulates segments, speakers, transcript", () => {
 	const s = useRecordingStore.getState();
-	s.appendSegment({ speaker: "Me", start: 0, end: 1, text: "hola" });
-	s.appendSegment({ speaker: "Speaker 1", start: 1, end: 2, text: "qué tal" });
-	s.appendSegment({ speaker: "Me", start: 2, end: 3, text: "bien" });
+	s.appendSegment({ speaker: "Me", start: 0, end: 1, text: "hello" });
+	s.appendSegment({ speaker: "Speaker 1", start: 1, end: 2, text: "how are you" });
+	s.appendSegment({ speaker: "Me", start: 2, end: 3, text: "fine" });
 	const st = useRecordingStore.getState();
 	expect(st.segments).toHaveLength(3);
 	expect(st.speakers).toEqual(["Me", "Speaker 1"]); // de-duped, first-seen order
-	expect(st.transcript).toBe("hola\nqué tal\nbien");
+	expect(st.transcript).toBe("hello\nhow are you\nfine");
 });
 
 test("upsertLiveTurn (stream/karaoke mode) appends a new id and updates text in place", () => {
 	const s = useRecordingStore.getState();
 	s.upsertLiveTurn({ id: 1, speaker: "Me", channel: "mic", text: "ho" });
-	s.upsertLiveTurn({ id: 1, speaker: "Me", channel: "mic", text: "hola" }); // same id → update
+	s.upsertLiveTurn({ id: 1, speaker: "Me", channel: "mic", text: "hello" }); // same id → update
 	s.upsertLiveTurn({ id: 2, speaker: "Speaker 1", channel: "sys", text: "hi" }); // new id → append
 	const st = useRecordingStore.getState();
 	expect(st.segments).toHaveLength(2);
-	expect(st.segments[0]).toMatchObject({ id: 1, text: "hola" });
+	expect(st.segments[0]).toMatchObject({ id: 1, text: "hello" });
 	expect(st.segments[1]).toMatchObject({ id: 2, speaker: "Speaker 1" });
-	expect(st.transcript).toBe("hola\nhi");
+	expect(st.transcript).toBe("hello\nhi");
 });
 
 test("setLiveSegment (full mode) keeps at most one segment per channel and replaces it", () => {
@@ -58,14 +58,14 @@ test("reset clears everything back to idle", () => {
 	expect(st.recording).toBe(false);
 });
 
-test("escolha manual persiste nas atualizações ao vivo e no resultado final", () => {
+test("manual choice persists through live updates and final results", () => {
  const s = useRecordingStore.getState();
  s.startRecording();
- s.upsertLiveTurn({ id: 1, speaker: "Speaker 1", channel: "sys", text: "olá", start: 0, end: 2 });
+ s.upsertLiveTurn({ id: 1, speaker: "Speaker 1", channel: "sys", text: "hello", start: 0, end: 2 });
  s.renameSpeaker("Speaker 1", "Ana");
- s.upsertLiveTurn({ id: 1, speaker: "Speaker 1", channel: "sys", text: "olá novamente", start: 0, end: 2 });
- s.revealSpeakers(["Speaker 1"], [{ speaker: "Speaker 1", start: 0, end: 2, text: "olá novamente", channel: "sys" }], {});
- s.setResult({ success: true, text: "olá novamente", segments: useRecordingStore.getState().segments,
+ s.upsertLiveTurn({ id: 1, speaker: "Speaker 1", channel: "sys", text: "hello again", start: 0, end: 2 });
+ s.revealSpeakers(["Speaker 1"], [{ speaker: "Speaker 1", start: 0, end: 2, text: "hello again", channel: "sys" }], {});
+ s.setResult({ success: true, text: "hello again", segments: useRecordingStore.getState().segments,
   speakers: ["Speaker 1"], embeddings: {}, files: { wav: "audio.wav", srt: "", txt: "" }, metadata: { language: "pt", model: "test" }, wordCount: 2 });
  expect(useRecordingStore.getState().speakerNames).toEqual({ "Speaker 1": "Ana" });
  s.startRecording();

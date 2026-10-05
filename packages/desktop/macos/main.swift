@@ -21,14 +21,14 @@ struct ControlStatus: Decodable {
 struct APIError: Decodable { let error: String }
 func responseError(_ data: Data?, status: Int) -> String {
     if let data = data, let decoded = try? JSONDecoder().decode(APIError.self, from: data) { return decoded.error }
-    return "Falha na comunicação (HTTP \(status))"
+    return "Communication failed (HTTP \(status))"
 }
 
 final class MenuController: NSObject, NSApplicationDelegate {
     private var item: NSStatusItem!
-    private let statusMenu = NSMenuItem(title: "Preparando serviços…", action: nil, keyEquivalent: "")
-    private let startMenu = NSMenuItem(title: "Iniciar gravação", action: #selector(startRecording), keyEquivalent: "")
-    private let stopMenu = NSMenuItem(title: "Parar gravação", action: #selector(stopRecording), keyEquivalent: "")
+    private let statusMenu = NSMenuItem(title: "Preparing services…", action: nil, keyEquivalent: "")
+    private let startMenu = NSMenuItem(title: "Start recording", action: #selector(startRecording), keyEquivalent: "")
+    private let stopMenu = NSMenuItem(title: "Stop recording", action: #selector(stopRecording), keyEquivalent: "")
     private var languages: [NSMenuItem] = []
     private var state: ControlStatus?
     private var sending = false
@@ -36,8 +36,8 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private var timer: Timer?
     private var slackDetector = SlackHuddleDetector()
     private var slackPolicy = SlackRecordingPolicy()
-    private let slackAutoMenu = NSMenuItem(title: "Gravar automaticamente reuniões do Slack", action: #selector(toggleSlackAuto), keyEquivalent: "")
-    private let slackStateMenu = NSMenuItem(title: "Slack: aguardando próxima reunião", action: nil, keyEquivalent: "")
+    private let slackAutoMenu = NSMenuItem(title: "Automatically record Slack meetings", action: #selector(toggleSlackAuto), keyEquivalent: "")
+    private let slackStateMenu = NSMenuItem(title: "Slack: waiting for the next meeting", action: nil, keyEquivalent: "")
     private var lastSlackObservation: String?
     private let slackLogAccess = SlackLogAccess()
     private var requestingSlackAccess = false
@@ -45,7 +45,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private var permissionCommandID: String?
     private var lastPermissionCommandID: String?
     private var reportingPermissions = false
-    private let slackAccessMenu = NSMenuItem(title: "Autorizar registros do Slack…", action: #selector(authorizeSlackLogs), keyEquivalent: "")
+    private let slackAccessMenu = NSMenuItem(title: "Allow Slack log access…", action: #selector(authorizeSlackLogs), keyEquivalent: "")
     private let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 6
@@ -60,23 +60,23 @@ final class MenuController: NSObject, NSApplicationDelegate {
         menu.addItem(statusMenu)
         menu.addItem(NSMenuItem.separator())
         for entry in [startMenu, stopMenu] { entry.target = self; entry.isEnabled = false; menu.addItem(entry) }
-        let open = NSMenuItem(title: "Abrir interface", action: #selector(openInterface), keyEquivalent: "")
+        let open = NSMenuItem(title: "Open interface", action: #selector(openInterface), keyEquivalent: "")
         open.target = self; menu.addItem(open)
-        let settings = NSMenuItem(title: "Configurações e permissões…", action: #selector(openSettings), keyEquivalent: "")
+        let settings = NSMenuItem(title: "Settings and permissions…", action: #selector(openSettings), keyEquivalent: "")
         settings.target = self; menu.addItem(settings)
         let languageMenu = NSMenu()
-        for (title, code) in [("Português", "pt"), ("English", "en")] {
+        for (title, code) in [("Portuguese (Brazil)", "pt"), ("English", "en")] {
             let entry = NSMenuItem(title: title, action: #selector(selectLanguage(_:)), keyEquivalent: "")
             entry.target = self; entry.representedObject = code
             languageMenu.addItem(entry); languages.append(entry)
         }
-        let languageEntry = NSMenuItem(title: "Idioma da reunião", action: nil, keyEquivalent: "")
+        let languageEntry = NSMenuItem(title: "Meeting language", action: nil, keyEquivalent: "")
         languageEntry.submenu = languageMenu; menu.addItem(languageEntry)
         slackAutoMenu.target = self; menu.addItem(slackAutoMenu)
         slackStateMenu.isEnabled = false; menu.addItem(slackStateMenu)
         slackAccessMenu.target = self; menu.addItem(slackAccessMenu)
         menu.addItem(NSMenuItem.separator())
-        let quit = NSMenuItem(title: "Sair do ícone", action: #selector(quitApp), keyEquivalent: "")
+        let quit = NSMenuItem(title: "Quit menu app", action: #selector(quitApp), keyEquivalent: "")
         quit.target = self; menu.addItem(quit)
         item.menu = menu
         if let folder = slackLogAccess.restore() { slackDetector.setAuthorizedLogRoot(folder) }
@@ -102,10 +102,10 @@ final class MenuController: NSObject, NSApplicationDelegate {
                 if let data = data, (response as? HTTPURLResponse)?.statusCode == 200,
                    let state = try? JSONDecoder().decode(ControlStatus.self, from: data) {
                     self.state = state
-                    self.statusMenu.title = state.error ?? (state.recording ? "Gravando • \(state.seconds / 60):\(String(format: "%02d", state.seconds % 60))" : state.processing ? "Processando reunião…" : state.pending ? "Aguardando interface…" : state.ready ? "Pronto para gravar" : "Preparando serviços…")
+                    self.statusMenu.title = state.error ?? (state.recording ? "Recording • \(state.seconds / 60):\(String(format: "%02d", state.seconds % 60))" : state.processing ? "Processing meeting…" : state.pending ? "Waiting for the interface…" : state.ready ? "Ready to record" : "Preparing services…")
                 } else {
                     self.state = nil
-                    self.statusMenu.title = "Serviço indisponível — abra a interface"
+                    self.statusMenu.title = "Service unavailable — open the interface"
                 }
                 self.updateMenu()
                 if let request = self.state?.permissionRequest { self.executePermissionRequest(request) }
@@ -120,7 +120,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         stopMenu.isEnabled = !sending && (state?.canStop ?? false)
         for entry in languages { entry.state = (entry.representedObject as? String) == language ? .on : .off; entry.isEnabled = !sending && !(state?.recording ?? false) && !(state?.pending ?? false) }
         let recording = state?.recording ?? false
-        let image = NSImage(systemSymbolName: recording ? "record.circle.fill" : "waveform.circle", accessibilityDescription: recording ? "Heed gravando" : "Heed")
+        let image = NSImage(systemSymbolName: recording ? "record.circle.fill" : "waveform.circle", accessibilityDescription: recording ? "Heed recording" : "Heed")
         image?.isTemplate = !recording
         item.button?.image = image
         item.button?.contentTintColor = recording ? .systemRed : nil
@@ -136,7 +136,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
             ready: $0.ready && captureAuthorized, clientConnected: $0.clientConnected) }
         let slackRunning = NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.tinyspeck.slackmacgap" }
         let signal = slackDetector.poll(slackRunning: slackRunning)
-        let observation = !slackAutoEnabled ? "desabilitado" : !slackRunning ? "fechado" : signal == nil ? "indisponível" : signal == true ? "reunião detectada" : "aguardando próxima reunião"
+        let observation = !slackAutoEnabled ? "disabled" : !slackRunning ? "closed" : signal == nil ? "unavailable" : signal == true ? "meeting detected" : "waiting for the next meeting"
         slackStateMenu.title = "Slack: \(observation)"
         if lastSlackObservation != observation { logSlack(observation); lastSlackObservation = observation }
         let effects = slackPolicy.evaluate(signal: signal, status: status, now: ProcessInfo.processInfo.systemUptime)
@@ -185,7 +185,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         case "microphone":
             if microphonePermission == "notDetermined" {
                 AVCaptureDevice.requestAccess(for: .audio) { granted in
-                    DispatchQueue.main.async { finish(granted ? nil : "Autorize o microfone do Heed nos Ajustes do Sistema.") }
+                    DispatchQueue.main.async { finish(granted ? nil : "Allow microphone access for Heed in System Settings.") }
                 }
             } else { openPrivacyPane("Privacy_Microphone"); finish(nil) }
         case "screenCapture":
@@ -193,7 +193,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
             openPrivacyPane("Privacy_ScreenCapture"); finish(nil)
         case "slackLogs":
             requestSlackLogFolder(completion: finish)
-        default: finish("Autorização desconhecida.")
+        default: finish("Unknown authorization request.")
         }
     }
     private func openPrivacyPane(_ pane: String) {
@@ -225,7 +225,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
                 let accepted = (response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } ?? false
                 if let callID = slackCallID {
                     self.slackPolicy.commandCompleted(callID: callID, accepted: accepted, now: ProcessInfo.processInfo.systemUptime)
-                    self.logSlack(accepted ? "início automático aceito" : "falha ao solicitar início automático")
+                    self.logSlack(accepted ? "automatic start accepted" : "automatic start request failed")
                 }
                 if accepted {
                     if slackCallID == nil { self.openInterface() }
@@ -245,14 +245,14 @@ final class MenuController: NSObject, NSApplicationDelegate {
     @objc private func toggleSlackAuto() { UserDefaults.standard.set(!slackAutoEnabled, forKey: "HeedSlackAutoRecord"); updateMenu() }
     @objc private func authorizeSlackLogs() { requestSlackLogFolder(completion: nil) }
     private func requestSlackLogFolder(completion: ((String?) -> Void)?) {
-        guard !requestingSlackAccess else { completion?("A autorização dos registros do Slack já está aberta."); return }
+        guard !requestingSlackAccess else { completion?("The Slack log authorization dialog is already open."); return }
         requestingSlackAccess = true; promptedForSlackAccess = true
         slackAccessMenu.isEnabled = false
         slackLogAccess.request { [weak self] folder in
             guard let self = self else { return }
             self.requestingSlackAccess = false; self.slackAccessMenu.isEnabled = true
-            if let folder = folder { self.slackDetector.setAuthorizedLogRoot(folder); self.logSlack("pasta de registros autorizada") }
-            else { self.logSlack("autorização da pasta não concluída") }
+            if let folder = folder { self.slackDetector.setAuthorizedLogRoot(folder); self.logSlack("log folder authorized") }
+            else { self.logSlack("folder authorization was not completed") }
             if let diagnostic = self.slackLogAccess.diagnostic { self.logSlack(diagnostic) }
             completion?(folder == nil ? self.slackLogAccess.diagnostic : nil)
             self.poll()
@@ -270,7 +270,7 @@ if CommandLine.arguments.contains("--self-test") {
     precondition(!status(false, true).canStart)
     precondition(!status(false, false, false).canStart)
     precondition(!status(true, false, true, true).canStop)
-    precondition(responseError(Data("{\"error\":\"Permissão necessária\"}".utf8), status: 409) == "Permissão necessária")
+    precondition(responseError(Data("{\"error\":\"Permission required\"}".utf8), status: 409) == "Permission required")
     precondition(responseError(nil, status: 500).contains("500"))
     try slackRecordingPolicySelfTest()
     try slackHuddleDetectorSelfTests()

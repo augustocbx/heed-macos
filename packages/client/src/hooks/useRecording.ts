@@ -51,7 +51,7 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 			// granted yet, the server does NOT start recording — we ask the user to grant it and
 			// press record again. The timer never starts until the permission is resolved.
 			if ((data as { permissionNeeded?: boolean }).permissionNeeded) {
-				showToast("Otorgá permiso de Grabación de Pantalla (se abrió Ajustes) y volvé a grabar");
+				showToast("Allow Screen Recording in the Settings window, then try recording again");
 				return false;
 			}
 			if ((data as { error?: string }).error) {
@@ -212,7 +212,7 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 			const words = text.split(/\s+/).filter(Boolean);
 			if (words.length === 0) {
 				useRecordingStore.getState().reset();
-				showToast("No se detectó voz en la grabación — nada que guardar");
+				showToast("No speech detected in the recording — nothing to save");
 				return;
 			}
 			const speakers = [...new Set(turns.map((t) => t.speaker))];
@@ -243,7 +243,7 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 			const words = text.split(/\s+/).filter(Boolean);
 			if (words.length === 0) {
 				useRecordingStore.getState().reset();
-				showToast("No se detectó voz en la grabación — nada que guardar");
+				showToast("No speech detected in the recording — nothing to save");
 				return;
 			}
 			const seg = { speaker: "Me", start: 0, end: seconds, text, channel: "mic" as const };
@@ -325,7 +325,7 @@ export function useRecording({ micBars, systemBars, getLanguage }: UseRecordingO
 								// an empty "Meeting ..." card.
 								const hasSegs = Array.isArray(data.segments) && data.segments.length > 0;
 								if (words.length === 0 && !hasSegs) {
-									showToast("No se detectó voz en la grabación — nada que guardar");
+									showToast("No speech detected in the recording — nothing to save");
          useRecordingStore.getState().reset();
          finalized = true;
 									break;

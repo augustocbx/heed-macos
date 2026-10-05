@@ -44,11 +44,11 @@ export function SessionDetail({ session, onBack }: Props) {
   const audio=audioRef.current;
   if(!audio || audio.error || !Number.isFinite(seconds) || seconds<0)return;
   if(Number.isFinite(audio.duration)&&seconds>=audio.duration) {
-   showToast('Este trecho está fora da duração do áudio disponível.');return;
+   showToast('This segment is outside the available audio duration.');return;
   }
   audio.currentTime=seconds;
   setPlaybackTime(seconds);
-  void audio.play().catch(()=>showToast('Clique em Play para reproduzir o áudio.'));
+  void audio.play().catch(()=>showToast('Click Play to start audio playback.'));
  };
 
 	useEffect(() => { loadTemplates(); loadModels(); }, [loadTemplates, loadModels]);
@@ -109,7 +109,7 @@ export function SessionDetail({ session, onBack }: Props) {
 			);
 		} catch (e) {
 			if ((e as { needsModelSelection?: boolean }).needsModelSelection) {
-				showToast("Elige un modelo de notas para generar");
+				showToast("Choose a notes model before generating notes");
 				openPicker();
 			} else {
 				showToast(`Error: ${(e as Error).message}`);
@@ -132,7 +132,7 @@ export function SessionDetail({ session, onBack }: Props) {
 				else delete restored[original];
 				return restored;
 			});
-			showToast("Não foi possível salvar o nome do participante. Tente novamente.");
+			showToast("Could not save the speaker name. Please try again.");
 		}
 	};
 

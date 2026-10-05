@@ -12,8 +12,8 @@ if [ "${1:-}" = "--build-only" ]; then
 fi
 HEED_APP="$HOME/Applications/Heed.app"
 HEED_AGENT="$HOME/Library/LaunchAgents/local.heed.menubar.plist"
-# O aplicativo também pode ter sido aberto pelo Finder. Encerrar somente o
-# LaunchAgent deixaria uma instância antiga usando a assinatura anterior.
+# The app may also have been opened from Finder. Stopping only the
+# LaunchAgent would leave an older instance running with its previous signature.
 launchctl bootout "gui/$(id -u)/local.heed.menubar" 2>/dev/null || true
 /usr/bin/python3 - "$HEED_APP/Contents/MacOS/Heed" <<'PYSTOP'
 import os, signal, subprocess, sys, time
@@ -52,8 +52,8 @@ cat > "$HEED_APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>LSUIElement</key><true/>
-<key>NSMicrophoneUsageDescription</key><string>O Heed usa o microfone para gravar sua voz durante reuniões.</string>
-<key>NSAppDataUsageDescription</key><string>O Heed lê somente os estados de reunião dos registros locais do Slack para iniciar a gravação automaticamente.</string>
+<key>NSMicrophoneUsageDescription</key><string>Heed uses the microphone to record your voice during meetings.</string>
+<key>NSAppDataUsageDescription</key><string>Heed reads only meeting states from local Slack logs to start recording automatically.</string>
 <key>LSMinimumSystemVersion</key><string>12.0</string>
 </dict></plist>
 PLIST

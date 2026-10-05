@@ -1,49 +1,58 @@
-# Heed no macOS
+# Heed on macOS
 
-Instalação local para Macs com Apple Silicon e macOS 14 ou posterior. A transcrição suporta português brasileiro (`pt`) e inglês (`en`), selecionados no menu do ícone.
+Local installation for Apple Silicon Macs running macOS 14 or later. Transcription supports Brazilian Portuguese (`pt`) and English (`en`), selected from the menu bar. The app interface and installation instructions are in English.
 
-## Instalar ou atualizar
+## Install or update
 
-Instale previamente [Homebrew](https://brew.sh) e as ferramentas da Apple:
+Install [Homebrew](https://brew.sh) and Apple's Command Line Tools first. If the tools are missing, run:
 
 ```sh
 xcode-select --install
 ```
 
-Com este checkout em qualquer diretório do usuário, execute:
+Clone the repository and run the installer from the checkout:
 
 ```sh
+git clone https://github.com/augustocbx/heed-macos.git
+cd heed-macos
 bash install-macos.sh
 ```
 
-O instalador instala FFmpeg, Python e Ollama pelo Homebrew, Bun quando necessário, dependências Python, os executáveis Swift de transcrição e captura, a interface e o aplicativo do menu. A primeira verificação pode baixar modelos de transcrição e levar alguns minutos. Modelos opcionais para notas por IA não são baixados automaticamente. O instalador não executa `sudo`.
+The installer installs FFmpeg, Python, Node.js, and Ollama through Homebrew, Bun when needed, Python dependencies, Swift transcription and capture executables, the interface, and the menu app. The first health check can download transcription models and take several minutes. Optional AI notes models are not downloaded automatically. Do not run the installer with `sudo`.
 
-Execute novamente para atualizar dependências e reinstalar o aplicativo após atualizar o código. Gravações em `recordings/` e configurações em `~/.heed-app/` são preservadas. Não copie esses diretórios entre máquinas para instalar o programa. Atualizações não devem ser executadas durante uma gravação ou seu processamento; encerre a reunião e aguarde o salvamento antes de atualizar. Se mover o checkout, execute o instalador novamente para atualizar o caminho usado pelo ícone.
+To update, stop recording and wait for processing and saving to finish, then run:
 
-## Usar
+```sh
+git pull --ff-only
+bash install-macos.sh
+```
 
-O aplicativo fica em `~/Applications/Heed.app` e inicia com o login pelo LaunchAgent `local.heed.menubar`. O ícone oferece iniciar, parar, escolher o idioma e abrir [a interface](http://localhost:5170). Mantenha a aba da interface aberta durante a gravação e o salvamento; ela pode ficar minimizada.
+Recordings in `recordings/` and settings in `~/.heed-app/` are preserved. Do not copy these folders between machines to install the app. The installer refuses to restart active recordings or processing. If you move the checkout, run the installer again to update the project path used by the menu app.
 
-O menu **Gravar automaticamente reuniões do Slack** vem habilitado: novas reuniões/huddles no aplicativo Slack instalado iniciam a gravação após alguns segundos, com o idioma selecionado. O Heed abre a interface se necessário e aguarda sua conexão. Pare pelo menu do Heed; sair do Slack não encerra a captura. Uma parada manual não reinicia a mesma reunião. O monitor acompanha novos estados nos registros locais, sem guardar mensagens; não inicia reuniões anteriores à abertura do Heed. Slack no navegador, Google Meet, Teams e Zoom não têm início automático. O estado aparece no menu e o diagnóstico em `~/Library/Logs/Heed/slack-auto.log`. Mudanças nos registros internos do Slack podem exigir atualização do detector.
+## Use
 
-Se aparecer o seletor de autorização, escolha a pasta **logs** do Slack e clique em **Autorizar registros**. O menu **Autorizar registros do Slack…** permite repetir. Essa autorização é limitada à pasta; acesso total ao disco não é necessário. Confira **Slack: aguardando próxima reunião** e então entre em uma nova reunião para testar. A autorização precisa ser feita em cada Mac.
+The app is installed at `~/Applications/Heed.app` and starts at login through the `local.heed.menubar` LaunchAgent. The menu lets you start, stop, choose **Portuguese (Brazil)** or **English**, and open [the interface](http://localhost:5170). Keep the interface tab open during recording and saving; it can be minimized.
 
-Em Ajustes do Sistema → Privacidade e Segurança, autorize **Gravação de Tela e Áudio do Sistema** e **Microfone** para o componente solicitado pelo macOS. Se o pedido não aparecer, consulte essas telas manualmente. O capturador de áudio do sistema fica em `packages/transcription/native/heed-parakeet/.build/release/heed-syscap`. As permissões são concedidas individualmente em cada Mac. A captura do sistema funciona independentemente do uso de fones de ouvido.
+**Automatically record Slack meetings** is enabled by default. New meetings/huddles in the installed Slack app start recording after a few seconds, using the selected meeting language. Heed opens the interface if needed and waits for it to connect. Stop through Heed's menu; leaving Slack does not stop capture. A manual stop does not restart the same meeting. The monitor follows new local log states without storing messages, and does not start meetings that were already active when Heed opened. Slack in a browser, Google Meet, Teams, and Zoom do not have automatic start. The menu shows detector status, and diagnostics are written to `~/Library/Logs/Heed/slack-auto.log`. Slack log format changes may require detector updates.
 
-Use **Configurações** na interface ou **Configurações e permissões…** no menu para consultar as autorizações deste Mac e abrir os Ajustes correspondentes. A tela também informa se o aplicativo nativo está desconectado. Depois de uma atualização, pode ser necessário desligar e ligar novamente a permissão de gravação do Heed, mesmo quando ela aparece habilitada, e aceitar o reinício solicitado pelo macOS.
+If an authorization picker appears, select the exact Slack **logs** folder and click **Allow log access**. **Allow Slack log access…** in the menu lets you repeat this. Authorization is read-only and limited to that folder; Full Disk Access is not required. Check for **Slack: waiting for the next meeting**, then join a new meeting to test. Authorize each Mac separately.
 
-Os áudios ficam localmente em `recordings/`. A política de retenção limita o total a 2 GB, remove primeiro os áudios das reuniões mais antigas e preserva suas transcrições. Uma gravação que atingir o limite individual é encerrada e salva. O limite de áudio e a transcrição nos dois idiomas devem ser usados igualmente em ambos os Macs.
+In **System Settings → Privacy & Security**, allow **Screen & System Audio Recording** and **Microphone** for the component requested by macOS. If no prompt appears, check these settings manually. The capture executable is `packages/transcription/native/heed-parakeet/.build/release/heed-syscap`. Permissions must be granted separately on each Mac. System audio capture works with headphones.
 
-Os serviços atendem somente na máquina local: interface na porta 5170, API na 5001, transcrição na 5002 e Ollama na 11434. Logs ficam em `~/Library/Logs/Heed/`. Para verificar instalação e modelos:
+Use **Settings** in the interface or **Settings and permissions…** in the menu to check this Mac's permissions and open their System Settings sections. The page also reports when the native app is disconnected. After an update, you may need to turn Heed's recording permission off and on again even when it appears enabled, then accept the restart requested by macOS.
+
+Audio is stored locally in `recordings/`. The retention quota is **2,000,000,000 bytes per machine**. Oldest audio is removed first; transcripts are preserved. Space is reserved for temporary processing copies, so one continuous recording has an output limit of approximately **990 MB**. Reaching that limit stops and saves it. Models and dependencies are outside this quota. Each installation uses the same retention and bilingual transcription features, with independent local files.
+
+The interface uses port **5170**, API **5001**, transcription **5002**, and Ollama **11434**, all on the local machine. Logs are stored in `~/Library/Logs/Heed/`. Check installation and models with:
 
 ```sh
 bun run doctor
 ```
 
-O limite é de 2.000.000.000 bytes por máquina. O Heed reserva espaço para as cópias temporárias de processamento; uma gravação contínua muito longa pode ser encerrada antes de atingir 2 GB sozinha. O limite de saída por gravação é de aproximadamente 990 MB, para que os dois canais possam ser processados dentro do orçamento.
+## Playback synchronized with the transcript
 
-## Ouvir uma reunião com transcrição sincronizada
+Open **Sessions**, choose a meeting, and use the audio player above its transcript. The segment matching the audio time is highlighted and kept visible. Click a segment, or use Enter/Space, to play from that point. Overlapping speech can highlight multiple segments. Synchronization uses segment timestamps, not individual words.
 
-Abra **Sessions**, escolha a reunião e use o player de áudio acima da transcrição. O trecho correspondente ao tempo do áudio fica destacado e visível durante a reprodução. Clique em um trecho (ou use Enter/Espaço) para ouvir a partir dele. Falas simultâneas podem ficar destacadas juntas. A sincronização é por trecho, usando os timestamps da transcrição, não palavra por palavra.
+The player uses the audio file's actual duration, which may differ from the recording timer. It does not artificially rescale timestamps. If audio has expired under the 2 GB retention policy, the transcript remains available and the interface reports that the audio is unavailable.
 
-O player usa a duração real do arquivo de áudio, que pode diferir do tempo indicado pelo cronômetro da captura. Não é aplicado ajuste artificial nos timestamps. Se o áudio tiver sido excluído pela retenção de 2 GB, a transcrição permanece disponível e a tela informa que o áudio não está mais disponível.
+See [README.md](README.md) for the native capture architecture, storage paths, troubleshooting, and limitations.

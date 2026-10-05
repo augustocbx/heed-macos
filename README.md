@@ -1,12 +1,14 @@
 # Heed macOS
 
-Personalização do [Heed](https://github.com/isjunrod/heed), de Junior Rodriguez, para gravar e transcrever reuniões localmente em **português brasileiro (`pt`) e inglês (`en`)**. Inclui controles na barra superior, retenção de áudio de 2 GB e reprodução sincronizada com a transcrição.
+A macOS adaptation of [Heed](https://github.com/isjunrod/heed), by Junior Rodriguez, for recording and transcribing meetings locally in **Brazilian Portuguese (`pt`) and English (`en`)**. It includes menu bar controls, a 2 GB audio retention limit, and audio playback synchronized with the transcript. The interface, documentation, and installation messages are in English; the selected meeting language controls transcription.
 
-Cada Mac mantém seus próprios áudios, modelos e sessões. Instalar o mesmo projeto em duas máquinas oferece o mesmo funcionamento, mas **não sincroniza arquivos entre elas nem envia reuniões para a nuvem**.
+Each Mac keeps its own audio, models, and sessions. Installing this project on two machines provides the same features, but **does not synchronize files between them or upload meetings to the cloud**.
 
-## Instalação
+## Installation
 
-Requer Mac com **Apple Silicon**, **macOS 14 ou posterior**, [Homebrew](https://brew.sh), Command Line Tools. O script instala também Node.js para a interface Vite. Não há um mínimo de RAM validado para todos os Macs.
+Requirements: **Apple Silicon**, **macOS 14 or later**, [Homebrew](https://brew.sh), and Apple's Command Line Tools. The installer also installs Node.js for the Vite interface. A minimum RAM requirement has not been validated across all Macs.
+
+Install Command Line Tools if needed, then clone and install:
 
 ```sh
 xcode-select --install
@@ -15,97 +17,97 @@ cd heed-macos
 bash install-macos.sh
 ```
 
-O instalador prepara Bun, Node.js, FFmpeg, Python e seu ambiente `.venv`, dependências, executáveis Swift e o aplicativo do menu. A versão de Bun usada na validação é **1.4.2**; o instalador baixa Bun se ele estiver ausente. Os modelos locais FluidAudio/Parakeet são baixados na preparação inicial: o conjunto medido ocupa aproximadamente **1,7 GB adicionais**, fora da cota dos áudios. A instalação e o primeiro download exigem internet.
+The installer prepares Bun, Node.js, FFmpeg, Python and its `.venv`, dependencies, Swift executables, the interface, and the menu app. **Bun 1.4.2** is the version used for validation; the installer downloads Bun if it is missing. Initial preparation downloads the local FluidAudio/Parakeet models. The measured model set takes approximately **1.7 GB of additional disk space**, outside the audio quota. Installation and the initial download require an internet connection.
 
-Ollama também é instalado para notas por IA. Seus modelos são opcionais e não são baixados automaticamente; a transcrição não depende de um modelo de notas. Não é necessário executar o instalador com `sudo`.
+Ollama is also installed for AI notes. Its models are optional and are not downloaded automatically; transcription does not require a notes model. Do not run this installer with `sudo`.
 
-## Permissões e uso
+## Permissions and use
 
-O aplicativo fica em `~/Applications/Heed.app`. O LaunchAgent `~/Library/LaunchAgents/local.heed.menubar.plist` inicia o ícone ao entrar no macOS. Pelo menu, escolha **Português** ou **English**, inicie/pare a gravação e abra [http://localhost:5170](http://localhost:5170).
+The app is installed at `~/Applications/Heed.app`. The LaunchAgent at `~/Library/LaunchAgents/local.heed.menubar.plist` starts the menu icon when you log in. Use the menu to select **Portuguese (Brazil)** or **English**, start or stop recording, and open [http://localhost:5170](http://localhost:5170).
 
-### Início automático no Slack
+### Automatic start for Slack meetings
 
-**Gravar automaticamente reuniões do Slack** vem habilitado no menu do ícone. Com o Heed já aberto, entrar em uma reunião/huddle no **aplicativo Slack instalado** inicia a gravação após alguns segundos de confirmação. Abrir o Slack, preparar uma reunião ou testar o microfone não inicia a captura. O idioma é o escolhido no menu; as permissões de áudio e os modelos precisam estar prontos.
+**Automatically record Slack meetings** is enabled by default in the menu. With Heed already running, joining a meeting/huddle in the **installed Slack app** starts recording after a few seconds of confirmation. Opening Slack, preparing a meeting, or testing the microphone does not start capture. The meeting language comes from the menu selection; audio permissions and models must be ready.
 
-Se o macOS bloquear os registros do Slack, o Heed abre um seletor de pasta. Selecione exatamente **logs** e clique em **Autorizar registros**. Para repetir, use **Autorizar registros do Slack…** no menu. A pasta da versão da App Store é `~/Library/Containers/com.tinyspeck.slackmacgap/Data/Library/Application Support/Slack/logs`; na versão baixada diretamente, é `~/Library/Application Support/Slack/logs`. O seletor abre nesse local; se necessário, use **⌘⇧G** para informar o caminho. A autorização é específica à pasta e fica salva para as próximas aberturas; não é necessário conceder acesso total ao disco. Faça isso em cada Mac. O menu deve mostrar **Slack: aguardando próxima reunião** antes do teste.
+If macOS blocks access to Slack logs, Heed opens a folder picker. Select the exact **logs** folder and click **Allow log access**. To request access again, choose **Allow Slack log access…** from the menu. The App Store version uses `~/Library/Containers/com.tinyspeck.slackmacgap/Data/Library/Application Support/Slack/logs`; the directly downloaded version uses `~/Library/Application Support/Slack/logs`. The picker opens at the expected location; use **⌘⇧G** to enter the path if needed. Access is limited to that folder and stored as a read-only security-scoped bookmark for future launches. Full Disk Access is not required. Authorize the folder separately on each Mac. The menu should show **Slack: waiting for the next meeting** before testing.
 
-Se a interface estiver fechada, o Heed abre `localhost:5170` e espera a conexão antes de enviar o comando. Mantenha essa aba aberta para transcrever e salvar. **Pare a gravação pelo menu do Heed**; sair da reunião não encerra a captura automaticamente. Se parar manualmente, a mesma reunião não reinicia a gravação.
+If the interface is closed, Heed opens `localhost:5170` and waits for it to connect before sending the start command. Keep that tab open for transcription and saving. **Stop recording through Heed's menu**; leaving the meeting does not stop capture automatically. A manual stop does not restart recording for the same meeting.
 
-A detecção acompanha apenas novos estados de reunião dos registros locais do Slack, sem armazenar mensagens ou nomes de canais. Por isso, uma reunião que já estava ativa quando o Heed abriu não dispara retroativamente. O estado do monitor aparece no menu; o diagnóstico fica em `~/Library/Logs/Heed/slack-auto.log`. Os registros são uma implementação interna do Slack e podem mudar em futuras versões. O Slack no navegador não é monitorado.
+The detector follows only new meeting states in local Slack logs, without storing messages or channel names. A meeting already active when Heed starts therefore does not trigger recording retroactively. The menu shows the detector state; diagnostics are written to `~/Library/Logs/Heed/slack-auto.log`. Slack's internal log format may change in future releases. Slack in a browser is not monitored.
 
-**Mantenha a aba da interface aberta durante a captura e o salvamento.** Ela pode ficar minimizada. O navegador executa o controle da gravação, acompanha a transcrição e salva a sessão quando a captura termina.
+**Keep the interface tab open during capture and saving.** It can be minimized. The browser controls recording, receives the live transcript, and saves the session when capture ends.
 
-Abra **Configurações** na interface ou **Configurações e permissões…** pelo ícone. A tela consulta o aplicativo nativo e mostra o estado do microfone, do áudio do sistema e da leitura dos registros do Slack. Os botões solicitam a autorização ou abrem a seção correspondente dos Ajustes. A verificação se atualiza ao voltar à tela e a cada três segundos; sem conexão com o ícone, o estado fica desconhecido. Os botões de Ajustes continuam disponíveis quando a permissão aparece habilitada, para renovar uma autorização invalidada pelo macOS.
+Open **Settings** in the interface or **Settings and permissions…** from the menu. The page queries the native app and shows microphone, system audio, and Slack log access status. Its buttons request access or open the corresponding System Settings section. Status refreshes when you return to the page and every three seconds; without a connection to the menu app, permission status is unknown. System Settings buttons remain available for permissions that appear enabled, so an authorization invalidated by macOS can be renewed.
 
-Em **Ajustes do Sistema → Privacidade e Segurança**, autorize:
+In **System Settings → Privacy & Security**, allow:
 
-- **Gravação de Tela e Áudio do Sistema**, para capturar os outros participantes.
-- **Microfone**, para capturar sua voz.
+- **Screen & System Audio Recording**, to capture other participants.
+- **Microphone**, to capture your voice.
 
-O nome apresentado pelo macOS pode ser Heed, Bun ou o componente de captura. Se não surgir um pedido, confira essas telas manualmente. O capturador está em `<pasta-do-projeto>/packages/transcription/native/heed-parakeet/.build/release/heed-syscap`. Cada Mac precisa de suas próprias autorizações.
+macOS may display Heed, Bun, or the capture component as the requesting app. If no prompt appears, check these settings manually. The capture executable is `<project-folder>/packages/transcription/native/heed-parakeet/.build/release/heed-syscap`. Each Mac needs its own permissions.
 
-Uma atualização do aplicativo assinado localmente pode invalidar a autorização anterior. Se a captura for recusada apesar de Heed aparecer habilitado, desligue e ligue novamente sua permissão de **Gravação de Tela e Áudio do Sistema** e aceite o reinício solicitado pelo macOS. Isso renova a autorização já existente; a leitura dos registros do Slack continua sendo autorizada separadamente pelo seletor de pasta.
+Updating the locally signed app may invalidate its previous authorization. If capture is denied even though Heed appears enabled, turn its **Screen & System Audio Recording** permission off and on again, then accept the restart requested by macOS. Slack log access remains a separate folder-picker authorization.
 
-A captura do som do sistema usa ScreenCaptureKit e funciona com fones de ouvido. O microfone usa a entrada padrão do macOS: confira **Ajustes do Sistema → Som → Entrada** antes da reunião.
+System audio capture uses ScreenCaptureKit and works with headphones. Microphone capture uses the default macOS input: check **System Settings → Sound → Input** before a meeting.
 
-## Ouvir com a transcrição
+## Playback with the transcript
 
-Abra **Sessions**, escolha a reunião e pressione Play no player acima da transcrição. O trecho correspondente ao áudio fica destacado e visível. Clique no trecho, ou use Enter/Espaço, para ouvir a partir dele. Falas simultâneas podem ficar destacadas juntas; a sincronização é por trecho, não palavra por palavra.
+Open **Sessions**, select a meeting, and press Play in the player above the transcript. The matching segment is highlighted and kept visible. Click a segment, or use Enter/Space, to play from that point. Overlapping speech can highlight multiple segments. Synchronization follows segment timestamps, not individual words.
 
-O WAV original mantém dois canais separados: **esquerdo = microfone; direito = som do sistema**, a 16 kHz. Isso permite processar as vozes separadamente. O player mistura esses canais em mono para ouvir ambos dos dois lados; abrir o arquivo original em outro player mantém a separação esquerda/direita.
+The original WAV preserves two separate channels at 16 kHz: **left = microphone; right = system audio**. This lets transcription process the sources separately. Heed's player mixes the channels to mono so you hear both sources in both ears; another player may retain the original left/right separation.
 
-Nomes escolhidos manualmente na tela de gravação permanecem durante as atualizações da transcrição e são salvos na sessão. Renomear depois da gravação ou em **Sessions** também atualiza os segmentos e a lista de participantes no arquivo local. Quando a diarização final reorganiza os falantes, o nome é transferido pela origem e pela sobreposição dos trechos; correspondências ambíguas não são forçadas pelo número de “Speaker”.
+Names entered manually during recording survive live transcript updates and are saved with the session. Renaming after recording or in **Sessions** also updates the segments and participant list in the local file. When final diarization reorganizes speakers, names are transferred using source channels and overlapping segments; ambiguous matches are not forced by a “Speaker” number.
 
-Se a qualidade cair ao usar o microfone de um fone Bluetooth, selecione o **microfone integrado do Mac como entrada**, mantendo o fone como saída. A Apple explica essa mudança de qualidade em [Se a qualidade do som dos fones Bluetooth estiver reduzida](https://support.apple.com/en-ie/102217).
+If microphone quality drops with Bluetooth headphones, select the **Mac's built-in microphone as input** while keeping the headphones as output. Apple explains the Bluetooth mode change in [If sound quality is reduced when using Bluetooth headphones with your Mac](https://support.apple.com/en-ie/102217).
 
-## Armazenamento e retenção
+## Storage and retention
 
-Os arquivos de áudio ficam em `recordings/`, dentro deste checkout. Sessões e transcrições ficam em `~/.heed-app/sessions/`; configurações ficam em `~/.heed-app/`. Modelos ficam em `~/Library/Application Support/FluidAudio/Models/`.
+Audio files are stored in this checkout's `recordings/` folder. Sessions and transcripts are stored in `~/.heed-app/sessions/`; configuration is stored in `~/.heed-app/`. Models are stored in `~/Library/Application Support/FluidAudio/Models/`.
 
-A cota por máquina é **2.000.000.000 bytes**, somando os arquivos de áudio elegíveis de `recordings/`, incluindo arquivos arquivados nessa pasta. Quando necessário, os áudios mais antigos são apagados; o texto da transcrição é preservado. A interface informa quando o áudio não está mais disponível.
+The quota on each machine is **2,000,000,000 bytes**, counting eligible audio files in `recordings/`, including archived files in that folder. When needed, the oldest audio is deleted first. Transcript text is preserved, and the interface indicates when a session's audio is no longer available.
 
-A captura e o processamento precisam de espaço temporário. Por isso, uma gravação contínua tem limite de saída de aproximadamente **990 MB**, reservando espaço para separar e processar os canais. Ao alcançar esse limite, ela é encerrada e salva. Os modelos, o ambiente Python e as dependências não fazem parte da cota de áudio.
+Capture and processing need temporary disk space. A continuous recording therefore has an output limit of approximately **990 MB**, reserving space to split and process its channels. Reaching this limit stops and saves the recording. Models, the Python environment, and dependencies are outside the audio quota.
 
-Não copie `recordings/`, `.venv` ou `~/.heed-app/` para instalar em outro Mac; execute o instalador naquela máquina.
+Do not copy `recordings/`, `.venv`, or `~/.heed-app/` to install on another Mac. Run the installer on that machine instead.
 
-## Como funciona
+## Architecture
 
 ```mermaid
 flowchart TD
-    S[Slack: nova reunião conectada nos registros locais] --> A[Ícone macOS / LaunchAgent]
-    A --> B[API Bun localhost:5001]
-    B <--> C[Navegador localhost:5170 aberto]
-    B --> D[ScreenCaptureKit: som do sistema]
-    B --> E[AVAudioEngine: microfone padrão]
-    D --> K[Captura nativa: canais alinhados por tempo]
+    S[Slack: newly connected meeting in local logs] --> A[macOS menu app / LaunchAgent]
+    A --> B[Bun API localhost:5001]
+    B <--> C[Open browser localhost:5170]
+    B --> D[ScreenCaptureKit: system audio]
+    B --> E[AVAudioEngine: default microphone]
+    D --> K[Native capture: timestamp-aligned channels]
     E --> K
-    K --> F[FFmpeg: uma entrada PCM, WAV estéreo local]
-    F --> G[Python localhost:5002 / Parakeet e diarização]
+    K --> F[FFmpeg: one PCM input, local stereo WAV]
+    F --> G[Python localhost:5002 / Parakeet and diarization]
     G --> C
-    C --> H[Sessão JSON e timestamps locais]
+    C --> H[Local session JSON and timestamps]
     H --> B
-    F --> I[GET/HEAD de áudio com HTTP Range]
+    F --> I[Audio GET/HEAD with HTTP Range]
     B --> I
-    I --> J[Player: mix mono, avanço e destaque dos trechos]
+    I --> J[Player: mono mix, seeking and segment highlights]
     H --> J
 ```
 
-O menu envia comandos à API local; a interface aberta recebe esses comandos e mantém o fluxo de captura, transcrição e salvamento. No macOS, um único capturador nativo reúne ScreenCaptureKit e AVAudioEngine, preserva o tempo de cada canal e entrega um fluxo PCM ao FFmpeg. A gravação só começa depois que o microfone entrega áudio estável. O serviço Python coordena os sidecars Swift/FluidAudio: ASR com Parakeet, diarização e finalização. Os nomes reconhecidos ao vivo são reaproveitados por compatibilidade de voz, sem supor que a numeração dos participantes permaneça igual. O endpoint `/api/sessions/:id/audio` serve apenas arquivos locais autorizados, com GET/HEAD e HTTP Range para avançar sem carregar o arquivo inteiro. O destaque acompanha o tempo real do player e os timestamps de cada segmento.
+The menu sends commands to the local API. The open interface receives them and coordinates capture, transcription, and session saving. On macOS, one native executable combines ScreenCaptureKit and AVAudioEngine, preserves each channel's timestamps, and supplies one PCM stream to FFmpeg. Recording starts only after the microphone supplies stable audio. The Python service coordinates Swift/FluidAudio sidecars for Parakeet ASR, diarization, and finalization. Live voice names are reconciled without assuming speaker numbers stay unchanged. The `/api/sessions/:id/audio` endpoint serves only authorized local files, using GET/HEAD and HTTP Range for seeking without loading the entire file. Highlighting follows the player's actual time and the saved segment timestamps.
 
-## Atualização
+## Updates
 
-Pare a gravação e aguarde o salvamento antes de atualizar, em **cada Mac**:
+Stop recording and wait for the session to finish saving before updating **each Mac**:
 
 ```sh
 git pull --ff-only
 bash install-macos.sh
 ```
 
-O instalador verifica se há captura, comando ou processamento ativo e recusa reiniciar nesse caso. Ele preserva os arquivos locais e reinstala o aplicativo. Se mover o checkout, execute novamente para atualizar o caminho usado pelo ícone.
+The installer checks for active capture, commands, or processing and refuses to restart in that state. It preserves local files and reinstalls the app. If you move the checkout, run it again to update the project path used by the menu app.
 
-## Diagnóstico e testes
+## Diagnostics and tests
 
-Os serviços são locais: interface **5170**, API Bun **5001**, transcrição Python **5002** e Ollama **11434**. Logs ficam em `~/Library/Logs/Heed/`.
+Services are local: interface **5170**, Bun API **5001**, Python transcription **5002**, and Ollama **11434**. Logs are stored in `~/Library/Logs/Heed/`.
 
 ```sh
 curl -fsS http://localhost:5001/api/desktop/control/status
@@ -116,16 +118,17 @@ bun test packages/server/lib
 python3 -m unittest discover -s packages/transcription -p voice_identity_test.py
 NODE_OPTIONS=--no-experimental-webstorage bun run --cwd packages/client test --run
 bun run build
+bash packages/desktop/install-menubar.sh --build-only
 ```
 
-O status permite verificar `recording`, `processing`, `pending`, `starting`, `ready` e a conexão da interface. Se ela estiver desconectada, abra novamente `http://localhost:5170`. Para uma sessão existente, `curl -I http://localhost:5001/api/sessions/ID/audio` verifica disponibilidade e metadados sem baixar o áudio.
+The control status reports `recording`, `processing`, `pending`, `starting`, `ready`, and the interface connection. If the interface is disconnected, reopen `http://localhost:5170`. For an existing session, `curl -I http://localhost:5001/api/sessions/ID/audio` checks availability and metadata without downloading the audio.
 
-## Limitações conhecidas
+## Known limitations
 
-O início automático no macOS está disponível para novas reuniões no aplicativo Slack. O encerramento automático e a detecção de Google Meet, Microsoft Teams e Zoom ainda não foram implementados. O detector original baseado em PipeWire continua sendo específico do Linux.
+Automatic start on macOS supports new meetings in the installed Slack app. Automatic stopping and detection for Google Meet, Microsoft Teams, and Zoom are not implemented. The original PipeWire-based detector remains Linux-specific.
 
-A captura anterior podia descartar blocos do microfone ao combinar duas entradas no FFmpeg, encurtando o arquivo e cortando a fala. A captura nativa unificada substitui esse caminho. Arquivos antigos podem continuar com trechos ausentes; a correção se aplica a novas gravações. O player usa a duração real do arquivo. Áudio que não foi capturado ou que foi apagado não pode ser recuperado a partir da transcrição.
+The previous capture path could discard microphone buffers while combining two FFmpeg inputs, shortening the file and cutting speech. Unified native capture replaces that path. Older recordings may still contain missing audio; this correction applies to new recordings. Playback uses the file's actual duration. Audio that was never captured or was deleted cannot be reconstructed from the transcript.
 
-## Créditos e licença
+## Credits and license
 
-Baseado no [isjunrod/heed](https://github.com/isjunrod/heed), de Junior Rodriguez. A licença MIT original está preservada em [LICENSE](LICENSE), e a documentação original em [README-upstream.md](README-upstream.md). Este fork reúne as adaptações de macOS mantidas em [augustocbx/heed-macos](https://github.com/augustocbx/heed-macos). Veja também [README-macos.md](README-macos.md).
+Based on [isjunrod/heed](https://github.com/isjunrod/heed), by Junior Rodriguez. The original MIT license is preserved in [LICENSE](LICENSE), and upstream documentation is preserved in [README-upstream.md](README-upstream.md). This fork contains the macOS adaptations maintained at [augustocbx/heed-macos](https://github.com/augustocbx/heed-macos). See also [README-macos.md](README-macos.md).

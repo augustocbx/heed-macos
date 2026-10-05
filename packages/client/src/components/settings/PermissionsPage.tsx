@@ -21,8 +21,8 @@ export function PermissionsPage() {
  }, [refresh]);
  const authorize = async (target: PermissionAction) => {
   setAction(target); setActionError(null); setNotice(null);
-  try { await permissionsApi.authorize(target); setNotice('Conclua a autorização na janela do macOS. Esta tela verifica as permissões automaticamente.'); await refresh(); }
-  catch { setActionError('Não foi possível abrir a autorização. Confirme que o aplicativo Heed está aberto e tente novamente.'); }
+  try { await permissionsApi.authorize(target); setNotice('Complete authorization in the macOS window. This page checks permissions automatically.'); await refresh(); }
+  catch { setActionError('Could not open authorization. Make sure the Heed app is running and try again.'); }
   finally { setAction(null); }
  };
  const connected = !loadError && snapshot?.controllerConnected === true;
@@ -33,24 +33,24 @@ export function PermissionsPage() {
  const slackOptional = permissions?.slackAutoRecord === false;
  const missing = microphone === 'denied' || microphone === 'restricted' || microphone === 'notDetermined' || system === false || (!slackOptional && slack === false);
  const ready = connected && microphone === 'authorized' && system === true && (slackOptional || (permissions?.slackAutoRecord === true && slack === true));
- const title = loadError ? 'Não foi possível verificar as permissões' : !snapshot ? 'Verificando permissões…' : !connected ? 'Aplicativo Heed desconectado' : missing ? 'Permissões pendentes' : ready ? 'Permissões autorizadas' : 'Verificação incompleta';
- const boolStatus = (value: boolean | null) => value === true ? 'Autorizado' : value === false ? 'Não autorizado' : 'Não verificado';
+ const title = loadError ? 'Could not check permissions' : !snapshot ? 'Checking permissions…' : !connected ? 'Heed app disconnected' : missing ? 'Permissions needed' : ready ? 'Permissions authorized' : 'Check incomplete';
+ const boolStatus = (value: boolean | null) => value === true ? 'Authorized' : value === false ? 'Not authorized' : 'Not checked';
  const disabled = !connected || !!action || !!snapshot?.pending;
  const rows = [
-  { id: 'microphone' as const, title: 'Microfone', description: 'Permite gravar sua voz.', status: microphone === 'authorized' ? 'Autorizado' : microphone === 'denied' ? 'Não autorizado' : microphone === 'restricted' ? 'Restrito pelo macOS' : microphone === 'notDetermined' ? 'Aguardando autorização' : 'Não verificado', allowed: microphone === 'authorized', button: microphone === 'authorized' || microphone === 'denied' || microphone === 'restricted' ? 'Abrir ajustes do microfone' : 'Autorizar microfone', help: 'Em Ajustes do Sistema → Privacidade e Segurança → Microfone, habilite o Heed.' },
-  { id: 'screenCapture' as const, title: 'Áudio do sistema', description: 'Permite gravar a voz dos outros participantes, inclusive com fones de ouvido.', status: boolStatus(system), allowed: system === true, button: system === true ? 'Abrir ajustes do áudio do sistema' : 'Autorizar áudio do sistema', help: 'Em Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela e Áudio do Sistema, habilite o Heed. O nome dessa opção pode variar conforme a versão do macOS.' },
-  { id: 'slackLogs' as const, title: 'Detecção de reuniões do Slack', description: 'Permite detectar quando você entra em uma reunião no aplicativo Slack.', status: slackOptional ? 'Opcional — gravação automática desativada' : boolStatus(slack), allowed: slack === true, button: 'Autorizar registros do Slack', help: 'Na janela de seleção de pasta, autorize a pasta de registros do Slack indicada pelo Heed. Ative “Gravar automaticamente reuniões do Slack” no ícone da barra superior.' },
+  { id: 'microphone' as const, title: 'Microphone', description: 'Records your voice.', status: microphone === 'authorized' ? 'Authorized' : microphone === 'denied' ? 'Not authorized' : microphone === 'restricted' ? 'Restricted by macOS' : microphone === 'notDetermined' ? 'Awaiting authorization' : 'Not checked', allowed: microphone === 'authorized', button: microphone === 'authorized' || microphone === 'denied' || microphone === 'restricted' ? 'Open microphone settings' : 'Authorize microphone', help: 'In System Settings → Privacy & Security → Microphone, enable Heed.' },
+  { id: 'screenCapture' as const, title: 'System audio', description: 'Records other participants, including when you use headphones.', status: boolStatus(system), allowed: system === true, button: system === true ? 'Open system audio settings' : 'Authorize system audio', help: 'In System Settings → Privacy & Security → Screen & System Audio Recording, enable Heed. The option name may vary with your macOS version.' },
+  { id: 'slackLogs' as const, title: 'Slack meeting detection', description: 'Detects when you join a meeting in the Slack app.', status: slackOptional ? 'Optional — automatic recording disabled' : boolStatus(slack), allowed: slack === true, button: 'Authorize Slack logs', help: 'In the folder picker, authorize the Slack logs folder selected by Heed. Enable “Automatically record Slack meetings” from the menu bar icon.' },
  ];
  return <section className={styles.page} aria-labelledby="settings-title">
-  <header><h1 id="settings-title">Configurações</h1><p>Permissões deste Mac</p></header>
-  <div className={`${styles.summary} ${ready ? styles.ready : styles.attention}`} role="status"><strong>{title}</strong><p>{!connected ? 'Abra o aplicativo Heed pelo ícone da barra superior para verificar e autorizar o acesso.' : ready ? 'As permissões necessárias estão autorizadas.' : 'Conclua as autorizações abaixo antes de iniciar uma reunião.'}</p><button onClick={() => void refresh()}>Verificar novamente</button></div>
+  <header><h1 id="settings-title">Settings</h1><p>Permissions on this Mac</p></header>
+  <div className={`${styles.summary} ${ready ? styles.ready : styles.attention}`} role="status"><strong>{title}</strong><p>{!connected ? 'Open the Heed app from the menu bar icon to check and authorize access.' : ready ? 'The required permissions are authorized.' : 'Complete the authorizations below before starting a meeting.'}</p><button onClick={() => void refresh()}>Check again</button></div>
   {(actionError || snapshot?.error) && <p className={styles.error} role="alert">{actionError || snapshot?.error}</p>}
   {notice && <p className={styles.notice} role="status">{notice}</p>}
   <div className={styles.cards}>{rows.map(row => <article key={row.id} className={styles.card} aria-labelledby={`permission-${row.id}`}>
    <div className={styles.cardHeading}><h2 id={`permission-${row.id}`}>{row.title}</h2><span className={row.allowed ? styles.authorized : styles.pending}>{row.status}</span></div>
    <p>{row.description}</p>
-   {(!row.allowed || row.id !== 'slackLogs') && <><p className={styles.help}>{row.help}</p><button disabled={disabled} onClick={() => void authorize(row.id)}>{action === row.id ? 'Abrindo autorização…' : row.button}</button></>}
+   {(!row.allowed || row.id !== 'slackLogs') && <><p className={styles.help}>{row.help}</p><button disabled={disabled} onClick={() => void authorize(row.id)}>{action === row.id ? 'Opening authorization…' : row.button}</button></>}
   </article>)}</div>
-  <aside className={styles.tip}><strong>Já autorizou, mas a gravação continua falhando?</strong><p>Após uma atualização, o macOS pode pedir uma nova autorização. Nos Ajustes, desative e ative novamente o Heed na permissão indicada. Se o macOS pedir, escolha “Encerrar e Reabrir”. Volte a esta tela e confirme o status antes de testar.</p><p>Mantenha a interface do Heed aberta durante a gravação automática.</p></aside>
+  <aside className={styles.tip}><strong>Already authorized, but recording still fails?</strong><p>After an update, macOS may require renewed authorization. In Settings, turn Heed off and on for the indicated permission. If macOS asks, choose “Quit & Reopen”. Return to this page and check the status before testing.</p><p>Keep the Heed interface open during automatic recording.</p></aside>
  </section>;
 }

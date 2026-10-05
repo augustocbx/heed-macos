@@ -90,7 +90,7 @@ export function ResultCard() {
 			);
 		} catch (e) {
 			if ((e as { needsModelSelection?: boolean }).needsModelSelection) {
-				showToast("Elige un modelo de notas para generar");
+				showToast("Choose a notes model before generating notes");
 				openPicker();
 			} else {
 				showToast(`Error: ${(e as Error).message}`);
@@ -116,7 +116,7 @@ export function ResultCard() {
 					else delete names[original];
 					return { speakerNames: names };
 				});
-				showToast("Não foi possível salvar o nome do participante. Tente novamente.");
+				showToast("Could not save the speaker name. Please try again.");
 			}
 		}
 	};

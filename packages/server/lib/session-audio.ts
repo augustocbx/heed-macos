@@ -1,7 +1,7 @@
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
-/** Expõe somente o áudio da sessão dentro da pasta local de gravações. */
+/** Expose session audio only from the local recordings directory. */
 export async function sessionAudioResponse(req:Request,id:string,sessionsDir:string,recordingsDir:string):Promise<Response>{
  if(!/^[a-zA-Z0-9_-]+$/.test(id))return new Response(null,{status:403});
  let session:any;
