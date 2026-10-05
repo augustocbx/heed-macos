@@ -6,7 +6,6 @@ import { useSessionsStore } from "@/stores/sessions.ts";
 import { useRecordingStore } from "@/stores/recording.ts";
 import { useUIStore } from "@/stores/ui.ts";
 import { fmtDate } from "@/lib/format.ts";
-import { detectLocale, t } from "@/lib/i18n.ts";
 import styles from "./RecoveryBanner.module.css";
 
 function fmtDurationShort(s: number): string {
@@ -22,7 +21,6 @@ export function RecoveryBanner() {
 	const [dismissed, setDismissed] = useState(false);
 	const showToast = useUIStore((s) => s.showToast);
 	const reloadSessions = useSessionsStore((s) => s.load);
-	const locale = detectLocale();
 
 	useEffect(() => {
 		recoveryApi.list().then((d) => setOrphans(d.recordings)).catch(() => {});
@@ -32,7 +30,7 @@ export function RecoveryBanner() {
 
 	const handleRecover = async (rec: OrphanedRecording) => {
 		setRecovering(rec.path);
-		showToast(locale === "es" ? "Recuperando grabacion..." : "Recovering recording...");
+		showToast("Recovering recording...");
 		try {
 			await transcribe(
 				{ url: rec.path, language: "auto", diarize: rec.is_dual },
@@ -58,7 +56,7 @@ export function RecoveryBanner() {
 						reloadSessions();
 						setOrphans((prev) => prev.filter((o) => o.path !== rec.path));
 						setRecovering(null);
-						showToast(locale === "es" ? "Grabacion recuperada" : "Recording recovered");
+						showToast("Recording recovered");
 					},
 					onError: (msg) => {
 						showToast(`Error: ${msg}`);
@@ -76,7 +74,7 @@ export function RecoveryBanner() {
 		try {
 			await recoveryApi.discard(rec.path);
 			setOrphans((prev) => prev.filter((o) => o.path !== rec.path));
-			showToast(locale === "es" ? "Grabacion descartada" : "Recording discarded");
+			showToast("Recording discarded");
 		} catch (e) {
 			showToast(`Error: ${(e as Error).message}`);
 		}
@@ -86,16 +84,12 @@ export function RecoveryBanner() {
 		<div className={styles.banner}>
 			<div className={styles.header}>
 				<span className={styles.title}>
-					{locale === "es"
-						? `${orphans.length} grabacion(es) sin procesar encontrada(s)`
-						: `${orphans.length} unprocessed recording(s) found`}
+					{`${orphans.length} unprocessed recording(s) found`}
 				</span>
 				<button className={styles.dismissBtn} onClick={() => setDismissed(true)}>×</button>
 			</div>
 			<p className={styles.subtitle}>
-				{locale === "es"
-					? "Estas grabaciones no se procesaron (la app pudo haberse cerrado). Puedes recuperarlas o descartarlas."
-					: "These recordings weren't processed (the app may have crashed). You can recover or discard them."}
+				{"These recordings weren't processed (the app may have crashed). You can recover or discard them."}
 			</p>
 			<div className={styles.list}>
 				{orphans.map((rec) => (
@@ -114,15 +108,15 @@ export function RecoveryBanner() {
 								disabled={!!recovering}
 							>
 								{recovering === rec.path
-									? (locale === "es" ? "Procesando..." : "Processing...")
-									: (locale === "es" ? "Recuperar" : "Recover")}
+									? ("Processing...")
+									: ("Recover")}
 							</button>
 							<button
 								className={styles.discardBtn}
 								onClick={() => handleDiscard(rec)}
 								disabled={!!recovering}
 							>
-								{locale === "es" ? "Descartar" : "Discard"}
+								{"Discard"}
 							</button>
 						</div>
 					</div>

@@ -9,60 +9,60 @@ let responseError = false;
 const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => ({ ok: !responseError || !init, status: 409, statusText: 'Conflict', json: async () => init ? responseError ? { error: 'controller unavailable' } : { ok: true, id: '1' } : snapshot }));
 beforeEach(() => { snapshot = state(authorized); responseError = false; vi.stubGlobal('fetch', fetchMock); fetchMock.mockClear(); });
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
-describe('configurações de permissões', () => {
- it('confirma autorização somente quando o aplicativo está conectado e os estados são conhecidos', async () => {
+describe('permission settings', () => {
+ it('confirms authorization only when the app is connected and states are known', async () => {
   const view = render(<PermissionsPage />);
-  expect(await screen.findByText('Permissões autorizadas')).toBeInTheDocument();
-  snapshot = state(authorized, false); fireEvent.click(screen.getByRole('button', { name: 'Verificar novamente' }));
-  await screen.findByText('Aplicativo Heed desconectado');
-  expect(screen.queryByText('Permissões autorizadas')).not.toBeInTheDocument();
-  expect(screen.getAllByText('Não verificado')).toHaveLength(3);
+  expect(await screen.findByText('Permissions authorized')).toBeInTheDocument();
+  snapshot = state(authorized, false); fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+  await screen.findByText('Heed app disconnected');
+  expect(screen.queryByText('Permissions authorized')).not.toBeInTheDocument();
+  expect(screen.getAllByText('Not checked')).toHaveLength(3);
   view.unmount();
  });
- it('permite renovar as autorizações existentes e informa falhas do aplicativo', async () => {
-  snapshot = { ...state(authorized), error: 'Autorização cancelada' };
+ it('allows renewing existing authorizations and reports app errors', async () => {
+  snapshot = { ...state(authorized), error: 'Authorization canceled' };
   render(<PermissionsPage />);
-  expect(await screen.findByRole('alert')).toHaveTextContent('Autorização cancelada');
-  expect(screen.getByRole('button', { name: 'Abrir ajustes do microfone' })).toBeEnabled();
-  expect(screen.getByRole('button', { name: 'Abrir ajustes do áudio do sistema' })).toBeEnabled();
+  expect(await screen.findByRole('alert')).toHaveTextContent('Authorization canceled');
+  expect(screen.getByRole('button', { name: 'Open microphone settings' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Open system audio settings' })).toBeEnabled();
  });
- it('mostra permissões ausentes e envia cada autorização para o aplicativo nativo', async () => {
+ it('shows missing permissions and sends each authorization to the native app', async () => {
   snapshot = state({ ...authorized, microphone: 'denied', screenCapture: false, slackLogs: false });
   render(<PermissionsPage />);
-  await screen.findByText('Permissões pendentes');
-  for (const [name, action] of [['Abrir ajustes do microfone', 'microphone'], ['Autorizar áudio do sistema', 'screenCapture'], ['Autorizar registros do Slack', 'slackLogs']]) {
+  await screen.findByText('Permissions needed');
+  for (const [name, action] of [['Open microphone settings', 'microphone'], ['Authorize system audio', 'screenCapture'], ['Authorize Slack logs', 'slackLogs']]) {
    fireEvent.click(screen.getByRole('button', { name }));
    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.body === JSON.stringify({ action }))).toBe(true));
    await waitFor(() => expect(screen.getByRole('button', { name })).toBeEnabled());
   }
  });
- it('não confunde estados desconhecidos ou Slack opcional com autorização', async () => {
+ it('does not treat unknown states or optional Slack access as authorization', async () => {
   snapshot = state({ microphone: 'unknown', screenCapture: null, slackLogs: null, slackAutoRecord: false });
   render(<PermissionsPage />);
-  await screen.findByText('Verificação incompleta');
-  expect(screen.getByText('Opcional — gravação automática desativada')).toBeInTheDocument();
-  expect(screen.queryByText('Permissões autorizadas')).not.toBeInTheDocument();
+  await screen.findByText('Check incomplete');
+  expect(screen.getByText('Optional — automatic recording disabled')).toBeInTheDocument();
+  expect(screen.queryByText('Permissions authorized')).not.toBeInTheDocument();
  });
- it('mostra falha na ação sem afirmar que a permissão foi concedida', async () => {
+ it('reports action failure without claiming permission was granted', async () => {
   snapshot = state({ ...authorized, microphone: 'notDetermined' }); responseError = true;
   render(<PermissionsPage />);
-  fireEvent.click(await screen.findByRole('button', { name: 'Autorizar microfone' }));
-  expect(await screen.findByRole('alert')).toHaveTextContent('Não foi possível abrir a autorização');
-  expect(screen.queryByText('Permissões autorizadas')).not.toBeInTheDocument();
+  fireEvent.click(await screen.findByRole('button', { name: 'Authorize microphone' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Could not open authorization');
+  expect(screen.queryByText('Permissions authorized')).not.toBeInTheDocument();
  });
- it('atualiza automaticamente as permissões a cada três segundos', async () => {
+ it('refreshes permissions automatically every three seconds', async () => {
   vi.useFakeTimers(); snapshot = state({ ...authorized, microphone: 'denied' });
   render(<PermissionsPage />);
   await act(async () => { await Promise.resolve(); });
-  expect(screen.getByText('Permissões pendentes')).toBeInTheDocument();
+  expect(screen.getByText('Permissions needed')).toBeInTheDocument();
   snapshot = state(authorized);
   await act(async () => { vi.advanceTimersByTime(3000); await Promise.resolve(); });
-  expect(screen.getByText('Permissões autorizadas')).toBeInTheDocument();
+  expect(screen.getByText('Permissions authorized')).toBeInTheDocument();
  });
- it('verifica novamente quando o usuário volta dos Ajustes', async () => {
+ it('checks again when the user returns from Settings', async () => {
   snapshot = state({ ...authorized, microphone: 'denied' }); render(<PermissionsPage />);
-  await screen.findByText('Permissões pendentes'); snapshot = state(authorized);
+  await screen.findByText('Permissions needed'); snapshot = state(authorized);
   act(() => window.dispatchEvent(new Event('focus')));
-  expect(await screen.findByText('Permissões autorizadas')).toBeInTheDocument();
+  expect(await screen.findByText('Permissions authorized')).toBeInTheDocument();
  });
 });

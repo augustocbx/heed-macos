@@ -7,7 +7,7 @@ import { memoryWord } from "@/lib/format.ts";
 import { useModelsStore } from "@/stores/models.ts";
 import { useSetup } from "@/hooks/useSetup.ts";
 import { useUIStore } from "@/stores/ui.ts";
-import { detectLocale, setLocale, t, type Locale } from "@/lib/i18n.ts";
+import { detectLocale, t, type Locale } from "@/lib/i18n.ts";
 import styles from "./SetupWizard.module.css";
 
 type StepId = "ollama" | "ffmpeg" | "model";
@@ -437,7 +437,7 @@ function StepModel({ check, locale, onComplete, forced, onFinish }: StepModelPro
 // --- Wizard shell ---
 export function SetupWizard() {
 	const { check, needsWizard, refresh, skip } = useSetup();
-	const [locale, setLocaleState] = useState<Locale>(detectLocale);
+	const locale = detectLocale();
 	const [activeStep, setActiveStep] = useState<StepId>("ollama");
 	const [dismissed, setDismissed] = useState(false);
 	const forced = typeof window !== "undefined" && window.location.search.includes("wizard=force");
@@ -450,11 +450,6 @@ export function SetupWizard() {
 		setDismissed(true); // close immediately, even in forced mode
 	}, [skip]);
 
-	const handleLocaleSwitch = () => {
-		const next: Locale = locale === "es" ? "en" : "es";
-		setLocaleState(next);
-		setLocale(next);
-	};
 
 	// When a step finishes, refresh the check and advance.
 	const advance = async () => {
@@ -490,9 +485,6 @@ export function SetupWizard() {
 						<p className={styles.subtitle}>{t("wizard.subtitle", locale)}</p>
 					</div>
 					<div className={styles.headRight}>
-						<button className={styles.localeBtn} onClick={handleLocaleSwitch} title="Switch language">
-							{locale === "es" ? "EN" : "ES"}
-						</button>
 						<button className={styles.skipBtn} onClick={skip}>
 							{t("wizard.skip", locale)}
 						</button>

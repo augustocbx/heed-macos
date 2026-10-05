@@ -49,8 +49,8 @@ export class ErrorBoundary extends Component<Props, State> {
 			if (this.props.fallback) return this.props.fallback(this.state.error, this.reset);
 			return (
 				<div role="alert" style={{ padding: 16, textAlign: "center", color: "var(--text-muted, #94a3b8)" }}>
-					<p>Algo falló al mostrar el transcript. Tu grabación está a salvo.</p>
-					<button onClick={this.reset} style={{ marginTop: 8 }}>Reintentar</button>
+					<p>Could not display the transcript. Your recording is safe.</p>
+					<button onClick={this.reset} style={{ marginTop: 8 }}>Try again</button>
 				</div>
 			);
 		}

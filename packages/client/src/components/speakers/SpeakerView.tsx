@@ -170,7 +170,7 @@ export function SpeakerView({
 						<span className={styles.chipDot} style={{ background: colorMap[s] }} />
 						<span>{speakerNames[s] || s}</span>
 						{autoSpeakers.has(s) && (
-							<span className={styles.autoBadge} title="Voz reconocida automáticamente — clic para corregir">auto</span>
+							<span className={styles.autoBadge} title="Voice recognized automatically — click to correct">auto</span>
 						)}
 					</div>
 				))}
@@ -189,13 +189,13 @@ export function SpeakerView({
 						{showHeader && (
 							<div className={styles.speakerHeader} style={{ color }}>
 								{displayName}
-								{seg.auto && <span className={styles.autoBadge} title="Voz reconocida automáticamente — clic en el chip para corregir">auto</span>}
+								{seg.auto && <span className={styles.autoBadge} title="Voice recognized automatically — click the speaker chip to correct it">auto</span>}
 							</div>
 						)}
 						<div className={`${styles.speakerLine} ${animateLast ? styles.speakerLineTyping : ""} ${canSeek ? styles.seekable : ""} ${isActive ? styles.activeSegment : ""}`}
        role={canSeek ? 'button' : undefined} tabIndex={canSeek ? 0 : undefined}
        aria-current={isActive ? 'true' : undefined}
-       title={canSeek ? 'Ouvir este trecho' : undefined}
+       title={canSeek ? 'Play this segment' : undefined}
        onClick={canSeek ? ()=>onSeek?.(seg.start) : undefined}
        onKeyDown={canSeek ? event=>{
         if(event.key==='Enter'||event.key===' '){event.preventDefault();onSeek?.(seg.start);}

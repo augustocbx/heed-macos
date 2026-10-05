@@ -1175,7 +1175,7 @@ function getSyscapBin(): string | null {
 //   - unavailable → explicit error; macOS never falls back to partial capture.
 async function spawnSyscap(mode: CaptureMode): Promise<{ proc: ReturnType<typeof Bun.spawn> | null; denied: boolean; error?: string }> {
 	const bin = getSyscapBin();
-	if (!bin) return { proc: null, denied: false, error: "Captura nativa ausente. Execute novamente o instalador do Heed." };
+	if (!bin) return { proc: null, denied: false, error: "Native capture is missing. Run the Heed installer again." };
 	try {
 		const proc = track(Bun.spawn(nativeCaptureCommand(bin, mode), { stdout: "pipe", stderr: "pipe" }));
 		let firstLine!: (line: string) => void;
@@ -1212,7 +1212,7 @@ async function spawnSyscap(mode: CaptureMode): Promise<{ proc: ReturnType<typeof
 		const handshake = await Promise.race([first, new Promise<string>((resolve) => setTimeout(() => resolve(""), 15000))]);
 		const result = verifyNativeHandshake(handshake, mode);
 		if (result.ready) {
-			console.log(`[heed] captura nativa pronta: ${handshake}`);
+			console.log(`[heed] native capture ready: ${handshake}`);
 			return { proc, denied: false };
 		}
 		// -3801 / "declined" / "TCC" = the permission hasn't been granted yet.
@@ -1222,7 +1222,7 @@ async function spawnSyscap(mode: CaptureMode): Promise<{ proc: ReturnType<typeof
 		return { proc: null, denied, error: result.error };
 	} catch (e) {
 		console.log(`[heed] ScreenCaptureKit spawn failed (${(e as Error).message})`);
-		return { proc: null, denied: false, error: `Falha na captura nativa: ${(e as Error).message}` };
+		return { proc: null, denied: false, error: `Native capture failed: ${(e as Error).message}` };
 	}
 }
 
@@ -1338,7 +1338,7 @@ async function beginSysRecording(req: Request): Promise<Response> {
 	// GROWS continuously. Without this, ffmpeg buffers output in ~256KB (~4s) blocks → the file
 	// stays 0 bytes then jumps; the live loop derives "new audio" from the file SIZE, so a
 	// non-growing file means it never feeds the streaming model → live never appears until stop.
-	// Limite físico de saída; a margem cobre cabeçalho e o último pacote do ffmpeg.
+	// Physical output limit; the margin covers the header and the final FFmpeg packet.
  args.splice(args.length - 1, 0, "-flush_packets", "1", "-fs", String(CAPTURE_LIMIT_BYTES));
 
 	recorderStartedAt = Date.now();
@@ -2324,26 +2324,26 @@ async function handleDesktopControl(req:Request, pathname:string): Promise<Respo
 }
 
 async function handleDesktopPermissions(req: Request, pathname: string): Promise<Response> {
- if (!desktopRequestAllowed(req)) return Response.json({error:"As permissões estão disponíveis somente em localhost."}, {status:403});
+ if (!desktopRequestAllowed(req)) return Response.json({error:"Permissions are available only on localhost."}, {status:403});
  if (req.method === "GET" && pathname === "/api/desktop/permissions") return Response.json(desktopPermissions.status());
- if (req.method !== "POST") return Response.json({error:"Método não permitido."}, {status:405});
+ if (req.method !== "POST") return Response.json({error:"Method not allowed."}, {status:405});
  let body: unknown;
- try { body = await req.json(); } catch { return Response.json({error:"Corpo JSON inválido."}, {status:400}); }
+ try { body = await req.json(); } catch { return Response.json({error:"Invalid JSON body."}, {status:400}); }
  if (pathname === "/api/desktop/permissions/report") {
   const report = permissionReport(body);
-  if (!report) return Response.json({error:"Relatório de permissões inválido."}, {status:400});
+  if (!report) return Response.json({error:"Invalid permission report."}, {status:400});
   desktopPermissions.report(report);
   return Response.json({ok:true});
  }
- if (pathname !== "/api/desktop/permissions") return Response.json({error:"Endpoint de permissões desconhecido."}, {status:404});
+ if (pathname !== "/api/desktop/permissions") return Response.json({error:"Unknown permissions endpoint."}, {status:404});
  const action = permissionAction(body);
- if (!action) return Response.json({error:"Escolha microphone, screenCapture ou slackLogs."}, {status:400});
+ if (!action) return Response.json({error:"Choose microphone, screenCapture, or slackLogs."}, {status:400});
  try { return Response.json({ok:true,id:desktopPermissions.enqueue(action)}); }
  catch (error) { return Response.json({error:(error as Error).message}, {status:409}); }
 }
 
 // --- Router ---
-// Libera áudios antigos durante a captura; nunca remove a reunião em andamento.
+// Prune old audio during capture; never remove the ongoing meeting.
 let retentionBusy=false;
 setInterval(async () => {
  if(retentionBusy)return;retentionBusy=true;
@@ -2354,14 +2354,14 @@ setInterval(async () => {
    if(size >= CAPTURE_LIMIT_BYTES - 1_000_000) {
     if(!quotaReachedAt) {
      quotaReachedAt=Date.now();
-     // Interrompe somente a escrita; mantém o caminho para a finalização normal.
+     // Stop writing only; keep the path for normal finalization.
      if(syscapProc){try{syscapProc.kill();}catch{}syscapProc=null;}
      await gracefulStop(recorderProc,1500,"SIGINT");
     }
     if(desktopControl.status().clientConnected && !desktopControl.pending) {
      try{desktopControl.enqueue('stop',recordingLanguage === 'en'?'en':'pt',{recording:true,processing:false});}catch{}
     }
-    // Sem navegador, salva o áudio e uma sessão recuperável no servidor.
+    // Without a browser, save the audio and a recoverable session on the server.
     if(!desktopControl.status().clientConnected || Date.now()-quotaReachedAt>30_000) {
      desktopControl.cancelPending();
      const duration=Math.floor((Date.now()-recorderStartedAt)/1000);
@@ -2369,13 +2369,13 @@ setInterval(async () => {
      if(response.ok){
       quotaStopResult=await response.json();
       if(!desktopControl.status().clientConnected) {
-       await handleCreateSession(new Request('http://localhost/api/sessions',{method:'POST',body:JSON.stringify({title:'Gravação encerrada — limite de 2 GB',duration,language:recordingLanguage,transcript:quotaStopResult.streamText||'',segments:quotaStopResult.turns||[],files:{wav:quotaStopResult.path,srt:'',txt:''},tags:[],speakers:[],aiNotes:'',summary:''})}));
+       await handleCreateSession(new Request('http://localhost/api/sessions',{method:'POST',body:JSON.stringify({title:'Recording stopped — 2 GB limit',duration,language:recordingLanguage,transcript:quotaStopResult.streamText||'',segments:quotaStopResult.turns||[],files:{wav:quotaStopResult.path,srt:'',txt:''},tags:[],speakers:[],aiNotes:'',summary:''})}));
       }
      }
     }
    }
   }
- }catch(error){console.error('[heed] retenção de áudio:',error);}
+ }catch(error){console.error('[heed] audio retention:',error);}
  finally{retentionBusy=false;}
 },1000);
 

@@ -248,8 +248,8 @@ class ParakeetEngine:
 def tokens_to_segments(tokens, max_gap=0.7, max_dur=12.0):
     """Merge Parakeet subword tokens into sentence-ish segments with real timestamps.
 
-    Parakeet TDT emits SentencePiece tokens where a LEADING SPACE marks a word start (e.g. " dé",
-    "j", "ame" -> "déjame"). We first stitch tokens into words, then group words into segments,
+    Parakeet TDT emits SentencePiece tokens where a LEADING SPACE marks a word start (e.g. " hel",
+    "lo" -> "hello"). We first stitch tokens into words, then group words into segments,
     breaking on sentence-final punctuation, a pause longer than max_gap, or max_dur seconds.
     Returns [{"start": float, "end": float, "text": str}].
     """

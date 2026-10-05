@@ -1,4 +1,4 @@
-"""Preserva identidades por voz e origem; índices de falantes não são identidades."""
+"""Preserve identities by voice and source; speaker indices are not identities."""
 import math
 
 
@@ -17,7 +17,7 @@ def _cosine(left, right):
 
 def reconcile_names(embeddings, recognized, live_voices, backend, channels=None,
                     mic_name=None, threshold=0.70, margin=0.08):
-    """Reconhecimentos finais prevalecem; recupera nomes ao vivo apenas sem ambiguidade."""
+    """Final recognition takes precedence; recover live names only when unambiguous."""
     names = {key: name for key, name in recognized.items() if name and key in embeddings}
     for key, embedding in embeddings.items():
         if key in names:
@@ -36,7 +36,7 @@ def reconcile_names(embeddings, recognized, live_voices, backend, channels=None,
             runner_up = ranked[1][1] if len(ranked) > 1 else 0.0
             if score >= threshold and score - runner_up >= margin:
                 names[key] = name
-    # O canal sozinho identifica o dono somente quando há uma única voz exclusiva do microfone.
+    # The channel alone identifies its owner only when a single voice is exclusive to the microphone.
     pure_mic = [key for key in embeddings if (channels or {}).get(key) == {'mic'}]
     if mic_name and mic_name.strip() and len(pure_mic) == 1 and pure_mic[0] not in names:
         names[pure_mic[0]] = mic_name.strip()

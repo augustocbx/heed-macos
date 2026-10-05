@@ -10,11 +10,11 @@ vi.mock("@/api/sessions.ts", () => ({ sessionsApi: { patch: vi.fn() } }));
 vi.mock("@/components/speakers/SpeakerView.tsx", () => ({ SpeakerView: ({ speakers, speakerNames, onRename }: {
  speakers: string[]; speakerNames: Record<string, string>; onRename: (original: string, name: string) => void;
 }) => <div><span data-testid="participante">{speakerNames[speakers[0]] || speakers[0]}</span>
- <button onClick={() => onRename(speakers[0], "Ana")}>Definir nome</button></div> }));
+ <button onClick={() => onRename(speakers[0], "Ana")}>Set name</button></div> }));
 const session = {
- id: "sessão", title: "Reunião", createdAt: "2026-10-05T12:00:00Z", duration: 3, language: "pt",
- speakers: ["Speaker 1"], segments: [{ speaker: "Speaker 1", start: 1, end: 3, text: "olá", channel: "sys" }],
- embeddings: { "Speaker 1": [1, 2] }, files: { wav: "", txt: "", srt: "" }, transcript: "olá",
+ id: "session", title: "Meeting", createdAt: "2026-10-05T12:00:00Z", duration: 3, language: "pt",
+ speakers: ["Speaker 1"], segments: [{ speaker: "Speaker 1", start: 1, end: 3, text: "hello", channel: "sys" }],
+ embeddings: { "Speaker 1": [1, 2] }, files: { wav: "", txt: "", srt: "" }, transcript: "hello",
  aiNotes: "", summary: "", tags: [], pinned: false,
 } as Session;
 beforeEach(() => {
@@ -24,12 +24,12 @@ beforeEach(() => {
  useModelsStore.setState({ load: vi.fn() });
 });
 
-test("nome editado em sessão é persistido e aparece ao reabrir", async () => {
+test("edited session speaker name persists and appears when reopened", async () => {
  vi.mocked(sessionsApi.patch).mockImplementation(async (_id, patch) => ({ ...session, ...patch }));
  const view = render(<SessionDetail session={session} onBack={vi.fn()} />);
- fireEvent.click(screen.getByText("Definir nome"));
+ fireEvent.click(screen.getByText("Set name"));
  await waitFor(() => expect(useSessionsStore.getState().viewing?.speakers).toEqual(["Ana"]));
- expect(sessionsApi.patch).toHaveBeenCalledWith("sessão", expect.objectContaining({
+ expect(sessionsApi.patch).toHaveBeenCalledWith("session", expect.objectContaining({
   speakers: ["Ana"], segments: [{ ...session.segments[0], speaker: "Ana", auto: false }], embeddings: { Ana: [1, 2] },
  }));
  const saved = useSessionsStore.getState().viewing!;
@@ -38,10 +38,10 @@ test("nome editado em sessão é persistido e aparece ao reabrir", async () => {
  expect(screen.getByTestId("participante")).toHaveTextContent("Ana");
 });
 
-test("falha ao persistir não deixa a tela indicando um nome que não foi salvo", async () => {
+test("persistence failure does not display an unsaved name", async () => {
  vi.mocked(sessionsApi.patch).mockRejectedValue(new Error("offline"));
  render(<SessionDetail session={session} onBack={vi.fn()} />);
- fireEvent.click(screen.getByText("Definir nome"));
+ fireEvent.click(screen.getByText("Set name"));
  await waitFor(() => expect(screen.getByTestId("participante")).toHaveTextContent("Speaker 1"));
  expect(useSessionsStore.getState().viewing?.speakers).toEqual(["Speaker 1"]);
 });
