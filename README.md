@@ -82,7 +82,7 @@ flowchart TD
     D --> K[Native capture: timestamp-aligned channels]
     E --> K
     K --> F[FFmpeg: one PCM input, local stereo WAV]
-    F --> G[Python localhost:5002 / Parakeet and diarization]
+    F --> G[Python localhost:5002 / MLX previews and native finalization]
     G --> C
     C --> H[Local session JSON and timestamps]
     H --> B
@@ -92,7 +92,7 @@ flowchart TD
     H --> J
 ```
 
-The menu sends commands to the local API. The open interface receives them and coordinates capture, transcription, and session saving. On macOS, one native executable combines ScreenCaptureKit and AVAudioEngine, preserves each channel's timestamps, and supplies one PCM stream to FFmpeg. Recording starts only after the microphone supplies stable audio. The Python service coordinates Swift/FluidAudio sidecars for Parakeet ASR, diarization, and finalization. Live voice names are reconciled without assuming speaker numbers stay unchanged. The `/api/sessions/:id/audio` endpoint serves only authorized local files, using GET/HEAD and HTTP Range for seeking without loading the entire file. Highlighting follows the player's actual time and the saved segment timestamps.
+The menu sends commands to the local API. The open interface receives them and coordinates capture, transcription, and session saving. On macOS, one native executable combines ScreenCaptureKit and AVAudioEngine, preserves each channel's timestamps, and supplies one PCM stream to FFmpeg. Recording starts only after the microphone supplies stable audio. The Python service uses MLX Whisper base for bounded live previews. At stop, a short-lived tiny Whisper worker detects English or Portuguese, and a temporary native Parakeet sidecar retranscribes the full audio with timestamps. FluidAudio handles diarization. Manual retranscription can instead use a selected Whisper model in an isolated worker. The installer caches the base and tiny models; additional models download on first use. MLX Whisper declares a Torch package dependency, which is installed even though live inference uses MLX. Pyannote and faster-whisper are optional fallback dependencies. Live voice names are reconciled without assuming speaker numbers stay unchanged. The `/api/sessions/:id/audio` endpoint serves only authorized local files, using GET/HEAD and HTTP Range for seeking without loading the entire file. Highlighting follows the player's actual time and the saved segment timestamps.
 
 ## Updates
 
