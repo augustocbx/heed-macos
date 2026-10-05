@@ -2,7 +2,7 @@
 
 ## Original project
 
-**Heed** foi criado por **Junior Rodriguez (@isjunrod)**. Esta adaptação para macOS é baseada em seu trabalho de código aberto e preserva a base de transcrição local, identificação de participantes, reuniões salvas e notas com IA.
+**Heed** was created by **Junior Rodriguez (@isjunrod)**. This macOS adaptation is based on his open-source work and retains its local transcription, speaker diarization, saved meetings, and AI notes foundation.
 
 - Original project: [isjunrod/heed](https://github.com/isjunrod/heed)
 - Original author: [Junior Rodriguez](https://github.com/isjunrod)

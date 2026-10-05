@@ -1,12 +1,12 @@
 # Heed macOS
 
-Adaptação do [Heed](https://github.com/isjunrod/heed), de Junior Rodriguez, para gravar e transcrever reuniões localmente em **português do Brasil (`pt`) e inglês (`en`)**. Inclui controles na barra de menus, retenção de áudio de 2 GB e reprodução sincronizada com a transcrição. A interface e o menu oferecem inglês, português do Brasil, francês e alemão, com fallback para inglês. O idioma final da reunião é detectado automaticamente.
+A macOS adaptation of [Heed](https://github.com/isjunrod/heed), by Junior Rodriguez, for recording and transcribing meetings locally in **Brazilian Portuguese (`pt`) and English (`en`)**. It includes menu bar controls, a 2 GB audio retention limit, and audio playback synchronized with the transcript. The interface and menu support English, Brazilian Portuguese, French, and German, with an English fallback. Documentation and installation messages remain in English; the final meeting language is detected automatically.
 
-Cada Mac mantém seus próprios áudios, modelos e reuniões. Instalar o projeto em duas máquinas oferece os mesmos recursos, mas **não sincroniza arquivos entre elas nem envia reuniões à nuvem**.
+Each Mac keeps its own audio, models, and meetings. Installing this project on two machines provides the same features, but **does not synchronize files between them or upload meetings to the cloud**.
 
 ## Credits and upstream
 
-Este projeto é baseado no **[Heed](https://github.com/isjunrod/heed)**, criado por **[Junior Rodriguez (@isjunrod)](https://github.com/isjunrod)**. O Heed fornece a base original de transcrição local, identificação de participantes, reuniões salvas e notas com IA.
+This project is based on **[Heed](https://github.com/isjunrod/heed)**, created by **[Junior Rodriguez (@isjunrod)](https://github.com/isjunrod)**. Heed provides the original local transcription, speaker diarization, saved meetings, and AI notes foundation.
 
 This repository maintains additional macOS controls, Slack automation, audio retention, permission guidance, transcript playback, and interface localization. The original MIT license and copyright notice are preserved in [LICENSE](LICENSE). See [CREDITS.md](CREDITS.md) for attribution and project links.
 
@@ -18,9 +18,9 @@ The screenshots below use demonstration meeting data.
 
 ![Recording interface](docs/screenshots/recording.jpg)
 
-### Reuniões
+### Meetings
 
-![Reuniões salvas](docs/screenshots/sessions.jpg)
+![Saved meetings](docs/screenshots/sessions.jpg)
 
 ### Settings
 
@@ -61,7 +61,7 @@ If the interface is closed, Heed opens `localhost:5170` and waits for it to conn
 
 The detector follows only new meeting states in local Slack logs, without storing messages or channel names. A meeting already active when Heed starts therefore does not trigger recording retroactively. The menu shows the detector state; diagnostics are written to `~/Library/Logs/Heed/slack-auto.log`. Slack's internal log format may change in future releases. Slack in a browser is not monitored.
 
-**Mantenha a aba da interface aberta durante a captura e o salvamento.** Ela pode ficar minimizada. O navegador controla a gravação, recebe a transcrição ao vivo e salva a reunião quando a captura termina.
+**Keep the interface tab open during capture and saving.** It can be minimized. The browser controls recording, receives the live transcript, and saves the meeting when capture ends.
 
 Open **Settings** in the interface or **Settings and permissions…** from the menu. The page queries the native app and shows microphone, system audio, and Slack log access status. Its buttons request access or open the corresponding System Settings section. Status refreshes when you return to the page and every three seconds; without a connection to the menu app, permission status is unknown. System Settings buttons remain available for permissions that appear enabled, so an authorization invalidated by macOS can be renewed.
 
@@ -76,37 +76,37 @@ Updating the locally signed app may invalidate its previous authorization. If ca
 
 System audio capture uses ScreenCaptureKit and works with headphones. Microphone capture uses the default macOS input: check **System Settings → Sound → Input** before a meeting.
 
-### Isolamento de Voz do macOS e captura do Heed
+### macOS Voice Isolation and Heed capture
 
-Em uma chamada de teste em um app compatível, como o FaceTime, abra o menu **Vídeo** ou **Áudio** na barra de menus do macOS e selecione **Modo do Microfone → Isolamento de Voz**. No macOS 14 ou posterior, esse é o caminho documentado pela [Apple](https://support.apple.com/pt-br/105117). Em chamadas somente de áudio no [FaceTime](https://support.apple.com/guide/facetime/change-audio-options-fctme7c07113/mac), **Isolamento de Voz** pode aparecer diretamente no menu **Áudio**. Confira qual app aparece no menu antes de alterar o modo. **Isolamento de Voz** prioriza sua fala e reduz ruídos próximos; **Padrão (Standard)** retorna ao processamento padrão, sem prometer áudio sem tratamento. As opções [variam conforme o app](https://support.apple.com/en-gb/guide/mac-help/mchle82b42f0/mac).
+During a test call in a compatible app such as FaceTime, open the macOS **Video** or **Audio** menu and choose **Mic Mode → Voice Isolation**. [Apple documents these controls](https://support.apple.com/en-us/105117) for macOS 14 or later. In audio-only [FaceTime calls](https://support.apple.com/guide/facetime/change-audio-options-fctme7c07113/mac), **Voice Isolation** may appear directly in the **Audio** menu. Check which app the menu identifies before changing its mode. **Voice Isolation** prioritizes your speech and reduces nearby noise; **Standard** restores default processing, rather than guaranteeing unprocessed audio. Available options [vary by app](https://support.apple.com/en-gb/guide/mac-help/mchle82b42f0/mac).
 
-A disponibilidade também depende do dispositivo de entrada e da rota de áudio: a Apple distingue o modo solicitado daquele [efetivamente usado pela rota atual](https://developer.apple.com/videos/play/wwdc2021/10047/). Se o controle estiver ausente ou indisponível, registre o app, o microfone e a versão do macOS; isso não comprova falha do Heed nem exige mudanças nas permissões.
+Availability also depends on the input device and audio route: Apple distinguishes the requested mode from the mode [actually used by the current route](https://developer.apple.com/videos/play/wwdc2021/10047/). If the control is missing or unavailable, note the app, microphone and macOS version. This does not establish a Heed failure or require permission changes.
 
-Os caminhos de áudio têm funções diferentes:
+The audio paths serve different purposes:
 
-- **Sua voz enviada à chamada:** o modo do microfone atua no caminho do app compatível usado para conversar. Escolher Isolamento de Voz no Slack não comprova que o microfone capturado separadamente pelo Heed recebe o mesmo tratamento.
-- **Voz dos demais participantes:** chega pela saída de áudio do app. O Heed a grava com ScreenCaptureKit, inclusive usando fones; o modo do seu microfone não remove o ruído recebido dos outros participantes.
-- **Gravação e transcrição:** o Heed captura seu microfone com AVAudioEngine e preserva as fontes em canais separados. A preparação do áudio para reconhecimento de fala (ASR), como conversão de formato e taxa de amostragem, não altera o áudio enviado aos participantes. O Heed não oferece dispositivos virtuais selecionáveis de microfone ou alto-falante. Isolamento de Voz não equivale ao conjunto de recursos e [roteamento do Krisp](https://help.krisp.ai/hc/en-us/articles/30533083171868-Noise-Cancellation-with-Krisp-AI-Meeting-Assistant).
+- **Your voice sent to the call:** microphone mode applies to the compatible calling app's audio path. Selecting Voice Isolation in Slack does not prove that Heed's separate microphone capture receives the same processing.
+- **Other participants' voices:** arrive through the calling app's audio output. Heed records them with ScreenCaptureKit, including when you wear headphones. Your microphone mode does not remove noise received from other participants.
+- **Recording and transcription:** Heed captures your microphone with AVAudioEngine and preserves the sources in separate channels. Preparing audio for speech recognition (ASR), such as format and sample-rate conversion, does not change audio sent to callers. Heed does not offer selectable virtual microphone or speaker devices. Voice Isolation does not provide the complete feature set or [audio routing offered by Krisp](https://help.krisp.ai/hc/en-us/articles/30533083171868-Noise-Cancellation-with-Krisp-AI-Meeting-Assistant).
 
-Para comparar, use uma chamada curta sem conteúdo privado, fora de reuniões importantes. Anote o modo inicial; fale a mesma frase com ruído leve em **Padrão** e em **Isolamento de Voz**, peça ao interlocutor que compare e restaure o modo inicial. Avalie a gravação do Heed separadamente. Consulte [permissões](#permissions-and-use), [reprodução](#playback-with-the-transcript) e [diagnóstico](#diagnostics-and-tests).
+For comparison, use a short test call without private content, outside important meetings. Note the initial mode, say the same phrase with mild background noise in **Standard** and **Voice Isolation**, ask the other person to compare, and restore the initial mode. Evaluate the Heed recording separately. See [permissions](#permissions-and-use), [playback](#playback-with-the-transcript) and [diagnostics](#diagnostics-and-tests).
 
-**Validação pendente:** MacBook Air M1 e MacBook Pro M4 Pro, ambos com macOS 27.0.1 conforme o contexto informado. Este texto não relata testes nesses Macs nem valida todas as versões compatíveis com macOS 14+.
+**Physical validation pending:** MacBook Air M1 and MacBook Pro M4 Pro, both reported as running macOS 27.0.1. These instructions do not report tests on those Macs or validate every supported macOS 14+ release.
 
 ## Playback with the transcript
 
-Abra **Meetings** (ou **Reuniões**, na interface em português), escolha uma reunião e pressione Play no reprodutor acima da transcrição. O trecho correspondente é destacado e mantido visível. Clique em um trecho, ou use Enter/Espaço, para reproduzir daquele ponto. Falas sobrepostas podem destacar vários trechos. A sincronização segue os tempos dos trechos, sem precisão por palavra.
+Open **Meetings**, select a meeting, and press Play in the player above the transcript. The matching segment is highlighted and kept visible. Click a segment, or use Enter/Space, to play from that point. Overlapping speech can highlight multiple segments. Synchronization follows segment timestamps, not individual words.
 
 The original WAV preserves two separate channels at 16 kHz: **left = microphone; right = system audio**. This lets transcription process the sources separately. Heed's player mixes the channels to mono so you hear both sources in both ears; another player may retain the original left/right separation.
 
-Os nomes atribuídos manualmente durante a gravação são preservados nas atualizações da transcrição e salvos com a reunião. Renomear após a gravação ou em **Meetings / Reuniões** também atualiza os trechos e a lista de participantes no arquivo local. Quando a identificação final reorganiza os participantes, os nomes são transferidos pelos canais de origem e pelos trechos sobrepostos; correspondências ambíguas não são forçadas pelo número de “Speaker”.
+Names entered manually during recording survive live transcript updates and are saved with the meeting. Renaming after recording or in **Meetings** also updates the segments and participant list in the local file. When final diarization reorganizes speakers, names are transferred using source channels and overlapping segments; ambiguous matches are not forced by a “Speaker” number.
 
 If microphone quality drops with Bluetooth headphones, select the **Mac's built-in microphone as input** while keeping the headphones as output. Apple explains the Bluetooth mode change in [If sound quality is reduced when using Bluetooth headphones with your Mac](https://support.apple.com/en-ie/102217).
 
 ## Storage and retention
 
-Os arquivos de áudio ficam na pasta `recordings/` deste checkout. As reuniões e transcrições ficam em `~/.heed-app/sessions/`; a configuração, em `~/.heed-app/`. Os modelos ficam em `~/Library/Application Support/FluidAudio/Models/`.
+Audio files are stored in this checkout's `recordings/` folder. Meetings and transcripts are stored in `~/.heed-app/sessions/`; configuration is stored in `~/.heed-app/`. Models are stored in `~/Library/Application Support/FluidAudio/Models/`.
 
-A cota por máquina é de **2.000.000.000 bytes**, contando os arquivos de áudio elegíveis em `recordings/`, inclusive os arquivados nessa pasta. Quando necessário, os áudios mais antigos são excluídos primeiro. O texto da transcrição é preservado, e a interface indica quando o áudio de uma reunião não está mais disponível.
+The quota on each machine is **2,000,000,000 bytes**, counting eligible audio files in `recordings/`, including archived files in that folder. When needed, the oldest audio is deleted first. Transcript text is preserved, and the interface indicates when a meeting's audio is no longer available.
 
 Capture and processing need temporary disk space. A continuous recording therefore has an output limit of approximately **990 MB**, reserving space to split and process its channels. Reaching this limit stops and saves the recording. Models, the Python environment, and dependencies are outside the audio quota.
 
@@ -126,7 +126,7 @@ flowchart TD
     K --> F[FFmpeg: one PCM input, local stereo WAV]
     F --> G[Python localhost:5002 / MLX previews and native finalization]
     G --> C
-    C --> H[JSON local de reuniões e timestamps]
+    C --> H[Local session JSON and timestamps]
     H --> B
     F --> I[Audio GET/HEAD with HTTP Range]
     B --> I
@@ -134,11 +134,11 @@ flowchart TD
     H --> J
 ```
 
-O menu envia comandos à API local. A interface aberta os recebe e coordena a captura, a transcrição e o salvamento da reunião. On macOS, one native executable combines ScreenCaptureKit and AVAudioEngine, preserves each channel's timestamps, and supplies one PCM stream to FFmpeg. Recording starts only after the microphone supplies stable audio. The Python service uses MLX Whisper base for bounded live previews. At stop, a short-lived tiny Whisper worker detects English or Portuguese, and a temporary native Parakeet sidecar retranscribes the full audio with timestamps. FluidAudio handles diarization. Manual retranscription can instead use a selected Whisper model in an isolated worker. The installer caches the base and tiny models; additional models download on first use. MLX Whisper declares a Torch package dependency, which is installed even though live inference uses MLX. Pyannote and faster-whisper are optional fallback dependencies. Live voice names are reconciled without assuming speaker numbers stay unchanged. The `/api/sessions/:id/audio` endpoint serves only authorized local files, using GET/HEAD and HTTP Range for seeking without loading the entire file. Highlighting follows the player's actual time and the saved segment timestamps.
+The menu sends commands to the local API. The open interface receives them and coordinates capture, transcription, and meeting saving. On macOS, one native executable combines ScreenCaptureKit and AVAudioEngine, preserves each channel's timestamps, and supplies one PCM stream to FFmpeg. Recording starts only after the microphone supplies stable audio. The Python service uses MLX Whisper base for bounded live previews. At stop, a short-lived tiny Whisper worker detects English or Portuguese, and a temporary native Parakeet sidecar retranscribes the full audio with timestamps. FluidAudio handles diarization. Manual retranscription can instead use a selected Whisper model in an isolated worker. The installer caches the base and tiny models; additional models download on first use. MLX Whisper declares a Torch package dependency, which is installed even though live inference uses MLX. Pyannote and faster-whisper are optional fallback dependencies. Live voice names are reconciled without assuming speaker numbers stay unchanged. The `/api/sessions/:id/audio` endpoint serves only authorized local files, using GET/HEAD and HTTP Range for seeking without loading the entire file. Highlighting follows the player's actual time and the saved segment timestamps.
 
 ## Updates
 
-Pare a gravação e aguarde o término do salvamento da reunião antes de atualizar **cada Mac**:
+Stop recording and wait for the meeting to finish saving before updating **each Mac**:
 
 ```sh
 git pull --ff-only
@@ -163,7 +163,7 @@ bun run build
 bash packages/desktop/install-menubar.sh --build-only
 ```
 
-O status de controle informa `recording`, `processing`, `pending`, `starting`, `ready` e a conexão da interface. Se ela estiver desconectada, reabra `http://localhost:5170`. Para uma reunião existente, `curl -I http://localhost:5001/api/sessions/ID/audio` verifica a disponibilidade e os metadados sem baixar o áudio.
+The control status reports `recording`, `processing`, `pending`, `starting`, `ready`, and the interface connection. If the interface is disconnected, reopen `http://localhost:5170`. For an existing meeting, `curl -I http://localhost:5001/api/sessions/ID/audio` checks availability and metadata without downloading the audio.
 
 ## Known limitations
 
@@ -177,7 +177,7 @@ Based on [isjunrod/heed](https://github.com/isjunrod/heed), by Junior Rodriguez.
 
 ### Live preview and final transcript
 
-Cada gravação começa com uma prévia em inglês usando um modelo menor e janelas limitadas para reduzir o processamento e a memória. A prévia é provisória. Ao parar, o Heed detecta inglês ou português em amostras do áudio salvo e sempre retranscreve a gravação inteira com o modelo final de maior precisão. A reunião salva usa o idioma detectado e os tempos do áudio completo, preservando nomes atribuídos manualmente quando a correspondência é inequívoca. Se a etapa final falhar, o áudio continua disponível para recuperação; a recuperação também detecta o idioma e processa o áudio completo, em vez de salvar a prévia.
+Every recording starts with an English live preview using a smaller, bounded-window model to reduce processing and memory use. The preview is provisional. When recording stops, Heed detects English or Portuguese from sampled speech in the saved audio and always retranscribes the entire recording with the accurate final model. The saved meeting uses the detected language and full-audio timestamps, and preserves manually assigned speaker names where matching is unambiguous. If the final pass fails, the audio stays available for recovery; recovery uses the same language detection and full-audio pass instead of saving the live preview.
 
 ## Interface localization
 

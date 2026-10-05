@@ -1,6 +1,6 @@
 # Heed on macOS
 
-Local installation for Apple Silicon Macs running macOS 14 or later. Transcription supports Brazilian Portuguese (`pt`) and English (`en`), detected automatically after recording. The interface and menu support English, Brazilian Portuguese, French, and German, with English as the fallback.
+Local installation for Apple Silicon Macs running macOS 14 or later. Transcription supports Brazilian Portuguese (`pt`) and English (`en`), detected automatically after recording. The interface and menu support English, Brazilian Portuguese, French, and German, with English as the fallback. Installation instructions remain in English.
 
 ## Install or update
 
@@ -41,8 +41,6 @@ In **System Settings → Privacy & Security**, allow **Screen & System Audio Rec
 
 Use **Settings** in the interface or **Settings and permissions…** in the menu to check this Mac's permissions and open their System Settings sections. The page also reports when the native app is disconnected. After an update, you may need to turn Heed's recording permission off and on again even when it appears enabled, then accept the restart requested by macOS.
 
-Para comparar o modo padrão com o Isolamento de Voz e entender os caminhos de áudio, consulte [Isolamento de Voz do macOS e captura do Heed](README.md#isolamento-de-voz-do-macos-e-captura-do-heed).
-
 Audio is stored locally in `recordings/`. The retention quota is **2,000,000,000 bytes per machine**. Oldest audio is removed first; transcripts are preserved. Space is reserved for temporary processing copies, so one continuous recording has an output limit of approximately **990 MB**. Reaching that limit stops and saves it. Models and dependencies are outside this quota. Each installation uses the same retention and bilingual transcription features, with independent local files.
 
 The interface uses port **5170**, API **5001**, transcription **5002**, and Ollama **11434**, all on the local machine. Logs are stored in `~/Library/Logs/Heed/`. Check installation and models with:
@@ -51,9 +49,11 @@ The interface uses port **5170**, API **5001**, transcription **5002**, and Olla
 bun run doctor
 ```
 
+For a reversible comparison of Standard and Voice Isolation and an explanation of the audio paths, see [macOS Voice Isolation and Heed capture](README.md#macos-voice-isolation-and-heed-capture).
+
 ## Playback synchronized with the transcript
 
-Abra **Meetings** (ou **Reuniões**, na interface em português), escolha uma reunião e pressione Play no reprodutor acima da transcrição. O trecho correspondente é destacado e mantido visível. Clique em um trecho, ou use Enter/Espaço, para reproduzir daquele ponto. Falas sobrepostas podem destacar vários trechos. A sincronização segue os tempos dos trechos, sem precisão por palavra.
+Open **Meetings**, choose a meeting, and use the audio player above its transcript. The segment matching the audio time is highlighted and kept visible. Click a segment, or use Enter/Space, to play from that point. Overlapping speech can highlight multiple segments. Synchronization uses segment timestamps, not individual words.
 
 The player uses the audio file's actual duration, which may differ from the recording timer. It does not artificially rescale timestamps. If audio has expired under the 2 GB retention policy, the transcript remains available and the interface reports that the audio is unavailable.
 
@@ -61,11 +61,11 @@ See [README.md](README.md) for the native capture architecture, storage paths, t
 
 ### Live preview and final transcript
 
-Cada gravação começa com uma prévia em inglês usando um modelo menor e janelas limitadas para reduzir o processamento e a memória. A prévia é provisória. Ao parar, o Heed detecta inglês ou português em amostras do áudio salvo e sempre retranscreve a gravação inteira com o modelo final de maior precisão. A reunião salva usa o idioma detectado e os tempos do áudio completo, preservando nomes atribuídos manualmente quando a correspondência é inequívoca. Se a etapa final falhar, o áudio continua disponível para recuperação; a recuperação também detecta o idioma e processa o áudio completo, em vez de salvar a prévia.
+Every recording starts with an English live preview using a smaller, bounded-window model to reduce processing and memory use. The preview is provisional. When recording stops, Heed detects English or Portuguese from sampled speech in the saved audio and always retranscribes the entire recording with the accurate final model. The saved meeting uses the detected language and full-audio timestamps, and preserves manually assigned speaker names where matching is unambiguous. If the final pass fails, the audio stays available for recovery; recovery uses the same language detection and full-audio pass instead of saving the live preview.
 
-Para retranscrever uma reunião salva, abra **Meetings / Reuniões**, escolha a reunião e clique em **Transcribe / Transcrever**. Selecione **Parakeet v3** (padrão), **Whisper base**, **small**, **medium** ou **large-v3**, e detecção automática de inglês/português, inglês ou português (Brasil). O modelo selecionado é baixado localmente no primeiro uso quando necessário. Modelos maiores exigem mais memória e tempo. O Heed mostra o progresso e bloqueia novas gravações durante a transcrição; substitui a transcrição somente após salvar o resultado completo, preservando o áudio original e os nomes com correspondência inequívoca, e corrigindo a duração a partir do áudio completo quando disponível. Se a transcrição ou o salvamento falhar, a reunião anterior continua disponível.
+To retranscribe a saved meeting manually, open **Meetings**, select the meeting, and click **Transcribe**. Choose **Parakeet v3** (the default), **Whisper base**, **small**, **medium**, or **large-v3**, and select automatic English/Portuguese detection, English, or Portuguese (Brazil). A selected model downloads locally on first use when needed. Larger models require more memory and time. Heed shows progress and blocks new recordings while transcription runs; it replaces the meeting transcript only after the complete result is saved, preserving the original audio and unambiguously matched speaker names, and correcting duration from the complete audio when available. If transcription or saving fails, the existing meeting stays available.
 
-Os cartões e detalhes mostram o idioma da reunião e os modelos de transcrição ao vivo e final registrados. Reuniões antigas sem esses metadados não exibem um modelo presumido. A transcrição manual atualiza o modelo final e mantém o modelo ao vivo original.
+Meeting cards and details show the meeting language and the live/final transcription models recorded for the meeting. Older meetings without model metadata do not display an assumed model. Manual transcription updates the final model while retaining the original live model.
 
 ## Interface language
 
