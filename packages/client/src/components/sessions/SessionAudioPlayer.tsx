@@ -31,7 +31,7 @@ export function SessionAudioPlayer({sessionId,available,audioRef,onTime,onDurati
   void graph.current?.resume().catch(()=>setError(true));
   onTime(audio.currentTime);
  };
- if(!available)return <p className={styles.audioMessage}>{tr("Audio is unavailable for this session. The transcript remains available.")}</p>;
+ if(!available)return <p className={styles.audioMessage}>{tr("Audio is unavailable for this meeting. The transcript remains available.")}</p>;
  return <div className={styles.audioPlayer}>
   <audio key={sessionId} ref={audioRef} controls preload="metadata" aria-label={tr("Meeting audio")}
    src={`/api/sessions/${encodeURIComponent(sessionId)}/audio`}

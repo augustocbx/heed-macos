@@ -12,7 +12,7 @@ import styles from "./Nav.module.css";
 
 const TABS: Array<{ id: Page; label: string }> = [
 	{ id: "record", label: "Record" },
-	{ id: "sessions", label: "Sessions" },
+	{ id: "sessions", label: "Meetings" },
 	{ id: "settings", label: "Settings" },
 ];
 

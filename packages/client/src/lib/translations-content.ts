@@ -260,10 +260,10 @@ export const CONTENT_TRANSLATIONS: Record<string, {"pt-BR": string; fr: string; 
     "fr": "← Retour",
     "de": "← Zurück"
   },
-  "No speaker segments in this session yet.": {
-    "pt-BR": "Esta sessão ainda não tem trechos identificados por participante.",
-    "fr": "Cette session ne contient pas encore de passages attribués.",
-    "de": "Diese Sitzung enthält noch keine Sprecherabschnitte."
+  "No speaker segments in this meeting yet.": {
+    "pt-BR": "Esta reunião ainda não tem trechos identificados por participante.",
+    "fr": "Cette réunion ne contient pas encore de passages attribués.",
+    "de": "Diese Besprechung enthält noch keine Sprecherabschnitte."
   },
   "Ollama started": {
     "pt-BR": "Ollama iniciado",
@@ -330,10 +330,10 @@ export const CONTENT_TRANSLATIONS: Record<string, {"pt-BR": string; fr: string; 
     "fr": "L’identification des intervenants n’est pas prête. Relancez le diagnostic pour la réparer, puis rechargez heed :",
     "de": "Die Sprechererkennung ist noch nicht bereit. Führen Sie die Diagnose erneut aus und laden Sie heed neu:"
   },
-  "Delete session": {
-    "pt-BR": "Excluir sessão",
-    "fr": "Supprimer la session",
-    "de": "Sitzung löschen"
+  "Delete meeting": {
+    "pt-BR": "Excluir reunião",
+    "fr": "Supprimer la réunion",
+    "de": "Besprechung löschen"
   },
   "Delete": {
     "pt-BR": "Excluir",
@@ -515,10 +515,10 @@ export const CONTENT_TRANSLATIONS: Record<string, {"pt-BR": string; fr: string; 
     "fr": "Démarrer la transcription",
     "de": "Transkription starten"
   },
-  "Audio is unavailable for this session. The transcript remains available.": {
-    "pt-BR": "O áudio desta sessão não está disponível. A transcrição continua disponível.",
-    "fr": "L’audio de cette session est indisponible. La transcription reste disponible.",
-    "de": "Das Audio dieser Sitzung ist nicht verfügbar. Das Transkript bleibt verfügbar."
+  "Audio is unavailable for this meeting. The transcript remains available.": {
+    "pt-BR": "O áudio desta reunião não está disponível. A transcrição continua disponível.",
+    "fr": "L’audio de cette réunion est indisponible. La transcription reste disponible.",
+    "de": "Das Audio dieser Besprechung ist nicht verfügbar. Das Transkript bleibt verfügbar."
   },
   "Meeting audio": {
     "pt-BR": "Áudio da reunião",
@@ -535,40 +535,40 @@ export const CONTENT_TRANSLATIONS: Record<string, {"pt-BR": string; fr: string; 
     "fr": "Cliquez sur un passage de la transcription pour écouter à partir de ce point.",
     "de": "Klicken Sie auf einen Transkriptabschnitt, um von dort abzuspielen."
   },
-  "Session deleted": {
-    "pt-BR": "Sessão excluída",
-    "fr": "Session supprimée",
-    "de": "Sitzung gelöscht"
+  "Meeting deleted": {
+    "pt-BR": "Reunião excluída",
+    "fr": "Réunion supprimée",
+    "de": "Besprechung gelöscht"
   },
-  "Failed to delete session": {
-    "pt-BR": "Falha ao excluir a sessão",
-    "fr": "Impossible de supprimer la session",
-    "de": "Sitzung konnte nicht gelöscht werden"
+  "Failed to delete meeting": {
+    "pt-BR": "Falha ao excluir a reunião",
+    "fr": "Impossible de supprimer la réunion",
+    "de": "Besprechung konnte nicht gelöscht werden"
   },
-  "Search sessions...": {
-    "pt-BR": "Pesquisar sessões...",
-    "fr": "Rechercher des sessions…",
-    "de": "Sitzungen suchen …"
+  "Search meetings...": {
+    "pt-BR": "Pesquisar reuniões...",
+    "fr": "Rechercher des réunions…",
+    "de": "Besprechungen suchen …"
   },
   "clear filter ×": {
     "pt-BR": "limpar filtro ×",
     "fr": "effacer le filtre ×",
     "de": "Filter löschen ×"
   },
-  "No sessions yet. Record something to get started.": {
-    "pt-BR": "Nenhuma sessão ainda. Grave algo para começar.",
-    "fr": "Aucune session pour le moment. Enregistrez quelque chose pour commencer.",
-    "de": "Noch keine Sitzungen. Machen Sie eine Aufnahme, um zu beginnen."
+  "No meetings yet. Record something to get started.": {
+    "pt-BR": "Nenhuma reunião ainda. Grave algo para começar.",
+    "fr": "Aucune réunion pour le moment. Enregistrez quelque chose pour commencer.",
+    "de": "Noch keine Besprechungen. Machen Sie eine Aufnahme, um zu beginnen."
   },
-  "No sessions match your search.": {
-    "pt-BR": "Nenhuma sessão corresponde à pesquisa.",
-    "fr": "Aucune session ne correspond à votre recherche.",
-    "de": "Keine Sitzungen entsprechen Ihrer Suche."
+  "No meetings match your search.": {
+    "pt-BR": "Nenhuma reunião corresponde à pesquisa.",
+    "fr": "Aucune réunion ne correspond à votre recherche.",
+    "de": "Keine Besprechungen entsprechen Ihrer Suche."
   },
-  "Delete session?": {
-    "pt-BR": "Excluir sessão?",
-    "fr": "Supprimer la session ?",
-    "de": "Sitzung löschen?"
+  "Delete meeting?": {
+    "pt-BR": "Excluir reunião?",
+    "fr": "Supprimer la réunion ?",
+    "de": "Besprechung löschen?"
   },
   "Good": {
     "pt-BR": "Boa",

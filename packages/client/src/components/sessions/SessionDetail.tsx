@@ -193,7 +193,7 @@ export function SessionDetail({ session, onBack }: Props) {
 					speakerNames={speakerNames}
 					onRename={handleSpeakerRename}
 					onMerge={handleSpeakerMerge}
-					emptyMessage={tr("No speaker segments in this session yet.")}
+					emptyMessage={tr("No speaker segments in this meeting yet.")}
 					animateEmpty={false}
      playbackTime={playbackTime}
      onSeek={session.files?.wav ? seekAudio : undefined}
