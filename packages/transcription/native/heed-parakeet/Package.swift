@@ -15,8 +15,8 @@ let package = Package(
             name: "heed-parakeet",
             dependencies: [.product(name: "FluidAudio", package: "FluidAudio")]
         ),
-        // System-audio capture via ScreenCaptureKit (no FluidAudio dep → fast build).
-        // Outputs raw s16le 16kHz mono PCM; the Node server merges it with the mic.
+        // Unified microphone/system capture (no FluidAudio dependency).
+        // Outputs timestamp-aligned s16le PCM at 16 kHz: mono or L=mic/R=system stereo.
         .executableTarget(
             name: "heed-syscap"
         ),

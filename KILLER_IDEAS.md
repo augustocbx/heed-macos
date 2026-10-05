@@ -1,143 +1,105 @@
-# heed — Ideas KILLER para destruir a la competencia
+# Heed — product strategy ideas
 
-> Para Junior. Estrategia primero, código después. No estamos apurados con esto: son apuestas de
-> foso (moat), algunas tardan, da igual. Cada idea dice: qué es, por qué la competencia NO puede
-> copiarla, y qué del refactor de esta noche la habilita.
+> Historical upstream strategy notes for Junior. Strategy first, code later. These are proposals, not a list of shipped features. Some take time; each describes the idea, its competitive rationale, and the refactoring work that could support it.
 
-## El encuadre estratégico (la verdad incómoda y la oportunidad)
+## Strategic context
 
-El mercado está **saturado** de transcriptores: Granola, Otter, Fathom, Fireflies, Meetily,
-Hyprnote. Casi todos comparten 3 debilidades estructurales que NO pueden arreglar sin destruir su
-propio modelo de negocio:
+The transcription market includes Granola, Otter, Fathom, Fireflies, Meetily, and Hyprnote. The original strategy identified three structural weaknesses in cloud-centered products:
 
-1. **Son nube.** Tu audio y el de tus reuniones sube a sus servidores. Eso los excluye de los
-   usuarios de MAYOR valor: abogados, médicos, terapeutas, finanzas, ejecutivos, periodistas con
-   fuentes, cualquiera bajo NDA/HIPAA/GDPR. No pueden volverse locales: su negocio ES tener tus datos.
-2. **Necesitan un bot o una cuenta.** Fathom/Otter mandan un bot a tu Zoom; Granola necesita login.
-   Fricción + señal social rara ("¿por qué hay un bot grabando?").
-3. **Monetizan TUS datos.** Vos sos el producto. La diarización buena suele ser de pago (Meetily la
-   tiene PRO-only).
+1. **Cloud processing.** Meeting audio is sent to a provider's servers. This can limit adoption by lawyers, clinicians, therapists, financial professionals, executives, journalists protecting sources, and people handling confidential information. A local architecture offers a different approach.
+2. **Bots or accounts.** A bot joining a meeting or an account requirement adds friction and a visible social signal.
+3. **Provider-controlled data and paid features.** Users depend on the provider's storage, policies, and feature tiers.
 
-**heed juega el juego opuesto, y ahí está el foso:** 100% local, Apple Neural Engine (Parakeet 115x,
-FluidAudio diarización sin token), reconocimiento de voz cross-sesión (lo construimos ayer), cero
-nube, cero cuenta, cero bot, open-source. La estrategia ganadora NO es "ser otro transcriptor mejor".
-Es **redefinir la categoría**: de "transcriptor de reuniones" a **"memoria conversacional privada
-que compone con el uso"**. Eso es lo que la competencia no puede seguir sin suicidarse.
+Heed's proposed positioning takes the opposite approach: local processing, Apple Neural Engine transcription with Parakeet, FluidAudio diarization without a token, speaker recognition across sessions, no cloud account or meeting bot, and open source code. The strategy is to move from a meeting transcriber toward **private conversational memory that becomes more useful with use**.
 
-Principio rector (48 Leyes / Blue Ocean): no compitas donde son fuertes (notas lindas en la nube).
-**Crea un terreno nuevo donde su fortaleza es su debilidad** (la nube = imposibilidad de privacidad).
+The guiding principle is to create a different product category rather than compete only on cloud notes: privacy, user-controlled data, and local computing become the foundation.
 
 ---
 
-## TIER 1 — Fosos que COMPONEN con el uso (el verdadero endgame)
+## Tier 1 — capabilities that become more useful with use
 
-Estas son las que crean **switching cost creciente**: mientras más usás heed, más imposible es irte.
-Es el único tipo de foso que un open-source local puede tener (no podés tener foso de red social,
-pero SÍ de "tus datos viven acá y se vuelven más valiosos solos").
+These proposals create increasing value in the user's local archive. A local open source app cannot rely on a social-network moat, but it can make the user's own data more useful.
 
-### 1. Grafo de identidad de voz personal ("quién, qué, cuándo")
-Extender el voice-RAG cross-sesión (ya hecho) a un **grafo privado de relaciones**: cada voz
-recurrente se vuelve un contacto con un dossier local — temas que tocaron, compromisos que asumió
-("dijiste que enviabas X"), última vez que hablaron, sentimiento. Todo en `~/.heed-app`, cero nube.
-- **Por qué no lo pueden copiar:** un CRM en la nube con esta data sería una bomba de privacidad
-  (grabar a terceros sin que suba a un server es justo lo que NO pueden ofrecer). heed lo hace
-  porque NUNCA sale de tu máquina.
-- **Lo habilita el refactor:** los `turns` ya son un event-log append-only con speaker; el voice-RAG
-  ya da identidad estable. El grafo es un fold sobre esos eventos.
+### 1. Personal voice identity graph: who, what, and when
 
-### 2. Búsqueda semántica sobre TODAS tus conversaciones, filtrable por voz
-Embeddings locales (mismo ANE) sobre todo tu historial de transcripts. "¿Qué se comprometió Carlos
-sobre el presupuesto?" → busca por significado, filtrado por la VOZ de Carlos (voice-RAG), fecha,
-tema. Una memoria buscable de cada conversación que tuviste.
-- **Por qué mata:** ningún competidor tiene búsqueda cross-reunión + cross-speaker LOCAL. Otter
-  busca texto en la nube; nadie cruza "por persona reconocida por voz" en local.
-- **Habilitado por:** voice-RAG + el pipeline determinista. Es el "Rewind/Limitless pero privado y
-  por persona".
+Extend cross-session voice RAG into a private relationship graph. A recurring voice becomes a local contact with topics discussed, commitments made, the most recent conversation, and sentiment. Store it under `~/.heed-app`.
 
-### 3. Re-procesamiento retroactivo (tu librería MEJORA sola con el tiempo)
-Como el pipeline ahora es event-log (turns) + funciones puras + adapters de motor, heed puede
-**re-procesar grabaciones viejas con modelos mejores** cuando salgan (re-diarizar, re-transcribir,
-re-RAG) SIN re-grabar. Tu transcript de hace 6 meses se vuelve más preciso solo.
-- **Por qué mata:** la nube te cobra por re-procesar (costo de cómputo = su margen). En local es
-  gratis y automático. Es un foso de calidad que COMPONE: cada mejora de modelo sube TODO tu archivo.
-- **Habilitado por:** la abstracción de motor (`engines.py` puerto/adapter) + funciones puras
-  testeadas (RF-7) + tipos de contrato (RF-1). Esta noche dejé justo las costuras para esto.
+- **Competitive rationale:** a locally stored relationship history gives users control over sensitive conversational data.
+- **Refactoring support:** append-only speaker turns provide the event history; stable voice identity provides the contact key. The graph can be computed from those events.
+
+### 2. Semantic search across conversations, filtered by voice
+
+Use local embeddings across transcript history. A question such as “What did Carlos promise about the budget?” searches by meaning, voice identity, date, and topic.
+
+- **Competitive rationale:** combine cross-meeting semantic search with recognized speakers while keeping the archive local.
+- **Supporting work:** voice RAG and the deterministic pipeline provide the inputs. The proposed experience is personal conversational search organized by person.
+
+### 3. Retrospective processing with better models
+
+Reprocess retained recordings with newer models: diarization, transcription, and voice recognition can improve without recording the meeting again.
+
+- **Competitive rationale:** local compute can improve the archive without a provider charging for each processing run.
+- **Supporting work:** engine ports/adapters in `engines.py`, tested pure functions from RF-7, and contract types from RF-1 provide replacement points.
 
 ---
 
-## TIER 2 — Diferenciadores de producto que la nube NO puede igualar
+## Tier 2 — local product differentiators
 
-### 4. Copiloto de reunión EN VIVO, on-device (Ollama + MCP)
-Las notas ya usan Ollama local. Sumar un agente que DURANTE la reunión, en privado y sin costo de
-API, te sopla: action items apenas se comprometen, "vos dijiste que mandabas X", preguntas sin
-responder, contradicciones de hecho, "llevás 8 min hablando vos". Granola hace esto post-hoc y en la
-nube; heed lo hace LIVE y PRIVADO.
-- **Por qué mata:** un copiloto en vivo que escucha a TODOS los participantes es inviable en la nube
-  por privacidad/latencia/costo. En local con ANE + Ollama es gratis e instantáneo.
+### 4. Live, on-device meeting assistant with Ollama and MCP
 
-### 5. Privacidad VERIFICABLE como producto (el wedge regulatorio)
-No solo "somos locales" — **demostrarlo**: panel de actividad de red que prueba 0 egress, builds
-reproducibles y firmados, un "modo auditoría" que un compliance officer puede revisar. Apuntar
-explícito a abogados/médicos/terapeutas/finanzas — los usuarios que LEGALMENTE no pueden usar la nube.
-- **Por qué mata:** es un foso REGULATORIO por arquitectura (HIPAA/GDPR by design). La competencia
-  nube literalmente no puede entrar a ese mercado. Es un océano azul de alto valor y baja competencia.
-- **Mensaje de marca (Cialdini/posicionamiento):** "El único que puede grabar a tu terapeuta/cliente/
-  paciente sin romper la ley, porque NADA sale de tu máquina." Eso es un titular que se comparte solo.
+Extend local AI notes into a private assistant during the meeting: capture action items as they are agreed, remind users of commitments, identify unanswered questions or contradictory statements, and report speaking time.
 
-### 6. Captura cero-fricción en todos lados
-Hotkey global + barra de menú; auto-detección de cualquier app de reunión (ya tenés meeting-detector)
-con captura de un toque; captura de conversaciones presenciales (solo mic). El "siempre listo" que
-Granola/Otter no pueden por necesitar bot o pestaña.
-- **Habilitado por:** SCK ya resuelto + meeting-detector ya existe. Es pulido de UX, no R&D.
+- **Competitive rationale:** keep participant audio and live assistance on the user's machine, with no external API cost for inference.
 
-### 7. heed como servidor MCP: "tu memoria de reuniones, consultable por tu IA"
-Exponer tu memoria conversacional como servidor MCP para Claude Desktop / cualquier agente local.
-"¿Qué decidimos con el equipo sobre el lanzamiento?" desde tu asistente, leyendo tu archivo LOCAL.
-- **Por qué mata:** te vuelve infraestructura, no una app. Foso de desarrollador/ecosistema. Y es
-  100% coherente con la ola MCP actual (Hyprnote ya coquetea con esto; vos lo hacés con voice-RAG,
-  que ellos no tienen).
+### 5. Verifiable privacy
+
+Go beyond a claim of local processing: provide network activity visibility, reproducible signed builds, and an audit mode that organizations can inspect. Explore professional audiences with confidentiality requirements.
+
+- **Competitive rationale:** make privacy inspectable through architecture and evidence.
+- **Proposed positioning:** emphasize that meeting content remains under the user's control. Legal and regulatory requirements would need their own assessment; local storage alone is not a compliance certification.
+
+### 6. Capture with minimal friction
+
+Provide a global shortcut, menu bar controls, meeting-app detection, one-action capture, and microphone-only capture for in-person conversations.
+
+- **Supporting work:** ScreenCaptureKit capture and the meeting detector provide starting points. The remaining work includes user experience and platform-specific integration.
+
+### 7. Heed as an MCP server
+
+Expose the user's local meeting archive to Claude Desktop or another local assistant. Questions such as “What did the team decide about the launch?” could be answered from the local archive.
+
+- **Competitive rationale:** make Heed a source of conversational infrastructure for other tools, with voice identity available as part of the archive.
 
 ---
 
-## TIER 3 — Apuestas grandes (tardan, pero redefinen la categoría)
+## Tier 3 — longer-term proposals
 
-### 8. Modo "ambiente" (passive personal log)
-VAD on-device siempre encendido (bajo consumo) que SOLO transcribe cuando detecta conversación real,
-construyendo tu bitácora personal pasivamente. Privacy-safe porque es 100% local.
-- **El pitch:** "Rewind/Limitless, pero tu vida no vive en el server de una startup que puede ser
-  hackeada o comprada." El escándalo recurrente de esas apps ES su nube; heed no lo tiene.
+### 8. Ambient conversational log
 
-### 9. Sync multi-dispositivo SOLO por red local / iCloud privado
-Tu librería de voces y transcripts se sincroniza entre TUS dispositivos por LAN/iCloud E2E, nunca por
-un server de heed.
-- **Por qué mata:** "multi-device sin nube de terceros" es algo que una empresa SaaS no quiere
-  construir (rompe su lock-in). Para un open-source local es el movimiento natural.
+Explore always-on, low-power voice activity detection that transcribes only when it detects a real conversation, building a personal log locally.
 
-### 10. El foso de datos que COMPONE (la tesis de unicornio)
-Juntá 1+2+3+8: cada grabación mejora el voice-RAG, el grafo de relaciones, la búsqueda y el archivo
-re-procesable. El switching cost crece con cada reunión. **La competencia nube es dueña de TUS datos;
-heed convierte TUS datos en un activo local que solo vos controlás y que se revaloriza solo.** Ese es
-el único foso defendible para un open-source — y es más fuerte que el de ellos, porque el de ellos
-depende de retenerte rehén, y el tuyo depende de darte algo que se vuelve tuyo.
+- **Proposed positioning:** a personal conversational archive stored on the user's machine rather than a provider's server.
+
+### 9. Device synchronization over a local network or private iCloud storage
+
+Synchronize voices and transcripts between the user's devices over a LAN or end-to-end encrypted storage, without a Heed-operated server.
+
+- **Competitive rationale:** offer multiple-device access while preserving user control over storage.
+
+### 10. An archive whose value grows
+
+Combine voice identity, relationship history, semantic search, retrospective processing, and optional ambient capture. Each retained conversation makes the user's archive more useful. The proposed advantage is value in data the user controls, rather than dependency on a provider holding it.
 
 ---
 
-## Secuenciación recomendada (no apurada, pero con orden de palanca)
+## Proposed sequence
 
-1. **Ahora / pre-lanzamiento:** terminá el voice-RAG real-time (enroll en Sortformer) + captura
-   cero-fricción (#6). Es lo que ya tenés casi y cierra la demo "mágica".
-2. **Post-lanzamiento inmediato (la cuña de mercado):** privacidad verificable (#5) como MENSAJE de
-   marca y wedge hacia los profesionales bajo NDA. Es marketing + un poco de UI, alto retorno.
-3. **El foso (3-6 meses):** búsqueda semántica local (#2) + grafo de identidad (#1) + re-procesamiento
-   (#3). Acá nace el "no me puedo ir de heed".
-4. **El ecosistema:** servidor MCP (#7) + copiloto en vivo (#4).
-5. **La apuesta de unicornio:** modo ambiente (#8) + sync local (#9) = la categoría nueva.
+1. **Before launch:** complete real-time voice enrollment and low-friction capture (#6).
+2. **Immediately after launch:** develop verifiable privacy (#5) and explain it clearly to professional audiences.
+3. **Next three to six months:** local semantic search (#2), voice identity graph (#1), and retrospective processing (#3).
+4. **Ecosystem:** MCP access (#7) and the live assistant (#4).
+5. **Longer term:** ambient capture (#8) and local device synchronization (#9).
 
-## Por qué el refactor de anoche importa para esto
+## Why the refactoring work matters
 
-Ninguna de estas ideas se construye rápido sobre dos God files sin tests con estado mutable global.
-Esta noche dejé: **contratos tipados** (los eventos/estados ya no driftean), **funciones puras
-testeadas** (la lógica de diarización/voz está pinneada), **adapters de motor** (cambiar/mejorar
-modelos sin tocar el pipeline = idea #3), **event-log de turns** (base del grafo y la búsqueda =
-ideas #1, #2), y **supervisión de procesos** (para que el modo ambiente #8 corra 24/7 sin dejar
-huérfanos). El refactor no fue cosmético: fue **poner los cimientos del foso**.
+These proposals are harder to build safely on large files with global mutable state and little test coverage. The refactoring introduced typed contracts, tests around pure diarization and voice logic, engine adapters, speaker-turn history, and process supervision. Those provide the seams for improving models, building search and identity features, and running long-lived capture without orphaned child processes.

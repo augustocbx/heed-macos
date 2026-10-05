@@ -1,88 +1,60 @@
-# heed — Reporte de refactor (rama `refactor`)
+# Heed — refactoring report (`refactor` branch)
 
-> Para Junior, cuando despiertes. Todo en el worktree `/Users/junrod/heed-refactor`, rama
-> `refactor`. `main`/`feat/v3-parakeet` INTACTOS. Cada commit deja el código verde (tsc + tests).
-> Las ideas killer para destruir competencia están en `KILLER_IDEAS.md` (documento aparte).
+> Historical upstream report for Junior. Work took place in `/Users/junrod/heed-refactor` on branch `refactor`, keeping `main` and `feat/v3-parakeet` untouched. Product strategy proposals are in [KILLER_IDEAS.md](KILLER_IDEAS.md).
 
-## TL;DR (la verdad primero)
+## Result
 
-Hice un research profundo con fuentes top oficiales y actualizadas, una auditoría arquitectónica
-con evidencia (file:line), y ejecuté un refactor **incremental y verde** — NO un rewrite. La
-conclusión más importante, que te debo con honestidad: **tu arquitectura ya tiene la forma
-correcta**. El riesgo #1 para vos (fundador solo, lanzando en días) no es "mala arquitectura", es
-**la trampa del rewrite elegante** — la forma en que mueren los proyectos solo antes de lanzar
-(Netscape, documentado por Joel Spolsky/Fowler). Por eso NO reescribí nada de cero. Estrangulé los
-God files con Strangler Fig + Tidy First, con red de seguridad de tests, dejando el pipeline idéntico.
+The audit found that the architecture already had the right overall shape. Rather than rewrite it, the work incrementally extracted behavior using Strangler Fig and Tidy First, with tests protecting the existing pipeline. The main pre-launch reliability improvement was **process supervision preventing orphaned FFmpeg processes**.
 
-Lo que SÍ tiene impacto real de confiabilidad antes de lanzar — y lo implementé y probé headless —
-es **supervisión de procesos (anti-ffmpeg-huérfano)**. Eso es lo que de verdad rompe un
-transcriptor en tiempo real en una laptop sin ventilador.
+## Changes
 
-## Qué hice (7 commits, todos verdes)
+| Step | Commit | Change | Practice or reference |
+|---|---|---|---|
+| RF-1 | `fcf2a88` | Discriminated unions in `@heed/shared`: SSE contracts, recording states, and `assertNever`. `useRecording` adopts typed `subscribeLiveEvents`, replacing four repeated listener/try-catch blocks. | Wlaschin: make illegal states unrepresentable; Total TypeScript discriminated unions. Contract failures become compile errors. |
+| RF-2 | `ecba4a1` | One configuration module, `lib/app-config.ts`; removal of duplicate `lib/config.ts`, `lib/input.ts`, and unused storage code; structured `lib/logger.ts`. | Tidy First structural changes and Ousterhout's deep modules. |
+| RF-3+4 | `6a2632e` | Extracted `lib/process.ts`, a shared `lib/sse.ts` helper, and `lib/transcription-client.ts`. Added graceful shutdown to reap children. | Strangler Fig, OTP-style supervision, in-band SSE errors, and streaming backpressure. |
+| RF-7 | `ab77ae6` | Characterization tests: 15 Python checks for diarization/voice logic, five store tests, and architecture rules with no cycles and shared as a leaf. | Feathers on legacy code and Normand's functional core. |
+| RF-6 | `02420c6` | Transcript error boundary with recording controls outside it; React 19 error sinks in `createRoot`. | React error boundaries and streaming behavior. |
+| RF-5 | `4399abf` | Atomic selectors in `stores/selectors.ts` using `useShallow`, adopted by `RecordPage`; confirmed audio levels already use DOM refs rather than global state. | TkDodo on Zustand. |
 
-| # | Commit | Qué | Práctica / fuente |
-|---|--------|-----|-------------------|
-| RF-1 | `fcf2a88` | Uniones discriminadas en `@heed/shared`: contrato de eventos SSE + máquina de estados de grabación + `assertNever`. Adoptado en `useRecording` con un `subscribeLiveEvents` tipado (mata 4 bloques `addEventListener`+try/catch). | "Make illegal states unrepresentable" (Wlaschin); discriminated unions (totaltypescript). Contrato roto = error de compilación, no falla silenciosa. |
-| RF-2 | `ecba4a1` | Config en UN módulo (`lib/app-config.ts`); **borré código muerto** (`lib/config.ts` duplicado, `lib/input.ts`, `lib/storage/*`); logger estructurado (`lib/logger.ts`). | Tidy First (Beck): estructural, sin cambio de comportamiento. Deep modules (Ousterhout). |
-| RF-3+4 | `6a2632e` | Extraje `lib/process.ts` (supervisor de procesos), `lib/sse.ts` (helper SSE único, antes copiado en 7+ endpoints), `lib/transcription-client.ts` (único adapter al sidecar Python). **Graceful shutdown anti-huérfano.** | Strangler Fig (Fowler); supervisión estilo OTP (Erlang); SSE in-band errors + backpressure (Vercel AI SDK, research de streaming). |
-| RF-7 | `ab77ae6` | Characterization tests de las funciones PURAS: 15 checks Python (diarización + voz) + 5 tests del store + reglas de arquitectura (dependency-cruiser: 0 ciclos, shared es leaf). | Feathers ("legacy = código sin tests"); functional core (Normand). |
-| RF-6 | `02420c6` | Error boundary alrededor del transcript con los controles AFUERA (nunca perder una grabación) + sinks de error de React 19 en `createRoot`. | react.dev error boundaries; research de React/streaming. |
-| RF-5 | `4399abf` | Selectores atómicos del store (`stores/selectors.ts`, `useShallow`); adoptados en `RecordPage` (antes suscribía al store entero). Verifiqué que los niveles de audio YA están fuera del estado global (refs al DOM). | TkDodo (Zustand). |
+## Reliability improvement: orphan prevention
 
-## La pieza de confiabilidad que importa: anti-ffmpeg-huérfano (probado)
+**The problem:** there were no signal handlers. After a server crash or exit, FFmpeg could remain running and keep the microphone busy.
 
-**El problema real** (de la auditoría): no había NINGÚN handler de señales. Si el server crasheaba o
-salías, ffmpeg seguía corriendo **agarrando el micrófono** → "la app está rota" / el mic queda
-ocupado. Es el bug #1 que se siente como app rota en este tipo de apps.
+**The solution:** `lib/process.ts` tracks children and reaps them on SIGINT, SIGTERM, and exit. It attempts process-group termination with a negative PID, falls back to direct termination, and uses SIGKILL after a timeout. Recording stop uses `gracefulStop`: SIGINT allows FFmpeg to flush its WAV, with a timed SIGKILL fallback. An indefinite `await .exited` can no longer hang stopping forever.
 
-**La solución** (`lib/process.ts`): cada hijo (recorder, captura de sistema, level meter) se
-`track()`-ea; un hook único en SIGINT/SIGTERM/exit los reapea (kill del GRUPO por PID negativo →
-fallback a kill directo → SIGKILL tras timeout). El stop ahora usa `gracefulStop` (SIGINT para que
-ffmpeg flushee limpio → SIGKILL de respaldo) así un ffmpeg colgado no puede trabar el stop para
-siempre (antes hacía `await .exited` sin timeout = potencial cuelgue eterno).
+**Headless validation:** four unit tests and an end-to-end harness spawned a child, sent SIGTERM to its parent, and confirmed that the child exited:
 
-**Probado headless** (sin mic): 4 unit tests + un harness end-to-end que spawnea un hijo, le manda
-SIGTERM al padre, y verifica que el hijo muere (vivo→reapeado, 1→0). Output real:
-```
+```text
 received SIGTERM — graceful shutdown
 shutting down — reaping 1 child process(es)
 child alive after SIGTERM: 0 (expect 0 = reaped)
 ```
 
-## Verificación (todo headless, reproducible)
+## Recorded verification
 
-- `bunx tsc --noEmit` (client + server): limpio.
-- `bun build server.ts`: bundlea (3→11 módulos, sin errores).
-- `bun test` (server): supervisor 4/4.
-- `bunx vitest run` (client): 15/15 (incluye los 5 nuevos del store).
-- `python3 diarize_voice_test.py`: 15/15 (diarización + voz puras).
-- `bunx --package dependency-cruiser depcruise server.ts`: 0 violaciones (sin ciclos, shared leaf).
-- `doctor.py`: 6/6 (en el stack que ya corre).
+- `bunx tsc --noEmit` for client and server: passed.
+- `bun build server.ts`: bundled successfully, increasing from three to eleven modules.
+- Server `bun test`: process supervision 4/4.
+- Client `bunx vitest run`: 15/15, including five new store tests.
+- `python3 diarize_voice_test.py`: 15/15 pure diarization and voice checks.
+- `bunx --package dependency-cruiser depcruise server.ts`: no violations, cycles absent, shared a leaf.
+- `doctor.py`: 6/6 on the running stack.
 
-## Decisiones honestas de alcance (lo que NO hice, a propósito)
+These are results from the original refactoring run, not a current validation report for every later change.
 
-Estas son TRAMPAS de sobreingeniería para un fundador solo que lanza en días (lo dicen todas las
-fuentes: Grug Brained Developer, Sandi Metz, el propio Fowler):
+## Deliberate scope decisions
 
-- **NO** big-bang rewrite de server.ts (2197 líneas) ni de transcription_server.py. Se estrangulan
-  por capacidad, post-lanzamiento, con la red de tests ya puesta.
-- **NO** normalización completa del store (`segmentsById`+`segmentIds`): reescribe TODOS los
-  consumidores = churn justo antes de lanzar. Diferida (los selectores atómicos ya dan el 80% del
-  beneficio sin tocar consumidores).
-- **NO** XState, **NO** event-sourcing/CQRS completo, **NO** Vercel AI SDK, **NO** TanStack Query
-  para el stream SSE, **NO** Turborepo, **NO** ts-rest, **NO** codegen Zod→Pydantic. Cada uno
-  agrega complejidad/peso sin pagar antes del lanzamiento. (Razonadas en `REFACTOR.md`.)
+- No large rewrite of `server.ts` or `transcription_server.py`; extract capabilities incrementally after launch, using the new tests.
+- No full store normalization at that point: rewriting every consumer would create pre-launch churn. Atomic selectors provided useful benefits without that migration.
+- No XState, full event sourcing/CQRS, Vercel AI SDK, TanStack Query for SSE, Turborepo, ts-rest, or Zod-to-Pydantic generation. The rationale is documented in [REFACTOR.md](REFACTOR.md).
 
-## Cómo seguir (post-lanzamiento, orden sugerido)
+## Suggested follow-up order
 
-1. Adoptar `lib/sse.ts` en los 6 endpoints SSE restantes (ya está en `levels`).
-2. Adoptar `tx.*` (transcription-client) en los call sites directos `fetch(${TRANSCRIPTION_SERVER}...)`.
-3. Estrangular el loop de grabación de `server.ts` a un `recording/`-slice (vertical slice, Bogard)
-   detrás de la máquina de estados de `@heed/shared` — con el mic disponible para validar.
-4. Migrar los `console.log` restantes al `logger`.
-5. Reemplazar los booleanos del store por la `RecordingPhase` discriminada de `@heed/shared`.
+1. Adopt `lib/sse.ts` in the remaining six SSE endpoints; it was already used by `levels`.
+2. Replace direct `fetch(${TRANSCRIPTION_SERVER}...)` calls with the transcription client adapter.
+3. Extract recording from `server.ts` into a vertical slice behind `@heed/shared` recording states, with microphone validation available.
+4. Move remaining `console.log` calls to the logger.
+5. Replace store booleans with the shared discriminated `RecordingPhase`.
 
-Todo esto es seguro PORQUE el refactor de esta noche dejó las costuras (seams), los tipos y los
-tests para hacerlo sin miedo. Esa es la verdadera entrega: no "código más lindo", sino **una base
-sobre la que se puede construir rápido y sin romper** — que es justo lo que habilita las ideas
-killer del otro documento.
+The result is a tested set of contracts and seams for incremental development, rather than a cosmetic rewrite.
