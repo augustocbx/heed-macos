@@ -17,6 +17,10 @@ jobs:
         run: bun test packages/server/lib
       - name: Testes da interface
         run: NODE_OPTIONS=--no-experimental-webstorage bun run --cwd packages/client test --run
+      - name: Testes de preservação dos participantes
+        run: python3 -m unittest discover -s packages/transcription -p voice_identity_test.py
+      - name: Verificar sintaxe Python
+        run: python3 -m py_compile packages/transcription/transcription_server.py packages/transcription/voice_identity.py
       - name: Compilar interface
         run: bun run build
       - name: Verificar instaladores

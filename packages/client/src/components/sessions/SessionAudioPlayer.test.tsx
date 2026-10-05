@@ -24,4 +24,21 @@ describe('player de reunião',()=>{
   fireEvent.error(screen.getByLabelText('Áudio da reunião'));
   expect(screen.getByRole('status')).toHaveTextContent('Não foi possível carregar');
  });
+ it('mistura microfone e sistema em mono antes de enviar aos dois lados do fone',()=>{
+  const source={connect:vi.fn()};const mix={channelCount:2,channelCountMode:'max',channelInterpretation:'speakers',connect:vi.fn()};
+  const resume=vi.fn().mockResolvedValue(undefined);const createSource=vi.fn(()=>source);
+  class MockAudioContext {
+   destination={};state='suspended';createMediaElementSource=createSource;
+   createGain=vi.fn(()=>mix);resume=resume;close=vi.fn().mockResolvedValue(undefined);
+  }
+  vi.stubGlobal('AudioContext',MockAudioContext);
+  try {
+   const ref=createRef<HTMLAudioElement>();
+   render(<SessionAudioPlayer sessionId="session-123" available audioRef={ref} onTime={vi.fn()} onDuration={vi.fn()}/>);
+   const audio=screen.getByLabelText('Áudio da reunião');fireEvent.play(audio);
+   expect(mix.channelCount).toBe(1);expect(mix.channelCountMode).toBe('explicit');
+   expect(source.connect).toHaveBeenCalledWith(mix);expect(mix.connect).toHaveBeenCalled();
+   expect(resume).toHaveBeenCalled();fireEvent.play(audio);expect(createSource).toHaveBeenCalledTimes(1);
+  } finally {vi.unstubAllGlobals();}
+ });
 });
