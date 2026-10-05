@@ -1,5 +1,5 @@
 import {test, expect} from 'bun:test';
-import {mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, utimesSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, utimesSync, symlinkSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {enforceAudioRetention} from './audio-retention.ts';
@@ -32,6 +32,12 @@ test('protects active recording and its derivatives, and reports pressure', () =
 });
 test('does not follow symlinks or delete non-audio files', () => {
  const root=mkdtempSync(join(tmpdir(),'heed-retention-')); const sessions=join(root,'sessions');mkdirSync(sessions);
- try {writeFileSync(join(root,'notes.txt'),'keep');expect(enforceAudioRetention(root,sessions,0).bytes).toBe(0);expect(existsSync(join(root,'notes.txt'))).toBe(true);}
+ try {
+  writeFileSync(join(root,'notes.txt'),'keep');
+  symlinkSync(join(root,'notes.txt'),join(root,'linked.wav'));
+  expect(enforceAudioRetention(root,sessions,0).bytes).toBe(0);
+  expect(existsSync(join(root,'notes.txt'))).toBe(true);
+  expect(existsSync(join(root,'linked.wav'))).toBe(true);
+ }
  finally {rmSync(root,{recursive:true,force:true});}
 });
