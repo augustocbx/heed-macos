@@ -1,6 +1,6 @@
 # Heed on macOS
 
-Local installation for Apple Silicon Macs running macOS 14 or later. Transcription supports Brazilian Portuguese (`pt`) and English (`en`), detected automatically after recording. The interface and menu support English, Brazilian Portuguese, French, and German, with English as the fallback. Installation instructions remain in English.
+Local installation for Apple Silicon Macs running macOS 14 or later. Transcription supports Brazilian Portuguese (`pt`) and English (`en`), detected automatically after recording. The interface and menu support English, Brazilian Portuguese, French, and German, with English as the fallback.
 
 ## Install or update
 
@@ -40,6 +40,8 @@ If an authorization picker appears, select the exact Slack **logs** folder and c
 In **System Settings → Privacy & Security**, allow **Screen & System Audio Recording** and **Microphone** for the component requested by macOS. If no prompt appears, check these settings manually. The capture executable is `packages/transcription/native/heed-parakeet/.build/release/heed-syscap`. Permissions must be granted separately on each Mac. System audio capture works with headphones.
 
 Use **Settings** in the interface or **Settings and permissions…** in the menu to check this Mac's permissions and open their System Settings sections. The page also reports when the native app is disconnected. After an update, you may need to turn Heed's recording permission off and on again even when it appears enabled, then accept the restart requested by macOS.
+
+Para comparar o modo padrão com o Isolamento de Voz e entender os caminhos de áudio, consulte [Isolamento de Voz do macOS e captura do Heed](README.md#isolamento-de-voz-do-macos-e-captura-do-heed).
 
 Audio is stored locally in `recordings/`. The retention quota is **2,000,000,000 bytes per machine**. Oldest audio is removed first; transcripts are preserved. Space is reserved for temporary processing copies, so one continuous recording has an output limit of approximately **990 MB**. Reaching that limit stops and saves it. Models and dependencies are outside this quota. Each installation uses the same retention and bilingual transcription features, with independent local files.
 

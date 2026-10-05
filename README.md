@@ -1,6 +1,6 @@
 # Heed macOS
 
-A macOS adaptation of [Heed](https://github.com/isjunrod/heed), by Junior Rodriguez, for recording and transcribing meetings locally in **Brazilian Portuguese (`pt`) and English (`en`)**. It includes menu bar controls, a 2 GB audio retention limit, and audio playback synchronized with the transcript. The interface and menu support English, Brazilian Portuguese, French, and German, with an English fallback. Documentation and installation messages remain in English; the final meeting language is detected automatically.
+Adaptação do [Heed](https://github.com/isjunrod/heed), de Junior Rodriguez, para gravar e transcrever reuniões localmente em **português do Brasil (`pt`) e inglês (`en`)**. Inclui controles na barra de menus, retenção de áudio de 2 GB e reprodução sincronizada com a transcrição. A interface e o menu oferecem inglês, português do Brasil, francês e alemão, com fallback para inglês. O idioma final da reunião é detectado automaticamente.
 
 Each Mac keeps its own audio, models, and sessions. Installing this project on two machines provides the same features, but **does not synchronize files between them or upload meetings to the cloud**.
 
@@ -75,6 +75,22 @@ macOS may display Heed, Bun, or the capture component as the requesting app. If 
 Updating the locally signed app may invalidate its previous authorization. If capture is denied even though Heed appears enabled, turn its **Screen & System Audio Recording** permission off and on again, then accept the restart requested by macOS. Slack log access remains a separate folder-picker authorization.
 
 System audio capture uses ScreenCaptureKit and works with headphones. Microphone capture uses the default macOS input: check **System Settings → Sound → Input** before a meeting.
+
+### Isolamento de Voz do macOS e captura do Heed
+
+Em uma chamada de teste em um app compatível, como o FaceTime, abra o menu **Vídeo** ou **Áudio** na barra de menus do macOS e selecione **Modo do Microfone → Isolamento de Voz**. No macOS 14 ou posterior, esse é o caminho documentado pela [Apple](https://support.apple.com/pt-br/105117). Em chamadas somente de áudio no [FaceTime](https://support.apple.com/guide/facetime/change-audio-options-fctme7c07113/mac), **Isolamento de Voz** pode aparecer diretamente no menu **Áudio**. Confira qual app aparece no menu antes de alterar o modo. **Isolamento de Voz** prioriza sua fala e reduz ruídos próximos; **Padrão (Standard)** retorna ao processamento padrão, sem prometer áudio sem tratamento. As opções [variam conforme o app](https://support.apple.com/en-gb/guide/mac-help/mchle82b42f0/mac).
+
+A disponibilidade também depende do dispositivo de entrada e da rota de áudio: a Apple distingue o modo solicitado daquele [efetivamente usado pela rota atual](https://developer.apple.com/videos/play/wwdc2021/10047/). Se o controle estiver ausente ou indisponível, registre o app, o microfone e a versão do macOS; isso não comprova falha do Heed nem exige mudanças nas permissões.
+
+Os caminhos de áudio têm funções diferentes:
+
+- **Sua voz enviada à chamada:** o modo do microfone atua no caminho do app compatível usado para conversar. Escolher Isolamento de Voz no Slack não comprova que o microfone capturado separadamente pelo Heed recebe o mesmo tratamento.
+- **Voz dos demais participantes:** chega pela saída de áudio do app. O Heed a grava com ScreenCaptureKit, inclusive usando fones; o modo do seu microfone não remove o ruído recebido dos outros participantes.
+- **Gravação e transcrição:** o Heed captura seu microfone com AVAudioEngine e preserva as fontes em canais separados. A preparação do áudio para reconhecimento de fala (ASR), como conversão de formato e taxa de amostragem, não altera o áudio enviado aos participantes. O Heed não oferece dispositivos virtuais selecionáveis de microfone ou alto-falante. Isolamento de Voz não equivale ao conjunto de recursos e [roteamento do Krisp](https://help.krisp.ai/hc/en-us/articles/30533083171868-Noise-Cancellation-with-Krisp-AI-Meeting-Assistant).
+
+Para comparar, use uma chamada curta sem conteúdo privado, fora de reuniões importantes. Anote o modo inicial; fale a mesma frase com ruído leve em **Padrão** e em **Isolamento de Voz**, peça ao interlocutor que compare e restaure o modo inicial. Avalie a gravação do Heed separadamente. Consulte [permissões](#permissions-and-use), [reprodução](#playback-with-the-transcript) e [diagnóstico](#diagnostics-and-tests).
+
+**Validação pendente:** MacBook Air M1 e MacBook Pro M4 Pro, ambos com macOS 27.0.1 conforme o contexto informado. Este texto não relata testes nesses Macs nem valida todas as versões compatíveis com macOS 14+.
 
 ## Playback with the transcript
 
