@@ -1,3 +1,5 @@
+> Archived upstream documentation from [isjunrod/heed](https://github.com/isjunrod/heed). For this fork's macOS requirements, installation, permissions, and current architecture, use [README.md](README.md).
+
 <p align="center">
   <img src="https://img.shields.io/badge/100%25-Local-10B981?style=for-the-badge" alt="100% Local" />
   <img src="https://img.shields.io/badge/Open_Source-MIT-2563EB?style=for-the-badge" alt="MIT License" />

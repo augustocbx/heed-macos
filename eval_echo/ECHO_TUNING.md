@@ -1,72 +1,62 @@
-# Afinado del eco en tiempo real — reporte de la noche
+# Real-time echo tuning — historical upstream report
 
-Para Junior. Hice las 3 tareas que dejaste, midiendo sobre TODOS tus audios (12 grabaciones
-recientes), iterando, y **sin caer en la falacia de generalización apresurada** — de hecho la data
-me hizo cambiar de opinión sobre lo que parecía obvio con una sola muestra.
+Evaluation for Junior across all twelve recent recordings. The results changed the original expectation formed from a single sample; the selected configuration was based on aggregate measurements.
 
-## Tarea 1 — Cold-start (commit `d699298`)
+## Task 1 — cold start (`d699298`)
 
-**Medido:** la transcripción ya estaba caliente (~0.8s primer texto). Lo que viste como "cold" eran
-dos cosas: (a) si grababas durante el pre-warm en background había contención, y (b) la diarización
-tardaba ~5.5s (delay de confirmación inherente de Sortformer), en CADA grabación.
+**Observed:** transcription was already warm, with first text after approximately 0.8 seconds. Two other effects looked like cold start: recording during background prewarming caused contention, and Sortformer's confirmation delay made diarization take approximately 5.5 seconds on every recording.
 
-**Fixes:**
-- Sidecar: el diar-feed en vivo ahora devuelve segmentos **tentativos + finalizados** → un hablante
-  aparece a **~3.6s** en vez de ~5.5s. (Rebuild de heed-parakeet, NO heed-syscap → SCK intacto.)
-- Pre-warm **síncrono** + flag `warm` en /health; el loop en vivo **espera warm** antes de alimentar
-  (el recorder igual captura, no se pierde audio) → la primera grabación nunca contende con el warm-up.
-- Medido nuevo: warm=True tras boot, primer texto ~0.8s, diarización ~3.6s.
+**Changes:**
 
-## Tarea 2 — AEC adaptativo (commit `caf4cba`, luego DESACTIVADO por la data)
+- The sidecar's live diarization feed returns tentative and finalized segments, reducing first-speaker appearance to approximately **3.6 seconds**. `heed-parakeet` was rebuilt; `heed-syscap` and ScreenCaptureKit capture were unchanged.
+- Synchronous prewarming and a `warm` flag in `/health` make the live transcription loop wait before feeding audio. The recorder continues capturing during prewarming.
+- New measurements: `warm=True` after startup, first text after approximately 0.8 seconds, and diarization after approximately 3.6 seconds.
 
-Construí el AEC adaptativo (solo cancela cuando detecta fuga real, vía ratio mic/sys). Pero el harness
-mostró que **el AEC daña tu voz en agregado** (ver tabla abajo). Quedó en el código pero **default OFF**.
+## Task 2 — adaptive AEC (`caf4cba`, subsequently disabled by default)
 
-## Tarea 3 — Harness + dedup (commit `c0edc40`) — EL HALLAZGO
+Adaptive acoustic echo cancellation runs only when the microphone/system energy ratio indicates actual leakage. Aggregate evaluation showed that it removed too much of the user's voice. The implementation was retained, but disabled by default.
 
-Construí un harness de evaluación (`eval_echo/`) que sobre las 12 grabaciones mide:
-- **echo_in_mic** = cuánto de la voz ajena se cuela en tu transcript (↓ mejor)
-- **junior_kept** = cuánto de TU voz se preserva (↑ mejor)
-- **score** = kept × (1 − echo)
+## Task 3 — evaluation harness and text deduplication (`c0edc40`)
 
-Resultados (promedio sobre 8 muestras con eco):
+The `eval_echo/` harness measures:
 
-| Config | echo | kept (tu voz) | score |
+- **echo_in_mic:** other participants' words leaking into the microphone transcript; lower is better.
+- **junior_kept:** preserved words from the user's voice; higher is better.
+- **score:** preserved fraction × (1 − echo fraction).
+
+Average results over eight samples containing echo:
+
+| Configuration | Echo | User voice preserved | Score |
 |---|---|---|---|
-| baseline (nada) | 0.111 | 0.798 | 0.685 |
-| + compuerta de energía (Capa 1) | 0.051 | 0.612 | 0.627 |
-| + Capa 1 + AEC adaptativo (Capa 2) | 0.057 | 0.522 | 0.607 |
-| + Capa 1 + AEC always | 0.058 | 0.513 | 0.595 |
-| **dedup de texto (Capa 3) SOLO** | **0.000** | **0.770** | **0.730** ← GANADOR |
+| Baseline | 0.111 | 0.798 | 0.685 |
+| Energy gate, layer 1 | 0.051 | 0.612 | 0.627 |
+| Gate plus adaptive AEC, layers 1–2 | 0.057 | 0.522 | 0.607 |
+| Gate plus always-on AEC | 0.058 | 0.513 | 0.595 |
+| **Text deduplication only, layer 3** | **0.000** | **0.770** | **0.730** |
 
-**La verdad contraintuitiva:** la compuerta y el AEC, que con UNA muestra parecían geniales,
-**cortan tu propia voz más de lo que quitan eco** cuando se miden sobre las 12. El **dedup de texto**
-gana: como SIEMPRE tenemos el transcript LIMPIO del otro speaker (canal del sistema), borramos de tu
-mic las palabras que matchean lo que él dijo → el eco ajeno cae a ~0 y se preserva ~97% de tu voz,
-**sin tocar tu audio**. Verificado cualitativamente: quita "Matthew seven seven" (la chica) y mantiene
-"estamos grabando... brillo de la pantalla... mouse".
+The gate and AEC appeared useful on one sample, but across the twelve recordings removed more of the user's voice than justified by echo reduction. Text deduplication performed best: the clean system-channel transcript identifies words leaking into the microphone transcript, which can be removed without modifying the recorded audio. Echo approached zero while approximately 97% of the baseline preserved user voice remained.
 
-Tuneé el umbral del dedup con un barrido (0.50→0.80) → **0.63** es el sweet spot.
+Qualitative checks removed the other speaker's “Matthew seven seven” while preserving the user's statements about recording, screen brightness, and the mouse. A threshold sweep from 0.50 to 0.80 selected **0.63**.
 
-## Config de producción final (corriendo ahora)
+## Configuration selected at the time
 
-- **Capa 3 (dedup de texto): ON** — aplicada a tus turnos del mic EN VIVO (vs el parcial del sistema)
-  y AL PARAR (vs el sistema final), umbral 0.63. La voz ajena nunca aparece bajo tu nombre.
-- **Capa 1 (gate) y Capa 2 (AEC): OFF por default** (env-tunables `HEED_MIC_GATE_RMS`, `HEED_AEC_MODE`
-  por si algún usuario en parlantes con eco brutal las quiere; pero la data dice que sobran).
-- Cold-start afinado (warm + tentative segments).
+- **Layer 3, text deduplication: enabled.** Applied to live microphone turns against the partial system transcript, and after stopping against the final system transcript, using threshold 0.63.
+- **Layer 1, gate, and layer 2, AEC: disabled by default.** Environment settings `HEED_MIC_GATE_RMS` and `HEED_AEC_MODE` remain available for experiments with severe speaker echo.
+- Cold-start improvements: synchronous warming and tentative diarization segments.
 
-## Para reproducir / re-tunear
-```
+These are historical evaluation results, not a current guarantee that every recording will produce the same scores.
+
+## Reproduce or retune
+
+```sh
 cd eval_echo
-python3 build_cache.py                       # cachea el ground truth (1 vez)
-bash restart_and_run.sh 0 off mi-config dedup  # corre un config sobre las 12 muestras
-python3 sweep_dedup.py                        # barre el umbral del dedup
+python3 build_cache.py                         # Cache ground truth once.
+bash restart_and_run.sh 0 off my-config dedup  # Run one configuration across all twelve samples.
+python3 sweep_dedup.py                         # Sweep the deduplication threshold.
 ```
-Agregá más grabaciones a `samples.txt` y re-corré para seguir afinando con más muestras.
 
-## Honestidad final
-El score top quedó en **0.73** (echo 0, kept 0.77). Dos muestras outlier bajan el promedio de
-preservación; NO las sobre-tuneé (sería la falacia al revés). El dedup es robusto: en grabaciones SIN
-voz ajena no toca nada (kept 0.83–0.97). Probá en vivo con auriculares en el cuello y confirmá que la
-voz ajena ya no se pega a tu transcript — y que tu voz sale completa.
+Add recordings to `samples.txt` and rerun to expand the evaluation set.
+
+## Remaining limitation
+
+The best aggregate score was **0.73**, with zero measured echo and 0.77 preservation. Two outliers reduce average preservation; the configuration was not tuned specifically to those samples. In recordings without other participants' voices, deduplication left the transcript unchanged, with preservation scores of 0.83–0.97. Physical live tests are still needed to confirm both echo removal and preservation of the user's voice in a given setup.

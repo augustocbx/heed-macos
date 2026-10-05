@@ -1,86 +1,51 @@
-# heed v3 — Refactor de arquitectura (rama `refactor`)
+# Heed v3 — architecture refactoring (`refactor` branch)
 
-> Worktree aislado. `main`/`feat/v3-parakeet` intactos. Todo verde e incremental (Tidy First:
-> commits estructurales separados de los de comportamiento). Investigación basada en fuentes top
-> oficiales y actualizadas (citas abajo). El norte: ingeniería de élite SIN matar el lanzamiento.
+> Historical upstream plan. Work took place in an isolated worktree, keeping `main` and `feat/v3-parakeet` untouched. Changes were incremental, with structural and behavioral commits separated following Tidy First. Sources are listed below.
 
-## Meta-veredicto (la verdad, aunque incomode)
+## Assessment
 
-La arquitectura ya tiene la **forma correcta** (SSE unidireccional + supervisión de procesos hijos +
-tipos compartidos + puertos/adaptadores en Python). El riesgo #1 para un fundador solo que lanza en
-días NO es "mala arquitectura" — es la **trampa del rewrite elegante**. Todos los autores que envían
-software (Fowler, Beck, Bogard, Ousterhout, el Grug-Brained Developer) dicen lo mismo: **lanza
-primero, estrangula los God files incrementalmente después**. Por eso este refactor NO reescribe
-nada de cero: estrangula con Strangler Fig + Sprout/Wrap, con red de seguridad de characterization
-tests, manteniendo el pipeline funcionando idéntico.
+The architecture already has the right overall shape: one-way SSE, child-process supervision, shared types, and Python ports/adapters. For a solo founder launching soon, the main risk is an ambitious rewrite. The plan instead uses Strangler Fig and Sprout/Wrap techniques with characterization tests, preserving the working pipeline.
 
-Dos áreas SÍ merecen ingeniería real antes de lanzar, porque son lo que **de verdad rompe** un
-transcriptor en tiempo real en una laptop sin ventilador: **backpressure** (buffer acotado) y
-**supervisión de procesos** (ffmpeg huérfano = "la app está rota").
+Two areas merit reliability work before launch: **bounded backpressure** and **process supervision**. An orphaned FFmpeg process holding the microphone can make a real-time transcription app appear broken.
 
-## Hallazgos del audit (evidencia, file:line) — los 6 CRÍTICOS
+## Audit findings — six critical items
 
-1. `server.ts` = **2197 líneas**, God file con 8+ dominios (routing HTTP + ffmpeg + Ollama + SSE +
-   estado de grabación + config + sesiones + wizard + recovery).
-2. **Estado mutable global** en server.ts (14 vars, líneas ~1108–1391) mutado por varios handlers
-   async → carreras (parar mientras un chunk live está in-flight).
-3. **29 `catch {}`** que tragan errores en silencio (config corrupta → `{}` silencioso, etc.).
-4. `useRecording.ts` = **390 líneas**, mega-hook acoplando API + 3 EventSource + animación + Zustand.
-5. `transcription_server.py` = **1741 líneas**, monolito HTTP + modelos + diarización + SSE + voces.
-6. Máquina de estados del live dispersa en 7 vars + 2 funciones, sin ciclo de vida explícito.
+1. `server.ts`: **2,197 lines**, combining more than eight domains: routing, FFmpeg, Ollama, SSE, recording state, configuration, sessions, setup, and recovery.
+2. **Global mutable state** in `server.ts`: 14 variables around lines 1108–1391, changed by multiple asynchronous handlers, creating races such as stopping during an in-flight live chunk.
+3. **29 `catch {}` blocks** silently swallowing errors, including corrupt configuration becoming an empty object.
+4. `useRecording.ts`: **390 lines**, coupling the API, three EventSource instances, animation, and Zustand.
+5. `transcription_server.py`: **1,741 lines**, combining HTTP, models, diarization, SSE, and voices.
+6. Live state spread across seven variables and two functions, without an explicit lifecycle.
 
-ALTOS: store con 3 patrones de mutación incompatibles (append/replace/upsert); contrato SSE implícito
-sin uniones discriminadas; `_stream_dual` sin recuperación de error; **dos `loadConfig()` duplicados**
-(server.ts inline + lib/config.ts); lifecycle de grabación sin state machine; sin logging estructurado;
-**cobertura de tests ~0.4%** (2 archivos).
+Other high-priority findings: incompatible append/replace/upsert store patterns; an implicit SSE contract without discriminated unions; no error recovery in `_stream_dual`; duplicate `loadConfig()` implementations; no recording state machine; no structured logging; and approximately **0.4% test coverage** across two files.
 
-## Fuentes top consultadas (oficiales / autores de referencia)
+## Reference sources
 
-- **Vercel Web Interface Guidelines** — https://vercel.com/design/guidelines (repo MIT
-  vercel-labs/web-interface-guidelines; instalable como *agent command* para Claude Code).
-- **Vercel AI SDK** — streaming/error-handling/backpressure/stopping-streams (ai-sdk.dev). NO adoptar
-  el SDK (heed no llama LLM); robar la disciplina: `partial` vs `final`, errores in-band, abort≠finish.
-- **Ousterhout, *A Philosophy of Software Design*** — módulos profundos, ocultar información,
-  "define errors out of existence". (No es dogma de archivos chiquitos.)
-- **Fowler, *Refactoring* 2ª ed + Strangler Fig + SelfTestingCode** — pasos chicos, big-bang falla.
-- **Feathers, *Working Effectively with Legacy Code*** — seams + characterization tests (autor clave
-  ahora: ambos God files = legacy por falta de tests).
-- **Kent Beck, *Tidy First?*** — nunca mezclar cambios estructurales y de comportamiento (commits
-  separados) = sustituto del code review para un dev solo.
-- **Eric Normand, *Grokking Simplicity*** — functional core / imperative shell (acciones vs cálculos
-  vs datos): los bugs de tiempo real viven en las "acciones".
-- **Cockburn (Hexagonal)**, **Wlaschin (*Domain Modeling Made Functional*** — make illegal states
-  unrepresentable), **Bogard (Vertical Slice** — cortar por capacidad, no por capa).
-- **Grug Brained Developer / Abramov / Sandi Metz** — vacuna anti-sobreingeniería: "la duplicación es
-  más barata que la abstracción equivocada"; no factorizar antes de tiempo.
-- **React 19 oficial + TkDodo (Zustand/React Query) + react-error-boundary + totaltypescript**
-  (uniones discriminadas) + **dependency-cruiser** (no-circular) + **Bun workspaces**.
+- **Vercel Web Interface Guidelines:** https://vercel.com/design/guidelines and the MIT-licensed `vercel-labs/web-interface-guidelines` repository.
+- **Vercel AI SDK:** streaming, error handling, backpressure, and stopping streams at https://ai-sdk.dev. The plan does not adopt the SDK; it adopts distinctions such as partial/final results, in-band errors, and abort versus finish.
+- **John Ousterhout, _A Philosophy of Software Design_:** deep modules, information hiding, and defining errors out of existence.
+- **Martin Fowler, _Refactoring_, second edition; Strangler Fig; SelfTestingCode:** small steps rather than a large rewrite.
+- **Michael Feathers, _Working Effectively with Legacy Code_:** seams and characterization tests for code without a safety net.
+- **Kent Beck, _Tidy First?_:** separate structural changes from behavioral changes.
+- **Eric Normand, _Grokking Simplicity_:** functional core and imperative shell; distinguish actions, calculations, and data.
+- **Alistair Cockburn, hexagonal architecture; Scott Wlaschin, _Domain Modeling Made Functional_; Jimmy Bogard, vertical slices:** explicit boundaries and capabilities rather than universal layers.
+- **The Grug Brained Developer, Dan Abramov, and Sandi Metz:** avoid premature abstraction; duplication can be cheaper than a wrong abstraction.
+- **React 19 documentation, TkDodo on Zustand/React Query, react-error-boundary, Total TypeScript, dependency-cruiser, and Bun workspaces.**
 
-## Plan de ejecución (lo que SÍ se hace, todo verde)
+## Execution plan
 
-- **RF-1 (cero riesgo):** uniones discriminadas en `shared` — eventos SSE + state machine de
-  grabación + `assertNever`. Hace los errores de contrato fallar en compile-time.
-- **RF-2 (estructural):** consolidar config en UNA fuente (matar el dup), logger estructurado.
-- **RF-3 (estructural, Strangler):** extraer de server.ts módulos behavior-preserving: `sse.ts`
-  (3 implementaciones → 1), `process-supervisor.ts`, `ollama.ts`, `transcription-client.ts`.
-- **RF-4 (comportamiento, alto valor, testeable headless):** graceful shutdown (SIGTERM/SIGINT mata
-  ffmpeg/syscap por negative-PID → cero huérfanos), readiness checks, errores SSE in-band + heartbeat.
-- **RF-5 (cliente):** normalizar el store del transcript (`segmentsById`+`segmentIds`) + selectores
-  atómicos; sacar niveles de audio del estado global; state machine discriminada.
-- **RF-6 (cliente):** error boundary alrededor del transcript con los controles AFUERA (nunca perder
-  una grabación) + `onUncaughtError` en createRoot.
-- **RF-7 (red de seguridad):** characterization tests de las funciones PURAS (TS + Python) +
-  dependency-cruiser (no-circular, shared-leaf).
+- **RF-1 — contracts:** discriminated unions in `shared` for SSE events and recording states, plus `assertNever`. Contract errors should fail compilation.
+- **RF-2 — structural:** consolidate configuration into one module and add structured logging.
+- **RF-3 — structural extraction:** extract behavior-preserving `sse.ts`, `process-supervisor.ts`, `ollama.ts`, and `transcription-client.ts` modules from `server.ts`.
+- **RF-4 — reliability behavior:** graceful shutdown reaps FFmpeg and system capture on SIGTERM/SIGINT; add readiness checks, in-band SSE errors, and heartbeats.
+- **RF-5 — client:** normalize transcript state with `segmentsById` and `segmentIds`, use atomic selectors, keep audio levels outside global state, and add a discriminated state machine.
+- **RF-6 — client:** place an error boundary around the transcript while keeping recording controls outside it; add `onUncaughtError` to `createRoot`.
+- **RF-7 — safety net:** characterize pure TypeScript/Python functions and enforce no cycles plus shared-leaf boundaries with dependency-cruiser.
 
-## TRAMPAS que se EVITAN explícitamente (sobreingeniería para un fundador solo que lanza en días)
+## Deliberately excluded complexity
 
-Big-bang rewrite de cualquier God file · Hexagonal/capas en todo · XState · event-sourcing/CQRS
-completo · framework de supervisión genérico · adoptar el Vercel AI SDK · TanStack Query para el
-stream SSE · React 19 Actions/useOptimistic/`use` · ts-rest · migrar Zod→Valibot · Turborepo/Nx ·
-codegen Zod→Pydantic · URL-as-state/i18n · branded types universales · RSC/Next caching.
+A large rewrite of either main file; universal hexagonal layers; XState; full event sourcing/CQRS; a generic supervision framework; adopting the Vercel AI SDK; TanStack Query for SSE; React Actions/useOptimistic/`use`; ts-rest; Zod-to-Valibot migration; Turborepo/Nx; Zod-to-Pydantic code generation; URL-as-state/i18n; universal branded types; RSC/Next caching.
 
-## Cómo verifico sin mic (headless)
+## Headless verification
 
-`bunx tsc --noEmit` (client+server) · `bun test` (funciones puras TS) · pytest/`python -m` self-tests
-(funciones puras Python) · `doctor.py` 6/6 · smoke boot en puertos alternos · `bunx depcruise`.
-La UX live+stop con mic real la prueba Junior.
+Use `bunx tsc --noEmit` for client/server, `bun test` for pure TypeScript logic, Python self-tests, `doctor.py`, alternate-port boot smoke tests, and `bunx depcruise`. Junior validates live capture and stopping with the physical microphone.

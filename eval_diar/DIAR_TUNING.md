@@ -1,56 +1,55 @@
-# Diarización en vivo "post-stop en vivo" — tuning con las 3 grabaciones
+# Live diarization with the offline engine — tuning on three recordings
 
-Harness que prueba la hipótesis: correr el motor OFFLINE (`performCompleteDiarization`, el del
-post-stop, DER 10.6%) sobre una ventana rolling cada pocos segundos + reconciliación por embedding +
-naming conservador → tiene la precisión del post-stop pero en vivo. Medido sobre las 3 grabaciones
-recientes de Junior, NO una (sin generalización apresurada). Ground truth = el post-stop REAL
-(diarize full + filtro de spurious ≥3s Y ≥12%).
+Historical upstream evaluation of the following hypothesis: running the offline `performCompleteDiarization` engine over a rolling window, with embedding reconciliation and conservative naming, can provide post-stop quality during live capture. The offline engine's reported DER was 10.6%. Evaluation used three recent recordings from Junior, with the actual full post-stop result as ground truth, including the spurious-speaker filter of at least three seconds and 12% of speech.
 
-## Resultado con el config ganador
-```
-W=30 STEP=2 MERGE=0.55 RECON=0.55 CONSOLIDATE=0.5 NAME(thr=0.62 margin=0.08 mindur=4) filtro(3s,12%)
+## Selected configuration and results
 
-grabación (sys)            GT  live  phantom  churn   naming
-342s (3→2 tras filtro)      2    2      0      2/85   Learn 0.925 (resto genérico) ✓
-86s  (1 hablante)           1    1      0      0/19   Learn 0.957 ✓
-53s  (2 hablantes)          2    1      0      0/27   Learn 0.968 ✓ (pierde 1 hablante de 5s)
+```text
+W=30 STEP=2 MERGE=0.55 RECON=0.55 CONSOLIDATE=0.5
+NAME(thr=0.62 margin=0.08 mindur=4) filter(3s,12%)
 
-TOTAL phantom: 0   (objetivo: 0)
+recording (system)         GT  live  phantom  churn   naming
+342s (3→2 after filtering)  2    2      0      2/85   Learn 0.925 (others generic)
+86s  (1 speaker)           1    1      0      0/19   Learn 0.957
+53s  (2 speakers)          2    1      0      0/27   Learn 0.968 (misses one 5s speaker)
+
+TOTAL phantom: 0   (target: 0)
 ```
 
-## Qué se logró vs el bug de las imágenes
-- **Fantasmas (un hablante partido en Speaker 1/2/3): ELIMINADOS.** 0/3 grabaciones. Antes: rampante.
-- **Naming cruzado (hombre → "Learn"): resuelto por diseño.** Umbral 0.5→0.62 + margen top1-top2 0.08
-  + duración mínima 4s. El hombre matcheaba a ~0.52 → ahora queda genérico. En la de 342s (3
-  hablantes) SOLO el que es Learn recibió el nombre (0.925); los otros quedaron `Speaker N`.
-- **Churn (parpadeo): casi nulo** (0-2 cambios de etiqueta en 19-85 ticks).
+## Improvements over the observed speaker-label bug
 
-## Por qué funciona (claves del diseño)
-1. **Motor offline en ventana** (no Sortformer streaming): clustering global → un hablante = un
-   cluster. Medido: sobre ventana de 30s NO sobre-parte (a diferencia de streaming).
-2. **Reconciliación por embedding** (registro de sesión): los IDs del sidecar se renumeran/acumulan
-   entre corridas → inútiles; la identidad se lleva por cosine del voiceprint 256-dim. Same voice
-   ≈0.7+, different ≈0.0 → separación enorme.
-3. **Consolidación del registro** (fusiona splits accidentales) + **airtime REAL** por tick activo +
-   el mismo filtro de spurious del post-stop (≥3s Y ≥12%) → mata blips.
-4. **Naming conservador** con umbral+margen+duración sobre el embedding ACUMULADO del hablante.
+- **Phantom speakers:** zero across the three recordings, avoiding one speaker being split into multiple labels.
+- **Incorrect name assignment:** raising the threshold from 0.5 to 0.62, requiring a top-one/top-two margin of 0.08, and requiring four seconds of speech prevented the incorrect assignment of “Learn” to another speaker whose similarity was approximately 0.52. In the 342-second recording, only the matching voice received that name; other voices remained `Speaker N`.
+- **Label churn:** zero to two changes across 19–85 evaluation ticks.
 
-## Límite honesto (no sobre-tuneado)
-La 53s pierde un hablante secundario de 5s (14.8% del habla, cos 0.051 = persona distinta real). La
-ventana rolling tiene menos contexto que el post-stop full → lo absorbe. Es el problema OPUESTO (y
-mucho menos grave) al de las imágenes. La fase de **enrollment** (voces conocidas nombradas desde su
-1ª palabra) y ventanas/step afinables por hardware lo mejoran después. NO se fuerza el config a este
-outlier para no reintroducir fantasmas en las otras 2.
+## Design
 
-## Config a portar a producción
-`transcription_server.py` (endpoint `/diar/live` + registro de sesión) usa exactamente
-`eval_diar/reconcile.py`: `merge_within_window(0.55)` → `Registry(recon=0.55).update` →
-`consolidate(0.5)` → `name_speakers(thr=0.62, margin=0.08, mindur=4)`; airtime real + filtro (3s,12%).
-Ventana 30s, cadencia 2s (afinable por hardware en la fase de escalado).
+1. **Windowed offline engine:** global clustering over a 30-second window avoids the over-splitting observed with streaming Sortformer.
+2. **Embedding reconciliation:** sidecar speaker IDs can change between runs. A session registry instead compares 256-dimensional voiceprints by cosine similarity; the measured same-voice similarity was approximately 0.7 or higher, versus approximately zero for different voices.
+3. **Registry consolidation and real airtime:** merge accidental splits, accumulate speech time only for active ticks, and apply the same three-second/12% spurious-speaker filter used after stopping.
+4. **Conservative naming:** apply threshold, margin, and minimum duration to each speaker's accumulated embedding.
 
-## Reproducir
+## Limitation
+
+The 53-second recording loses a secondary speaker with approximately five seconds of speech, representing 14.8% of speech time. A cosine similarity of 0.051 indicates a distinct voice. The rolling window has less context than full-file processing and absorbs that speaker into another cluster. The configuration was not adjusted specifically for this outlier, since doing so could reintroduce phantom speakers in the other recordings. Enrollment and hardware-specific window/cadence tuning were proposed follow-up work.
+
+## Production integration recorded at the time
+
+`transcription_server.py` used the `/diar/live` endpoint and session registry with `eval_diar/reconcile.py`:
+
+```text
+merge_within_window(0.55)
+Registry(recon=0.55).update
+consolidate(0.5)
+name_speakers(thr=0.62, margin=0.08, mindur=4)
 ```
+
+The configuration used real airtime, the three-second/12% filter, a 30-second window, and a two-second cadence, with cadence intended to be adjustable by hardware.
+
+## Reproduce
+
+```sh
 cd eval_diar
-python3 exp_window.py <rec.wav> 30 3     # ¿la ventana sobre-parte? (viabilidad)
-python3 simulate.py --all                # score sobre las 3 (config por env: W, STEP, RECON, ...)
+python3 exp_window.py <rec.wav> 30 3  # Check window over-splitting.
+python3 simulate.py --all           # Evaluate all three; configure W, STEP, RECON, etc. through the environment.
 ```
