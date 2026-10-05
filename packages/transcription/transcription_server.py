@@ -1950,7 +1950,7 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
     # The full offline ASR model belongs only to this pass, not the next live recording.
     asr = engines.ParakeetEngine(role="asr") if final_model == "parakeet-v3" else None
     metadata = {"language": language, "language_detection": detection,
-                "model": final_model, "finalized": True}
+                "model": final_model, "finalized": True, "duration": engines._wav_duration(wav_path)}
 
     # Use the FluidAudio path directly on Apple Silicon so this works whether or not the server's
     # boot set the `diarize_backend` global (the harness imports the module without booting).
