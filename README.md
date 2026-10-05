@@ -1,6 +1,6 @@
 # Heed macOS
 
-Personalização do [Heed original](https://github.com/isjunrod/heed), de Junior Rodriguez, sob licença MIT. Oferece transcrição local em português brasileiro e inglês, controles na barra superior e retenção automática de áudio com limite de 2 GB por máquina.
+Personalização do [Heed original](https://github.com/isjunrod/heed), de Junior Rodriguez, sob licença MIT. Oferece transcrição local em português brasileiro e inglês, controles na barra superior e retenção automática de áudio com limite de 2 GB por máquina e reprodução sincronizada com a transcrição.
 
 ## Instalação
 

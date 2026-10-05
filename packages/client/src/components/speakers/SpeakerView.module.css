@@ -148,3 +148,7 @@
 	0%, 100% { opacity: 0.3; transform: scale(0.8); }
 	50% { opacity: 1; transform: scale(1.2); }
 }
+.seekable { cursor: pointer; border-radius: var(--radius-sm); }
+.seekable:hover { background: var(--blue-pale); }
+.seekable:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.activeSegment { background: var(--blue-pale); box-shadow: inset 3px 0 var(--blue); }

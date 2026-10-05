@@ -1,0 +1,26 @@
+import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+
+/** Expõe somente o áudio da sessão dentro da pasta local de gravações. */
+export async function sessionAudioResponse(req:Request,id:string,sessionsDir:string,recordingsDir:string):Promise<Response>{
+ if(!/^[a-zA-Z0-9_-]+$/.test(id))return new Response(null,{status:403});
+ let session:any;
+ try{const root=realpathSync(sessionsDir);const file=realpathSync(join(root,`${id}.json`));if(relative(root,file)!==`${id}.json`)return new Response(null,{status:403});session=JSON.parse(readFileSync(file,'utf8'));}catch{return new Response(null,{status:404});}
+ const path=session?.files?.wav;
+ if(typeof path!=='string'||!path)return new Response(null,{status:404});
+ if(!isAbsolute(path))return new Response(null,{status:403});
+ const lexical=relative(resolve(recordingsDir),resolve(path));
+ if(!lexical||lexical==='..'||lexical.startsWith(`..${sep}`)||isAbsolute(lexical))return new Response(null,{status:403});
+ let actual:string,size:number;
+ try{const root=realpathSync(recordingsDir);actual=realpathSync(path);const child=relative(root,actual);if(!child||child==='..'||child.startsWith(`..${sep}`)||isAbsolute(child))return new Response(null,{status:403});const stat=statSync(actual);if(!stat.isFile())return new Response(null,{status:404});size=stat.size;}catch{return new Response(null,{status:404});}
+ const headers=new Headers({'Content-Type':'audio/wav','Accept-Ranges':'bytes','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
+ let start=0,end=size-1,status=200;
+ const range=req.headers.get('range');
+ if(range){const match=/^bytes=(\d*)-(\d*)$/.exec(range);let valid=!!match && !!(match[1]||match[2]) && size>0;
+ if(valid&&match){if(match[1]){start=Number(match[1]);end=match[2]?Math.min(Number(match[2]),size-1):size-1;}else{const suffix=Number(match[2]);valid=suffix>0;start=Math.max(0,size-suffix);}valid=valid&&Number.isSafeInteger(start)&&Number.isSafeInteger(end)&&start>=0&&start<size&&end>=start;}
+ if(!valid){headers.set('Content-Range',`bytes */${size}`);return new Response(null,{status:416,headers});}
+ status=206;headers.set('Content-Range',`bytes ${start}-${end}/${size}`);
+ }
+ headers.set('Content-Length',String(Math.max(0,end-start+1)));
+ return new Response(req.method==='HEAD'?null:Bun.file(actual).slice(start,end+1),{status,headers});
+}

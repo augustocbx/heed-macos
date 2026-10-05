@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { Session } from "@heed/shared";
 import { useSessionsStore } from "@/stores/sessions.ts";
 import { useTemplatesStore } from "@/stores/templates.ts";
@@ -12,6 +12,7 @@ import { NotesView } from "@/components/ai-notes/NotesView.tsx";
 import { NotesHardwareHint } from "@/components/ai-notes/NotesHardwareHint.tsx";
 import { Spinner } from "@/components/shared/Spinner.tsx";
 import { TitleInput } from "./TitleInput.tsx";
+import { SessionAudioPlayer } from "./SessionAudioPlayer.tsx";
 import styles from "./SessionDetail.module.css";
 
 interface Props {
@@ -34,6 +35,20 @@ export function SessionDetail({ session, onBack }: Props) {
 	const [generating, setGenerating] = useState(false);
 	const [streamingNotes, setStreamingNotes] = useState("");
 	const [speakerNames, setSpeakerNames] = useState<Record<string, string>>({});
+ const audioRef = useRef<HTMLAudioElement>(null);
+ const [playbackTime,setPlaybackTime] = useState<number|null>(null);
+ const [audioDuration,setAudioDuration] = useState<number|null>(null);
+ useEffect(()=>{setPlaybackTime(null);setAudioDuration(null);setSpeakerNames({});},[session.id]);
+ const seekAudio = (seconds:number) => {
+  const audio=audioRef.current;
+  if(!audio || audio.error || !Number.isFinite(seconds) || seconds<0)return;
+  if(Number.isFinite(audio.duration)&&seconds>=audio.duration) {
+   showToast('Este trecho está fora da duração do áudio disponível.');return;
+  }
+  audio.currentTime=seconds;
+  setPlaybackTime(seconds);
+  void audio.play().catch(()=>showToast('Clique em Play para reproduzir o áudio.'));
+ };
 
 	useEffect(() => { loadTemplates(); loadModels(); }, [loadTemplates, loadModels]);
 
@@ -42,7 +57,7 @@ export function SessionDetail({ session, onBack }: Props) {
 
 	const meta = [
 		fmtDate(session.createdAt),
-		session.duration ? fmtDuration(session.duration) : null,
+		(audioDuration ?? session.duration) ? fmtDuration(Math.floor(audioDuration ?? session.duration)) : null,
 		session.language ? `lang: ${session.language}` : null,
 		session.speakers?.length ? `${session.speakers.length} speaker${session.speakers.length > 1 ? "s" : ""}` : null,
 	].filter(Boolean).join(" · ");
@@ -129,6 +144,8 @@ export function SessionDetail({ session, onBack }: Props) {
 			</div>
 
 			<div className={styles.meta}>{meta}</div>
+   <SessionAudioPlayer sessionId={session.id} available={!!session.files?.wav}
+    audioRef={audioRef} onTime={setPlaybackTime} onDuration={setAudioDuration}/>
 
 			{(session.tags && session.tags.length > 0) && (
 				<div className={styles.tagsRow}>
@@ -153,6 +170,8 @@ export function SessionDetail({ session, onBack }: Props) {
 					onMerge={handleSpeakerMerge}
 					emptyMessage="No speaker segments in this session yet."
 					animateEmpty={false}
+     playbackTime={playbackTime}
+     onSeek={session.files?.wav ? seekAudio : undefined}
 				/>
 			)}
 

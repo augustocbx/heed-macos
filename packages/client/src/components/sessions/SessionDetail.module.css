@@ -158,3 +158,12 @@
 	color: #92400E;
 	line-height: 1.5;
 }
+.audioPlayer {
+ margin-bottom: var(--space-4);
+}
+.audioPlayer audio { width: 100%; }
+.audioMessage {
+ font-size: 12px;
+ color: var(--text-3);
+ margin: 8px 0 14px;
+}
