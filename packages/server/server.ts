@@ -12,6 +12,8 @@ import { TRANSCRIPTION_SERVER, pyPost as postJSON } from "./lib/transcription-cl
 import { track, gracefulStop, installShutdownHooks } from "./lib/process.ts";
 import { sseResponse } from "./lib/sse.ts";
 import { sessionAudioResponse } from "./lib/session-audio.ts";
+import { SessionTags, TagError, tagResponse } from "./lib/session-tags.ts";
+const sessionTags = new SessionTags(SESSIONS_DIR);
 import { DesktopControl } from "./lib/desktop-control.ts";
 import { DesktopPermissions, desktopRequestAllowed as permissionRequestAllowed, permissionAction, permissionReport } from "./lib/desktop-permissions.ts";
 import { AUDIO_LIMIT_BYTES, enforceAudioRetention, removeChannelCopies } from "./lib/audio-retention.ts";
@@ -36,6 +38,7 @@ async function preemptNotes() {
 }
 function protectAudio(path: string) { retainedProcessing.set(path, Date.now() + 120_000); }
 function pruneAudio(limit = AUDIO_LIMIT_BYTES) {
+ sessionTags.recover();
  for (const [path, until] of retainedProcessing) if (until < Date.now()) retainedProcessing.delete(path);
  const protectedPaths = [...retainedProcessing.keys()];
  if (recorderPath) protectedPaths.push(recorderPath);
@@ -998,10 +1001,10 @@ async function handleDesktopFloat(): Promise<Response> {
 // --- Sessions CRUD ---
 function sessionError(error: unknown): Response {
  const message = error instanceof Error ? error.message : "Could not save the meeting.";
- const status = /not found/i.test(message) ? 404 : /changed|replacement|already running/i.test(message) ? 409 : 400;
+ const status = error instanceof TagError ? error.status : (error as { code?: string })?.code || error instanceof SyntaxError ? 500 : /not found/i.test(message) ? 404 : /changed|replacement|already running/i.test(message) ? 409 : 400;
  return Response.json({error:message},{status});
 }
-function handleListSessions(): Response { return Response.json(notesService.list()); }
+function handleListSessions(): Response { try { return Response.json(notesService.list()); } catch (error) { return sessionError(error); } }
 async function handleCreateSession(req: Request): Promise<Response> {
  try {
   const data = notesService.create(await req.json());
@@ -2321,6 +2324,7 @@ setInterval(async () => {
 
 const notesService = new AutomaticNotesService({
  sessionsDir:SESSIONS_DIR,
+ sessionStore:sessionTags,
  getSettings:() => automaticNotesSettings(loadConfig()),
  loadTemplate:id => loadTemplate(id) || undefined,
  isBusy:() => audioWorkBusy() || !!manualNotesController,
@@ -2357,6 +2361,10 @@ const server = Bun.serve({
             try { sessionId = decodeURIComponent(audioRoute[1]!); } catch { return new Response(null, {status:403}); }
             return sessionAudioResponse(req, sessionId, SESSIONS_DIR, UPLOAD_DIR);
         }
+		if ((method === "GET" || method === "POST") && url.pathname === "/api/tags") {
+      if (!desktopRequestAllowed(req)) return new Response(null, { status: 403 });
+      return tagResponse(req, sessionTags, session => notesService.normalize(session));
+    }
 		if (method === "GET" && url.pathname === "/api/sessions") return handleListSessions();
 		if (method === "POST" && url.pathname === "/api/sessions") return handleCreateSession(req);
 		if (method === "PATCH" && url.pathname === "/api/sessions") return handlePatchSession(req, url);

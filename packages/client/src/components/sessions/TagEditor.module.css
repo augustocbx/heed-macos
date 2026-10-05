@@ -1,0 +1,17 @@
+.editor { margin-top: 8px; font-family: var(--mono); font-size: 11px; cursor: default; }
+.row, .buttons { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.editor button { cursor: pointer; border: 1px solid var(--border-light); background: var(--white); color: var(--text-2); border-radius: 6px; padding: 5px 8px; font: inherit; }
+.editor button:disabled { opacity: .55; cursor: wait; }
+.editor button:focus-visible, .editor input:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.chip { display: inline-flex; border-radius: 12px; overflow: hidden; background: var(--blue-pale); }
+.chip button { border: 0; background: transparent; color: var(--blue); }
+.chip button:focus-visible { outline-offset: -2px; }
+.chip button + button { border-left: 1px solid var(--border-light); }
+.add { border-style: dashed !important; }
+.panel { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; border: 1px solid var(--border-light); border-radius: 8px; padding: 10px; margin-top: 8px; max-width: 520px; background: var(--white); }
+.panel p { width: 100%; margin: 0 0 4px; line-height: 1.5; color: var(--text-2); }
+.panel input { flex: 1; min-width: 120px; border: 1px solid var(--border-light); border-radius: 6px; padding: 7px; font: inherit; color: var(--text); background: var(--white); }
+.suggestions { display: flex; flex-direction: column; width: 100%; max-height: 160px; overflow: auto; gap: 2px; }
+.suggestions button { text-align: left; border: 0; }
+.suggestions button[aria-selected="true"], .editor button:hover { background: var(--blue-pale); color: var(--blue); }
+.error { color: var(--red); display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; }

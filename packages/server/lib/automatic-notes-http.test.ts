@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Session, NotesJob } from "../../shared/types";
@@ -128,4 +128,34 @@ test("unavailable Ollama fails only the notes and can be disabled while offline"
  expect(failed.transcript).toBe("Saved meeting");expect(failed.files?.wav).toBe(join(directory,"offline.wav"));
  expect(currentJob(failed)?.reason).toBe("ollama-unavailable");expect(currentJob(failed)?.retryable).toBe(true);
  expect((await jsonRequest("/api/notes/settings",{enabled:false,model:"fixture:1b",templateId:"general",language:"meeting"},"PATCH")).status).toBe(200);
+});
+
+test("HTTP meeting and tag endpoints preserve notes guards and reject stale assignment patches", async () => {
+ const created = await jsonRequest("/api/sessions", { id: "tags-http", transcript: "Synthetic source", aiNotes: "Manual notes", tags: [" Planning "] });
+ expect(created.body.tags).toEqual(["Planning"]);
+ expect(created.body.tagsRevision).toBeString();
+ const tags = await jsonRequest("/api/tags", undefined, "GET");
+ const loaded = tags.body.sessions.find((session: Session) => session.id === "tags-http");
+ expect(loaded).toEqual(await get("tags-http"));
+ expect(loaded.notesMetadata).toMatchObject({ origin: "manual", stale: false });
+ expect((await jsonRequest("/api/sessions?id=tags-http", { tags: ["Changed"], aiNotes: "Lost" }, "PATCH")).status).toBe(409);
+ const renamed = await jsonRequest("/api/tags", { action: "rename", tag: "Planning", name: "Décisions", expectedRevision: tags.body.revision });
+ expect(renamed.status).toBe(200);
+ expect((await get("tags-http"))).toMatchObject({ tags: ["Décisions"], aiNotes: "Manual notes", transcriptRevision: loaded.transcriptRevision });
+ expect((await jsonRequest("/api/sessions?id=tags-http", { tags: [], tagsRevision: created.body.tagsRevision }, "PATCH")).status).toBe(409);
+ const current = await get("tags-http");
+ expect((await jsonRequest("/api/sessions?id=tags-http", { tags: [], tagsRevision: current.tagsRevision }, "PATCH")).status).toBe(200);
+ expect((await jsonRequest("/api/sessions?id=tags-http", { aiNotes: "Edited notes", expectedNotes: "Manual notes", expectedTranscriptRevision: current.transcriptRevision }, "PATCH")).status).toBe(200);
+});
+
+test("HTTP session reads and writes fail closed when tag recovery cannot proceed", async () => {
+ const journal = join(directory, "sessions", ".tag-transaction");
+ mkdirSync(journal);
+ try {
+  expect((await jsonRequest("/api/sessions", undefined, "GET")).status).toBe(500);
+  expect((await jsonRequest("/api/tags", undefined, "GET")).status).toBe(500);
+  expect((await jsonRequest("/api/sessions?id=tags-http", { title: "Lost edit" }, "PATCH")).status).toBe(500);
+  expect((await jsonRequest("/api/sessions?id=tags-http", undefined, "DELETE")).status).toBe(500);
+ } finally { rmSync(journal, { recursive: true }); }
+ expect((await get("tags-http")).title).not.toBe("Lost edit");
 });

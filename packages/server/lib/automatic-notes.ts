@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Session, SessionPatch } from "../../shared/types/session";
 import type { AutomaticNotesSettings, NotesJob } from "../../shared/types/notes";
 import type { Template } from "../../shared/types/template";
+import type { SessionTags } from "./session-tags";
 import { atomicWriteJson } from "./atomic-json";
 
 export interface NotesGenerationInput {
@@ -14,6 +15,7 @@ export interface NotesGenerationInput {
 }
 export interface AutomaticNotesOptions {
  sessionsDir: string;
+ sessionStore?: SessionTags;
  getSettings: () => AutomaticNotesSettings;
  loadTemplate: (id: string) => Template | undefined;
  generate: (input: NotesGenerationInput) => Promise<string>;
@@ -46,17 +48,23 @@ export class AutomaticNotesService {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(id)) throw new Error("Invalid session id");
   return join(this.sessionsDir, `${id}.json`);
  }
- private save(session: Session): Session { session.updatedAt = this.timestamp(); atomicWriteJson(this.path(session.id), session); return session; }
+ private save(session: Session): Session { session.updatedAt = this.timestamp(); if (this.options.sessionStore) return this.options.sessionStore.save(session); atomicWriteJson(this.path(session.id), session); return session; }
  get(id: string): Session | null {
+  this.path(id);
+  if (this.options.sessionStore) { const session = this.options.sessionStore.read(id); return session ? this.normalize(session) : null; }
   const path = this.path(id); if (!existsSync(path)) return null;
   if (!lstatSync(path).isFile()) throw new Error("Invalid session file");
   const session: Session = JSON.parse(readFileSync(path, "utf8"));
+  return this.normalize(session);
+ }
+ normalize(session: Session): Session {
   // Normalize legacy records for guarded editing without enqueueing or writing them on read.
   session.transcriptRevision ||= sourceRevision(session);
   if (session.aiNotes?.trim() && !session.notesMetadata) session.notesMetadata = { origin: "manual", sourceRevision: session.transcriptRevision, stale: false };
   return session;
  }
  list(): Session[] {
+  if (this.options.sessionStore) return this.options.sessionStore.snapshot().sessions.map(session => this.normalize(session)).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
   return readdirSync(this.sessionsDir).filter(file => file.endsWith(".json")).flatMap(file => {
    try { const result = this.get(file.slice(0, -5)); return result ? [result] : []; } catch { return []; }
   }).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
@@ -71,10 +79,12 @@ export class AutomaticNotesService {
   session.transcriptRevision = sourceRevision(session);
   if (session.aiNotes) session.notesMetadata = { origin: "manual", stale: false, sourceRevision: session.transcriptRevision };
   if (session.transcriptFinalized && this.options.getSettings().enabled) this.enqueue(session);
+  if (this.options.sessionStore) { session.updatedAt = this.timestamp(); return this.options.sessionStore.create(session); }
   return this.save(session);
  }
  patch(id: string, patch: GuardedSessionPatch): Session {
   const existing = this.require(id);
+  if (this.options.sessionStore) patch = this.options.sessionStore.preparePatch(existing, patch);
   if (patch.expectedTranscriptRevision !== undefined && patch.expectedTranscriptRevision !== existing.transcriptRevision) throw new Error("Transcript changed; reload before saving notes");
   if (patch.expectedNotes !== undefined && patch.expectedNotes !== existing.aiNotes) throw new Error("Notes changed; reload before saving notes");
   const { id: _id, createdAt: _created, transcriptRevision: _revision, notesJobs: _jobs, notesMetadata: _metadata, expectedTranscriptRevision: _expectedRevision, expectedNotes: _expectedNotes, ...mutable } = patch as GuardedSessionPatch & { id?: string; createdAt?: string };
@@ -91,7 +101,7 @@ export class AutomaticNotesService {
   if (session.transcriptFinalized && (revised || !existing.transcriptFinalized) && this.options.getSettings().enabled) this.enqueue(session);
   return this.save(session);
  }
- delete(id: string): boolean { const path = this.path(id); if (this.active?.sessionId === id) this.active.controller.abort(); if (!existsSync(path)) return false; unlinkSync(path); return true; }
+ delete(id: string): boolean { const path = this.path(id); this.options.sessionStore?.recover(); if (this.active?.sessionId === id) this.active.controller.abort(); if (!existsSync(path)) return false; if (this.options.sessionStore) this.options.sessionStore.remove(id); else unlinkSync(path); return true; }
  private snapshot(session: Session, old?: NotesJob, retry: NotesRetryOptions = {}): NotesJob {
   const settings = this.options.getSettings();
   let template: Template | undefined;
@@ -107,8 +117,9 @@ export class AutomaticNotesService {
   if (previous && previous.status !== "superseded") return;
   session.notesJobs = { ...session.notesJobs, [id]: this.snapshot(session, previous) };
  }
- recover(): void {
-  for (const session of this.list()) {
+ recover(): void { this.recoverRunning(this.list()); }
+ private recoverRunning(sessions: Session[]): void {
+  for (const session of sessions) {
    let changed = false;
    for (const job of Object.values(session.notesJobs || {})) if (job.status === "running") { job.status = "waiting"; job.reason = "interrupted"; job.generatedCharacters = 0; job.updatedAt = this.timestamp(); changed = true; }
    if (changed) this.save(session);
@@ -143,7 +154,10 @@ export class AutomaticNotesService {
  }
  async tick(): Promise<void> {
   if (this.active) return;
-  const candidate = this.list().reverse().flatMap(session => Object.values(session.notesJobs || {}).map(job => ({ session, job }))).find(({ job }) => job.status === "queued" || job.status === "waiting");
+  // An idle worker may follow a failed storage read; recover its durable running job.
+  const sessions = this.list();
+  this.recoverRunning(sessions);
+  const candidate = sessions.reverse().flatMap(session => Object.values(session.notesJobs || {}).map(job => ({ session, job }))).find(({ job }) => job.status === "queued" || job.status === "waiting");
   if (!candidate) return;
   const { session, job } = candidate;
   if (!this.options.getSettings().enabled || this.options.isBusy()) { job.status = "waiting"; job.reason = this.options.getSettings().enabled ? "resources-busy" : "disabled"; job.updatedAt = this.timestamp(); this.save(session); return; }

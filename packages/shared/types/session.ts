@@ -23,6 +23,8 @@ export interface Session {
 	aiNotes: string;
 	summary: string;
 	tags: string[];
+  /** Assignment-only revision; unrelated meeting edits do not invalidate it. */
+  tagsRevision?: string;
 	pinned: boolean;
 	files?: SessionFiles;
  transcriptFinalized?: boolean;
@@ -38,4 +40,15 @@ export type SessionPatch = Partial<Omit<Session, "id" | "createdAt">> & {
 
 export interface SessionListResponse {
 	sessions: Session[];
+}
+
+export type TagMutation =
+  | { action: "add" | "remove"; sessionId: string; tag: string; expectedRevision: string }
+  | { action: "rename"; tag: string; name: string; expectedRevision: string }
+  | { action: "delete"; tag: string; expectedRevision: string };
+
+export interface TagSnapshot {
+  tags: Array<{ name: string; meetingCount: number }>;
+  sessions: Session[];
+  revision: string;
 }

@@ -1,6 +1,6 @@
 import { tr, useLocale } from "@/lib/i18n.ts";
-import { useEffect, useMemo, useState } from "react";
-import type { Session } from "@heed/shared";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { tagKey, uniqueTags, type Session } from "@heed/shared";
 import { useSessionsStore } from "@/stores/sessions.ts";
 import { useUIStore } from "@/stores/ui.ts";
 import { SessionItem } from "./SessionItem.tsx";
@@ -10,7 +10,7 @@ import styles from "./SessionsPage.module.css";
 
 export function SessionsPage() {
 	useLocale();
-	const { sessions, load, viewing, view, update, remove } = useSessionsStore();
+	const { sessions, load, loadTags, lastTagChange, viewing, view, update, remove } = useSessionsStore();
 	const showToast = useUIStore((s) => s.showToast);
 
 	const [search, setSearch] = useState("");
@@ -23,16 +23,31 @@ export function SessionsPage() {
 		load();
 	}, [load]);
 
-	const allTags = useMemo(() => {
-		const tags = new Set<string>();
-		sessions.forEach((s) => s.tags?.forEach((t) => tags.add(t)));
-		return [...tags].sort();
-	}, [sessions]);
+  useEffect(() => {
+    const refresh = () => { void loadTags(); };
+    const visible = () => { if (document.visibilityState === "visible") refresh(); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", visible);
+    return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", visible); };
+  }, [loadTags]);
+
+  const allTags = useMemo(() => uniqueTags(sessions.flatMap(s => s.tags ?? [])).sort(), [sessions]);
+  const consumedTagChange = useRef<typeof lastTagChange>(null);
+  useEffect(() => {
+    const change = consumedTagChange.current !== lastTagChange ? lastTagChange : null;
+    consumedTagChange.current = lastTagChange;
+    setActiveTagFilter(current => {
+      let next = current;
+      if (current && change?.action === "rename" && tagKey(current) === tagKey(change.tag)) next = change.name;
+      if (current && change?.action === "delete" && tagKey(current) === tagKey(change.tag)) next = null;
+      return next && allTags.some(tag => tagKey(tag) === tagKey(next!)) ? next : null;
+    });
+  }, [allTags, lastTagChange]);
 
 	const filtered = useMemo(() => {
 		let result = sessions;
 		if (activeTagFilter) {
-			result = result.filter((s) => s.tags?.includes(activeTagFilter));
+			result = result.filter((s) => s.tags?.some(tag => tagKey(tag) === tagKey(activeTagFilter)));
 		}
 		const q = search.toLowerCase().trim();
 		if (q) {
@@ -52,7 +67,7 @@ export function SessionsPage() {
 	}, [sessions, search, activeTagFilter]);
 
 	if (viewing) {
-		return <SessionDetail session={viewing} onBack={() => view(null)} />;
+		return <SessionDetail session={viewing} onBack={() => view(null)} onTagClick={tag => { setActiveTagFilter(tag); view(null); }} />;
 	}
 
 	const openDeletePanel = (session: Session) => {
@@ -90,15 +105,15 @@ export function SessionsPage() {
 					{allTags.map((t) => (
 						<button
 							key={t}
-							className={`${styles.tagFilter} ${activeTagFilter === t ? styles.tagFilterActive : ""}`}
-							onClick={() => setActiveTagFilter(activeTagFilter === t ? null : t)}
+							className={`${styles.tagFilter} ${activeTagFilter !== null && tagKey(activeTagFilter) === tagKey(t) ? styles.tagFilterActive : ""}`}
+							onClick={() => setActiveTagFilter(activeTagFilter !== null && tagKey(activeTagFilter) === tagKey(t) ? null : t)}
 						>
 							#{t}
 						</button>
 					))}
 					{activeTagFilter && (
-						<span className={styles.tagClear} onClick={() => setActiveTagFilter(null)}>
-							{tr("clear filter ×")}</span>
+						<button type="button" className={styles.tagClear} onClick={() => setActiveTagFilter(null)}>
+							{tr("clear filter ×")}</button>
 					)}
 				</div>
 			)}

@@ -13,6 +13,7 @@ import { NotesView } from "@/components/ai-notes/NotesView.tsx";
 import { NotesJobStatus, automaticNotesBusy, replacementPrompt } from "@/components/ai-notes/NotesJobStatus";
 import { NotesHardwareHint } from "@/components/ai-notes/NotesHardwareHint.tsx";
 import { Spinner } from "@/components/shared/Spinner.tsx";
+import { TagEditor } from "./TagEditor";
 import { TitleInput } from "./TitleInput.tsx";
 import { SessionAudioPlayer } from "./SessionAudioPlayer.tsx";
 import { applySpeakerNames } from "@/lib/speakerNames.ts";
@@ -24,11 +25,12 @@ import styles from "./SessionDetail.module.css";
 interface Props {
 	session: Session;
 	onBack: () => void;
+  onTagClick?: (tag: string) => void;
 }
 
 type TabId = "speakers" | "notes";
 
-export function SessionDetail({ session, onBack }: Props) {
+export function SessionDetail({ session, onBack, onTagClick }: Props) {
  const notesBusy = automaticNotesBusy(session);
 	useLocale();
 	const [showTranscribe,setShowTranscribe] = useState(false);
@@ -79,10 +81,6 @@ export function SessionDetail({ session, onBack }: Props) {
 		{ id: "notes", label: tr("AI Notes") },
 	];
 
-	const handleRemoveTag = async (tag: string) => {
-		const newTags = (session.tags || []).filter((t) => t !== tag);
-		await update(session.id, { tags: newTags });
-	};
 
 	const handleCopy = () => {
 		if (activeTab === "notes") {
@@ -177,16 +175,7 @@ export function SessionDetail({ session, onBack }: Props) {
    <SessionAudioPlayer sessionId={session.id} available={!!session.files?.wav}
     audioRef={audioRef} onTime={setPlaybackTime} onDuration={setAudioDuration}/>
 
-			{(session.tags && session.tags.length > 0) && (
-				<div className={styles.tagsRow}>
-					{session.tags.map((t) => (
-						<span key={t} className={styles.tag}>
-							#{t}
-							<span className={styles.tagRemove} onClick={() => handleRemoveTag(t)}>×</span>
-						</span>
-					))}
-				</div>
-			)}
+      <TagEditor session={session} onTagClick={onTagClick} />
 
 			<NotesJobStatus session={session} />
    <Tabs tabs={tabs} active={activeTab} onChange={(id) => setActiveTab(id as TabId)} />

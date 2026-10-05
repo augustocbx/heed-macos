@@ -8,7 +8,7 @@ afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 test('refreshes open notes from saved sessions and stops its timer on unmount', async () => {
  vi.useFakeTimers();
  const saved = { ...session, aiNotes: 'Saved automatic notes', notesJobs: { 'notes-r': { sourceRevision: 'r', status: 'completed' } } };
- const fetchMock = vi.fn(async () => Response.json([saved])); vi.stubGlobal('fetch', fetchMock);
+ const fetchMock = vi.fn(async () => Response.json({ sessions: [saved], tags: [], revision: "current" })); vi.stubGlobal('fetch', fetchMock);
  useSessionsStore.setState({ sessions: [session], viewing: session });
  const view = renderHook(() => useAutomaticNotesPolling());
  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });

@@ -9,7 +9,7 @@ test('does not regress a saved edit when an older poll finishes afterward', asyn
  useSessionsStore.setState({ sessions: [session], viewing: session });
  const polling = useSessionsStore.getState().load(true);
  useSessionsStore.getState().accept({ ...session, aiNotes: 'Saved edit' });
- resolve(Response.json([session])); await polling;
+ resolve(Response.json({ sessions: [session], tags: [], revision: "older" })); await polling;
  expect(useSessionsStore.getState().sessions[0].aiNotes).toBe('Saved edit');
  expect(useSessionsStore.getState().viewing?.aiNotes).toBe('Saved edit');
 });
