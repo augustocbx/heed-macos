@@ -8,9 +8,11 @@ import { track, gracefulStop, installShutdownHooks } from "./lib/process.ts";
 import { sseResponse } from "./lib/sse.ts";
 import { sessionAudioResponse } from "./lib/session-audio.ts";
 import { DesktopControl } from "./lib/desktop-control.ts";
+import { DesktopPermissions, desktopRequestAllowed as permissionRequestAllowed, permissionAction, permissionReport } from "./lib/desktop-permissions.ts";
 import { AUDIO_LIMIT_BYTES, enforceAudioRetention, removeChannelCopies } from "./lib/audio-retention.ts";
 import { type CaptureMode, nativeCaptureCommand, nativeRecordingCommand, verifyNativeHandshake, isNativeProtocolLine } from "./lib/native-capture.ts";
 const desktopControl = new DesktopControl();
+const desktopPermissions = new DesktopPermissions();
 const retainedProcessing = new Map<string, number>();
 const CAPTURE_LIMIT_BYTES = Math.floor(AUDIO_LIMIT_BYTES / 2) - 10_000_000;
 let quotaReachedAt = 0;
@@ -2277,11 +2279,7 @@ async function handleHealth(): Promise<Response> {
 
 // Desktop controls are local-only and use the existing browser recording lifecycle.
 function desktopRequestAllowed(req: Request): boolean {
- const url = new URL(req.url);
- if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return false;
- const origin = req.headers.get("origin");
- if (!origin) return true;
- try { const u = new URL(origin); return ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname) && ["5170", String(PORT)].includes(u.port); } catch { return false; }
+ return permissionRequestAllowed(req, PORT);
 }
 function desktopRecordingStatus() {
  if (recorderProc && recorderProc.exitCode !== null && !recorderStopping && !quotaReachedAt && !(recorderPath && existsSync(recorderPath) && statSync(recorderPath).size >= CAPTURE_LIMIT_BYTES - 1_000_000)) {
@@ -2299,7 +2297,7 @@ async function handleDesktopControl(req:Request, pathname:string): Promise<Respo
   if (req.method === "GET" && pathname.endsWith("/status")) {
    const status = desktopRecordingStatus();
    try { const health = await fetch(`${TRANSCRIPTION_SERVER}/health`, {signal:AbortSignal.timeout(1500)}); const data=await health.json(); status.ready = data.whisper === true; } catch {status.ready=false;}
-   return Response.json(status);
+   return Response.json({...status, permissionRequest:desktopPermissions.request()});
   }
   const body = await req.json();
   if (pathname.endsWith("/commands") && req.method === "POST") {
@@ -2323,6 +2321,25 @@ async function handleDesktopControl(req:Request, pathname:string): Promise<Respo
   }
   return Response.json({error:"Unknown desktop control endpoint"},{status:404});
  } catch (e) { return Response.json({error:(e as Error).message},{status:409}); }
+}
+
+async function handleDesktopPermissions(req: Request, pathname: string): Promise<Response> {
+ if (!desktopRequestAllowed(req)) return Response.json({error:"As permissões estão disponíveis somente em localhost."}, {status:403});
+ if (req.method === "GET" && pathname === "/api/desktop/permissions") return Response.json(desktopPermissions.status());
+ if (req.method !== "POST") return Response.json({error:"Método não permitido."}, {status:405});
+ let body: unknown;
+ try { body = await req.json(); } catch { return Response.json({error:"Corpo JSON inválido."}, {status:400}); }
+ if (pathname === "/api/desktop/permissions/report") {
+  const report = permissionReport(body);
+  if (!report) return Response.json({error:"Relatório de permissões inválido."}, {status:400});
+  desktopPermissions.report(report);
+  return Response.json({ok:true});
+ }
+ if (pathname !== "/api/desktop/permissions") return Response.json({error:"Endpoint de permissões desconhecido."}, {status:404});
+ const action = permissionAction(body);
+ if (!action) return Response.json({error:"Escolha microphone, screenCapture ou slackLogs."}, {status:400});
+ try { return Response.json({ok:true,id:desktopPermissions.enqueue(action)}); }
+ catch (error) { return Response.json({error:(error as Error).message}, {status:409}); }
 }
 
 // --- Router ---
@@ -2401,6 +2418,7 @@ const server = Bun.serve({
 		if (method === "GET" && url.pathname === "/api/setup/install-ollama") return handleInstallOllama();
 		if (method === "GET" && url.pathname === "/api/setup/install-ffmpeg") return handleInstallFfmpeg();
 		if (method === "POST" && url.pathname === "/api/setup/start-ollama") return handleStartOllama();
+		if (url.pathname === "/api/desktop/permissions" || url.pathname.startsWith("/api/desktop/permissions/")) return handleDesktopPermissions(req, url.pathname);
 		if (url.pathname.startsWith("/api/desktop/control/")) return handleDesktopControl(req, url.pathname);
 		if (method === "POST" && url.pathname === "/api/desktop/float") return handleDesktopFloat();
 		if (method === "GET" && url.pathname === "/api/meeting-detector") return handleDetectorStream();
