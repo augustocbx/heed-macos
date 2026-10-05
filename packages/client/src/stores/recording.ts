@@ -1,7 +1,10 @@
+import { reconcileSpeakerNames } from "@/lib/speakerNames.ts";
 import { create } from "zustand";
 import type { Segment, TranscribeResult } from "@heed/shared";
 
 interface RecordingState {
+	speakerNames: Record<string, string>;
+	renameSpeaker: (original: string, name: string) => void;
 	recording: boolean;
 	processing: boolean;
 	seconds: number;
@@ -27,7 +30,7 @@ interface RecordingState {
 	/** Live "full" mode: REPLACE the single live segment for this channel each tick (full re-transcribe). */
 	setLiveSegment: (seg: Segment) => void;
 	/** Live "stream" mode (karaoke): upsert a chronological turn by id — append new, update text in place. */
-	upsertLiveTurn: (turn: { id: number; speaker: string; channel?: "mic" | "sys"; text: string }) => void;
+	upsertLiveTurn: (turn: { id: number; speaker: string; channel?: "mic" | "sys"; text: string; start?: number; end?: number }) => void;
 	/** Live audio-quality hint (heed differentiator): warns when the mic is too quiet / echoey / unclear. */
 	liveQuality: { ok: boolean; hint?: string } | null;
 	setLiveQuality: (q: { ok: boolean; hint?: string }) => void;
@@ -40,6 +43,8 @@ interface RecordingState {
 }
 
 export const useRecordingStore = create<RecordingState>((set) => ({
+	speakerNames: {},
+	renameSpeaker: (original, name) => set((s) => ({ speakerNames: { ...s.speakerNames, [original]: name } })),
 	recording: false,
 	processing: false,
 	seconds: 0,
@@ -67,6 +72,7 @@ export const useRecordingStore = create<RecordingState>((set) => ({
 			notesText: "",
 			liveQuality: null,
 			currentSessionId: null,
+			speakerNames: {},
 		}),
 
 	tick: () => set((s) => ({ seconds: s.seconds + 1 })),
@@ -92,12 +98,16 @@ export const useRecordingStore = create<RecordingState>((set) => ({
 			let next: Segment[];
 			if (idx >= 0) {
 				next = s.segments.slice();
-				next[idx] = { ...next[idx], speaker: turn.speaker, text: turn.text };
+				next[idx] = { ...next[idx], speaker: turn.speaker, text: turn.text, start: turn.start ?? next[idx].start, end: turn.end ?? next[idx].end };
 			} else {
-				next = [...s.segments, { id: turn.id, speaker: turn.speaker, channel: turn.channel, text: turn.text, start: 0, end: 0 }];
+				next = [...s.segments, { id: turn.id, speaker: turn.speaker, channel: turn.channel, text: turn.text, start: turn.start ?? 0, end: turn.end ?? 0 }];
 			}
 			const newSpeakers = next.reduce<string[]>((acc, x) => acc.includes(x.speaker) ? acc : [...acc, x.speaker], []);
-			return { segments: next, speakers: newSpeakers, transcript: next.map((x) => x.text).join("\n") };
+			const speakerNames = { ...s.speakerNames };
+			if (idx >= 0 && s.speakerNames[s.segments[idx].speaker]) {
+				speakerNames[turn.speaker] = s.speakerNames[s.segments[idx].speaker];
+			}
+			return { segments: next, speakers: newSpeakers, speakerNames, transcript: next.map((x) => x.text).join("\n") };
 		}),
 
 	setLiveSegment: (seg) =>
@@ -114,10 +124,11 @@ export const useRecordingStore = create<RecordingState>((set) => ({
 		}),
 
 	revealSpeakers: (speakers, segments, embeddings) =>
-		set({ speakers, segments, embeddings }),
+		set((s) => ({ speakers, segments, embeddings, speakerNames: reconcileSpeakerNames(s.segments, segments, s.speakerNames) })),
 
 	setResult: (result) =>
-		set({
+		set((s) => ({
+			speakerNames: reconcileSpeakerNames(s.segments, result.segments || [], s.speakerNames),
 			processing: false,
 			transcript: result.text,
 			segments: result.segments || [],
@@ -125,7 +136,7 @@ export const useRecordingStore = create<RecordingState>((set) => ({
 			embeddings: result.embeddings || {},
 			files: result.files,
 			processProgress: 100,
-		}),
+		})),
 
 	setNotes: (text) => set({ notesText: text }),
 
@@ -143,5 +154,6 @@ export const useRecordingStore = create<RecordingState>((set) => ({
 			files: null,
 			notesText: "",
 			currentSessionId: null,
+			speakerNames: {},
 		}),
 }));

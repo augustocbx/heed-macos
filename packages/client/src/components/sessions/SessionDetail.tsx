@@ -13,6 +13,7 @@ import { NotesHardwareHint } from "@/components/ai-notes/NotesHardwareHint.tsx";
 import { Spinner } from "@/components/shared/Spinner.tsx";
 import { TitleInput } from "./TitleInput.tsx";
 import { SessionAudioPlayer } from "./SessionAudioPlayer.tsx";
+import { applySpeakerNames } from "@/lib/speakerNames.ts";
 import styles from "./SessionDetail.module.css";
 
 interface Props {
@@ -118,8 +119,21 @@ export function SessionDetail({ session, onBack }: Props) {
 		}
 	};
 
-	const handleSpeakerRename = (original: string, newName: string) => {
-		setSpeakerNames((prev) => ({ ...prev, [original]: newName }));
+	const handleSpeakerRename = async (original: string, newName: string) => {
+		const names = { ...speakerNames, [original]: newName };
+		setSpeakerNames(names);
+		try {
+			await update(session.id, applySpeakerNames(session.segments || [], session.speakers || [], session.embeddings || {}, names));
+		} catch {
+			setSpeakerNames((latest) => {
+				if (latest[original] !== newName) return latest;
+				const restored = { ...latest };
+				if (speakerNames[original]) restored[original] = speakerNames[original];
+				else delete restored[original];
+				return restored;
+			});
+			showToast("Não foi possível salvar o nome do participante. Tente novamente.");
+		}
 	};
 
 	const handleSpeakerMerge = async (from: string, into: string) => {

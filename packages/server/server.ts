@@ -1706,7 +1706,7 @@ async function processStreamLive(
 		// growing system transcript, which made stable lines get rewritten (append-only broke).
 		// Live echo is handled at the AUDIO level (the relative gate in /stream/feed, stable +
 		// no lag); the final transcript is cleaned by the dedup at stop.
-		if (text) send("turn", { id: liveTurnId, channel: active, speaker, text });
+		if (text) send("turn", { id: liveTurnId, channel: active, speaker, text, start: last?.startT ?? start, end: last?.endT ?? fileDurationS });
 	}
 	lastMicLen = micPartial.length;
 	lastSysLen = sysPartial.length;

@@ -23,6 +23,14 @@ Ollama também é instalado para notas por IA. Seus modelos são opcionais e nã
 
 O aplicativo fica em `~/Applications/Heed.app`. O LaunchAgent `~/Library/LaunchAgents/local.heed.menubar.plist` inicia o ícone ao entrar no macOS. Pelo menu, escolha **Português** ou **English**, inicie/pare a gravação e abra [http://localhost:5170](http://localhost:5170).
 
+### Início automático no Slack
+
+**Gravar automaticamente reuniões do Slack** vem habilitado no menu do ícone. Com o Heed já aberto, entrar em uma reunião/huddle no **aplicativo Slack instalado** inicia a gravação após alguns segundos de confirmação. Abrir o Slack, preparar uma reunião ou testar o microfone não inicia a captura. O idioma é o escolhido no menu; as permissões de áudio e os modelos precisam estar prontos.
+
+Se a interface estiver fechada, o Heed abre `localhost:5170` e espera a conexão antes de enviar o comando. Mantenha essa aba aberta para transcrever e salvar. **Pare a gravação pelo menu do Heed**; sair da reunião não encerra a captura automaticamente. Se parar manualmente, a mesma reunião não reinicia a gravação.
+
+A detecção acompanha apenas novos estados de reunião dos registros locais do Slack, sem armazenar mensagens ou nomes de canais. Por isso, uma reunião que já estava ativa quando o Heed abriu não dispara retroativamente. O estado do monitor aparece no menu; o diagnóstico fica em `~/Library/Logs/Heed/slack-auto.log`. Os registros são uma implementação interna do Slack e podem mudar em futuras versões. O Slack no navegador não é monitorado.
+
 **Mantenha a aba da interface aberta durante a captura e o salvamento.** Ela pode ficar minimizada. O navegador executa o controle da gravação, acompanha a transcrição e salva a sessão quando a captura termina.
 
 Em **Ajustes do Sistema → Privacidade e Segurança**, autorize:
@@ -40,6 +48,8 @@ Abra **Sessions**, escolha a reunião e pressione Play no player acima da transc
 
 O WAV original mantém dois canais separados: **esquerdo = microfone; direito = som do sistema**, a 16 kHz. Isso permite processar as vozes separadamente. O player mistura esses canais em mono para ouvir ambos dos dois lados; abrir o arquivo original em outro player mantém a separação esquerda/direita.
 
+Nomes escolhidos manualmente na tela de gravação permanecem durante as atualizações da transcrição e são salvos na sessão. Renomear depois da gravação ou em **Sessions** também atualiza os segmentos e a lista de participantes no arquivo local. Quando a diarização final reorganiza os falantes, o nome é transferido pela origem e pela sobreposição dos trechos; correspondências ambíguas não são forçadas pelo número de “Speaker”.
+
 Se a qualidade cair ao usar o microfone de um fone Bluetooth, selecione o **microfone integrado do Mac como entrada**, mantendo o fone como saída. A Apple explica essa mudança de qualidade em [Se a qualidade do som dos fones Bluetooth estiver reduzida](https://support.apple.com/en-ie/102217).
 
 ## Armazenamento e retenção
@@ -56,7 +66,8 @@ Não copie `recordings/`, `.venv` ou `~/.heed-app/` para instalar em outro Mac; 
 
 ```mermaid
 flowchart TD
-    A[Ícone macOS / LaunchAgent] --> B[API Bun localhost:5001]
+    S[Slack: nova reunião conectada nos registros locais] --> A[Ícone macOS / LaunchAgent]
+    A --> B[API Bun localhost:5001]
     B <--> C[Navegador localhost:5170 aberto]
     B --> D[ScreenCaptureKit: som do sistema]
     B --> E[AVAudioEngine: microfone padrão]
@@ -105,7 +116,7 @@ O status permite verificar `recording`, `processing`, `pending`, `starting`, `re
 
 ## Limitações conhecidas
 
-A detecção automática de início/fim para Slack, Google Meet, Microsoft Teams e Zoom **ainda não foi implementada no macOS**. Use os controles do menu; o fluxo de detecção existente do projeto original é voltado ao Linux.
+O início automático no macOS está disponível para novas reuniões no aplicativo Slack. O encerramento automático e a detecção de Google Meet, Microsoft Teams e Zoom ainda não foram implementados. O detector original baseado em PipeWire continua sendo específico do Linux.
 
 A captura anterior podia descartar blocos do microfone ao combinar duas entradas no FFmpeg, encurtando o arquivo e cortando a fala. A captura nativa unificada substitui esse caminho. Arquivos antigos podem continuar com trechos ausentes; a correção se aplica a novas gravações. O player usa a duração real do arquivo. Áudio que não foi capturado ou que foi apagado não pode ser recuperado a partir da transcrição.
 

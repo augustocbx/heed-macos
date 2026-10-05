@@ -57,3 +57,17 @@ test("reset clears everything back to idle", () => {
 	expect(st.transcript).toBe("");
 	expect(st.recording).toBe(false);
 });
+
+test("escolha manual persiste nas atualizações ao vivo e no resultado final", () => {
+ const s = useRecordingStore.getState();
+ s.startRecording();
+ s.upsertLiveTurn({ id: 1, speaker: "Speaker 1", channel: "sys", text: "olá", start: 0, end: 2 });
+ s.renameSpeaker("Speaker 1", "Ana");
+ s.upsertLiveTurn({ id: 1, speaker: "Speaker 1", channel: "sys", text: "olá novamente", start: 0, end: 2 });
+ s.revealSpeakers(["Speaker 1"], [{ speaker: "Speaker 1", start: 0, end: 2, text: "olá novamente", channel: "sys" }], {});
+ s.setResult({ success: true, text: "olá novamente", segments: useRecordingStore.getState().segments,
+  speakers: ["Speaker 1"], embeddings: {}, files: { wav: "audio.wav", srt: "", txt: "" }, metadata: { language: "pt", model: "test" }, wordCount: 2 });
+ expect(useRecordingStore.getState().speakerNames).toEqual({ "Speaker 1": "Ana" });
+ s.startRecording();
+ expect(useRecordingStore.getState().speakerNames).toEqual({});
+});
