@@ -26,6 +26,7 @@ cat > "$HEED_APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleVersion</key><string>1</string>
 <key>LSUIElement</key><true/>
 <key>NSMicrophoneUsageDescription</key><string>O Heed usa o microfone para gravar sua voz durante reuniões.</string>
+<key>NSAppDataUsageDescription</key><string>O Heed lê somente os estados de reunião dos registros locais do Slack para iniciar a gravação automaticamente.</string>
 <key>LSMinimumSystemVersion</key><string>12.0</string>
 </dict></plist>
 PLIST
