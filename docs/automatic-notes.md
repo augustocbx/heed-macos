@@ -22,7 +22,7 @@ Queue state survives closing the browser and restarting the Bun server after the
 
 Nonempty existing notes, including legacy notes without provenance, are protected. An explicit replacement request must match their current content. A completed job commits only if its source revision, attempt, running state, and expected existing notes still match. Editing notes, cancelling work, deleting a meeting, or changing its transcript/speakers makes late output ineligible.
 
-Generated notes retain the source revision, template ID/name/hash, model, output language, and completion time. Editing or retranscribing a meeting marks notes stale when their source differs. Ordinary notes edits are marked manual. Both automatic and manual generation use saved speaker-labeled segments and instruct the model to ground decisions and actions in the transcript, distinguish uncertainty, and leave unspecified owners/deadlines unspecified. These instructions reduce unsupported output but do not guarantee factual accuracy; review generated notes before using them.
+Generated notes retain the source revision, template ID/name/hash, model, output language, and completion time. Editing or retranscribing a meeting marks notes stale when their source differs. Ordinary notes edits are marked manual. Both automatic and manual generation use saved speaker-labeled segments. The adapter supplies template and transcript as separate JSON fields; template instructions control presentation while the system rules control grounding. It requests a short exact source quote and speaker for each decision/action, preserving quotes in the source language. Suggestions, rejected proposals, and open questions must remain distinct from confirmed decisions and assigned actions. Speaking about an action does not establish ownership; only explicit assignments or commitments do. Missing owners/deadlines remain unspecified, and relative dates must not be converted into invented calendar dates. Empty decision/action sections must say that none were documented. These are model instructions, not a semantic validator or a guarantee of factual accuracy; review generated notes and their excerpts against the saved transcript before using them.
 
 ## Local generation
 
@@ -33,3 +33,32 @@ The notes adapter allows only a loopback Ollama endpoint and rejects redirects. 
 Automated tests use temporary session/configuration directories, synthetic English and Portuguese transcripts, and a controlled local Ollama transport. They cover opt-in prerequisites, custom templates, final-save ordering and late speaker edits, duplicate finalization, retry identity, crash recovery, cancellation/preemption, source and notes compare-and-save, stale provenance, model locality/missing models, stopped Ollama, malformed or incomplete streams, all supported interface locales, and refreshed list/detail/result state. HTTP tests run an isolated Bun server and verify notes interruption/model unload before a final-transcription resource hold and resumption afterward.
 
 Physical MacBook Air M1 and MacBook Pro M4 Pro validation, live model quality, memory pressure during real capture, and end-to-end installed-app restart recovery remain pending. Automated test results and CI do not claim those hardware outcomes.
+
+### Repeatable live-model quality review
+
+With capture/transcription idle, run an explicitly selected, already installed local model:
+
+```sh
+bun scripts/check-notes-quality.ts --model gemma4:e4b
+# Also inspect translated notes while source excerpts retain their original language:
+bun scripts/check-notes-quality.ts --model gemma4:e4b --language fr
+bun scripts/check-notes-quality.ts --model gemma4:e4b --language de
+```
+
+The evaluator uses the production adapter and durable notes service with a synthetic custom template. It runs four English/Portuguese fixtures sequentially, covering confirmed/rejected/tentative decisions, explicit commitments, unassigned actions, unspecified deadlines, quoted instructions, and meetings with no commitments. It reopens the saved queue before generation and checks job identity, provenance, and duplicate-finalization preservation. It never reads personal sessions or recordings, changes settings, downloads models, installs an app, or starts services. Run it only during an idle period; the standalone evaluator does not participate in the installed app's resource scheduler.
+
+Each run writes a private `report.json` to a new system temporary directory and prints its path. The report includes inputs, outputs, review checklists, job/provenance records, host/version metadata, elapsed time, and sampled Ollama process RSS (the second `ps` column, in KiB). Exit 0 means generation and persistence checks completed, **not** that note quality passed. Review every decision/action and source excerpt manually and record any omissions, invented assignments/dates, promoted suggestions, or incorrect quotes. A failing generation exits nonzero and still retains the review report. RSS samples do not establish peak memory, responsiveness during capture, or successful model unload. Retain evidence outside the repository and record the Ollama version/model digest alongside it.
+
+For each Mac, also run the following installed-app acceptance scenarios with synthetic spoken content. Record actual results; do not infer them from the evaluator:
+
+| Scenario | Required observation |
+| --- | --- |
+| English and Portuguese capture | Saved final transcript/speakers, playable audio, correct notes language; review grounding and missing owners/deadlines. |
+| Start capture while notes run or wait | Capture starts responsively, notes yield, no partial notes persist, and the same job resumes after final transcription. Measure memory pressure and responsiveness before/during/after. |
+| Missing model and stopped Ollama | Recording/audio remain saved; notes show a retryable explanation and recover with the same job identity. Do not delete the installed model solely for this test; use an isolated configuration. |
+| App/server crash and restart | Queued/running jobs recover without duplicate results or replacement of manual edits. A browser refresh reflects saved progress/results. |
+| Four interface locales | Settings, list/detail, retry/cancel and stale/provenance text work in English, Brazilian Portuguese, French and German without changing meeting content. |
+
+See [macOS compatibility](macos-compatibility.md) for the declared macOS 14 minimum and separate physical OS validation requirements.
+
+The [October 5 follow-up validation](automatic-notes-validation-2026-10-05.md) records the bounded M1 live-model experiment, observed source-excerpt limitations, and remaining acceptance.
