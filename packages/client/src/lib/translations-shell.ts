@@ -1,6 +1,6 @@
 export const SHELL_TRANSLATIONS: Record<string, {"pt-BR":string;fr:string;de:string}> = Object.fromEntries([
  ["Record","Gravar","Enregistrer","Aufnehmen"],
- ["Sessions","Sessões","Sessions","Sitzungen"],
+ ["Meetings","Reuniões","Réunions","Besprechungen"],
  ["Settings","Configurações","Paramètres","Einstellungen"],
  ["Interface language","Idioma da interface","Langue de l’interface","Sprache der Oberfläche"],
  ["Interface language does not change the meeting transcription language.","O idioma da interface não altera o idioma da transcrição da reunião.","La langue de l’interface ne change pas la langue de transcription de la réunion.","Die Sprache der Oberfläche ändert nicht die Transkriptionssprache der Besprechung."],

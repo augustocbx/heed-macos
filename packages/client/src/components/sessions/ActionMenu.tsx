@@ -72,7 +72,7 @@ export function ActionMenu({ x, y, session, onClose, onTogglePin, onDelete }: Pr
 
 	const handleExport = (cat: Category, action: ExportAction) => {
 		const { text, md } = getContent(session, cat);
-		const filename = `${session.title || "session"}-${cat}`.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+		const filename = `${session.title || "meeting"}-${cat}`.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
 		switch (action) {
 			case "copy-text":
 				navigator.clipboard.writeText(text);
