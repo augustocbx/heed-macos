@@ -109,6 +109,15 @@ test("searches 100 suggestions and selects an existing tag with the keyboard", a
   await user.keyboard("{ArrowDown}{Enter}");
   expect(await screen.findByRole("button", { name: "Filter by Client 99" })).toBeInTheDocument();
 });
+test("selects an existing suggestion with the keyboard before typing a query", async () => {
+  meetings[1].tags = ["Client"];
+  useSessionsStore.setState({ tagCatalog: snapshot().tags });
+  const user = userEvent.setup(); render(<Host />);
+  await user.click(screen.getByRole("button", { name: "Add tag" }));
+  await user.keyboard("{ArrowDown}{Enter}");
+  expect(await screen.findByRole("button", { name: "Filter by Client" })).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
 test.each([ ["en", "Add tag"], ["pt-BR", "Adicionar tag"], ["fr", "Ajouter une étiquette"], ["de", "Tag hinzufügen"] ] as const)("%s localizes controls without translating tag names", async (locale, label) => {
   render(<Host />);
   await act(async () => useLocaleStore.setState({ locale }));

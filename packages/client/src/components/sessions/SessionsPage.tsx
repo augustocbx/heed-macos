@@ -1,5 +1,5 @@
 import { tr, useLocale } from "@/lib/i18n.ts";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { tagKey, uniqueTags, type Session } from "@heed/shared";
 import { useSessionsStore } from "@/stores/sessions.ts";
 import { useUIStore } from "@/stores/ui.ts";
@@ -32,11 +32,14 @@ export function SessionsPage() {
   }, [loadTags]);
 
   const allTags = useMemo(() => uniqueTags(sessions.flatMap(s => s.tags ?? [])).sort(), [sessions]);
+  const consumedTagChange = useRef<typeof lastTagChange>(null);
   useEffect(() => {
+    const change = consumedTagChange.current !== lastTagChange ? lastTagChange : null;
+    consumedTagChange.current = lastTagChange;
     setActiveTagFilter(current => {
       let next = current;
-      if (current && lastTagChange?.action === "rename" && tagKey(current) === tagKey(lastTagChange.tag)) next = lastTagChange.name;
-      if (current && lastTagChange?.action === "delete" && tagKey(current) === tagKey(lastTagChange.tag)) next = null;
+      if (current && change?.action === "rename" && tagKey(current) === tagKey(change.tag)) next = change.name;
+      if (current && change?.action === "delete" && tagKey(current) === tagKey(change.tag)) next = null;
       return next && allTags.some(tag => tagKey(tag) === tagKey(next!)) ? next : null;
     });
   }, [allTags, lastTagChange]);

@@ -46,14 +46,14 @@
 - `GET /api/tags`: return the current snapshot. `POST /api/tags`: validate and apply one mutation, then return the committed snapshot.
 - Existing session responses expose an optional `tagsRevision`; session patches containing tags must carry the corresponding expected revision and return HTTP 409 on a stale write.
 
-- [ ] Write tests against synthetic session directories for Unicode/spaces/hyphens, empty names, normalized duplicates, legacy tags, assignment-only removal, global rename/delete, rename collisions and stale revisions.
-- [ ] Add tests asserting notes, transcript, speakers, files, titles and unrelated tags remain unchanged; metadata-only edits must not invalidate a tag-only revision.
-- [ ] Add filesystem-failure and interruption fixtures: stage every replacement before modifying originals; recover unfinished transactions before list/create/patch/delete/tag operations, or fail the request if recovery cannot finish.
-- [ ] Run `bun test packages/server/lib/session-tags.test.ts`; verify the new behavior fails before implementation.
-- [ ] Implement synchronous tag read/mutation functions with an injectable filesystem adapter for failure tests. Keep the commit section free of `await`, stage original/replacement files and a recovery journal, and mark commit only after all replacements succeed. Restore originals for unfinished transactions; block reads if restoration fails.
-- [ ] Route existing session CRUD through transaction recovery, validate tag revisions when patching assignments, and read current metadata after parsing the request body to avoid overwriting intervening edits.
-- [ ] Implement the tag routes with structured error codes for localized client errors. Validate session IDs and avoid following session symlinks. A rename to another existing normalized key is a conflict, not a merge; a case-only rename of the same tag is allowed.
-- [ ] Run the server suite and commit the backend and shared behavior.
+- [x] Write tests against synthetic session directories for Unicode/spaces/hyphens, empty names, normalized duplicates, legacy tags, assignment-only removal, global rename/delete, rename collisions and stale revisions.
+- [x] Add tests asserting notes, transcript, speakers, files, titles and unrelated tags remain unchanged; metadata-only edits must not invalidate a tag-only revision.
+- [x] Add filesystem-failure and interruption fixtures: stage every replacement before modifying originals; recover unfinished transactions before list/create/patch/delete/tag operations, or fail the request if recovery cannot finish.
+- [x] Run `bun test packages/server/lib/session-tags.test.ts`; verify the new behavior fails before implementation.
+- [x] Implement synchronous tag read/mutation functions with an injectable filesystem adapter for failure tests. Keep the commit section free of `await`, stage original/replacement files and a recovery journal, and mark commit only after all replacements succeed. Restore originals for unfinished transactions; block reads if restoration fails.
+- [x] Route existing session CRUD through transaction recovery, validate tag revisions when patching assignments, and read current metadata after parsing the request body to avoid overwriting intervening edits.
+- [x] Implement the tag routes with structured error codes for localized client errors. Validate session IDs and avoid following session symlinks. A rename to another existing normalized key is a conflict, not a merge; a case-only rename of the same tag is allowed.
+- [x] Run the server suite and commit the backend and shared behavior.
 
 ## Task 2: Client state and inline editor
 
@@ -70,15 +70,15 @@
 - Sessions store adds `loadTags(): Promise<void>` and `mutateTag(mutation: TagMutation): Promise<void>`; apply successful snapshots consistently to list and viewing state, and retain saved state on failure.
 - `TagEditor({ session, onTagClick? }: { session: Session; onTagClick?: (tag: string) => void })`: render tag chips, an inline add input and a compact action menu. Use ordinary accessible buttons/forms and a searchable suggestion list.
 
-- [ ] Write failing interaction tests for inline creation/reuse, multiple assignment, assignment removal, global rename with save/cancel and global deletion with name/count confirmation. Assert rendered saved state, not only mocked call counts.
-- [ ] Add tests for failed saves retaining input and current saved tags, stale-write errors with reload/retry, 100 searchable suggestions, keyboard-only operation and all four interface locales preserving user-authored text.
-- [ ] Add filter integration tests for rename/delete while searching and after returning from detail. Add a store test that a stale request response cannot revert a newer tag snapshot.
-- [ ] Run the focused Vitest files and verify missing inline behavior causes failures before implementing it.
-- [ ] Implement the API/store and shared inline editor. Keep global deletion distinct from detaching the current meeting; show the scope of global renaming before saving. Disable duplicate submissions and keep errors next to the relevant input/action.
-- [ ] Render the editor in cards and detail, stop card navigation when using editor controls, and preserve tag-click filtering and the title hashtag shortcut.
-- [ ] Keep active filter state synchronized with successful rename/delete snapshots; refresh tags when regaining focus to reconcile another tab's changes. Metadata updates send only the intended fields.
-- [ ] Add English fallback and pt-BR/fr/de translations for every new control, scope message and error.
-- [ ] Run the client suite and build, then commit the inline feature.
+- [x] Write failing interaction tests for inline creation/reuse, multiple assignment, assignment removal, global rename with save/cancel and global deletion with name/count confirmation. Assert rendered saved state, not only mocked call counts.
+- [x] Add tests for failed saves retaining input and current saved tags, stale-write errors with reload/retry, 100 searchable suggestions, keyboard-only operation and all four interface locales preserving user-authored text.
+- [x] Add filter integration tests for rename/delete while searching and after returning from detail. Add a store test that a stale request response cannot revert a newer tag snapshot.
+- [x] Run the focused Vitest files and verify missing inline behavior causes failures before implementing it.
+- [x] Implement the API/store and shared inline editor. Keep global deletion distinct from detaching the current meeting; show the scope of global renaming before saving. Disable duplicate submissions and keep errors next to the relevant input/action.
+- [x] Render the editor in cards and detail, stop card navigation when using editor controls, and preserve tag-click filtering and the title hashtag shortcut.
+- [x] Keep active filter state synchronized with successful rename/delete snapshots; refresh tags when regaining focus to reconcile another tab's changes. Metadata updates send only the intended fields.
+- [x] Add English fallback and pt-BR/fr/de translations for every new control, scope message and error.
+- [x] Run the client suite and build, then commit the inline feature.
 
 ## Task 3: Integration validation, documentation and PR handoff
 
@@ -98,4 +98,4 @@
 
 ## Execution status
 
-The plan has been checked against issue #3. The worktree and dependencies are prepared. Baseline verification passed: 44 server tests, 73 client tests and the production interface build. Product implementation awaits the plan-review gate required by the `writing-plans` skill.
+Implementation and local verification are complete. The independent review identified four client regressions; each received a failing regression test and a verified correction. Final validation covers 52 server tests, 99 client tests, 18 Python policy tests, the production interface build, installer syntax and a synthetic Chrome smoke test. The installed application was not changed. Physical acceptance on both target Macs remains pending. The final remote-branch and cleanup handoff is recorded in the pull request.

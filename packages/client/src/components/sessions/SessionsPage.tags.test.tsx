@@ -52,3 +52,18 @@ test("returning from detail clears a filter removed by another tab", async () =>
   fireEvent.click(screen.getByRole("button", { name: "Back to meetings" }));
   expect(screen.getByText("Beta weekly")).toBeInTheDocument();
 });
+test.each(["rename", "delete"] as const)("a historical %s does not change a recreated tag's filter", async action => {
+  const recreated = [{ ...meetings[0], tags: ["Planning"] }, { ...meetings[1], tags: ["Renamed"] }];
+  const lastTagChange = action === "rename" ? { action, tag: "Planning", name: "Renamed" } : { action, tag: "Planning" };
+  useSessionsStore.setState({ sessions: recreated, lastTagChange });
+  vi.mocked(tagsApi.list).mockResolvedValue({ sessions: recreated, tags: [{ name: "Planning", meetingCount: 1 }, { name: "Renamed", meetingCount: 1 }], revision: "3" });
+  render(<SessionsPage />);
+  await waitFor(() => expect(useSessionsStore.getState().tagRevision).toBe("3"));
+  fireEvent.click(screen.getByRole("button", { name: "Filter by Planning" }));
+  expect(screen.queryByText("Beta weekly")).not.toBeInTheDocument();
+  vi.mocked(tagsApi.list).mockResolvedValue({ sessions: recreated, tags: [{ name: "Planning", meetingCount: 1 }, { name: "Renamed", meetingCount: 1 }], revision: "4" });
+  fireEvent(window, new Event("focus"));
+  await waitFor(() => expect(useSessionsStore.getState().tagRevision).toBe("4"));
+  expect(screen.queryByText("Beta weekly")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "#Planning" }).className).toContain("tagFilterActive");
+});

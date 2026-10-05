@@ -37,10 +37,10 @@ export function TagEditor({ session, onTagClick }: { session: Session; onTagClic
   const submit = () => {
     if (!mode) return;
     if (mode.action === "delete") return void run({ action: "delete", tag: mode.tag });
-    const name = normalizeTag(text);
+    const name = normalizeTag(mode.action === "add" ? choices[active]?.name ?? text : text);
     if (!name) { setError("Enter a tag name"); return; }
     if (mode.action === "rename") return void run({ action: "rename", tag: mode.tag, name });
-    return void run({ action: "add", sessionId: session.id, tag: choices[active]?.name ?? name });
+    return void run({ action: "add", sessionId: session.id, tag: name });
   };
   return <div className={styles.editor} onClick={e => e.stopPropagation()} onKeyDown={e => {
     e.stopPropagation();

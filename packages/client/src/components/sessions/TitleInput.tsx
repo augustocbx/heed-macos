@@ -24,6 +24,7 @@ interface SuggestState {
 export function TitleInput({ sessionId, value, tags, className }: Props) {
 	useLocale();
 	const update = useSessionsStore((s) => s.update);
+  const tagsBusy = useSessionsStore(s => s.tagsBusy);
 	const allSessions = useSessionsStore((s) => s.sessions);
 	const showToast = useUIStore((s) => s.showToast);
 	const inputRef = useRef<HTMLInputElement>(null);
@@ -136,7 +137,7 @@ export function TitleInput({ sessionId, value, tags, className }: Props) {
 				placeholder={tr("Untitled meeting (use #tags)")}
 				autoComplete="off"
 				value={text}
-        disabled={saving}
+        disabled={saving || tagsBusy}
 				onChange={(e) => { setText(e.target.value); showSuggest(); }}
 				onKeyDown={handleKeyDown}
 				onBlur={() => { setTimeout(() => setSuggest((s) => ({ ...s, visible: false })), 150); void handleCommit(); }}

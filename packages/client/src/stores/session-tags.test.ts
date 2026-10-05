@@ -4,7 +4,7 @@ import { tagsApi } from "@/api/tags";
 import { sessionsApi } from "@/api/sessions";
 import type { Session, TagSnapshot } from "@heed/shared";
 vi.mock("@/api/tags", () => ({ tagsApi: { list: vi.fn(), mutate: vi.fn() } }));
-vi.mock("@/api/sessions", () => ({ sessionsApi: { patch: vi.fn(), list: vi.fn() } }));
+vi.mock("@/api/sessions", () => ({ sessionsApi: { patch: vi.fn(), list: vi.fn(), create: vi.fn(), delete: vi.fn() } }));
 const session = { id: "a", title: "Meeting", tags: ["Planning"], tagsRevision: "old" } as Session;
 beforeEach(() => {
   vi.resetAllMocks();
@@ -45,4 +45,50 @@ test("an unrelated pending metadata edit does not hide an accepted hashtag assig
   finishNotes({ ...session, aiNotes: "new notes" });
   await notes;
   expect(useSessionsStore.getState().viewing).toMatchObject({ tags: ["Planning", "New"], aiNotes: "new notes" });
+});
+test.each(["create", "delete"] as const)("a late tag snapshot preserves an intervening meeting %s", async action => {
+  const second = { ...session, id: "b" };
+  useSessionsStore.setState({ sessions: [session, second] });
+  let finish!: (snapshot: TagSnapshot) => void;
+  vi.mocked(tagsApi.mutate).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const pending = useSessionsStore.getState().mutateTag({ action: "rename", tag: "Planning", name: "Renamed" });
+  if (action === "create") {
+    vi.mocked(sessionsApi.create).mockResolvedValue({ ...session, id: "c", tags: ["Created"] });
+    await useSessionsStore.getState().create({ title: "Created" });
+  } else {
+    vi.mocked(sessionsApi.delete).mockResolvedValue({ ok: true });
+    await useSessionsStore.getState().remove("b");
+  }
+  finish({ sessions: [session, second].map(s => ({ ...s, tags: ["Renamed"] })), tags: [{ name: "Renamed", meetingCount: 2 }], revision: "2" });
+  await pending;
+  expect(useSessionsStore.getState().sessions.map(s => s.id).sort()).toEqual(action === "create" ? ["a", "b", "c"] : ["a"]);
+  expect(useSessionsStore.getState().sessions.find(s => s.id === "a")?.tags).toEqual(["Renamed"]);
+  expect(useSessionsStore.getState().tagCatalog).toContainEqual({ name: "Renamed", meetingCount: action === "create" ? 2 : 1 });
+  if (action === "create") expect(useSessionsStore.getState().tagCatalog).toContainEqual({ name: "Created", meetingCount: 1 });
+  expect(useSessionsStore.getState().tagRevision).toBe("");
+});
+test("assignment patches immediately reconcile reusable suggestions and meeting counts", async () => {
+  vi.mocked(sessionsApi.patch).mockResolvedValue({ ...session, tags: ["Planning", "New"], tagsRevision: "new" });
+  await useSessionsStore.getState().update("a", { tags: ["Planning", "New"] });
+  expect(useSessionsStore.getState().tagCatalog).toContainEqual({ name: "New", meetingCount: 1 });
+});
+test("hashtag assignment and inline mutations cannot overlap, while notes can save", async () => {
+  let finish!: (snapshot: TagSnapshot) => void;
+  vi.mocked(tagsApi.mutate).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  vi.mocked(sessionsApi.patch).mockResolvedValue({ ...session, aiNotes: "new notes" });
+  const pending = useSessionsStore.getState().mutateTag({ action: "rename", tag: "Planning", name: "Renamed" });
+  await expect(useSessionsStore.getState().update("a", { tags: ["Planning", "New"] })).rejects.toThrow("Wait for the current tag change");
+  await useSessionsStore.getState().update("a", { aiNotes: "new notes" });
+  finish({ sessions: [{ ...session, tags: ["Renamed"] }], tags: [{ name: "Renamed", meetingCount: 1 }], revision: "2" });
+  await pending;
+  expect(useSessionsStore.getState().viewing).toMatchObject({ tags: ["Renamed"], aiNotes: "new notes" });
+});
+test("inline mutations wait for a pending hashtag save and saving state clears after failure", async () => {
+  let reject!: (error: Error) => void;
+  vi.mocked(sessionsApi.patch).mockImplementation(() => new Promise((_resolve, fail) => { reject = fail; }));
+  const pending = useSessionsStore.getState().update("a", { tags: ["Planning", "New"] });
+  await expect(useSessionsStore.getState().mutateTag({ action: "delete", tag: "Planning" })).rejects.toThrow("Wait for the current tag change");
+  reject(new Error("disk full"));
+  await expect(pending).rejects.toThrow("disk full");
+  expect(useSessionsStore.getState().tagsBusy).toBe(false);
 });
