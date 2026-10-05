@@ -35,6 +35,13 @@ class FinalLanguageContractTests(unittest.TestCase):
         import types
         import transcription_server as server
         import engines
+        import tempfile, wave, os
+        audio = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        audio.close()
+        self.addCleanup(os.unlink, audio.name)
+        with wave.open(audio.name, "wb") as wav:
+            wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(16000)
+            wav.writeframes(b"\0\0" * 200000)
         asr = types.SimpleNamespace(close=lambda: None, transcribe_ts=lambda path, language: {
             "tokens": [{"text": language, "start": 0.0, "end": 1.0}]})
         with patch("meeting_language.detect_meeting_language", return_value={"language": "pt", "confidence": .99, "samples": 1}), \
@@ -43,9 +50,10 @@ class FinalLanguageContractTests(unittest.TestCase):
              patch.object(engines, "tokens_to_segments", return_value=[{"start": 0, "end": 1, "text": "Portuguese final"}]), \
              patch.object(server, "_ffmpeg_channel"), \
              patch.object(server, "_diarize_parakeet", return_value={"segments": [{"start": 0, "end": 1, "speaker": "Speaker 1"}], "speakers": ["Speaker 1"]}):
-            result = server.finalize_recording("unused.wav", language="en", is_dual=False)
+            result = server.finalize_recording(audio.name, language="en", is_dual=False)
         self.assertEqual(result["language"], "pt")
         self.assertTrue(result["finalized"])
+        self.assertEqual(result["duration"], 12.5)
         self.assertEqual(result["turns"][0]["text"], "Portuguese final")
         self.assertEqual(result["turns"][0]["channel"], "mic")
 
