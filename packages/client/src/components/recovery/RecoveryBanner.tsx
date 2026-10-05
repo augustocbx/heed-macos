@@ -1,6 +1,7 @@
 import { tr, useLocale } from "@/lib/i18n.ts";
 import { useEffect, useState } from "react";
 import { recoveryApi, type OrphanedRecording } from "@/api/recovery.ts";
+import type { TranscribeResult } from "@heed/shared";
 import { transcribe } from "@/api/transcribe.ts";
 import { sessionsApi } from "@/api/sessions.ts";
 import { useSessionsStore } from "@/stores/sessions.ts";
@@ -34,39 +35,29 @@ export function RecoveryBanner() {
 		setRecovering(rec.path);
 		showToast(tr("Recovering recording..."));
 		try {
-			await transcribe(
-				{ url: rec.path, language: "auto", diarize: rec.is_dual, recording_finalize: true },
-				{
-					onStep: () => {},
-					onProgress: () => {},
-					onResult: async (result) => {
-						await sessionsApi.create({
-							title: `Recovered ${fmtDate(rec.created)}`,
-							createdAt: rec.created,
-							duration: result.duration ?? rec.duration_estimate_s,
-							language: result.metadata?.language || "auto",
-       transcriptionModel: result.metadata?.model,
-							transcript: result.text,
-							speakers: result.speakers || [],
-							segments: result.segments || [],
-							embeddings: result.embeddings || {},
-							files: { wav: rec.path, srt: result.files?.srt || "", txt: result.files?.txt || "" },
-							aiNotes: "",
-							summary: "",
-							tags: [],
-							pinned: false,
-						});
-						reloadSessions();
-						setOrphans((prev) => prev.filter((o) => o.path !== rec.path));
-						setRecovering(null);
-						showToast(tr("Recording recovered"));
-					},
-					onError: (msg) => {
-						showToast(`Error: ${msg}`);
-						setRecovering(null);
-					},
-				},
-			);
+   let completed: TranscribeResult | null = null;
+   await transcribe(
+    { url: rec.path, language: "auto", diarize: rec.is_dual, recording_finalize: true },
+    { onResult: result => { completed = result; } },
+   );
+   const result = completed as TranscribeResult | null;
+   if (!result?.success || result.finalized === false || !result.text?.trim() || !Array.isArray(result.segments)
+    || !["en", "pt"].includes(result.metadata?.language)) {
+    throw new Error(tr("Recovery ended without a final transcript. The audio remains available."));
+   }
+   await sessionsApi.create({
+    title: `Recovered ${fmtDate(rec.created)}`, createdAt: rec.created,
+    duration: result.duration ?? rec.duration_estimate_s, language: result.metadata.language,
+    transcriptionModel: result.metadata.model, transcriptFinalized: true,
+    transcript: result.text, speakers: result.speakers || [], segments: result.segments,
+    embeddings: result.embeddings || {},
+    files: { wav: rec.path, srt: result.files?.srt || "", txt: result.files?.txt || "" },
+    aiNotes: "", summary: "", tags: [], pinned: false,
+   });
+   await reloadSessions();
+   setOrphans(prev => prev.filter(o => o.path !== rec.path));
+   setRecovering(null);
+   showToast(tr("Recording recovered"));
 		} catch (e) {
 			showToast(tr("Error: {message}", undefined, {message:tr((e as Error).message)}));
 			setRecovering(null);

@@ -1,5 +1,6 @@
-import {readdirSync, lstatSync, unlinkSync, readFileSync, writeFileSync, existsSync} from 'node:fs';
+import {readdirSync, lstatSync, unlinkSync, readFileSync, existsSync} from 'node:fs';
 import {join, basename} from 'node:path';
+import {atomicWriteJson} from './atomic-json';
 
 export const AUDIO_LIMIT_BYTES = 2_000_000_000;
 const AUDIO = /\.(wav|mp3|m4a|aac|flac|ogg|opus|aiff|aif|webm|mp4|mov)$/i;
@@ -26,7 +27,7 @@ export function enforceAudioRetention(directory:string, sessions:string, limit=A
   let session;try{session=JSON.parse(readFileSync(path,'utf8'));}catch{continue;}
   if(removed.includes(session.files?.wav)) {
    session.files.wav='';session.audioExpired=true;session.audioRemovedAt=new Date().toISOString();
-   writeFileSync(path,JSON.stringify(session,null,2));
+   atomicWriteJson(path,session);
   }
  }
  return {bytes,limitBytes:limit,removed,overLimit:bytes>limit};

@@ -25,7 +25,7 @@ export async function retranscribeSession(
    && session.segments.some(segment=>segment.speaker===speaker && segment.auto!==true))).map(speaker=>[speaker,speaker]));
  const mapped = applySpeakerNames(result.segments,result.speakers,result.embeddings || {},
   reconcileSpeakerNames(session.segments,result.segments,names));
- await save(session.id,{transcript:result.text,language:result.metadata.language,
+ await save(session.id,{transcript:result.text,language:result.metadata.language,transcriptFinalized:true,
   transcriptionModel:result.metadata.model || model,
   ...(Number.isFinite(result.duration) && (result.duration || 0)>0 ? {duration:result.duration} : {}),...mapped});
 }

@@ -102,6 +102,16 @@ Names entered manually during recording survive live transcript updates and are 
 
 If microphone quality drops with Bluetooth headphones, select the **Mac's built-in microphone as input** while keeping the headphones as output. Apple explains the Bluetooth mode change in [If sound quality is reduced when using Bluetooth headphones with your Mac](https://support.apple.com/en-ie/102217).
 
+## Automatic meeting notes
+
+In **Settings → Automatic meeting notes**, choose an installed local Ollama model, a built-in or custom template, and the notes language. Enable **Generate notes automatically** and save the settings. This is disabled by default and configured separately on each Mac. **Meeting language** uses the detected final English or Portuguese language, independently of the interface language or English live preview.
+
+Heed queues notes only after saving the complete final transcript and speaker names. One generation runs at a time; recording and transcription take priority and interrupt notes generation. Interrupted jobs resume from the beginning when resources are available. The saved meeting and audio remain available if Ollama stops or the model is missing. The meeting list and detail show the durable status, generated character count, failure explanation, and cancel/retry controls.
+
+Existing notes are preserved. Replacing them requires confirmation, and results generated from an older transcript or notes version are discarded. Transcript or speaker edits mark notes stale. The displayed provenance identifies the source revision, template, model, and output language. Earlier meetings are not automatically backfilled. No models are downloaded by this setting, and no notes are sent to attendees or published externally.
+
+See [automatic notes behavior and validation](docs/automatic-notes.md) for scheduling, restart recovery, local-only model checks, and validation limits.
+
 ## Storage and retention
 
 Audio files are stored in this checkout's `recordings/` folder. Meetings and transcripts are stored in `~/.heed-app/sessions/`; configuration is stored in `~/.heed-app/`. Models are stored in `~/Library/Application Support/FluidAudio/Models/`.

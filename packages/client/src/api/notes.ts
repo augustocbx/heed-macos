@@ -2,7 +2,7 @@ import { buildUrl, apiClient } from "./client.ts";
 
 export interface SummaryHandlers {
 	onToken?: (token: string) => void;
-	onDone?: (full: string) => void;
+	onDone?: (full: string) => void | Promise<void>;
 	onError?: (msg: string) => void;
 }
 
@@ -39,24 +39,38 @@ export async function generateNotes(
 	let buffer = "";
 	let full = "";
 
-	while (true) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		buffer += decoder.decode(value, { stream: true });
-		const lines = buffer.split("\n");
-		buffer = lines.pop() || "";
-		for (const line of lines) {
-			if (!line.startsWith("data: ")) continue;
-			try {
-				const data = JSON.parse(line.slice(6));
-				if (data.token) {
-					full += data.token;
-					handlers.onToken?.(data.token);
-				}
-				if (data.done) handlers.onDone?.(full);
-			} catch {}
-		}
-	}
+ let complete = false;
+ const consume = (line: string) => {
+  if (!line.startsWith("data: ")) return;
+  let data: { token?: unknown; done?: unknown; error?: unknown };
+  try { data = JSON.parse(line.slice(6)); }
+  catch { throw new Error("Notes generation returned a malformed stream."); }
+  if (data.error) throw new Error(String(data.error));
+  if (data.token !== undefined) {
+   if (typeof data.token !== "string" || complete) throw new Error("Notes generation returned a malformed stream.");
+   full += data.token; handlers.onToken?.(data.token);
+  }
+  if (data.done === true) complete = true;
+ };
+ try {
+  while (true) {
+   const { done, value } = await reader.read();
+   if (done) break;
+   buffer += decoder.decode(value, { stream: true });
+   const lines = buffer.split("\n");
+   buffer = lines.pop() || "";
+   for (const line of lines) consume(line);
+  }
+  buffer += decoder.decode();
+  if (buffer) consume(buffer);
+  if (!complete || !full.trim()) throw new Error("Notes generation was incomplete. Please retry.");
+  await handlers.onDone?.(full);
+ } catch (error) {
+  handlers.onError?.((error as Error).message);
+  await reader.cancel().catch(() => {});
+  throw error;
+ } finally { reader.releaseLock(); }
+
 	return full;
 }
 
