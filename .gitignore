@@ -1,0 +1,42 @@
+node_modules/
+.venv/
+.venv
+.env
+*.log
+.vercel
+dist/
+.astro/
+*.tsbuildinfo
+
+# Personal working notes — never committed
+pendits.txt
+PLAN.md
+.claude/
+.vscode/
+
+# Backup of original crafter-station/trx git history (not part of heed)
+.git.backup-trx-fork/
+__pycache__/
+records/
+recordings/*.wav
+recordings/*.srt
+recordings/*.txt
+pendints.txt
+_warmup.wav
+CLAUDE.md
+docs/competitive-analysis.md
+
+# Swift sidecar build artifacts (heed-parakeet) — rebuilt by the installer
+packages/transcription/native/**/.build/
+packages/transcription/native/**/.swiftpm/
+
+# worktree dep symlinks (not real dirs, so node_modules/ rule misses them)
+/node_modules
+packages/*/node_modules
+
+# Repo hygiene: keep large DERIVED artifacts out of the public repo (test recordings + eval caches).
+# The eval rig SCRIPTS still get committed — only the multi-MB caches/wavs are excluded.
+recordings/
+eval_diar/cache/
+eval_echo/cache/
+**/*.wav.json

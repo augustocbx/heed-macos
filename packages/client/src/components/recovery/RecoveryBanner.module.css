@@ -1,0 +1,130 @@
+.banner {
+	background: #FFF7ED;
+	border: 1px solid #FED7AA;
+	border-left: 4px solid #F59E0B;
+	border-radius: var(--radius-md);
+	padding: 16px 20px;
+	margin-bottom: 16px;
+}
+
+.header {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin-bottom: 4px;
+}
+
+.title {
+	font-family: var(--mono);
+	font-size: 12px;
+	font-weight: 700;
+	color: #92400E;
+}
+
+.subtitle {
+	font-size: 11px;
+	color: #B45309;
+	line-height: 1.5;
+	margin: 0 0 12px 0;
+}
+
+.dismissBtn {
+	background: transparent;
+	border: none;
+	font-size: 18px;
+	color: #B45309;
+	cursor: pointer;
+	padding: 0 4px;
+	line-height: 1;
+}
+
+.dismissBtn:hover {
+	color: #92400E;
+}
+
+.list {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.item {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	background: var(--white);
+	border: 1px solid #FED7AA;
+	border-radius: var(--radius-sm);
+	padding: 10px 12px;
+	gap: 12px;
+}
+
+.itemInfo {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.itemDate {
+	font-family: var(--mono);
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--text);
+}
+
+.itemMeta {
+	font-family: var(--mono);
+	font-size: 10px;
+	color: var(--text-3);
+}
+
+.itemActions {
+	display: flex;
+	gap: 6px;
+	flex-shrink: 0;
+}
+
+.recoverBtn {
+	font-family: var(--mono);
+	font-size: 10px;
+	font-weight: 600;
+	padding: 5px 12px;
+	border-radius: var(--radius-sm);
+	border: 1px solid var(--blue);
+	background: var(--blue);
+	color: var(--white);
+	cursor: pointer;
+	transition: all 150ms;
+}
+
+.recoverBtn:hover:not(:disabled) {
+	background: #1D4ED8;
+}
+
+.recoverBtn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.discardBtn {
+	font-family: var(--mono);
+	font-size: 10px;
+	font-weight: 600;
+	padding: 5px 10px;
+	border-radius: var(--radius-sm);
+	border: 1px solid var(--border-light);
+	background: var(--white);
+	color: var(--text-3);
+	cursor: pointer;
+	transition: all 150ms;
+}
+
+.discardBtn:hover:not(:disabled) {
+	border-color: #EF4444;
+	color: #EF4444;
+}
+
+.discardBtn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}

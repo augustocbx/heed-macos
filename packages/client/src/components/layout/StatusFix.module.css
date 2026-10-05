@@ -1,0 +1,155 @@
+.backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 300;
+}
+
+.popover {
+	position: absolute;
+	top: calc(100% + 10px);
+	right: 0;
+	width: 320px;
+	padding: 14px;
+	border-radius: 12px;
+	background: var(--white);
+	border: 1px solid var(--border-light);
+	box-shadow: 0 20px 44px rgba(15, 23, 42, 0.18);
+	z-index: 320;
+}
+
+.popover::before {
+	content: "";
+	position: absolute;
+	top: -7px;
+	right: 20px;
+	width: 10px;
+	height: 10px;
+	background: var(--white);
+	border-top: 1px solid var(--border-light);
+	border-left: 1px solid var(--border-light);
+	transform: rotate(45deg);
+}
+
+.head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 8px;
+}
+
+.title {
+	font-family: var(--mono);
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: 0.45px;
+	text-transform: uppercase;
+	color: var(--text);
+}
+
+.close {
+	border: none;
+	background: transparent;
+	font-size: 16px;
+	line-height: 1;
+	color: var(--text-3);
+	cursor: pointer;
+	padding: 0 2px;
+}
+
+.close:hover {
+	color: var(--text);
+}
+
+.body {
+	font-family: var(--mono);
+	font-size: 11px;
+	line-height: 1.5;
+	color: var(--text-2);
+	margin: 0 0 10px;
+}
+
+.actions {
+	display: flex;
+	gap: 8px;
+	margin-bottom: 8px;
+}
+
+.btnPrimary {
+	font-family: var(--mono);
+	font-size: 11px;
+	font-weight: 600;
+	padding: 7px 12px;
+	border-radius: 8px;
+	border: none;
+	background: var(--blue);
+	color: var(--white);
+	cursor: pointer;
+	transition: opacity 140ms ease;
+}
+
+.btnPrimary:hover {
+	opacity: 0.9;
+}
+
+.btnPrimary:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
+.cmdBox {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	background: #0f172a;
+	border-radius: 8px;
+	padding: 8px 10px;
+	margin-top: 4px;
+}
+
+.cmdText {
+	font-family: var(--mono);
+	font-size: 10px;
+	color: #e2e8f0;
+	flex: 1;
+	overflow-x: auto;
+	white-space: nowrap;
+}
+
+.cmdCopy {
+	font-family: var(--mono);
+	font-size: 10px;
+	font-weight: 600;
+	border: 1px solid rgba(255, 255, 255, 0.2);
+	background: transparent;
+	color: #e2e8f0;
+	border-radius: 6px;
+	padding: 4px 8px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.cmdCopy:hover {
+	background: rgba(255, 255, 255, 0.1);
+}
+
+.stream {
+	margin-top: 10px;
+	max-height: 140px;
+	overflow-y: auto;
+	background: #0f172a;
+	border-radius: 8px;
+	padding: 8px;
+}
+
+.streamLine {
+	font-family: var(--mono);
+	font-size: 9px;
+	line-height: 1.5;
+	color: #94a3b8;
+	white-space: pre-wrap;
+	word-break: break-all;
+}
+
+.streamErr {
+	color: #fca5a5;
+}

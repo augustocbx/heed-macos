@@ -1,0 +1,154 @@
+.header {
+	display: flex;
+	gap: 12px;
+	margin-bottom: var(--space-4);
+}
+
+.header input {
+	flex: 1;
+	font-family: var(--mono);
+	font-size: 13px;
+	padding: 10px 14px;
+	border: 1px solid var(--border-light);
+	border-radius: var(--radius-md);
+	outline: none;
+	background: var(--white);
+	color: var(--text);
+}
+
+.header input:focus {
+	border-color: var(--blue);
+}
+
+.tagBar {
+	display: flex;
+	gap: 6px;
+	flex-wrap: wrap;
+	margin-bottom: 12px;
+	align-items: center;
+}
+
+.tagFilter {
+	font-family: var(--mono);
+	font-size: 11px;
+	color: var(--text-3);
+	padding: 4px 10px;
+	border: 1px solid var(--border-light);
+	background: var(--white);
+	border-radius: 12px;
+	cursor: pointer;
+	transition: all 150ms;
+}
+
+.tagFilter:hover {
+	border-color: var(--blue);
+	color: var(--blue);
+}
+
+.tagFilterActive {
+	background: var(--blue);
+	color: var(--white);
+	border-color: var(--blue);
+}
+
+.tagClear {
+	font-family: var(--mono);
+	font-size: 10px;
+	color: var(--text-3);
+	cursor: pointer;
+	padding: 4px 8px;
+}
+
+.tagClear:hover {
+	color: var(--red);
+}
+
+.empty {
+	text-align: center;
+	padding: 80px 20px;
+	color: var(--text-3);
+	font-family: var(--mono);
+	font-size: 13px;
+}
+
+.confirmOverlay {
+	position: fixed;
+	inset: 0;
+	background: rgba(15, 23, 42, 0.46);
+	backdrop-filter: blur(3px);
+	z-index: 260;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 20px;
+}
+
+.confirmPanel {
+	width: min(420px, 100%);
+	background: var(--white);
+	border: 1px solid var(--border-light);
+	border-radius: var(--radius-lg);
+	box-shadow: 0 22px 52px rgba(2, 6, 23, 0.24);
+	padding: 18px;
+}
+
+.confirmTitle {
+	font-family: var(--mono);
+	font-size: 14px;
+	font-weight: 700;
+	color: var(--text);
+	margin-bottom: 8px;
+}
+
+.confirmBody {
+	font-size: 13px;
+	line-height: 1.5;
+	color: var(--text-2);
+}
+
+.confirmActions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-top: 14px;
+}
+
+.confirmCancel,
+.confirmDelete {
+	font-family: var(--mono);
+	font-size: 11px;
+	font-weight: 700;
+	padding: 7px 12px;
+	border-radius: var(--radius-md);
+	border: 1px solid var(--border-light);
+	background: var(--white);
+	cursor: pointer;
+	transition: all 140ms;
+}
+
+.confirmCancel {
+	color: var(--text-2);
+}
+
+.confirmCancel:hover:not(:disabled) {
+	background: var(--border-light);
+	border-color: var(--border-light);
+}
+
+.confirmDelete {
+	color: #b91c1c;
+	border-color: rgba(239, 68, 68, 0.3);
+	background: rgba(239, 68, 68, 0.06);
+}
+
+.confirmDelete:hover:not(:disabled) {
+	color: #991b1b;
+	border-color: rgba(239, 68, 68, 0.42);
+	background: rgba(239, 68, 68, 0.12);
+}
+
+.confirmCancel:disabled,
+.confirmDelete:disabled {
+	opacity: 0.55;
+	cursor: not-allowed;
+}

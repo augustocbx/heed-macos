@@ -1,0 +1,7 @@
+.main {
+	max-width: var(--container-max);
+	margin: 0 auto;
+	padding: 72px var(--space-6) var(--space-8);
+	flex: 1;
+	width: 100%;
+}

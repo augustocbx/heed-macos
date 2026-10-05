@@ -1,0 +1,131 @@
+.item {
+	background: var(--white);
+	border: 1px solid var(--border-light);
+	border-radius: 10px;
+	padding: 14px 18px;
+	margin-bottom: var(--space-2);
+	cursor: pointer;
+	transition: all 150ms;
+	display: flex;
+	justify-content: space-between;
+	align-items: flex-start;
+	gap: 12px;
+	position: relative;
+}
+
+.item:hover {
+	border-color: var(--blue);
+	box-shadow: var(--shadow-blue);
+}
+
+.info {
+	flex: 1;
+	min-width: 0;
+}
+
+.title {
+	font-family: var(--mono);
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text);
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+
+.pin {
+	color: var(--blue);
+}
+
+.tags {
+	display: inline-flex;
+	gap: 4px;
+	margin-left: 6px;
+	flex-wrap: wrap;
+}
+
+.tag {
+	font-family: var(--mono);
+	font-size: 10px;
+	color: var(--blue);
+	background: var(--blue-pale);
+	padding: 2px 8px;
+	border-radius: 10px;
+	cursor: pointer;
+	transition: all 150ms;
+}
+
+.tag:hover {
+	background: var(--blue);
+	color: var(--white);
+}
+
+.summary {
+	font-size: 13px;
+	color: var(--text-2);
+	margin-top: 4px;
+	line-height: 1.4;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	display: -webkit-box;
+	-webkit-line-clamp: 1;
+	-webkit-box-orient: vertical;
+}
+
+.meta {
+	font-family: var(--mono);
+	font-size: 10px;
+	color: var(--text-3);
+	margin-top: 6px;
+	display: flex;
+	gap: 12px;
+}
+
+.actions {
+	opacity: 1;
+	transition: opacity 150ms;
+	display: flex;
+	gap: 6px;
+	align-items: center;
+}
+
+.item:hover .actions {
+	opacity: 1;
+}
+
+.actionBtn {
+	background: var(--white);
+	border: 1px solid var(--border-light);
+	color: var(--text-3);
+	min-width: 28px;
+	height: 28px;
+	padding: 0 8px;
+	border-radius: var(--radius-sm);
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-family: var(--mono);
+	font-size: 10px;
+	font-weight: 600;
+	line-height: 1;
+}
+
+.actionBtn:hover {
+	background: var(--border-light);
+	color: var(--text);
+	border-color: var(--border-light);
+}
+
+.actionBtnDanger {
+	color: #b91c1c;
+	border-color: rgba(239, 68, 68, 0.26);
+	background: rgba(239, 68, 68, 0.06);
+}
+
+.actionBtnDanger:hover {
+	color: #991b1b;
+	border-color: rgba(239, 68, 68, 0.34);
+	background: rgba(239, 68, 68, 0.12);
+}

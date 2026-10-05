@@ -1,0 +1,10 @@
+heed hardware-calibration sample
+--------------------------------
+File:    bench_sample.wav (30s, 16kHz mono) — used only to measure transcription speed.
+Source:  "Alice's Adventures in Wonderland", Chapter 1, read by a LibriVox volunteer.
+         https://archive.org/details/alice_in_wonderland_librivox
+License:  Public Domain (LibriVox dedicates all recordings to the public domain).
+         Text by Lewis Carroll (1865), also public domain.
+Note:    A ~30s clip of distinct natural speech is required for a representative
+         real-time-factor measurement (Whisper processes audio in 30s windows; a tone
+         or a looped/short clip mis-measures).

@@ -1,0 +1,22 @@
+.hint {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-top: 12px;
+	padding: 7px 11px;
+	border-radius: 8px;
+	font-family: var(--mono);
+	font-size: 11px;
+	color: #047857;
+	background: rgba(16, 185, 129, 0.08);
+	border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.bolt {
+	font-size: 12px;
+	line-height: 1;
+}
+
+.hint strong {
+	font-weight: 700;
+}

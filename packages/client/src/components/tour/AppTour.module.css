@@ -1,0 +1,114 @@
+.overlay {
+	position: fixed;
+	inset: 0;
+	background: rgba(15, 23, 42, 0.6);
+	z-index: 400;
+	cursor: pointer;
+}
+
+.spotlight {
+	position: fixed;
+	border-radius: var(--radius-md);
+	box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.6);
+	background: transparent;
+	border: 2px solid var(--blue);
+	z-index: 401;
+	pointer-events: none;
+	transition: all 350ms ease;
+}
+
+.tooltip {
+	position: fixed;
+	z-index: 402;
+	background: var(--white);
+	border-radius: var(--radius-lg);
+	padding: 24px 28px;
+	max-width: 360px;
+	width: calc(100vw - 32px);
+	box-shadow: 0 24px 64px rgba(0, 0, 0, 0.25);
+	animation: tooltipIn 300ms ease-out;
+}
+
+@keyframes tooltipIn {
+	from { opacity: 0; transform: translateY(8px); }
+	to { opacity: 1; transform: translateY(0); }
+}
+
+.stepCount {
+	font-family: var(--mono);
+	font-size: 10px;
+	color: var(--text-3);
+	text-transform: uppercase;
+	letter-spacing: 0.8px;
+	margin-bottom: 8px;
+}
+
+.title {
+	font-size: 16px;
+	font-weight: 700;
+	color: var(--text);
+	margin: 0 0 8px 0;
+}
+
+.body {
+	font-size: 13px;
+	line-height: 1.65;
+	color: var(--text-2);
+	margin: 0 0 16px 0;
+}
+
+.actions {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+
+.btnPrimary {
+	font-family: var(--mono);
+	font-size: 11px;
+	font-weight: 600;
+	padding: 8px 18px;
+	border-radius: var(--radius-md);
+	border: 1px solid var(--blue);
+	background: var(--blue);
+	color: var(--white);
+	cursor: pointer;
+	transition: all 150ms;
+}
+
+.btnPrimary:hover {
+	background: #1D4ED8;
+}
+
+.btnGhost {
+	font-family: var(--mono);
+	font-size: 11px;
+	font-weight: 600;
+	padding: 8px 14px;
+	border-radius: var(--radius-md);
+	border: 1px solid var(--border-light);
+	background: var(--white);
+	color: var(--text-2);
+	cursor: pointer;
+	transition: all 150ms;
+}
+
+.btnGhost:hover {
+	background: var(--border-light);
+}
+
+.btnSkip {
+	margin-left: auto;
+	font-family: var(--mono);
+	font-size: 10px;
+	padding: 6px 10px;
+	border: none;
+	background: transparent;
+	color: var(--text-3);
+	cursor: pointer;
+}
+
+.btnSkip:hover {
+	color: var(--text);
+	text-decoration: underline;
+}

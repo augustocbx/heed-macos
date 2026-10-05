@@ -1,0 +1,8 @@
+.timer {
+	font-family: var(--mono);
+	font-size: 48px;
+	font-weight: 700;
+	color: var(--text);
+	letter-spacing: 0.05em;
+	font-variant-numeric: tabular-nums;
+}

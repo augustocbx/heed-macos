@@ -1,0 +1,12 @@
+recordings/dual-capture-1782459020076.wav
+recordings/dual-capture-1782458200673.wav
+recordings/dual-capture-1782457624416.wav
+recordings/dual-capture-1782454743299.wav
+recordings/dual-capture-1782453505613.wav
+recordings/dual-capture-1782452223877.wav
+recordings/dual-capture-1782452196322.wav
+recordings/dual-capture-1782450379218.wav
+recordings/dual-capture-1782450345203.wav
+recordings/dual-capture-1782420547608.wav
+recordings/dual-capture-1782420284086.wav
+recordings/dual-capture-1782372989078.wav

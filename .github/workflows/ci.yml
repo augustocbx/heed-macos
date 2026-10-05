@@ -1,0 +1,25 @@
+name: Verificação
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  verificar:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - name: Testes do servidor
+        run: bun test packages/server/lib
+      - name: Testes da interface
+        run: NODE_OPTIONS=--no-experimental-webstorage bun run --cwd packages/client test --run
+      - name: Compilar interface
+        run: bun run build
+      - name: Verificar instaladores
+        run: bash -n install-macos.sh packages/desktop/install-menubar.sh packages/desktop/macos/start-services.sh
+      - name: Compilar ícone
+        run: bash packages/desktop/install-menubar.sh --build-only

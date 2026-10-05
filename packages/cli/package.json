@@ -1,0 +1,54 @@
+{
+	"name": "create-heed",
+	"version": "0.2.1",
+	"description": "Set up heed — local-first meeting transcription with real speaker diarization. One command, everything installs.",
+	"author": "Junior Rodriguez <junrodpro@gmail.com> (https://github.com/isjunrod)",
+	"license": "MIT",
+	"type": "module",
+	"bin": {
+		"create-heed": "./bin/cli.mjs"
+	},
+	"files": [
+		"bin/cli.mjs",
+		"README.md"
+	],
+	"engines": {
+		"node": ">=18.0.0"
+	},
+	"os": [
+		"linux",
+		"darwin"
+	],
+	"keywords": [
+		"meeting",
+		"transcription",
+		"whisper",
+		"pyannote",
+		"diarization",
+		"speaker",
+		"local-first",
+		"privacy",
+		"self-hosted",
+		"ollama",
+		"granola",
+		"meeting-notes",
+		"voice-recognition",
+		"linux",
+		"macos",
+		"offline",
+		"open-source"
+	],
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/isjunrod/heed",
+		"directory": "packages/cli"
+	},
+	"homepage": "https://github.com/isjunrod/heed#readme",
+	"bugs": {
+		"url": "https://github.com/isjunrod/heed/issues"
+	},
+	"funding": {
+		"type": "github",
+		"url": "https://github.com/sponsors/isjunrod"
+	}
+}

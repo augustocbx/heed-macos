@@ -1,0 +1,47 @@
+.btn {
+	width: 100px;
+	height: 100px;
+	border-radius: 50%;
+	border: 3px solid var(--border);
+	background: var(--white);
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	transition: all 200ms;
+	padding: 0;
+}
+
+.btn:hover {
+	border-color: var(--red);
+	box-shadow: 0 0 0 8px rgba(239, 68, 68, 0.08);
+}
+
+.recording {
+	border-color: var(--red);
+	box-shadow: 0 0 0 8px rgba(239, 68, 68, 0.12);
+	animation: pulse-ring 2s infinite;
+}
+
+.icon {
+	width: 36px;
+	height: 36px;
+	background: var(--red);
+	border-radius: 50%;
+	transition: all 200ms;
+}
+
+.recording .icon {
+	border-radius: 6px;
+	width: 28px;
+	height: 28px;
+}
+
+@keyframes pulse-ring {
+	0%, 100% {
+		box-shadow: 0 0 0 8px rgba(239, 68, 68, 0.12);
+	}
+	50% {
+		box-shadow: 0 0 0 16px rgba(239, 68, 68, 0.04);
+	}
+}

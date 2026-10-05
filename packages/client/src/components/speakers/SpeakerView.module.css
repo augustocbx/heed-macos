@@ -1,0 +1,150 @@
+.container {
+	background: var(--white);
+	border: 1px solid var(--border-light);
+	border-radius: var(--radius-lg);
+	padding: 20px;
+	max-height: 400px;
+	overflow-y: auto;
+}
+
+.hint {
+	font-size: 10px;
+	color: var(--text-3);
+	margin-bottom: 12px;
+	font-family: var(--mono);
+}
+
+.chips {
+	display: flex;
+	gap: var(--space-2);
+	flex-wrap: wrap;
+	margin-bottom: var(--space-4);
+}
+
+.chip {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 4px 10px;
+	border-radius: var(--radius-sm);
+	border: 1px solid var(--border-light);
+	font-family: var(--mono);
+	font-size: 11px;
+	cursor: pointer;
+	user-select: none;
+}
+
+.chipDot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+
+.speakerHeader {
+	margin-top: 14px;
+	font-weight: 600;
+	font-family: var(--mono);
+	font-size: 13px;
+}
+
+/* Subtle "auto" marker on a voice recognized cross-session — present but unobtrusive, so a
+   wrong match is visible and easy to correct (click the chip to rename). */
+.autoBadge {
+	margin-left: 6px;
+	padding: 1px 5px;
+	border-radius: 6px;
+	font-size: 9px;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	font-family: var(--mono);
+	color: var(--text-muted, #94a3b8);
+	background: color-mix(in srgb, currentColor 14%, transparent);
+	vertical-align: middle;
+	cursor: help;
+}
+
+.speakerLine {
+	padding-left: 12px;
+	font-size: 14px;
+	line-height: 1.7;
+}
+
+.speakerLineTyping {
+	animation: fadeIn 300ms ease-out;
+}
+
+.cursor {
+	display: inline-block;
+	width: 2px;
+	height: 1em;
+	background: var(--blue);
+	margin-left: 2px;
+	vertical-align: text-bottom;
+	animation: blink 800ms step-end infinite;
+}
+
+@keyframes fadeIn {
+	from { opacity: 0; transform: translateY(4px); }
+	to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes blink {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0; }
+}
+
+.overlapBadge {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 1px 7px;
+	border-radius: 999px;
+	background: #fef3c7;
+	color: #92400e;
+	font-family: var(--mono);
+	font-size: 9px;
+	font-weight: 600;
+	letter-spacing: 0.3px;
+	flex-shrink: 0;
+	margin-top: 4px;
+	text-transform: uppercase;
+}
+
+.overlapBadge::before {
+	content: "⟳";
+	font-size: 11px;
+}
+
+.placeholder {
+	font-family: var(--mono);
+	font-size: 13px;
+	color: var(--text-3);
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 20px 0;
+}
+
+.placeholderDot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--blue);
+	flex-shrink: 0;
+}
+
+.placeholderDotPulse {
+	animation: pulse 1.2s ease-in-out infinite;
+}
+
+.placeholderDotStatic {
+	background: var(--text-3);
+	opacity: 0.45;
+}
+
+@keyframes pulse {
+	0%, 100% { opacity: 0.3; transform: scale(0.8); }
+	50% { opacity: 1; transform: scale(1.2); }
+}

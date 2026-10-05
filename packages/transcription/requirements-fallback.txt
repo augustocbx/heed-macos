@@ -1,0 +1,11 @@
+# heed FALLBACK stack — installed ON-DEMAND only, NOT in the default macOS install (~1.6GB).
+# When: Parakeet isn't available (Linux/Windows, or a Mac where `swift build` of the sidecar failed).
+# heed's doctor detects this and offers `npx create-heed fallback`, which pip-installs this file into
+# the existing venv and sets HEED_ENGINE=mlx (Mac) so the server uses MLX/faster-whisper instead.
+faster-whisper==1.2.1
+# Apple Silicon ONLY: Whisper on the Apple GPU (Metal). Marker skips it on Linux/Windows/Intel.
+mlx-whisper==0.4.3; sys_platform == "darwin" and platform_machine == "arm64"
+pyannote.audio==4.0.4
+torch==2.10.0
+torchaudio==2.10.0
+torchcodec==0.10.0

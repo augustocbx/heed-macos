@@ -1,0 +1,12 @@
+# NOTE: the server imports `faster_whisper` (CTranslate2), NOT openai-whisper.
+# Listing openai-whisper here made fresh installs ship the wrong package and crash.
+faster-whisper==1.2.1
+# Apple Silicon ONLY: runs Whisper on the Apple GPU (Metal), ~5x faster than CTranslate2
+# on CPU. The env marker means Linux/Windows/Intel installs skip it entirely (they use
+# faster-whisper on CUDA/CPU instead). See packages/transcription/engines.py.
+mlx-whisper==0.4.3; sys_platform == "darwin" and platform_machine == "arm64"
+pyannote.audio==4.0.4
+torch==2.10.0
+torchaudio==2.10.0
+torchcodec==0.10.0
+livekit  # WebRTC AEC3 for mic echo cancellation (Layer 2)
