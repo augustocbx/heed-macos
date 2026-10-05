@@ -14,12 +14,12 @@ test('duplicate start cannot replace an active recording', () => {
  const control = new DesktopControl();
  expect(() => control.enqueue('start', 'en', {recording:true, processing:false})).toThrow('already recording');
 });
-test('stop stays with the browser that owns the recording', () => {
+test('another connected tab can stop an active native recording', () => {
  const control = new DesktopControl();
  control.heartbeat('owner', {recording:true, processing:false, seconds:12}, 1000);
  control.enqueue('stop', 'pt', {recording:true, processing:false}, 1001);
- expect(control.claim('other', 1002)).toBeNull();
- expect(control.claim('owner', 1002)?.action).toBe('stop');
+ expect(control.claim('other', 1002)?.action).toBe('stop');
+ expect(control.claim('owner', 1002)).toBeNull();
 });
 test('expired unclaimed command does not start recording later', () => {
  const control = new DesktopControl();
@@ -56,4 +56,11 @@ test('server takeover clears an automatic stop before a later start', () => {
  bridge.cancelPending();
  expect(bridge.pending).toBe(false);
  expect(bridge.enqueue('start','pt',{recording:false,processing:false})).toBeTruthy();
+});
+
+test('an executing browser cannot silently consume a subsequent stop command', () => {
+ const control = new DesktopControl();
+ control.enqueue('stop','en',{recording:true,processing:false},1000);
+ expect(control.claim('busy',1001,'previous-start')).toBeNull();
+ expect(control.claim('available',1002)?.action).toBe('stop');
 });

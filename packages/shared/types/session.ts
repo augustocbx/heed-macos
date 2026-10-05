@@ -13,6 +13,8 @@ export interface Session {
 	updatedAt?: string;
 	duration: number;
 	language: string;
+ transcriptionModel?: string;
+ liveModel?: string;
 	transcript: string;
 	speakers: string[];
 	segments: Segment[];

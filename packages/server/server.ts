@@ -1,3 +1,4 @@
+import { finalRecordingResult, recordingFinalizationOptions } from "./lib/final-recording.ts";
 import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, statSync } from "node:fs";
 import { join, resolve, extname } from "node:path";
 import { homedir, cpus } from "node:os";
@@ -17,6 +18,7 @@ const retainedProcessing = new Map<string, number>();
 const CAPTURE_LIMIT_BYTES = Math.floor(AUDIO_LIMIT_BYTES / 2) - 10_000_000;
 let quotaReachedAt = 0;
 let quotaStopResult: any = null;
+let recordingFinalizationRunning = false;
 function protectAudio(path: string) { retainedProcessing.set(path, Date.now() + 120_000); }
 function pruneAudio(limit = AUDIO_LIMIT_BYTES) {
  for (const [path, until] of retainedProcessing) if (until < Date.now()) retainedProcessing.delete(path);
@@ -268,11 +270,15 @@ async function handleTranscribe(req: Request): Promise<Response> {
 	let language = "auto";
 	let diarize = true;
 	let inputFilePath: string | null = null;
+ let recordingFinalize = false;
+ let finalModelOverride: string | null = null;
 
 	const contentType = req.headers.get("content-type") || "";
 
 	if (contentType.includes("multipart/form-data")) {
 		const formData = await req.formData();
+  recordingFinalize = formData.get("recording_finalize") === "true";
+  finalModelOverride = formData.get("final_model") as string | null;
 		const file = formData.get("file") as File | null;
 		const url = formData.get("url") as string | null;
 		language = (formData.get("language") as string) || "auto";
@@ -291,16 +297,27 @@ async function handleTranscribe(req: Request): Promise<Response> {
 		}
 	} else {
 		const body = await req.json();
+  recordingFinalize = body.recording_finalize === true;
+  finalModelOverride = body.final_model || null;
 		input = body.url || body.input;
 		language = body.language || "auto";
 		diarize = body.diarize || false;
 		if (!input) return Response.json({ error: "No input provided" }, { status: 400 });
 	}
 
+ if (recordingFinalize) {
+  try { recordingFinalizationOptions(language, finalModelOverride); } catch (error) { return Response.json({error:(error as Error).message}, {status:400}); }
+  if (recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning) return Response.json({error:"Wait for the current recording or final transcription to finish"}, {status:409});
+ }
+ if (resolve(input) === recorderPath || retainedProcessing.get(resolve(input)) === Infinity) {
+  return Response.json({error:"This audio is still recording or processing. Wait until it finishes before recovery."}, {status:409});
+ }
+
 	// For URLs, first download with yt-dlp then clean audio with ffmpeg
 	let wavPath = input;
 	const isUrl = /^https?:\/\//i.test(input);
 
+ if (recordingFinalize) recordingFinalizationRunning = true;
 	retainedProcessing.set(wavPath, Infinity);
 	const encoder = new TextEncoder();
 	const stream = new ReadableStream({
@@ -337,6 +354,13 @@ async function handleTranscribe(req: Request): Promise<Response> {
     if(existsSync(wavPath))pruneAudio(Math.max(0,AUDIO_LIMIT_BYTES-statSync(wavPath).size-10_000_000));
 				// Detect dual-channel captures (L=mic, R=system)
 				const isDualChannel = /(?:^|\/)dual-capture-/.test(wavPath);
+
+    if (recordingFinalize) {
+     send("step", {message:"Detecting meeting language and retranscribing the complete recording..."});
+     const fin = await postJSON("/finalize", {wav_path:wavPath, ...recordingFinalizationOptions(language, finalModelOverride), allowed_languages:["en","pt"], dual:isDualChannel, mic_name:micLabel()});
+     send("result", finalRecordingResult(fin, wavPath));
+     return;
+    }
 
 				// Use the STREAMING endpoint: Python emits segments one by one via SSE.
 				// We forward each event to the frontend so text appears progressively.
@@ -426,6 +450,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 				send("error", { message: (e as Error).message });
 			} finally {
     removeChannelCopies(wavPath); protectAudio(wavPath);
+    if (recordingFinalize) recordingFinalizationRunning = false;
 				controller.close();
 			}
 		},
@@ -1273,14 +1298,15 @@ function getMicSource(): string | null {
 const AUDIO_FMT = IS_MAC ? "avfoundation" : "pulse";
 
 async function handleSysRecordStart(req: Request): Promise<Response> {
- if (recorderProc || recorderStarting || recorderStopping) return Response.json({error:"Heed is already recording"}, {status:409});
+ if (recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning) return Response.json({error:"Heed is already recording or finalizing audio"}, {status:409});
  recorderStarting = true;
  try { return await beginSysRecording(req); } finally { recorderStarting = false; }
 }
 
 async function beginSysRecording(req: Request): Promise<Response> {
 	let mode: CaptureMode = "both";
-	try { const body = await req.json(); mode = ["both", "mic", "system"].includes(body.mode) ? body.mode : "both"; recordingLanguage = ["pt", "en"].includes(body.language) ? body.language : null; } catch {}
+ recordingLanguage = "en";
+	try { const body = await req.json(); mode = ["both", "mic", "system"].includes(body.mode) ? body.mode : "both"; recordingLanguage = "en"; } catch {}
 
 	if (syscapProc) {
 		try { syscapProc.kill(); } catch {}
@@ -1290,6 +1316,7 @@ async function beginSysRecording(req: Request): Promise<Response> {
 	liveTranscribeOffset = 0;
 	liveChunkProcessing = false;
 	// Pick up the engine-adaptive live cadence (parakeet = fast) before the loop starts.
+	recordingLiveModel = undefined;
 	await refreshLiveTuning();
 
 	const ts = Date.now();
@@ -1487,12 +1514,14 @@ let liveTurns: Array<{ id: number; channel: "mic" | "sys"; speaker: string; base
 // Engine-adaptive live cadence, fetched from the Python /health on record-start.
 // Parakeet (Apple Neural Engine) polls fast with short windows for near-instant words;
 // Whisper keeps the safe 3s/2000ms cadence so slow CPUs never starve. Defaults are safe.
-let liveTuning = { chunk_s: 3.0, interval_ms: 2000, mode: "chunk" as "chunk" | "full" };
+let recordingLiveModel: string | undefined;
+let liveTuning = { chunk_s: 3.0, interval_ms: 2000, mode: "chunk" as "chunk" | "full" | "stream" };
 async function refreshLiveTuning() {
 	try {
 		const r = await fetch(`${TRANSCRIPTION_SERVER}/health`, { signal: AbortSignal.timeout(2000) });
 		if (r.ok) {
-			const h = await r.json() as { live_tuning?: { chunk_s?: number; interval_ms?: number; mode?: "chunk" | "full" } };
+			const h = await r.json() as { live_tuning?: { chunk_s?: number; interval_ms?: number; mode?: "chunk" | "full" | "stream"; model?: string }; whisper_info?: {live_model?: string} };
+			recordingLiveModel = h.live_tuning?.model || h.whisper_info?.live_model;
 			if (h.live_tuning?.chunk_s && h.live_tuning?.interval_ms) {
 				liveTuning = { chunk_s: h.live_tuning.chunk_s, interval_ms: h.live_tuning.interval_ms, mode: h.live_tuning.mode || "chunk" };
 				console.log(`[heed] live: mode=${liveTuning.mode} interval=${liveTuning.interval_ms}ms`);
@@ -1738,7 +1767,7 @@ function handleLiveTranscribe(reqUrl?: URL): Response {
 	// keeps it reliable (~0.3s/chunk). The accurate final pass re-transcribes with full context.
 	const LIVE_CHUNK = liveTuning.chunk_s; // engine-adaptive (parakeet 2s, whisper 3s)
 	let interval = liveTuning.interval_ms; // engine-adaptive (parakeet 800ms, whisper 2000ms)
-	const lang = reqUrl?.searchParams.get("lang") || "es";
+	const lang = "en"; // Every live preview starts in English; finalization detects en/pt.
 	// DON'T reset offset here — if EventSource reconnects, we continue from
 	// where we left off instead of re-processing the same first chunk forever.
 	// Offset is only reset in stopLiveTranscribe() when recording actually stops.
@@ -1987,10 +2016,8 @@ async function handleSysRecordStop(req: Request): Promise<Response> {
  try { return await finishSysRecording(req); } finally {recorderStopping=false; if(path){removeChannelCopies(path);protectAudio(path);} }
 }
 async function finishSysRecording(req: Request): Promise<Response> {
-	// Language for the post-stop re-transcription. Passing the real code (not "auto") stops Parakeet
-	// from flipping to English on Spanish-with-tech-terms speech.
-	let stopLang = "auto";
-	try { const b = await req.json(); if (b?.language) stopLang = String(b.language); } catch {}
+	// The live English preview is provisional. Always detect the language from the saved audio.
+	let captureDuration = Math.max(0, Math.floor((Date.now() - recorderStartedAt) / 1000));
 	const offset = liveTranscribeOffset; // save before reset
 	const wasStreaming = streamStarted;
 	const streamOffset = lastStreamOffset;
@@ -2025,36 +2052,34 @@ async function finishSysRecording(req: Request): Promise<Response> {
 	let refinedTurns: Array<{ id: number; speaker: string; channel: "mic" | "sys"; text: string; start: number; end: number; auto?: boolean }> = [];
 	let speakerEmbeddings: Record<string, number[]> = {};
 	let autoNamed: Record<string, { name: string; score: number }> = {};
-	if (wasStreaming) {
-		try {
+	let finalLanguage = "en";
+	let finalModel = "";
+	try {
 			const isDual = path.includes("dual-capture-");
 			// Close the live streaming/diar sessions so the sidecar resets cleanly for the next recording.
-			try { await postJSON("/stream/finish", { channel: "mic" }); } catch {}
+			if (wasStreaming) {
+   try { await postJSON("/stream/finish", { channel: "mic" }); } catch {}
 			if (isDual) {
 				try { await postJSON("/stream/finish", { channel: "sys" }); } catch {}
 				try { await postJSON("/diar/finish", {}); } catch {}
 			}
+   }
 
-			const fin = await postJSON("/finalize", { wav_path: path, language: stopLang, dual: isDual, mic_name: micLabel() });
-			const finTurns: Array<{ start: number; end: number; speaker: string; text: string; channel?: "mic" | "sys" }> = fin?.turns || [];
-			speakerEmbeddings = fin?.embeddings || {};
-			autoNamed = fin?.auto_named || {};
-			refinedTurns = finTurns
-				.filter((t) => (t.text || "").trim())
-				.map((t, i) => ({
-					id: i,
-					speaker: t.speaker,
-					channel: t.channel === "mic" ? "mic" : "sys",
-					text: t.text.trim(),
-					start: t.start,
-					end: t.end,
-					auto: !!(autoNamed && autoNamed[t.speaker]),
-				}));
+			const fin = await postJSON("/finalize", { wav_path: path, language: "auto", allowed_languages: ["en", "pt"], dual: isDual, mic_name: micLabel() });
+   const result = finalRecordingResult(fin, path);
+   if (result.duration !== undefined) captureDuration = result.duration;
+   finalLanguage = result.metadata.language;
+   finalModel = result.metadata.model;
+   speakerEmbeddings = result.embeddings;
+   autoNamed = result.autoNamed;
+   refinedTurns = result.segments;
+
 			streamText = refinedTurns.map((t) => t.text).join(" ");
-		} catch {}
+	} catch (error) {
+  return Response.json({ path, finalized: false, error: `Final transcription failed: ${(error as Error).message}. The audio is available in recovery.` }, {status: 502});
 	}
 
-	return Response.json({ path, liveOffset: offset, streaming: wasStreaming, streamText, turns: refinedTurns, embeddings: speakerEmbeddings, autoNamed });
+	return Response.json({ path, duration: captureDuration, liveModel: recordingLiveModel, liveOffset: offset, streaming: wasStreaming, finalized: true, language: finalLanguage, model: finalModel, streamText, turns: refinedTurns, embeddings: speakerEmbeddings, autoNamed });
 }
 
 // --- Meeting auto-detector ---
@@ -2208,7 +2233,7 @@ function handleListOrphaned(): Response {
 	const orphans: OrphanedRecording[] = [];
 	for (const f of wavFiles) {
 		const fullPath = join(UPLOAD_DIR, f);
-		if (sessionPaths.has(fullPath)) continue;
+		if (sessionPaths.has(fullPath) || fullPath === recorderPath || retainedProcessing.get(fullPath) === Infinity) continue;
 
 		const stat = Bun.file(fullPath);
 		const sizeBytes = stat.size;
@@ -2239,6 +2264,7 @@ function handleListOrphaned(): Response {
 function handleDiscardOrphaned(url: URL): Response {
 	const path = url.searchParams.get("path");
 	if (!path) return Response.json({ error: "No path" }, { status: 400 });
+ if (resolve(path) === recorderPath || retainedProcessing.get(resolve(path)) === Infinity) return Response.json({error:"Audio is still recording or processing"}, {status:409});
 	// Safety: only allow deleting files inside UPLOAD_DIR
 	if (!path.startsWith(UPLOAD_DIR)) return Response.json({ error: "Invalid path" }, { status: 400 });
 	try {
@@ -2289,7 +2315,7 @@ function desktopRecordingStatus() {
   desktopControl.error = "Audio capture stopped unexpectedly. Check microphone permission and recover the audio in the interface.";
  }
  const state = desktopControl.status();
- return {...state, recording: !!recorderProc, seconds: recorderProc ? Math.floor((Date.now()-recorderStartedAt)/1000) : state.seconds, ready: state.ready, language:recordingLanguage, processing:state.processing || recorderStopping, starting:recorderStarting, storage:{limitBytes:AUDIO_LIMIT_BYTES, bytes:pruneAudio().bytes}, quotaStopped:!!quotaStopResult};
+ return {...state, recording: !!recorderProc, seconds: recorderProc ? Math.floor((Date.now()-recorderStartedAt)/1000) : state.seconds, ready: state.ready, language:recordingLanguage, processing:state.processing || recorderStopping || recordingFinalizationRunning, starting:recorderStarting, storage:{limitBytes:AUDIO_LIMIT_BYTES, bytes:pruneAudio().bytes}, quotaStopped:!!quotaStopResult};
 }
 async function handleDesktopControl(req:Request, pathname:string): Promise<Response> {
  if (!desktopRequestAllowed(req)) return Response.json({error:"Desktop control is available only on localhost"}, {status:403});
@@ -2304,7 +2330,7 @@ async function handleDesktopControl(req:Request, pathname:string): Promise<Respo
    if (!["start", "stop"].includes(body.action) || !["pt", "en"].includes(body.language)) return Response.json({error:"Choose start/stop and pt/en"}, {status:400});
    const state = desktopRecordingStatus();
    if (recorderStarting) return Response.json({error:"Recording is starting"}, {status:409});
-   const language = body.action === "stop" && recordingLanguage ? recordingLanguage : body.language;
+   const language = body.action === "start" ? "en" : recordingLanguage || "en";
    const id = desktopControl.enqueue(body.action, language, state);
    if (body.action === "start") recordingLanguage = language;
    return Response.json({ok:true,id});
@@ -2313,7 +2339,7 @@ async function handleDesktopControl(req:Request, pathname:string): Promise<Respo
   if (pathname.endsWith("/poll") && req.method === "POST") {
    desktopControl.heartbeat(body.client, {recording:body.recording === true,processing:body.processing === true,seconds:Number(body.seconds)||0,ready:body.ready === true,commandId:typeof body.commandId === "string" ? body.commandId : undefined});
    const state = desktopRecordingStatus();
-   return Response.json({command:desktopControl.claim(body.client),status:state});
+   return Response.json({command:desktopControl.claim(body.client, Date.now(), typeof body.commandId === "string" ? body.commandId : undefined),status:state});
   }
   if (pathname.endsWith("/complete") && req.method === "POST") {
    desktopControl.complete(body.id, body.client, typeof body.error === "string" ? body.error : null);
@@ -2369,7 +2395,7 @@ setInterval(async () => {
      if(response.ok){
       quotaStopResult=await response.json();
       if(!desktopControl.status().clientConnected) {
-       await handleCreateSession(new Request('http://localhost/api/sessions',{method:'POST',body:JSON.stringify({title:'Recording stopped — 2 GB limit',duration,language:recordingLanguage,transcript:quotaStopResult.streamText||'',segments:quotaStopResult.turns||[],files:{wav:quotaStopResult.path,srt:'',txt:''},tags:[],speakers:[],aiNotes:'',summary:''})}));
+       await handleCreateSession(new Request('http://localhost/api/sessions',{method:'POST',body:JSON.stringify({title:'Recording stopped — 2 GB limit',duration,language:quotaStopResult.language || "en",transcript:quotaStopResult.streamText||'',segments:quotaStopResult.turns||[],files:{wav:quotaStopResult.path,srt:'',txt:''},tags:[],speakers:[],aiNotes:'',summary:''})}));
       }
      }
     }
@@ -2383,12 +2409,12 @@ const server = Bun.serve({
 	hostname: "127.0.0.1",
 	port: PORT,
 	idleTimeout: 255, // max allowed — pyannote + whisper can take a while
-	async fetch(req) {
+	async fetch(req, httpServer) {
 		const url = new URL(req.url);
 		const method = req.method;
 
-		if (method === "POST" && url.pathname === "/api/transcribe") return handleTranscribe(req);
-		// /api/finalize removed — post-stop now uses /api/transcribe (process-stream)
+		if (method === "POST" && url.pathname === "/api/transcribe") { httpServer.timeout(req, 0); return handleTranscribe(req); }
+		// Stop and recording recovery use the authoritative full-audio /finalize sidecar pass.
 		if (method === "POST" && url.pathname === "/api/summarize") return handleSummarize(req);
 		if (method === "POST" && url.pathname === "/api/summary-line") return handleSummaryLine(req);
 		// /api/diarize removed — finalize handles speaker identification now
@@ -2424,7 +2450,7 @@ const server = Bun.serve({
 		if (method === "GET" && url.pathname === "/api/meeting-detector") return handleDetectorStream();
 		// /api/download and /api/recording removed — unused legacy endpoints
 		if (method === "POST" && url.pathname === "/api/sysrecord/start") return handleSysRecordStart(req);
-		if (method === "POST" && url.pathname === "/api/sysrecord/stop") return handleSysRecordStop(req);
+		if (method === "POST" && url.pathname === "/api/sysrecord/stop") { httpServer.timeout(req, 0); return handleSysRecordStop(req); }
 		if (method === "GET" && url.pathname === "/api/sysrecord/levels") return handleSysLevelsSSE();
 		if (method === "GET" && url.pathname === "/api/sysrecord/live") return handleLiveTranscribe(url);
 		if (method === "GET" && url.pathname === "/api/health") return handleHealth();

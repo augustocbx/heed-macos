@@ -6,12 +6,12 @@ import { useRecordingStore } from '@/stores/recording';
 beforeEach(() => {
  useRecordingStore.getState().reset();
  useRecordingStore.getState().startRecording();
- vi.spyOn(recordingApi,'stop').mockResolvedValue({path:'/test.wav'});
+ vi.spyOn(recordingApi,'stop').mockResolvedValue({path:'/test.wav', finalized:false});
 });
 afterEach(() => {vi.restoreAllMocks();vi.unstubAllGlobals();});
-for (const [label,stream] of [['SSE error','event: error\ndata: {"message":"Transcription failed"}\n\n'],['unfinished stream','event: step\ndata: {"message":"Processing"}\n\n']]) {
+for (const label of ['failed final pass', 'unfinished final pass']) {
  it(`rejects ${label} and releases the processing state`, async () => {
-  vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response(stream)));
+  if (label === 'failed final pass') vi.mocked(recordingApi.stop).mockRejectedValue(new Error('Transcription failed'));
   const {result}=renderHook(() => useRecording({micBars:{current:[]},systemBars:{current:[]},getLanguage:()=> 'pt'}));
   let success:boolean|undefined;
   await act(async () => {success=await result.current.stop('pt');});

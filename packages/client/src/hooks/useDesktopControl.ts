@@ -25,6 +25,12 @@ export function useDesktopControl(controls:{start:(language?:string)=>Promise<bo
    try {
     const state = useRecordingStore.getState();
     const {command,status} = await post('poll', {client,recording:state.recording,processing:state.processing || !!executing,commandId:executing,seconds:state.seconds,ready:useHealthStore.getState().health.whisper});
+    // Native capture is authoritative across reloads and multiple interface tabs.
+    if (!executing && !cancelled) {
+     const local = useRecordingStore.getState();
+     if (status.recording && !local.recording) local.startRecording();
+     useRecordingStore.setState({recording:status.recording === true, seconds:Math.max(0, Number(status.seconds) || 0)});
+    }
     if (command && !cancelled && !executing) {
      const cmd = command as DesktopCommand & {id:string};
      executing = cmd.id;

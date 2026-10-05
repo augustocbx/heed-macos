@@ -13,7 +13,7 @@ export class DesktopControl {
  heartbeat(client: string, state: ClientState, now = Date.now()) {
   this.clients.set(client, {...state, seen:now});
   if (this.command?.client === client && state.commandId === this.command.id) this.command.leasedAt = now;
-  if (state.recording || state.processing) this.owner = client;
+  if (!this.owner && (state.recording || state.processing)) this.owner = client;
   for (const [id, entry] of this.clients) if (now - entry.seen > 60000) this.clients.delete(id);
  }
  status(now = Date.now()) {
@@ -40,14 +40,14 @@ export class DesktopControl {
    this.command = null; this.error = 'Recording command expired. Open the interface and try again.';
   }
  }
- claim(client:string, now = Date.now()) {
+ claim(client:string, now = Date.now(), executingCommandId?: string) {
   this.expire(now);
-  if (!this.command || this.command.client) return null;
-  const owner = this.owner ? this.clients.get(this.owner) : null;
-  if (this.command.action === 'stop' && this.owner !== client && owner && now - owner.seen < 10000) return null;
+  if (executingCommandId || !this.command || this.command.client) return null;
+  // A single claimed command is sufficient for exclusivity. Any connected tab can
+  // stop a native recording when the original tab is idle, suspended or replaced.
   this.command.client = client;
   this.command.leasedAt = now;
-  if (this.command.action === 'start') this.owner = client;
+  this.owner = client;
   return {...this.command};
  }
  complete(id:string, client:string, error:string|null) {

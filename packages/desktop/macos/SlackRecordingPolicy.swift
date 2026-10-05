@@ -14,6 +14,7 @@ struct SlackRecordingPolicy {
     enum Effect: Equatable {
         case openInterface
         case start(callID: Int)
+        case stop(callID: Int)
     }
 
     var enabled = true
@@ -25,10 +26,32 @@ struct SlackRecordingPolicy {
     private var attempts = 0
     private var retryAfter: TimeInterval = 0
     private var openedAt: TimeInterval?
+    private var automaticCallID: Int?
+    private var observedRecording = false
+    private var falseSince: TimeInterval?
+    private var stopInFlight = false
+    private var stopRetryAfter: TimeInterval = 0
 
     /// Call on the same serial executor that receives command results.
     mutating func evaluate(signal: Bool?, status: Status?, now: TimeInterval) -> [Effect] {
+        if let status = status, automaticCallID != nil {
+            if status.recording { observedRecording = true }
+            else if observedRecording && !status.starting && !status.pending {
+                // A manual stop releases ownership before any subsequent recording.
+                automaticCallID = nil
+                observedRecording = false
+                stopInFlight = false
+            }
+        }
         if signal == false {
+            if falseSince == nil { falseSince = now }
+            var effects: [Effect] = []
+            if enabled, let owner = automaticCallID, let since = falseSince,
+               now - since >= 5, let status = status, status.recording,
+               !status.pending, !stopInFlight, now >= stopRetryAfter {
+                stopInFlight = true
+                effects = [.stop(callID: owner)]
+            }
             inCall = false
             trueSince = nil
             consumed = false
@@ -36,8 +59,9 @@ struct SlackRecordingPolicy {
             attempts = 0
             retryAfter = 0
             openedAt = nil
-            return []
+            return effects
         }
+        falseSince = nil
         guard signal == true else {
             // An unavailable observation does not end the call, but interrupts
             // start confirmation to avoid triggering with stale evidence.
@@ -74,10 +98,25 @@ struct SlackRecordingPolicy {
     /// An accepted HTTP request consumes the call even while its start is queued.
     /// Responses for older calls must not alter a new call.
     mutating func commandCompleted(callID completedID: Int, accepted: Bool, now: TimeInterval) {
-        guard inCall, callID == completedID, commandInFlight else { return }
+        guard callID == completedID, commandInFlight || !inCall else { return }
         commandInFlight = false
-        if accepted { consumed = true }
+        if accepted {
+            consumed = true
+            automaticCallID = completedID
+            observedRecording = false
+            stopInFlight = false
+            stopRetryAfter = 0
+        }
         else { retryAfter = now + 5 }
+    }
+
+    mutating func stopCommandCompleted(callID completedID: Int, accepted: Bool, now: TimeInterval) {
+        guard automaticCallID == completedID, stopInFlight else { return }
+        stopInFlight = false
+        if accepted {
+            automaticCallID = nil
+            observedRecording = false
+        } else { stopRetryAfter = now + 5 }
     }
 }
 
@@ -145,4 +184,38 @@ func slackRecordingPolicySelfTest() throws {
     disabled.enabled = true
     _ = disabled.evaluate(signal: true, status: ready, now: 6)
     try check(disabled.evaluate(signal: true, status: ready, now: 9) == [.start(callID: 1)], "Confirm the signal again after enabling")
+    var ending = SlackRecordingPolicy()
+    _ = ending.evaluate(signal: true, status: ready, now: 0)
+    _ = ending.evaluate(signal: true, status: ready, now: 3)
+    ending.commandCompleted(callID: 1, accepted: true, now: 4)
+    _ = ending.evaluate(signal: true, status: recording, now: 5)
+    try check(ending.evaluate(signal: false, status: recording, now: 6).isEmpty, "Debounce meeting end")
+    try check(ending.evaluate(signal: nil, status: recording, now: 12).isEmpty, "Unavailable Slack must not stop recording")
+    _ = ending.evaluate(signal: false, status: recording, now: 13)
+    try check(ending.evaluate(signal: false, status: recording, now: 18) == [.stop(callID: 1)], "A confirmed meeting end must stop its automatic recording")
+    try check(ending.evaluate(signal: false, status: recording, now: 19).isEmpty, "Do not duplicate an in-flight stop")
+    ending.stopCommandCompleted(callID: 1, accepted: false, now: 20)
+    try check(ending.evaluate(signal: false, status: recording, now: 24).isEmpty, "Stop retries must wait")
+    try check(ending.evaluate(signal: false, status: recording, now: 25) == [.stop(callID: 1)], "Retry a failed stop")
+    ending.stopCommandCompleted(callID: 1, accepted: true, now: 26)
+    try check(ending.evaluate(signal: false, status: recording, now: 35).isEmpty, "An accepted stop must not repeat")
+    try check(manual.evaluate(signal: false, status: recording, now: 6).isEmpty, "Manual recordings must not stop automatically")
+    try check(manual.evaluate(signal: false, status: recording, now: 20).isEmpty, "Manual recording ownership must be respected")
+
+    var manuallyStopped = SlackRecordingPolicy()
+    _ = manuallyStopped.evaluate(signal: true, status: ready, now: 0)
+    _ = manuallyStopped.evaluate(signal: true, status: ready, now: 3)
+    manuallyStopped.commandCompleted(callID: 1, accepted: true, now: 4)
+    _ = manuallyStopped.evaluate(signal: true, status: recording, now: 5)
+    _ = manuallyStopped.evaluate(signal: true, status: ready, now: 6)
+    _ = manuallyStopped.evaluate(signal: false, status: recording, now: 7)
+    try check(manuallyStopped.evaluate(signal: false, status: recording, now: 12).isEmpty, "Do not stop a new manual recording after the automatic recording ended")
+
+    var endedBeforeAcknowledgement = SlackRecordingPolicy()
+    _ = endedBeforeAcknowledgement.evaluate(signal: true, status: ready, now: 0)
+    _ = endedBeforeAcknowledgement.evaluate(signal: true, status: ready, now: 3)
+    _ = endedBeforeAcknowledgement.evaluate(signal: false, status: ready, now: 4)
+    endedBeforeAcknowledgement.commandCompleted(callID: 1, accepted: true, now: 5)
+    try check(endedBeforeAcknowledgement.evaluate(signal: false, status: recording, now: 9) == [.stop(callID: 1)], "A late start acknowledgement must retain ownership after the meeting ends")
+
 }

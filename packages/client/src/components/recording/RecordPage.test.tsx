@@ -38,11 +38,10 @@ describe("RecordPage", () => {
 		expect(screen.getByLabelText(/start recording/i)).toBeInTheDocument();
 	});
 
-	it("defaults the language selector to the browser language", () => {
+	it("explains the English preview and automatic final language", () => {
 		render(<RecordPage />);
-		const select = document.querySelector("select") as HTMLSelectElement;
-		expect(select).toBeInTheDocument();
-		expect(select.value).toBe(navigator.language.slice(0, 2));
+		expect(screen.getByText(/Live preview starts in English/)).toBeInTheDocument();
+		expect(document.querySelector("select")).toBeNull();
 	});
 
 	it("renders exactly 48 visualizer bars total (24 mic + 24 system)", () => {

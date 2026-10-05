@@ -231,6 +231,11 @@ while let line = readLine() {
             guard let m = streamMgrs[channel] else { emit(["ok": false, "error": "no stream session"]); continue }
             let text = try await m.finish()
             await m.reset()
+            streamMgrs.removeValue(forKey: channel)
+            if streamMgrs.isEmpty {
+                streamShared = nil
+                streamVariant = nil
+            }
             emit(["ok": true, "text": text])
         case "diar-start":
             // Open/reset a live streaming diarization session (system channel).

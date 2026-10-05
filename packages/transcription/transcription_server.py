@@ -895,6 +895,11 @@ def load_models():
     import engines
     engine_kind = engines.select_engine_kind(devices)
     active_engine = engine_kind
+    if engine_kind == "parakeet":
+        whisper_model_live_name = "base"
+        whisper_runtime_info.update({"final_model": "parakeet-v3", "live_model": "base",
+                                     "live_engine": "mlx", "device": "Apple Neural Engine / Metal",
+                                     "reason": "Lightweight eight-second live preview; full native final pass"})
     print(f"[heed] Whisper engine: {engine_kind} (final={whisper_model_name}, live={whisper_model_live_name})", flush=True)
 
     # Build the silent warm-up clip once; it validates each model actually loads.
@@ -910,10 +915,9 @@ def load_models():
         pass
 
     t = time.time()
-    # On Apple Silicon the ENGINE is Parakeet (ANE) for both live and post-stop — Whisper is only ever
-    # touched by the file-upload path (/api/transcribe → /process-stream) and the non-parakeet live
-    # chunk mode. So DON'T load Whisper at boot on parakeet: it wasted ~1-3GB of RAM and slowed the
-    # cold-start. It lazy-loads on first file upload via _ensure_whisper(). (Linux/CPU: unchanged.)
+    # Final Apple Silicon ASR remains native Parakeet. The live preview uses MLX Whisper base
+    # in bounded eight-second chunks, so Nemotron streaming weights need not be loaded.
+    # Large final models are lazy; live preview never borrows the final model instance.
     if engine_kind != "parakeet":
         whisper_model, whisper_model_name = _load_whisper_with_fallback(whisper_model_name, devices, _warmup_path, "final")
         models_ready["whisper"] = True
@@ -945,48 +949,29 @@ def load_models():
         live_governor = None
         print(f"[heed] Live governor unavailable (non-critical): {e}", flush=True)
 
-    # Live strategy, per engine:
-    #  - "full" (Parakeet/MLX, fast): RE-TRANSCRIBE the whole growing audio each tick and REPLACE
-    #    the on-screen text. Full context = accurate (no word-cutting), and it's affordable because
-    #    Parakeet does 30s in ~0.3s. This is the killer live UX Whisper-on-CPU could never do.
-    #  - "chunk" (CTranslate2/CPU, slow): keep stitching short 3s chunks — re-transcribing the whole
-    #    file each tick would be far too slow on CPU. Safe, proven path.
+    # Bounded chunk preview avoids repeated whole-recording inference during a meeting.
     if engine_kind == "parakeet":
-        # "stream": true real-time. The sidecar runs a streaming ASR session (Nemotron
-        # multilingual); heed feeds only the NEW audio each tick and shows the model's
-        # append-only partial (confirmed prefix never re-renders). ~25-50ms/chunk.
-        live_tuning = {"chunk_s": 1.0, "interval_ms": 700, "mode": "stream"}
+        # Base is substantially smaller than the native streaming model; final stays native.
+        live_tuning = {"chunk_s": 8.0, "interval_ms": 8000, "mode": "chunk", "model": "base", "engine": "mlx"}
     elif engine_kind == "mlx":
         live_tuning = {"chunk_s": 2.0, "interval_ms": 700, "mode": "full"}
     else:
         live_tuning = {"chunk_s": 3.0, "interval_ms": 2000, "mode": "chunk"}
     print(f"[heed] Live: mode={live_tuning['mode']} interval={live_tuning['interval_ms']}ms ({engine_kind})", flush=True)
 
-    # Pre-warm the live models in the BACKGROUND so the FIRST recording is instant (no cold-start
-    # stall). Warms THREE things that previously lazy-loaded on the first record:
-    #   - streaming ASR on BOTH channels (dual records use mic+sys): "en" loads the shared 'latin'
-    #     variant that also covers es/fr/it/pt/de (most users);
-    #   - the streaming DIARIZATION model (Sortformer) — this was the main culprit: it lazy-loaded
-    #     on the first diar-start, so diarization took several seconds the first time only;
-    # and exercises the first ANE inference compile with a tiny silent clip.
-    # Non-blocking: the server is ready immediately; the warm finishes within seconds of boot. If
-    # the user records before it finishes, the lazy path still works (just the old cold-start).
+    # Warm only the lightweight live ASR and dedicated diarizer before allowing recording.
     if engine_kind == "parakeet":
-        # Warm with a REAL-VOICE clip (not silence): silence skips the ANE kernels that real mel
-        # features exercise, so the first real inference still paid a compile cost (part of the ~10s
-        # cold-start). A 2s speech clip compiles the same path the first record hits → first text <1s.
+        # A real speech clip exercises inference kernels that silence may skip.
         _voice_clip = os.path.join(os.path.dirname(__file__), "_warmup_voice.wav")
         warm_clip = _voice_clip if os.path.exists(_voice_clip) else _warmup_path
         def _prewarm_stream():
             global models_warm
             try:
-                asr = engines.get_parakeet()            # ASR sidecar (ANE)
                 have_clip = bool(warm_clip) and os.path.exists(warm_clip)
-                for ch in ("mic", "sys"):
-                    asr.stream_start("en", ch)
-                    if have_clip:
-                        asr.stream_feed(warm_clip, ch)
-                    asr.stream_finish(ch)
+                live = _ensure_whisper_live()
+                if have_clip:
+                    with whisper_live_lock:
+                        list(live.transcribe(warm_clip, language="en")[0])
                 # Warm the DEDICATED diarization sidecar (GPU) — the live /diar/live path is the offline
                 # `diarize`. Runs in parallel with ASR so warming it doesn't stall the ASR warm.
                 try:
@@ -996,7 +981,7 @@ def load_models():
                 except Exception:
                     pass
                 models_warm = True
-                print("[heed] Live models pre-warmed (ASR sidecar + diarization sidecar) — first record is instant", flush=True)
+                print("[heed] Live models pre-warmed (Whisper base + diarization sidecar)", flush=True)
             except Exception as e:
                 models_warm = True  # don't block recording forever if warm fails
                 print(f"[heed] Stream pre-warm skipped: {str(e)[:80]}", flush=True)
@@ -1153,12 +1138,18 @@ def _ensure_whisper():
 
 
 def _ensure_whisper_live():
-    """Lazy-load the live Whisper model (non-parakeet live chunk mode). Reuses the final instance."""
+    """Use a small, independent live preview; never reuse a large final model."""
     global whisper_model_live, whisper_model_live_name
     if whisper_model_live is None:
-        m = _ensure_whisper()
-        whisper_model_live = m
-        whisper_model_live_name = whisper_model_name
+        import engines
+        with whisper_live_lock:
+            if whisper_model_live is None:
+                if active_engine == "parakeet":
+                    whisper_model_live = engines.MLXEngine("base")
+                    whisper_model_live_name = "base"
+                else:
+                    whisper_model_live, whisper_model_live_name = _load_whisper_with_fallback(
+                        "base", _devices, _warmup_path, "live-lazy")
     return whisper_model_live
 
 
@@ -1931,9 +1922,10 @@ def _dominant_diar_speaker(seg, diar_segs):
 OWNER_ECHO_COS = 0.65
 
 
-def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None):
-    """Post-stop pipeline (the real 'brilliant' one): re-transcribe BOTH channels with REAL Parakeet
-    timestamps, diarize the system channel (remote speakers), and — crucially for no-headphone setups —
+def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
+                       final_model="parakeet-v3", manual=False):
+    """Full-audio final pipeline with native Parakeet or an explicitly selected Whisper model.
+    Preserve ASR timestamps, diarize the system channel (remote speakers), and for speaker playback
     acoustically strip the mic's echo by keeping only the mic voice that does NOT match any system
     voice (the owner). Names known voices. Returns coherent, time-stamped, attributed turns.
 
@@ -1942,7 +1934,23 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None):
     """
     import engines
     import tempfile
-    asr = engines.get_parakeet()
+    from meeting_language import detect_meeting_language
+    from manual_transcription import MODELS, transcribe_complete
+    if final_model not in ("parakeet-v3", *MODELS):
+        raise ValueError("Unsupported final transcription model")
+    if language not in ("auto", "en", "pt"):
+        raise ValueError("Unsupported final transcription language")
+    if not isinstance(manual, bool):
+        raise ValueError("Manual transcription flag must be a boolean")
+    if manual and language != "auto":
+        detection = {"language": language, "source": "manual", "samples": 0}
+    else:
+        detection = detect_meeting_language(wav_path)
+        language = detection["language"]
+    # The full offline ASR model belongs only to this pass, not the next live recording.
+    asr = engines.ParakeetEngine(role="asr") if final_model == "parakeet-v3" else None
+    metadata = {"language": language, "language_detection": detection,
+                "model": final_model, "finalized": True}
 
     # Use the FluidAudio path directly on Apple Silicon so this works whether or not the server's
     # boot set the `diarize_backend` global (the harness imports the module without booting).
@@ -1952,6 +1960,8 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None):
         return diarize(path)
 
     def segs_for(path):
+        if asr is None:
+            return transcribe_complete(path, final_model, language)
         tok = asr.transcribe_ts(path, language)
         return engines.tokens_to_segments(tok.get("tokens", []))
 
@@ -1961,10 +1971,10 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None):
             mono = tempfile.mktemp(suffix=".wav"); tmp.append(mono)
             _ffmpeg_channel(wav_path, 0, mono)
             d = _diar(mono)
-            turns = [{**s, "speaker": _dominant_diar_speaker(s, d["segments"]) or "Speaker 1", "channel": "sys"}
+            turns = [{**s, "speaker": _dominant_diar_speaker(s, d["segments"]) or "Speaker 1", "channel": "mic"}
                      for s in segs_for(mono)]
             turns.sort(key=lambda x: x["start"])
-            return {"turns": turns, "speakers": d.get("speakers", []),
+            return {**metadata, "turns": turns, "speakers": d.get("speakers", []),
                     "embeddings": d.get("embeddings", {}), "auto_named": d.get("auto_named", {})}
 
         mic = tempfile.mktemp(suffix=".wav"); tmp.append(mic); _ffmpeg_channel(wav_path, 0, mic)
@@ -2071,9 +2081,11 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None):
         embeddings = {cluster_label[cid]: clusters[cid]["emb"] for cid in clusters}
         auto_named = {cluster_label[cid]: {"name": matched_name[cid], "score": 1.0}
                       for cid in clusters if matched_name[cid]}
-        return {"turns": turns, "speakers": sorted({t["speaker"] for t in turns}),
+        return {**metadata, "turns": turns, "speakers": sorted({t["speaker"] for t in turns}),
                 "embeddings": embeddings, "auto_named": auto_named}
     finally:
+        if asr is not None:
+            asr.close()
         for p in tmp:
             try:
                 if p and os.path.exists(p):
@@ -2578,7 +2590,7 @@ class Handler(BaseHTTPRequestHandler):
             # self-correct — hot-swap to a lighter live model if we're falling behind under
             # contention, or recover toward the ceiling when there's headroom.
             gov_info = {}
-            if live_governor is not None:
+            if live_governor is not None and active_engine != "parakeet":
                 audio_s = float(body.get("audio_s", 3.0)) or 3.0
                 dec = live_governor.observe(audio_s, process_s)
                 if dec.changed and dec.live_model != whisper_model_live_name:
@@ -2620,9 +2632,11 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("language", "auto"),
                     bool(body.get("dual", True)),
                     body.get("mic_name"),
+                    body.get("final_model", "parakeet-v3"),
+                    body.get("manual", False),
                 )
             except Exception as e:
-                self._json({"error": str(e)[:200], "turns": []}, 200)
+                self._json({"error": str(e)[:200], "turns": [], "finalized": False}, 200)
                 return
             result["time_ms"] = int((time.time() - t) * 1000)
             self._json(result)

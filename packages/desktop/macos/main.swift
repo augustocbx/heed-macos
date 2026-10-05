@@ -24,12 +24,22 @@ func responseError(_ data: Data?, status: Int) -> String {
     return "Communication failed (HTTP \(status))"
 }
 
+func recordingStatusImage(_ recording: Bool) -> NSImage? {
+    guard let image = NSImage(systemSymbolName: recording ? "record.circle.fill" : "waveform.circle",
+                              accessibilityDescription: recording ? "Heed recording" : "Heed") else { return nil }
+    guard recording else { image.isTemplate = true; return image }
+    // Bake the red palette into the symbol; a non-template image must not rely
+    // on NSStatusBarButton applying contentTintColor.
+    let colored = image.withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [.systemRed])) ?? image
+    colored.isTemplate = false
+    return colored
+}
+
 final class MenuController: NSObject, NSApplicationDelegate {
     private var item: NSStatusItem!
     private let statusMenu = NSMenuItem(title: "Preparing services…", action: nil, keyEquivalent: "")
     private let startMenu = NSMenuItem(title: "Start recording", action: #selector(startRecording), keyEquivalent: "")
     private let stopMenu = NSMenuItem(title: "Stop recording", action: #selector(stopRecording), keyEquivalent: "")
-    private var languages: [NSMenuItem] = []
     private var state: ControlStatus?
     private var sending = false
     private var polling = false
@@ -51,7 +61,6 @@ final class MenuController: NSObject, NSApplicationDelegate {
         config.timeoutIntervalForRequest = 6
         return URLSession(configuration: config)
     }()
-    private var language: String { UserDefaults.standard.string(forKey: "HeedLanguage") == "en" ? "en" : "pt" }
     func applicationDidFinishLaunching(_ notification: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
@@ -64,14 +73,6 @@ final class MenuController: NSObject, NSApplicationDelegate {
         open.target = self; menu.addItem(open)
         let settings = NSMenuItem(title: "Settings and permissions…", action: #selector(openSettings), keyEquivalent: "")
         settings.target = self; menu.addItem(settings)
-        let languageMenu = NSMenu()
-        for (title, code) in [("Portuguese (Brazil)", "pt"), ("English", "en")] {
-            let entry = NSMenuItem(title: title, action: #selector(selectLanguage(_:)), keyEquivalent: "")
-            entry.target = self; entry.representedObject = code
-            languageMenu.addItem(entry); languages.append(entry)
-        }
-        let languageEntry = NSMenuItem(title: "Meeting language", action: nil, keyEquivalent: "")
-        languageEntry.submenu = languageMenu; menu.addItem(languageEntry)
         slackAutoMenu.target = self; menu.addItem(slackAutoMenu)
         slackStateMenu.isEnabled = false; menu.addItem(slackStateMenu)
         slackAccessMenu.target = self; menu.addItem(slackAccessMenu)
@@ -118,11 +119,8 @@ final class MenuController: NSObject, NSApplicationDelegate {
         slackAutoMenu.state = slackAutoEnabled ? .on : .off
         startMenu.isEnabled = !sending && (state?.canStart ?? false) && captureAuthorized
         stopMenu.isEnabled = !sending && (state?.canStop ?? false)
-        for entry in languages { entry.state = (entry.representedObject as? String) == language ? .on : .off; entry.isEnabled = !sending && !(state?.recording ?? false) && !(state?.pending ?? false) }
         let recording = state?.recording ?? false
-        let image = NSImage(systemSymbolName: recording ? "record.circle.fill" : "waveform.circle", accessibilityDescription: recording ? "Heed recording" : "Heed")
-        image?.isTemplate = !recording
-        item.button?.image = image
+        item.button?.image = recordingStatusImage(recording)
         item.button?.contentTintColor = recording ? .systemRed : nil
         item.button?.toolTip = "Heed — \(statusMenu.title)"
     }
@@ -145,6 +143,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
             switch effect {
             case .openInterface: openInterface()
             case .start(let callID): command("start", slackCallID: callID)
+            case .stop(let callID): command("stop", slackCallID: callID)
             }
         }
     }
@@ -217,15 +216,19 @@ final class MenuController: NSObject, NSApplicationDelegate {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:5001/api/desktop/control/commands")!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["action": action, "language": language])
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["action": action, "language": "en"])
         session.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.sending = false
                 let accepted = (response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } ?? false
                 if let callID = slackCallID {
-                    self.slackPolicy.commandCompleted(callID: callID, accepted: accepted, now: ProcessInfo.processInfo.systemUptime)
-                    self.logSlack(accepted ? "automatic start accepted" : "automatic start request failed")
+                    if action == "start" {
+                        self.slackPolicy.commandCompleted(callID: callID, accepted: accepted, now: ProcessInfo.processInfo.systemUptime)
+                    } else {
+                        self.slackPolicy.stopCommandCompleted(callID: callID, accepted: accepted, now: ProcessInfo.processInfo.systemUptime)
+                    }
+                    self.logSlack(accepted ? "automatic \(action) accepted" : "automatic \(action) request failed")
                 }
                 if accepted {
                     if slackCallID == nil { self.openInterface() }
@@ -241,7 +244,6 @@ final class MenuController: NSObject, NSApplicationDelegate {
     @objc private func stopRecording() { command("stop") }
     @objc private func openInterface() { bootServices(); NSWorkspace.shared.open(URL(string: "http://localhost:5170")!) }
     @objc private func openSettings() { bootServices(); NSWorkspace.shared.open(URL(string: "http://localhost:5170/#settings")!) }
-    @objc private func selectLanguage(_ sender: NSMenuItem) { UserDefaults.standard.set(sender.representedObject as? String, forKey: "HeedLanguage"); updateMenu() }
     @objc private func toggleSlackAuto() { UserDefaults.standard.set(!slackAutoEnabled, forKey: "HeedSlackAutoRecord"); updateMenu() }
     @objc private func authorizeSlackLogs() { requestSlackLogFolder(completion: nil) }
     private func requestSlackLogFolder(completion: ((String?) -> Void)?) {
@@ -265,6 +267,20 @@ if CommandLine.arguments.contains("--self-test") {
     func status(_ recording: Bool = false, _ processing: Bool = false, _ ready: Bool = true, _ pending: Bool = false) -> ControlStatus {
         ControlStatus(recording: recording, processing: processing, seconds: 0, ready: ready, clientConnected: true, error: nil, pending: pending, starting: false)
     }
+    precondition(recordingStatusImage(false)?.isTemplate == true)
+    precondition(recordingStatusImage(true)?.isTemplate == false)
+    if let data = recordingStatusImage(true)?.tiffRepresentation,
+       let bitmap = NSBitmapImageRep(data: data) {
+        var redPixelFound = false
+        for y in 0..<bitmap.pixelsHigh {
+            for x in 0..<bitmap.pixelsWide {
+                if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB),
+                   color.alphaComponent > 0.5, color.redComponent > color.greenComponent * 1.5,
+                   color.redComponent > color.blueComponent * 1.5 { redPixelFound = true }
+            }
+        }
+        precondition(redPixelFound, "The recording symbol must render red pixels")
+    } else { preconditionFailure("The recording symbol must be renderable") }
     precondition(status().canStart && !status().canStop)
     precondition(!status(true).canStart && status(true).canStop)
     precondition(!status(false, true).canStart)

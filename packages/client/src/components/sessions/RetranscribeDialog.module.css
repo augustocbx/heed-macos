@@ -1,0 +1,13 @@
+.overlay {position:fixed;inset:0;background:rgb(0 0 0 / .45);z-index:120;display:grid;place-items:center;padding:24px;}
+.dialog {background:var(--white);color:var(--text);border:1px solid var(--border-light);border-radius:var(--radius-lg);padding:24px;width:min(100%,480px);box-shadow:0 16px 64px rgb(0 0 0 / .2);}
+.dialog h2 {font-size:18px;margin:0 0 12px;}
+.dialog p {font-size:13px;line-height:1.6;}
+.dialog label {display:flex;flex-direction:column;gap:8px;margin-top:18px;font-size:13px;font-weight:600;}
+.dialog select {padding:9px 10px;background:var(--white);color:var(--text);border:1px solid var(--border-light);border-radius:var(--radius-sm);font:inherit;}
+.hint {color:var(--text-3);}
+.error {color:var(--red);}
+.actions {display:flex;justify-content:flex-end;gap:12px;margin-top:24px;}
+.actions button {padding:8px 14px;font:inherit;border:1px solid var(--border-light);border-radius:var(--radius-sm);background:var(--white);color:var(--text);cursor:pointer;}
+.actions button:last-child {background:var(--blue);color:white;border-color:var(--blue);}
+.actions button:disabled {opacity:.55;cursor:default;}
+.dialog progress {width:100%;accent-color:var(--blue);}

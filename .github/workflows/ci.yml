@@ -19,8 +19,12 @@ jobs:
         run: NODE_OPTIONS=--no-experimental-webstorage bun run --cwd packages/client test --run
       - name: Speaker identity preservation tests
         run: python3 -m unittest discover -s packages/transcription -p voice_identity_test.py
+      - name: Meeting language and transcription policy tests
+        run: python3 -m unittest discover -s packages/transcription -p meeting_language_test.py
+      - name: Manual transcription selection tests
+        run: python3 -m unittest discover -s packages/transcription -p manual_transcription_test.py
       - name: Check Python syntax
-        run: python3 -m py_compile packages/transcription/transcription_server.py packages/transcription/voice_identity.py
+        run: python3 -m py_compile packages/transcription/transcription_server.py packages/transcription/voice_identity.py packages/transcription/meeting_language.py packages/transcription/manual_transcription.py
       - name: Build interface
         run: bun run build
       - name: Check installers

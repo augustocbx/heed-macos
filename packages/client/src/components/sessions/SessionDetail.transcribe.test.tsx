@@ -1,0 +1,76 @@
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import type { Session } from '@heed/shared';
+import { SessionDetail } from './SessionDetail';
+import { useSessionsStore } from '@/stores/sessions';
+import { useTemplatesStore } from '@/stores/templates';
+import { useModelsStore } from '@/stores/models';
+import { useRecordingStore } from '@/stores/recording';
+
+const session = {id:'s1',title:'Meeting',createdAt:'2026-10-05T12:00:00Z',duration:20,language:'en',transcript:'Old text',
+ speakers:['Ana'],segments:[{speaker:'Ana',start:0,end:10,text:'Old text',channel:'sys',auto:false}],
+ embeddings:{Ana:[1]},files:{wav:'/recordings/meeting.wav'},aiNotes:'Original notes',summary:'Summary',tags:[],pinned:false,liveModel:'base'} as Session;
+const result = {success:true,text:'Bom dia',files:{wav:'/tmp/new.wav',srt:'',txt:''},metadata:{language:'pt',model:'small'},
+ speakers:['Speaker 4'],segments:[{speaker:'Speaker 4',start:0,end:10,text:'Bom dia',channel:'sys'}],embeddings:{'Speaker 4':[2]},wordCount:2};
+beforeEach(()=>{
+ useSessionsStore.setState({sessions:[session],viewing:session});
+ useTemplatesStore.setState({load:vi.fn()});useModelsStore.setState({load:vi.fn()});
+ useRecordingStore.setState({recording:false,processing:false});
+});
+afterEach(()=>vi.unstubAllGlobals());
+
+test('manual transcription sends model and language, saves only final result, and preserves audio and speaker names',async()=>{
+ const requests:Array<{url:string;init:RequestInit}>=[];
+ vi.stubGlobal('fetch',vi.fn(async(url:string,init:RequestInit)=>{
+  requests.push({url,init});
+  if(url.includes('/api/transcribe')) return new Response(`event: result\ndata: ${JSON.stringify(result)}\n\n`);
+  return new Response(JSON.stringify({...session,...JSON.parse(init.body as string)}));
+ }));
+ render(<SessionDetail session={session} onBack={vi.fn()}/>);
+ fireEvent.click(screen.getByRole('button',{name:'Transcribe'}));
+ fireEvent.change(screen.getByLabelText('Transcription model'),{target:{value:'small'}});
+ fireEvent.change(screen.getByLabelText('Meeting language'),{target:{value:'pt'}});
+ fireEvent.click(screen.getByRole('button',{name:'Start transcription'}));
+ await waitFor(()=>expect(useSessionsStore.getState().viewing?.transcript).toBe('Bom dia'));
+ const form=requests[0].init.body as FormData;
+ expect(form.get('url')).toBe('/recordings/meeting.wav');expect(form.get('final_model')).toBe('small');expect(form.get('language')).toBe('pt');
+ expect(form.get('recording_finalize')).toBe('true');
+ const saved=useSessionsStore.getState().viewing!;
+ expect(saved.speakers).toEqual(['Ana']);expect(saved.embeddings).toEqual({Ana:[2]});expect(saved.files).toEqual(session.files);
+ expect(saved.duration).toBe(20);expect(saved.language).toBe('pt');expect(saved.liveModel).toBe('base');expect(saved.transcriptionModel).toBe('small');
+});
+
+test('failed transcription leaves the existing session intact and displays the error',async()=>{
+ vi.stubGlobal('fetch',vi.fn(async()=>new Response('event: error\ndata: {"message":"Model download failed"}\n\n')));
+ render(<SessionDetail session={session} onBack={vi.fn()}/>);
+ fireEvent.click(screen.getByRole('button',{name:'Transcribe'}));fireEvent.click(screen.getByRole('button',{name:'Start transcription'}));
+ await screen.findByRole('alert');expect(screen.getByRole('alert')).toHaveTextContent('Model download failed');
+ expect(useSessionsStore.getState().viewing).toEqual(session);expect(useRecordingStore.getState().processing).toBe(false);
+});
+
+test('manual transcription is unavailable during recording or without saved audio',()=>{
+ useRecordingStore.setState({recording:true});const view=render(<SessionDetail session={session} onBack={vi.fn()}/>);
+ expect(screen.getByRole('button',{name:'Transcribe'})).toBeDisabled();view.unmount();
+ useRecordingStore.setState({recording:false});render(<SessionDetail session={{...session,files:{}}} onBack={vi.fn()}/>);
+ expect(screen.getByRole('button',{name:'Transcribe'})).toBeDisabled();
+});
+
+
+test('manual transcription corrects a stale session timer from the full audio duration',async()=>{
+ vi.stubGlobal('fetch',vi.fn(async(url:string,init:RequestInit)=>url.includes('/api/transcribe')
+  ? new Response(`event: result\ndata: ${JSON.stringify({...result,duration:732.5})}\n\n`)
+  : new Response(JSON.stringify({...session,...JSON.parse(init.body as string)}))));
+ render(<SessionDetail session={session} onBack={vi.fn()}/>);
+ fireEvent.click(screen.getByRole('button',{name:'Transcribe'}));fireEvent.click(screen.getByRole('button',{name:'Start transcription'}));
+ await waitFor(()=>expect(useSessionsStore.getState().viewing?.duration).toBe(732.5));
+});
+
+test('a completed transcript does not replace the session when saving fails',async()=>{
+ vi.stubGlobal('fetch',vi.fn(async(url:string)=>url.includes('/api/transcribe')
+  ? new Response(`event: result\ndata: ${JSON.stringify(result)}\n\n`)
+  : new Response(JSON.stringify({error:'Could not save transcript'}),{status:500})));
+ render(<SessionDetail session={session} onBack={vi.fn()}/>);
+ fireEvent.click(screen.getByRole('button',{name:'Transcribe'}));fireEvent.click(screen.getByRole('button',{name:'Start transcription'}));
+ expect(await screen.findByRole('alert')).toHaveTextContent('Could not save transcript');
+ expect(useSessionsStore.getState().viewing).toEqual(session);
+});
