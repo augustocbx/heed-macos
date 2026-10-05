@@ -25,5 +25,9 @@ jobs:
         run: bun run build
       - name: Verificar instaladores
         run: bash -n install-macos.sh packages/desktop/install-menubar.sh packages/desktop/macos/start-services.sh
+      - name: Validar captura nativa sem dispositivos físicos
+        run: |
+          swiftc -O -target "$(uname -m)-apple-macos14.0" packages/transcription/native/heed-parakeet/Sources/heed-syscap/*.swift -o "$RUNNER_TEMP/heed-syscap-check"
+          "$RUNNER_TEMP/heed-syscap-check" --self-test
       - name: Compilar ícone
         run: bash packages/desktop/install-menubar.sh --build-only

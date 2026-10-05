@@ -59,9 +59,10 @@ flowchart TD
     A[Ícone macOS / LaunchAgent] --> B[API Bun localhost:5001]
     B <--> C[Navegador localhost:5170 aberto]
     B --> D[ScreenCaptureKit: som do sistema]
-    B --> E[AVFoundation: microfone padrão]
-    D --> F[FFmpeg: WAV estéreo local]
-    E --> F
+    B --> E[AVAudioEngine: microfone padrão]
+    D --> K[Captura nativa: canais alinhados por tempo]
+    E --> K
+    K --> F[FFmpeg: uma entrada PCM, WAV estéreo local]
     F --> G[Python localhost:5002 / Parakeet e diarização]
     G --> C
     C --> H[Sessão JSON e timestamps locais]
@@ -72,7 +73,7 @@ flowchart TD
     H --> J
 ```
 
-O menu envia comandos à API local; a interface aberta recebe esses comandos e mantém o fluxo de captura, transcrição e salvamento. O serviço Python coordena os sidecars Swift/FluidAudio: ASR com Parakeet, diarização e finalização. Os nomes reconhecidos ao vivo são reaproveitados por compatibilidade de voz, sem supor que a numeração dos participantes permaneça igual. O endpoint `/api/sessions/:id/audio` serve apenas arquivos locais autorizados, com GET/HEAD e HTTP Range para avançar sem carregar o arquivo inteiro. O destaque acompanha o tempo real do player e os timestamps de cada segmento.
+O menu envia comandos à API local; a interface aberta recebe esses comandos e mantém o fluxo de captura, transcrição e salvamento. No macOS, um único capturador nativo reúne ScreenCaptureKit e AVAudioEngine, preserva o tempo de cada canal e entrega um fluxo PCM ao FFmpeg. A gravação só começa depois que o microfone entrega áudio estável. O serviço Python coordena os sidecars Swift/FluidAudio: ASR com Parakeet, diarização e finalização. Os nomes reconhecidos ao vivo são reaproveitados por compatibilidade de voz, sem supor que a numeração dos participantes permaneça igual. O endpoint `/api/sessions/:id/audio` serve apenas arquivos locais autorizados, com GET/HEAD e HTTP Range para avançar sem carregar o arquivo inteiro. O destaque acompanha o tempo real do player e os timestamps de cada segmento.
 
 ## Atualização
 
@@ -106,7 +107,7 @@ O status permite verificar `recording`, `processing`, `pending`, `starting`, `re
 
 A detecção automática de início/fim para Slack, Google Meet, Microsoft Teams e Zoom **ainda não foi implementada no macOS**. Use os controles do menu; o fluxo de detecção existente do projeto original é voltado ao Linux.
 
-Foi observada divergência entre o cronômetro da captura e a duração de um WAV. A causa está em investigação. O player usa a duração real do arquivo, sem esticar o áudio ou ajustar artificialmente os timestamps. Áudio que não foi capturado ou que foi apagado não pode ser recuperado a partir da transcrição.
+A captura anterior podia descartar blocos do microfone ao combinar duas entradas no FFmpeg, encurtando o arquivo e cortando a fala. A captura nativa unificada substitui esse caminho. Arquivos antigos podem continuar com trechos ausentes; a correção se aplica a novas gravações. O player usa a duração real do arquivo. Áudio que não foi capturado ou que foi apagado não pode ser recuperado a partir da transcrição.
 
 ## Créditos e licença
 

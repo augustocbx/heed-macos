@@ -9,6 +9,7 @@ import { sseResponse } from "./lib/sse.ts";
 import { sessionAudioResponse } from "./lib/session-audio.ts";
 import { DesktopControl } from "./lib/desktop-control.ts";
 import { AUDIO_LIMIT_BYTES, enforceAudioRetention, removeChannelCopies } from "./lib/audio-retention.ts";
+import { type CaptureMode, nativeCaptureCommand, nativeRecordingCommand, verifyNativeHandshake, isNativeProtocolLine } from "./lib/native-capture.ts";
 const desktopControl = new DesktopControl();
 const retainedProcessing = new Map<string, number>();
 const CAPTURE_LIMIT_BYTES = Math.floor(AUDIO_LIMIT_BYTES / 2) - 10_000_000;
@@ -1169,41 +1170,57 @@ function getSyscapBin(): string | null {
 //   - proc set     → SCK is capturing (permission granted).
 //   - denied=true  → built but the user hasn't granted Screen Recording (TCC -3801). The caller
 //                    should NOT start recording; it should ask the user to grant + retry.
-//   - both falsy   → not built / not mac → just record mic only.
-async function spawnSyscap(): Promise<{ proc: ReturnType<typeof Bun.spawn> | null; denied: boolean }> {
+//   - unavailable → explicit error; macOS never falls back to partial capture.
+async function spawnSyscap(mode: CaptureMode): Promise<{ proc: ReturnType<typeof Bun.spawn> | null; denied: boolean; error?: string }> {
 	const bin = getSyscapBin();
-	if (!bin) return { proc: null, denied: false };
+	if (!bin) return { proc: null, denied: false, error: "Captura nativa ausente. Execute novamente o instalador do Heed." };
 	try {
-		const proc = track(Bun.spawn([bin], { stdout: "pipe", stderr: "pipe" }));
-		const handshake = await Promise.race([
-			(async () => {
-				const reader = (proc.stderr as ReadableStream).getReader();
-				const dec = new TextDecoder();
-				let buf = "";
-				while (!buf.includes("\n")) {
+		const proc = track(Bun.spawn(nativeCaptureCommand(bin, mode), { stdout: "pipe", stderr: "pipe" }));
+		let firstLine!: (line: string) => void;
+		const first = new Promise<string>((resolve) => { firstLine = resolve; });
+		// Keep draining diagnostics after readiness, including lines sharing its chunk.
+		void (async () => {
+			const reader = (proc.stderr as ReadableStream).getReader();
+			const decoder = new TextDecoder();
+			let pending = "", seenHandshake = false;
+			const consume = (line: string) => {
+				if (!seenHandshake && isNativeProtocolLine(line)) { seenHandshake = true; firstLine(line); return; }
+				console.log(`[heed-native] ${line.slice(0, 4096)}`);
+				try {
+					const diagnostic = JSON.parse(line);
+					if (diagnostic.error && syscapProc === proc && recorderProc) {
+						void gracefulStop(recorderProc, 1500, "SIGINT");
+						try { proc.kill(); } catch {}
+					}
+				} catch {}
+			};
+			try {
+				while (true) {
 					const { value, done } = await reader.read();
 					if (done) break;
-					buf += dec.decode(value, { stream: true });
+					pending += decoder.decode(value, { stream: true });
+					let newline: number;
+					while ((newline = pending.indexOf("\n")) >= 0) { consume(pending.slice(0, newline)); pending = pending.slice(newline + 1); }
+					if (pending.length > 16384) { consume(pending); pending = ""; }
 				}
-				reader.releaseLock();
-				return buf.split("\n")[0];
-			})(),
-			new Promise<string>((r) => setTimeout(() => r(""), 3000)),
-		]);
-		let ok = false;
-		try { ok = JSON.parse(handshake || "{}").ready === true; } catch {}
-		if (ok) {
-			console.log("[heed] system audio via ScreenCaptureKit");
+				if (pending) consume(pending);
+			} catch (error) { console.log(`[heed-native] diagnostic stream: ${String(error)}`); }
+			finally { if (!seenHandshake) firstLine(""); reader.releaseLock(); }
+		})();
+		const handshake = await Promise.race([first, new Promise<string>((resolve) => setTimeout(() => resolve(""), 15000))]);
+		const result = verifyNativeHandshake(handshake, mode);
+		if (result.ready) {
+			console.log(`[heed] captura nativa pronta: ${handshake}`);
 			return { proc, denied: false };
 		}
 		// -3801 / "declined" / "TCC" = the permission hasn't been granted yet.
-		const denied = /-3801|declined|TCC/i.test(handshake || "");
+		const denied = result.permissionNeeded;
 		console.log(`[heed] ScreenCaptureKit ${denied ? "permission needed" : "unavailable"} (${(handshake || "no handshake").slice(0, 80)})`);
 		try { proc.kill(); } catch {}
-		return { proc: null, denied };
+		return { proc: null, denied, error: result.error };
 	} catch (e) {
 		console.log(`[heed] ScreenCaptureKit spawn failed (${(e as Error).message})`);
-		return { proc: null, denied: false };
+		return { proc: null, denied: false, error: `Falha na captura nativa: ${(e as Error).message}` };
 	}
 }
 
@@ -1211,7 +1228,7 @@ function getMonitorSource(): string | null {
 	if (IS_MAC) {
 		// macOS captures system audio via ScreenCaptureKit (heed-syscap) — no virtual driver.
 		// BlackHole support was removed (confusing: needs manual output re-routing and the user
-		// hears nothing). If SCK isn't available, system audio is simply unavailable (mic-only).
+		// hears nothing). Native capture failures are reported explicitly before recording.
 		return null;
 	}
 	// Linux: PipeWire/PulseAudio monitor
@@ -1260,8 +1277,8 @@ async function handleSysRecordStart(req: Request): Promise<Response> {
 }
 
 async function beginSysRecording(req: Request): Promise<Response> {
-	let mode = "both";
-	try { const body = await req.json(); mode = body.mode || "both"; recordingLanguage = ["pt", "en"].includes(body.language) ? body.language : null; } catch {}
+	let mode: CaptureMode = "both";
+	try { const body = await req.json(); mode = ["both", "mic", "system"].includes(body.mode) ? body.mode : "both"; recordingLanguage = ["pt", "en"].includes(body.language) ? body.language : null; } catch {}
 
 	if (syscapProc) {
 		try { syscapProc.kill(); } catch {}
@@ -1276,27 +1293,23 @@ async function beginSysRecording(req: Request): Promise<Response> {
 	const ts = Date.now();
 	quotaReachedAt = 0; quotaStopResult = null;
  pruneAudio();
-	recorderStartedAt = ts;
+	recorderStartedAt = 0;
 	const mic = getMicSource() || "default";
 
-	// Prefer ScreenCaptureKit for system audio on mac. If the binary is built but Screen
-	// Recording hasn't been granted yet, DON'T start a half-recording (mic-only) and let the
-	// timer run — return a clear "permission needed" so the UI can ask first and the user
-	// retries. This is what makes the record button feel correct: nothing starts until the
-	// permission is resolved.
-	if (mode === "system" || mode === "both") {
-		const r = await spawnSyscap();
+	// macOS captures both sources in one native PCM clock. Never silently fall back
+	// to the old AVFoundation/second-input path if a source cannot be captured.
+	if (IS_MAC) {
+		const r = await spawnSyscap(mode);
 		syscapProc = r.proc;
-		if (!r.proc && r.denied) {
-			// Open the exact Settings pane so granting is one move; recording does NOT start.
-			try { Bun.spawn(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"]); } catch {}
-			return Response.json({ permissionNeeded: true, mode }, { status: 200 });
+		if (!r.proc) {
+			recorderStartedAt = 0;
+			return Response.json({ recording: false, permissionNeeded: r.denied, error: r.error, mode }, { status: r.denied ? 200 : 503 });
 		}
 	}
 	const usedSyscap = !!syscapProc;
 	const monitor = usedSyscap ? null : getMonitorSource();
 	// system source exists if SCK is active OR a (Linux) monitor was found.
-	const haveSystem = usedSyscap || !!monitor;
+	const haveSystem = (usedSyscap && mode !== "mic") || !!monitor;
 
 	// Naming convention: dual-capture-* signals stereo (L=mic, R=system) → channel-based diarization later.
 	const isDual = mode === "both" && haveSystem;
@@ -1305,33 +1318,18 @@ async function beginSysRecording(req: Request): Promise<Response> {
 	let args: string[];
 	// When SCK feeds the system channel, ffmpeg reads its raw PCM from stdin (pipe:0).
 	let stdinStream: ReadableStream | undefined;
-	const SCK_IN = ["-f", "s16le", "-ar", "16000", "-ac", "1", "-i", "pipe:0"];
 
-	if (mode === "system") {
-		if (usedSyscap) {
-			args = ["ffmpeg", "-y", ...SCK_IN, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", recorderPath];
-			stdinStream = syscapProc!.stdout as ReadableStream;
-		} else {
-			if (!monitor) return Response.json({ error: "No system audio monitor found" }, { status: 500 });
-			args = ["ffmpeg", "-y", "-f", AUDIO_FMT, "-i", monitor, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", recorderPath];
-		}
-	} else if (mode === "mic") {
+	if (usedSyscap) {
+		args = nativeRecordingCommand(mode, recorderPath);
+		stdinStream = syscapProc!.stdout as ReadableStream;
+	} else if (mode === "system") {
+		if (!monitor) return Response.json({ error: "No system audio monitor found" }, { status: 500 });
+		args = ["ffmpeg", "-y", "-f", AUDIO_FMT, "-i", monitor, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", recorderPath];
+	} else if (mode === "mic" || !monitor) {
 		args = ["ffmpeg", "-y", "-f", AUDIO_FMT, "-i", mic, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", recorderPath];
 	} else {
-		// both: keep mic and system in SEPARATE physical channels (L=mic, R=system).
-		// Downstream we split them and run diarization independently — this is what unlocks
-		// real overlap detection when two people speak at the same time.
 		const MERGE = ["-filter_complex", "[0:a]aresample=16000,pan=mono|c0=c0[micL];[1:a]aresample=16000,pan=mono|c0=c0[sysR];[micL][sysR]amerge=inputs=2[out]", "-map", "[out]", "-ar", "16000", "-ac", "2", "-c:a", "pcm_s16le"];
-		if (usedSyscap) {
-			// mic from avfoundation (input 0) + SCK system PCM from stdin (input 1)
-			args = ["ffmpeg", "-y", "-f", AUDIO_FMT, "-i", mic, ...SCK_IN, ...MERGE, recorderPath];
-			stdinStream = syscapProc!.stdout as ReadableStream;
-		} else if (!monitor) {
-			// No system source at all → mic only (graceful)
-			args = ["ffmpeg", "-y", "-f", AUDIO_FMT, "-i", mic, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", recorderPath];
-		} else {
-			args = ["ffmpeg", "-y", "-f", AUDIO_FMT, "-i", mic, "-f", AUDIO_FMT, "-i", monitor, ...MERGE, recorderPath];
-		}
+		args = ["ffmpeg", "-y", "-f", AUDIO_FMT, "-i", mic, "-f", AUDIO_FMT, "-i", monitor, ...MERGE, recorderPath];
 	}
 
 	// CRITICAL for live transcription: force ffmpeg to flush each packet to disk so the WAV file
@@ -1341,6 +1339,7 @@ async function beginSysRecording(req: Request): Promise<Response> {
 	// Limite físico de saída; a margem cobre cabeçalho e o último pacote do ffmpeg.
  args.splice(args.length - 1, 0, "-flush_packets", "1", "-fs", String(CAPTURE_LIMIT_BYTES));
 
+	recorderStartedAt = Date.now();
 	recorderProc = track(Bun.spawn(args, stdinStream ? { stdin: stdinStream, stdout: "pipe", stderr: "pipe" } : { stdout: "pipe", stderr: "pipe" }));
 
 	// Feed the System (green) visualizer. We sample the growing recorder WAV directly instead of
@@ -1997,9 +1996,9 @@ async function finishSysRecording(req: Request): Promise<Response> {
 	stopLiveTranscribe();
 	if (!recorderProc || !recorderPath) return Response.json({ error: "Not recording" }, { status: 400 });
 
-	// Stop SCK first so ffmpeg gets EOF on its stdin pipe and flushes cleanly, then SIGINT ffmpeg.
+	// Allow the native writer to flush its final frames before FFmpeg receives EOF.
 	if (syscapProc) {
-		try { syscapProc.kill(); } catch {}
+		await gracefulStop(syscapProc, 1500, "SIGTERM");
 		syscapProc = null;
 	}
 	// SIGINT lets ffmpeg flush the WAV cleanly; gracefulStop adds a SIGKILL fallback so a hung
