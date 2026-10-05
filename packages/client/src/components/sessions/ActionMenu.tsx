@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import { useEffect, useRef, useState } from "react";
 import type { Session } from "@heed/shared";
 import { useUIStore } from "@/stores/ui.ts";
@@ -53,6 +54,7 @@ function downloadFile(content: string, filename: string, mime: string) {
 }
 
 export function ActionMenu({ x, y, session, onClose, onTogglePin, onDelete }: Props) {
+	useLocale();
 	const ref = useRef<HTMLDivElement>(null);
 	const showToast = useUIStore((s) => s.showToast);
 	const [hoveredCategory, setHoveredCategory] = useState<Category | null>(null);
@@ -74,11 +76,11 @@ export function ActionMenu({ x, y, session, onClose, onTogglePin, onDelete }: Pr
 		switch (action) {
 			case "copy-text":
 				navigator.clipboard.writeText(text);
-				showToast("Copied as text");
+				showToast(tr("Copied as text"));
 				break;
 			case "copy-md":
 				navigator.clipboard.writeText(md);
-				showToast("Copied as markdown");
+				showToast(tr("Copied as markdown"));
 				break;
 			case "export-md":
 				downloadFile(md, `${filename}.md`, "text/markdown");
@@ -116,7 +118,7 @@ export function ActionMenu({ x, y, session, onClose, onTogglePin, onDelete }: Pr
 		if (session.aiNotes) out += `## AI NOTES\n\n${stripMarkdown(session.aiNotes)}\n`;
 
 		navigator.clipboard.writeText(out);
-		showToast("Copied everything");
+		showToast(tr("Copied everything"));
 		onClose();
 	};
 
@@ -134,10 +136,10 @@ export function ActionMenu({ x, y, session, onClose, onTogglePin, onDelete }: Pr
 				<span className={styles.arrow}>▶</span>
 				{enabled && hoveredCategory === cat && (
 					<div className={styles.submenu}>
-						<div className={styles.item} onClick={() => handleExport(cat, "copy-text")}>Copy as text</div>
-						<div className={styles.item} onClick={() => handleExport(cat, "copy-md")}>Copy as markdown</div>
-						<div className={styles.item} onClick={() => handleExport(cat, "export-md")}>Export as .md</div>
-						<div className={styles.item} onClick={() => handleExport(cat, "export-txt")}>Export as .txt</div>
+						<div className={styles.item} onClick={() => handleExport(cat, "copy-text")}>{tr("Copy as text")}</div>
+						<div className={styles.item} onClick={() => handleExport(cat, "copy-md")}>{tr("Copy as markdown")}</div>
+						<div className={styles.item} onClick={() => handleExport(cat, "export-md")}>{tr("Export as .md")}</div>
+						<div className={styles.item} onClick={() => handleExport(cat, "export-txt")}>{tr("Export as .txt")}</div>
 					</div>
 				)}
 			</div>
@@ -146,18 +148,17 @@ export function ActionMenu({ x, y, session, onClose, onTogglePin, onDelete }: Pr
 
 	return (
 		<div ref={ref} className={styles.menu} style={{ top: y, right: window.innerWidth - x }}>
-			{renderCategoryItem("transcript", "Transcript", true)}
-			{renderCategoryItem("speakers", "Speakers", hasSpeakers, "No speakers detected")}
-			{renderCategoryItem("notes", "AI Notes", hasNotes, "Generate AI notes first")}
+			{renderCategoryItem("transcript", tr("Transcript"), true)}
+			{renderCategoryItem("speakers", tr("Speakers"), hasSpeakers, tr("No speakers detected"))}
+			{renderCategoryItem("notes", tr("AI Notes"), hasNotes, tr("Generate AI notes first"))}
 			<div className={styles.divider} />
-			<div className={styles.item} onClick={copyEverything}>Copy everything</div>
+			<div className={styles.item} onClick={copyEverything}>{tr("Copy everything")}</div>
 			<div className={styles.divider} />
 			<div className={styles.item} onClick={() => { onTogglePin(); onClose(); }}>
-				{session.pinned ? "Unpin" : "Pin"}
+				{session.pinned ? tr("Unpin") : tr("Pin")}
 			</div>
 			<div className={`${styles.item} ${styles.itemDanger}`} onClick={() => { onDelete(); onClose(); }}>
-				Delete
-			</div>
+				{tr("Delete")}</div>
 		</div>
 	);
 }

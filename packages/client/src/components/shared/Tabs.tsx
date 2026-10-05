@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import styles from "./Tabs.module.css";
 
 export interface TabDef {
@@ -14,6 +15,7 @@ interface Props {
 }
 
 export function Tabs({ tabs, active, onChange }: Props) {
+ useLocale();
 	return (
 		<div className={styles.tabs}>
 			{tabs.map((t) => {
@@ -24,11 +26,11 @@ export function Tabs({ tabs, active, onChange }: Props) {
 					<div
 						key={t.id}
 						className={cls.join(" ")}
-						title={t.disabled ? t.disabledReason : undefined}
+						title={t.disabled && t.disabledReason ? tr(t.disabledReason) : undefined}
 						onClick={() => !t.disabled && onChange(t.id)}
 						data-tour={t.id === "speakers" ? "speakers-tab" : undefined}
 					>
-						{t.label}
+						{tr(t.label)}
 					</div>
 				);
 			})}

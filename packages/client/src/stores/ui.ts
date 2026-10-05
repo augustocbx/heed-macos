@@ -1,3 +1,4 @@
+import { tr } from "@/lib/i18n.ts";
 import { create } from "zustand";
 
 export type Page = "record" | "sessions" | "settings";
@@ -14,7 +15,7 @@ export const useUIStore = create<UIState>((set) => ({
 	toast: null,
 	setPage: (page) => set({ currentPage: page }),
 	showToast: (message) => {
-		set({ toast: message });
+		set({ toast: tr(message) });
 		setTimeout(() => set({ toast: null }), 2500);
 	},
 }));

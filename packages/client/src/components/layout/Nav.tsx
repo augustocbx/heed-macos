@@ -1,3 +1,4 @@
+import { useLocale } from "@/lib/i18n.ts";
 import { useEffect, useState, useCallback } from "react";
 import type { SetupCheckResult } from "@heed/shared";
 import { useUIStore, type Page } from "@/stores/ui.ts";
@@ -28,6 +29,7 @@ const WHISPER_SPEED_LABEL: Record<string, string> = {
 };
 
 export function Nav() {
+ const {tr}=useLocale();
 	const currentPage = useUIStore((s) => s.currentPage);
 	const setPage = useUIStore((s) => s.setPage);
 	const showToast = useUIStore((s) => s.showToast);
@@ -61,12 +63,12 @@ export function Nav() {
 
 	// Open the floating desktop panel — a standalone Chrome window that floats over Zoom/Meet.
 	const openFloat = useCallback(async () => {
-		showToast("Opening floating panel…");
+		showToast(tr("Opening floating panel…"));
 		try {
 			const res = await desktopApi.float();
 			if (!res.ok && res.error) showToast(res.error);
 		} catch {
-			showToast("Could not open floating panel");
+			showToast(tr("Could not open floating panel"));
 		}
 	}, [showToast]);
 
@@ -88,7 +90,7 @@ export function Nav() {
 	const isCpuOnly = modelsData?.current?.num_gpu === 0;
 	const whisperInfo = health.whisper_info || null;
 	const pyannoteInfo = health.pyannote_info || null;
-	const whisperPower = whisperInfo ? `${WHISPER_QUALITY_LABEL[whisperInfo.quality] || whisperInfo.quality} / ${WHISPER_SPEED_LABEL[whisperInfo.speed] || whisperInfo.speed}` : "detecting";
+	const whisperPower = whisperInfo ? `${tr(WHISPER_QUALITY_LABEL[whisperInfo.quality] || whisperInfo.quality)} / ${tr(WHISPER_SPEED_LABEL[whisperInfo.speed] || whisperInfo.speed)}` : tr("detecting");
 	// Show the REAL engine, not the nominal whisper tier. Apple Silicon runs Parakeet (Neural
 	// Engine); CUDA/CPU run Whisper. Diarization is FluidAudio on Mac, pyannote elsewhere.
 	const engine = health.languages?.engine;
@@ -102,7 +104,7 @@ export function Nav() {
 		<nav className={styles.nav}>
 			<div className={styles.inner}>
 				<div className={styles.leftBlock}>
-					<a href="/" className={styles.brand}>heed</a>
+					<a href="/" className={styles.brand}>{tr('heed')}</a>
 				</div>
 
 				<div className={styles.centerBlock}>
@@ -114,7 +116,7 @@ export function Nav() {
 								onClick={() => setPage(t.id)}
 								data-tour={t.id === "sessions" ? "sessions-tab" : undefined}
 							>
-								{t.label}
+								{tr(t.label)}
 							</button>
 						))}
 					</div>
@@ -125,51 +127,51 @@ export function Nav() {
 						<button
 							className={styles.floatChip}
 							onClick={openFloat}
-							title="Open the floating panel — a small always-on-top window that floats over your Zoom/Meet calls"
-							aria-label="Open floating panel"
+							title={tr('Open the floating panel — a small always-on-top window that floats over your Zoom/Meet calls')}
+							aria-label={tr('Open floating panel')}
 						>
 							<span className={styles.floatChipIcon} aria-hidden="true">⧉</span>
-							<span className={styles.floatChipLabel}>Float</span>
+							<span className={styles.floatChipLabel}>{tr('Float')}</span>
 						</button>
 						<button
 							className={styles.modelChip}
 							onClick={() => openPicker()}
-							title="Click to switch AI model"
+							title={tr('Click to switch AI model')}
 							data-tour="model-chip"
 						>
 							<span className={styles.modelChipDot} />
 							<span className={styles.modelChipName}>
-								{currentModel?.name || modelsData?.current?.id || "no model"}
+								{currentModel?.name || modelsData?.current?.id || tr("no model")}
 							</span>
-							{isCpuOnly && <span className={styles.modelChipBadge}>CPU</span>}
-							{currentModel?.new && <span className={styles.modelChipNew}>NEW</span>}
+							{isCpuOnly && <span className={styles.modelChipBadge}>{tr('CPU')}</span>}
+							{currentModel?.new && <span className={styles.modelChipNew}>{tr('NEW')}</span>}
 							<span className={styles.modelChipChevron} aria-hidden="true">⌄</span>
 						</button>
 						<div
 							className={`${styles.statusItem} ${styles.statusItemInfo} ${healthLoaded && !health.ollama ? styles.statusItemDown : ""}`}
 							tabIndex={0}
 							role={healthLoaded && !health.ollama ? "button" : undefined}
-							aria-label="Local notes engine (Ollama)"
+							aria-label={tr('Local notes engine (Ollama)')}
 							onClick={healthLoaded && !health.ollama ? () => setFixOpen("ollama") : undefined}
 						>
 							<div className={dotClass(health.ollama)} />
-							<span className={styles.label}>ollama</span>
+							<span className={styles.label}>{tr('ollama')}</span>
 							<span className={styles.statusItemChevron} aria-hidden="true">⌄</span>
 							<div className={styles.infoTooltip} role="tooltip">
 								<div className={styles.infoTooltipHead}>
-									<div className={styles.infoTooltipTitle}>Ollama</div>
-									<span className={styles.infoTooltipBadge}>AI notes</span>
+									<div className={styles.infoTooltipTitle}>{tr('Ollama')}</div>
+									<span className={styles.infoTooltipBadge}>{tr('AI notes')}</span>
 								</div>
-								<div className={styles.infoTooltipLine}>Local LLM that writes the meeting <strong>notes</strong> from the transcript.</div>
-								<div className={styles.infoTooltipLine}><strong>Model:</strong> {currentModel?.name || modelsData?.current?.id || "none selected"}</div>
-								<div className={styles.infoTooltipReason}>Separate from transcription — heed transcribes locally, then Ollama summarizes.</div>
+								<div className={styles.infoTooltipLine}>{tr("Local LLM that writes the meeting notes from the transcript.")}</div>
+								<div className={styles.infoTooltipLine}><strong>{tr('Model:')}</strong> {currentModel?.name || modelsData?.current?.id || tr("none selected")}</div>
+								<div className={styles.infoTooltipReason}>{tr('Separate from transcription — heed transcribes locally, then Ollama summarizes.')}</div>
 							</div>
 						</div>
 						<div
 							className={`${styles.statusItem} ${styles.statusItemInfo} ${healthLoaded && !health.whisper ? styles.statusItemDown : ""}`}
 							tabIndex={0}
 							role={healthLoaded && !health.whisper ? "button" : undefined}
-							aria-label="Transcription engine details"
+							aria-label={tr('Transcription engine details')}
 							onClick={healthLoaded && !health.whisper ? () => setFixOpen("engine") : undefined}
 						>
 							<div className={dotClass(health.whisper)} />
@@ -178,32 +180,32 @@ export function Nav() {
 							<div className={styles.infoTooltip} role="tooltip">
 								<div className={styles.infoTooltipHead}>
 									<div className={styles.infoTooltipTitle}>
-										{engine === "parakeet" ? "Parakeet (Apple Neural Engine)" : engine === "mlx" ? "MLX-Whisper (Apple GPU)" : "Whisper auto profile"}
+										{engine === "parakeet" ? "Parakeet (Apple Neural Engine)" : engine === "mlx" ? "MLX-Whisper (Apple GPU)" : tr("Whisper auto profile")}
 									</div>
-									<span className={styles.infoTooltipBadge}>transcription</span>
+									<span className={styles.infoTooltipBadge}>{tr('transcription')}</span>
 								</div>
 								{engine === "parakeet" ? (
 									<>
-										<div className={styles.infoTooltipLine}><strong>Model:</strong> parakeet-tdt-v3</div>
-										<div className={styles.infoTooltipLine}><strong>Runs on:</strong> Apple Neural Engine</div>
-										<div className={styles.infoTooltipLine}><strong>Languages:</strong> 28 European</div>
+										<div className={styles.infoTooltipLine}><strong>{tr('Model:')}</strong>{tr(' parakeet-tdt-v3')}</div>
+										<div className={styles.infoTooltipLine}><strong>{tr('Runs on:')}</strong>{tr(' Apple Neural Engine')}</div>
+										<div className={styles.infoTooltipLine}><strong>{tr('Languages:')}</strong>{tr(' 28 European')}</div>
 									</>
 								) : (
 									<>
-										<div className={styles.infoTooltipLine}><strong>Final:</strong> {whisperInfo?.final_model || "small"}</div>
-										<div className={styles.infoTooltipLine}><strong>Live:</strong> {whisperInfo?.live_model || "small"}</div>
-										<div className={styles.infoTooltipLine}><strong>Power:</strong> {whisperPower}</div>
-										<div className={styles.infoTooltipLine}><strong>Device:</strong> {whisperInfo?.device || "cpu"}</div>
+										<div className={styles.infoTooltipLine}><strong>{tr('Final:')}</strong> {whisperInfo?.final_model || "small"}</div>
+										<div className={styles.infoTooltipLine}><strong>{tr('Live:')}</strong> {whisperInfo?.live_model || "small"}</div>
+										<div className={styles.infoTooltipLine}><strong>{tr('Power:')}</strong> {whisperPower}</div>
+										<div className={styles.infoTooltipLine}><strong>{tr('Device:')}</strong> {whisperInfo?.device || "cpu"}</div>
 									</>
 								)}
-								<div className={styles.infoTooltipReason}>{whisperInfo?.reason || "Detecting hardware and choosing the best engine."}</div>
+								<div className={styles.infoTooltipReason}>{tr(whisperInfo?.reason || "Detecting hardware and choosing the best engine.")}</div>
 							</div>
 						</div>
 						<div
 							className={`${styles.statusItem} ${styles.statusItemInfo} ${healthLoaded && !health.pyannote ? styles.statusItemDown : ""}`}
 							tabIndex={0}
 							role={healthLoaded && !health.pyannote ? "button" : undefined}
-							aria-label="Speaker diarization details"
+							aria-label={tr('Speaker diarization details')}
 							onClick={healthLoaded && !health.pyannote ? () => setFixOpen("diar") : undefined}
 						>
 							<div className={dotClass(health.pyannote)} />
@@ -211,27 +213,27 @@ export function Nav() {
 							<span className={styles.statusItemChevron} aria-hidden="true">⌄</span>
 							<div className={styles.infoTooltip} role="tooltip">
 								<div className={styles.infoTooltipHead}>
-									<div className={styles.infoTooltipTitle}>{diarLabel === "FluidAudio" ? "FluidAudio diarization" : "Pyannote auto tuning"}</div>
-									<span className={styles.infoTooltipBadge}>who said what</span>
+									<div className={styles.infoTooltipTitle}>{tr(diarLabel === "FluidAudio" ? "FluidAudio diarization" : "Pyannote auto tuning")}</div>
+									<span className={styles.infoTooltipBadge}>{tr('who said what')}</span>
 								</div>
 								{diarLabel === "FluidAudio" ? (
 									<>
-										<div className={styles.infoTooltipLine}><strong>Model:</strong> FluidAudio CoreML</div>
-										<div className={styles.infoTooltipLine}><strong>Runs on:</strong> Apple Neural Engine</div>
-										<div className={styles.infoTooltipLine}><strong>Token:</strong> none needed</div>
+										<div className={styles.infoTooltipLine}><strong>{tr('Model:')}</strong>{tr(' FluidAudio CoreML')}</div>
+										<div className={styles.infoTooltipLine}><strong>{tr('Runs on:')}</strong>{tr(' Apple Neural Engine')}</div>
+										<div className={styles.infoTooltipLine}><strong>{tr('Token:')}</strong>{tr(' none needed')}</div>
 									</>
 								) : (
 									<>
-										<div className={styles.infoTooltipLine}><strong>Model:</strong> {pyannoteInfo?.model || "pyannote/speaker-diarization-3.1"}</div>
-										<div className={styles.infoTooltipLine}><strong>Device:</strong> {pyannoteInfo?.device || "cpu"}</div>
-										<div className={styles.infoTooltipLine}><strong>Profile:</strong> {pyannoteInfo?.profile || "balanced"}</div>
-										<div className={styles.infoTooltipLine}><strong>Batch:</strong> {pyannoteInfo?.batch_size || 8}</div>
+										<div className={styles.infoTooltipLine}><strong>{tr('Model:')}</strong> {pyannoteInfo?.model || "pyannote/speaker-diarization-3.1"}</div>
+										<div className={styles.infoTooltipLine}><strong>{tr('Device:')}</strong> {pyannoteInfo?.device || "cpu"}</div>
+										<div className={styles.infoTooltipLine}><strong>{tr('Profile:')}</strong> {pyannoteInfo?.profile || "balanced"}</div>
+										<div className={styles.infoTooltipLine}><strong>{tr('Batch:')}</strong> {pyannoteInfo?.batch_size || 8}</div>
 										{pyannoteInfo?.cpu_threads ? (
-											<div className={styles.infoTooltipLine}><strong>CPU threads:</strong> {pyannoteInfo.cpu_threads}</div>
+											<div className={styles.infoTooltipLine}><strong>{tr('CPU threads:')}</strong> {pyannoteInfo.cpu_threads}</div>
 										) : null}
 									</>
 								)}
-								<div className={styles.infoTooltipReason}>{pyannoteInfo?.reason || "Tuning based on available hardware."}</div>
+								<div className={styles.infoTooltipReason}>{tr(pyannoteInfo?.reason || "Tuning based on available hardware.")}</div>
 							</div>
 						</div>
 						{fixOpen && (

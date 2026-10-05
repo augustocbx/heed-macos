@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import { useRef, useEffect, useState } from "react";
 import { useDesktopControl } from "@/hooks/useDesktopControl.ts";
 import { useRecording } from "@/hooks/useRecording.ts";
@@ -24,6 +25,7 @@ const FAST_PROCESS_MESSAGES_EN = [
 ];
 
 export function RecordPage() {
+	useLocale();
 	const micBars = useRef<HTMLDivElement[]>([]);
 	const systemBars = useRef<HTMLDivElement[]>([]);
 	const [language, setLanguage] = useState("en");
@@ -77,7 +79,7 @@ export function RecordPage() {
 		};
 
 		let idx = 0;
-		updateMessage(uniquePool[0] || "It's almost ready!");
+		updateMessage(uniquePool[0] || tr("It's almost ready!"));
 
 		const id = window.setInterval(() => {
 			if (!uniquePool.length) return;
@@ -93,31 +95,31 @@ export function RecordPage() {
 			<div className={styles.center}>
 				<Timer seconds={useSeconds()} />
 				<div className={vizStyles.dualWrap}>
-					<Visualizer ref={micBars} barCount={24} variant="mic" label="Microphone" />
-					<Visualizer ref={systemBars} barCount={24} variant="system" label="System" />
+					<Visualizer ref={micBars} barCount={24} variant="mic" label={tr("Microphone")} />
+					<Visualizer ref={systemBars} barCount={24} variant="system" label={tr("System")} />
 				</div>
 				{processing ? (
 					<div className={styles.processingStatus}>
 						<div className={styles.processingDot} />
 						<span key={rotatingStepKey} className={styles.processingText}>
-							{rotatingStep || processStep || "Finalizing..."}
+							{tr(rotatingStep || processStep || "Finalizing...")}
 						</span>
 					</div>
 				) : (
 					<RecordButton recording={recording} onClick={() => (recording ? stop() : canRecord ? start() : null)} />
 				)}
 				<div className={styles.label}>
-					{recording ? "Recording... click to stop" : processing ? "" : !showResult ? "Click to start recording" : ""}
+					{recording ? tr("Recording... click to stop") : processing ? "" : !showResult ? tr("Click to start recording") : ""}
 				</div>
 				{recording && liveQuality && !liveQuality.ok && (
 					<div className={styles.qualityWarn} role="status">
 						<span className={styles.qualityWarnIcon} aria-hidden="true">!</span>
-						<span>{liveQuality.hint}</span>
+						<span>{tr(liveQuality.hint || "")}</span>
 					</div>
 				)}
 				{!processing && (
 					<div className={styles.options}>
-						<span>Live preview starts in English. The final transcript automatically detects English or Portuguese.</span>
+						<span>{tr("Live preview starts in English. The final transcript automatically detects English or Portuguese.")}</span>
 					</div>
 				)}
 			</div>

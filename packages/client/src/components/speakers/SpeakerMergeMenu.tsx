@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import styles from "./SpeakerMergeMenu.module.css";
@@ -13,6 +14,7 @@ interface Props {
 }
 
 export function SpeakerMergeMenu({ x, y, currentSpeaker, speakers, speakerNames, onClose, onMerge }: Props) {
+	useLocale();
 	const ref = useRef<HTMLDivElement>(null);
 
 	useEffect(() => {
@@ -30,7 +32,7 @@ export function SpeakerMergeMenu({ x, y, currentSpeaker, speakers, speakerNames,
 
 	return createPortal(
 		<div ref={ref} className={styles.menu} style={{ top: y, left: x }}>
-			<div className={styles.header}>Merge "{currentName}" into:</div>
+			<div className={styles.header}>{tr('Merge "{name}" into:', undefined, {name:currentName})}</div>
 			<div className={styles.divider} />
 			{others.map((s) => (
 				<div key={s} className={styles.item} onClick={() => onMerge(currentSpeaker, s)}>

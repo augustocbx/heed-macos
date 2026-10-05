@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import { useState, useRef, useEffect, useMemo } from "react";
 import { useSessionsStore } from "@/stores/sessions.ts";
 import { useUIStore } from "@/stores/ui.ts";
@@ -20,6 +21,7 @@ interface SuggestState {
 }
 
 export function TitleInput({ sessionId, value, tags, className }: Props) {
+	useLocale();
 	const update = useSessionsStore((s) => s.update);
 	const allSessions = useSessionsStore((s) => s.sessions);
 	const showToast = useUIStore((s) => s.showToast);
@@ -99,7 +101,7 @@ export function TitleInput({ sessionId, value, tags, className }: Props) {
 	const handleCommit = async () => {
 		const raw = text.trim();
 		const newTags = extractTags(raw);
-		const cleanTitle = stripTagsFromText(raw) || "Untitled meeting";
+		const cleanTitle = stripTagsFromText(raw) || tr("Untitled meeting");
 		const merged = [...new Set([...(tags || []), ...newTags])];
 		const added = newTags.filter((t) => !(tags || []).includes(t));
 		const trulyNew = added.filter((t) => !allKnownTags.has(t));
@@ -110,9 +112,9 @@ export function TitleInput({ sessionId, value, tags, className }: Props) {
 		await update(sessionId, { title: cleanTitle, tags: merged });
 		setText(cleanTitle);
 
-		if (trulyNew.length) showToast(`Created new tag${trulyNew.length > 1 ? "s" : ""}: ${trulyNew.map((t) => "#" + t).join(", ")}`);
-		else if (reused.length) showToast(`Added to existing tag${reused.length > 1 ? "s" : ""}: ${reused.map((t) => "#" + t).join(", ")}`);
-		else showToast("Title updated");
+		if (trulyNew.length) showToast(tr(trulyNew.length===1 ? "Created new tag: {tags}" : "Created new tags: {tags}", undefined, {tags:trulyNew.map(t=>"#"+t).join(", ")}));
+		else if (reused.length) showToast(tr(reused.length===1 ? "Added to existing tag: {tags}" : "Added to existing tags: {tags}", undefined, {tags:reused.map(t=>"#"+t).join(", ")}));
+		else showToast(tr("Title updated"));
 	};
 
 	return (
@@ -121,7 +123,7 @@ export function TitleInput({ sessionId, value, tags, className }: Props) {
 				ref={inputRef}
 				type="text"
 				className={className || styles.titleInput}
-				placeholder="Untitled meeting (use #tags)"
+				placeholder={tr("Untitled meeting (use #tags)")}
 				autoComplete="off"
 				value={text}
 				onChange={(e) => { setText(e.target.value); showSuggest(); }}
@@ -171,7 +173,7 @@ export function TitleInput({ sessionId, value, tags, className }: Props) {
 									padding: "1px 6px",
 									borderRadius: "8px",
 									marginLeft: "auto",
-								}}>new</span>
+								}}>{tr("new")}</span>
 							)}
 						</div>
 					))}

@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import { useEffect, useMemo, useState } from "react";
 import type { Session } from "@heed/shared";
 import { useSessionsStore } from "@/stores/sessions.ts";
@@ -8,6 +9,7 @@ import { SessionDetail } from "./SessionDetail.tsx";
 import styles from "./SessionsPage.module.css";
 
 export function SessionsPage() {
+	useLocale();
 	const { sessions, load, viewing, view, update, remove } = useSessionsStore();
 	const showToast = useUIStore((s) => s.showToast);
 
@@ -63,10 +65,10 @@ export function SessionsPage() {
 		setDeleting(true);
 		try {
 			await remove(deleteTarget.id);
-			showToast("Session deleted");
+			showToast(tr("Session deleted"));
 			setDeleteTarget(null);
 		} catch {
-			showToast("Failed to delete session");
+			showToast(tr("Failed to delete session"));
 		} finally {
 			setDeleting(false);
 		}
@@ -77,7 +79,7 @@ export function SessionsPage() {
 			<div className={styles.header}>
 				<input
 					type="search"
-					placeholder="Search sessions..."
+					placeholder={tr("Search sessions...")}
 					value={search}
 					onChange={(e) => setSearch(e.target.value)}
 				/>
@@ -96,8 +98,7 @@ export function SessionsPage() {
 					))}
 					{activeTagFilter && (
 						<span className={styles.tagClear} onClick={() => setActiveTagFilter(null)}>
-							clear filter ×
-						</span>
+							{tr("clear filter ×")}</span>
 					)}
 				</div>
 			)}
@@ -105,8 +106,8 @@ export function SessionsPage() {
 			{filtered.length === 0 ? (
 				<div className={styles.empty}>
 					{sessions.length === 0
-						? "No sessions yet. Record something to get started."
-						: "No sessions match your search."}
+						? tr("No sessions yet. Record something to get started.")
+						: tr("No sessions match your search.")}
 				</div>
 			) : (
 				filtered.map((s) => (
@@ -132,7 +133,7 @@ export function SessionsPage() {
 					onClose={() => setMenuState(null)}
 					onTogglePin={async () => {
 						await update(menuState.session.id, { pinned: !menuState.session.pinned });
-						showToast(menuState.session.pinned ? "Unpinned" : "Pinned");
+						showToast(menuState.session.pinned ? tr("Unpinned") : tr("Pinned"));
 					}}
 					onDelete={() => openDeletePanel(menuState.session)}
 				/>
@@ -141,9 +142,9 @@ export function SessionsPage() {
 			{deleteTarget && (
 				<div className={styles.confirmOverlay} onClick={() => !deleting && setDeleteTarget(null)}>
 					<div className={styles.confirmPanel} onClick={(e) => e.stopPropagation()}>
-						<div className={styles.confirmTitle}>Delete session?</div>
+						<div className={styles.confirmTitle}>{tr("Delete session?")}</div>
 						<div className={styles.confirmBody}>
-							"{deleteTarget.title || "Untitled"}" will be permanently removed. This cannot be undone.
+							{tr('"{title}" will be permanently removed. This cannot be undone.', undefined, {title:deleteTarget.title || tr("Untitled")})}
 						</div>
 						<div className={styles.confirmActions}>
 							<button
@@ -151,14 +152,13 @@ export function SessionsPage() {
 								onClick={() => setDeleteTarget(null)}
 								disabled={deleting}
 							>
-								Cancel
-							</button>
+								{tr("Cancel")}</button>
 							<button
 								className={styles.confirmDelete}
 								onClick={confirmDelete}
 								disabled={deleting}
 							>
-								{deleting ? "Deleting..." : "Delete"}
+								{deleting ? tr("Deleting...") : tr("Delete")}
 							</button>
 						</div>
 					</div>

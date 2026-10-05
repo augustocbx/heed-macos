@@ -1,3 +1,4 @@
+import { detectLocale, tr } from "./i18n.ts";
 export function fmtTime(seconds: number): string {
 	const m = Math.floor(seconds / 60);
 	const s = seconds % 60;
@@ -14,9 +15,9 @@ export function fmtDuration(seconds: number): string {
 export function fmtDate(iso: string): string {
 	const d = new Date(iso);
 	return (
-		d.toLocaleDateString(undefined, { day: "numeric", month: "short" }) +
+		d.toLocaleDateString(detectLocale(), { day: "numeric", month: "short" }) +
 		" " +
-		d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+		d.toLocaleTimeString(detectLocale(), { hour: "2-digit", minute: "2-digit" })
 	);
 }
 
@@ -30,13 +31,13 @@ export function escapeHtml(s: string): string {
  * (and name the chip when known); on CUDA we keep the classic "doesn't fit in your GPU" wording.
  */
 export function cpuFallbackWarning(modelName: string | undefined, gpuName: string | null | undefined): string {
-	const model = modelName || "This model";
+	const model = modelName || tr("This model");
 	const isApple = /apple|metal|\bM\d/i.test(gpuName || "");
 	if (isApple) {
-		const where = gpuName ? `your ${gpuName}'s memory` : "your Mac's memory";
-		return `${model} is larger than ${where} can hold right now — it will run on CPU (slower).`;
+		const where = gpuName ? tr("your {gpu}'s memory", undefined, {gpu:gpuName}) : tr("your Mac's memory");
+		return tr("{model} is larger than {memory} can hold right now — it will run on CPU (slower).", undefined, {model,memory:where});
 	}
-	return `${model} doesn't fit in your GPU right now. It will run on CPU (~3-4x slower).`;
+	return tr("{model} doesn't fit in your GPU right now. It will run on CPU (~3-4x slower).", undefined, {model});
 }
 
 /**
@@ -50,7 +51,7 @@ export function cpuFallbackWarning(modelName: string | undefined, gpuName: strin
  * and the expected "VRAM" on CUDA machines.
  */
 export function memoryWord(gpuName: string | null | undefined): string {
-	return /apple|metal|\bM\d/i.test(gpuName || "") ? "unified memory" : "VRAM";
+	return /apple|metal|\bM\d/i.test(gpuName || "") ? tr("unified memory") : "VRAM";
 }
 
 export function estimateNotesSeconds(vramMb: number | undefined, onGpu: boolean): number {

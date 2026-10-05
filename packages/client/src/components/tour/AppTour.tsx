@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useRecordingStore } from "@/stores/recording.ts";
 import { useUIStore } from "@/stores/ui.ts";
-import { detectLocale } from "@/lib/i18n.ts";
+import { detectLocale, tr, useLocale } from "@/lib/i18n.ts";
 import styles from "./AppTour.module.css";
 
 const TOUR_KEY = "heed-tour-done";
@@ -70,7 +70,7 @@ const STEPS: TourStep[] = [
 export function AppTour() {
 	const [step, setStep] = useState(-1);
 	const [rect, setRect] = useState<DOMRect | null>(null);
-	const locale = detectLocale();
+	const { locale } = useLocale();
 	const hadMockData = useRef(false);
 
 	// Mock segments to simulate a real session for steps 3-4
@@ -155,8 +155,8 @@ export function AppTour() {
 	if (step < 0 || step >= STEPS.length) return null;
 
 	const current = STEPS[step];
-	const title = current.title[locale] || current.title.en;
-	const body = current.body[locale] || current.body.en;
+	const title = tr(current.title.en, locale);
+	const body = tr(current.body.en, locale);
 
 	// Tooltip position: centered if no target found, otherwise relative to spotlight
 	const tooltipStyle: React.CSSProperties = {};
@@ -217,16 +217,16 @@ export function AppTour() {
 				<div className={styles.actions}>
 					{step > 0 && (
 						<button className={styles.btnGhost} onClick={prev}>
-							{"Back"}
+							{tr("Back")}
 						</button>
 					)}
 					<button className={styles.btnPrimary} onClick={next}>
 						{step === STEPS.length - 1
-							? ("Get started")
-							: ("Next")}
+							? (tr("Get started"))
+							: (tr("Next"))}
 					</button>
 					<button className={styles.btnSkip} onClick={finish}>
-						{"Skip"}
+						{tr("Skip")}
 					</button>
 				</div>
 			</div>

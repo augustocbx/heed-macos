@@ -1,8 +1,10 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import { useMeetingDetector } from "@/hooks/useMeetingDetector.ts";
 import { useUIStore } from "@/stores/ui.ts";
 import styles from "./MeetingBanner.module.css";
 
 export function MeetingBanner() {
+	useLocale();
 	const { detected, dismiss, clear } = useMeetingDetector();
 	const setPage = useUIStore((s) => s.setPage);
 
@@ -18,13 +20,12 @@ export function MeetingBanner() {
 			<div className={styles.text}>
 				{detected && (
 					<>
-						<strong>{detected.app}</strong> is running. Start recording?
-					</>
+						<strong>{detected.app}</strong> {tr("is running. Start recording?")}</>
 				)}
 			</div>
 			<div className={styles.actions}>
-				<button className={`${styles.btn} ${styles.primary}`} onClick={handleRecord}>Record</button>
-				<button className={`${styles.btn} ${styles.secondary}`} onClick={dismiss}>Dismiss</button>
+				<button className={`${styles.btn} ${styles.primary}`} onClick={handleRecord}>{tr("Record")}</button>
+				<button className={`${styles.btn} ${styles.secondary}`} onClick={dismiss}>{tr("Dismiss")}</button>
 			</div>
 		</div>
 	);

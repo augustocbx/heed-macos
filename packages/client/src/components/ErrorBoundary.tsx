@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import { Component, type ReactNode, type ErrorInfo } from "react";
 
 interface Props {
@@ -49,8 +50,8 @@ export class ErrorBoundary extends Component<Props, State> {
 			if (this.props.fallback) return this.props.fallback(this.state.error, this.reset);
 			return (
 				<div role="alert" style={{ padding: 16, textAlign: "center", color: "var(--text-muted, #94a3b8)" }}>
-					<p>Could not display the transcript. Your recording is safe.</p>
-					<button onClick={this.reset} style={{ marginTop: 8 }}>Try again</button>
+					<p>{tr("Could not display the transcript. Your recording is safe.")}</p>
+					<button onClick={this.reset} style={{ marginTop: 8 }}>{tr("Try again")}</button>
 				</div>
 			);
 		}

@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import { useEffect, useState } from "react";
 import { recoveryApi, type OrphanedRecording } from "@/api/recovery.ts";
 import { transcribe } from "@/api/transcribe.ts";
@@ -16,6 +17,7 @@ function fmtDurationShort(s: number): string {
 }
 
 export function RecoveryBanner() {
+	useLocale();
 	const [orphans, setOrphans] = useState<OrphanedRecording[]>([]);
 	const [recovering, setRecovering] = useState<string | null>(null);
 	const [dismissed, setDismissed] = useState(false);
@@ -30,7 +32,7 @@ export function RecoveryBanner() {
 
 	const handleRecover = async (rec: OrphanedRecording) => {
 		setRecovering(rec.path);
-		showToast("Recovering recording...");
+		showToast(tr("Recovering recording..."));
 		try {
 			await transcribe(
 				{ url: rec.path, language: "auto", diarize: rec.is_dual, recording_finalize: true },
@@ -57,7 +59,7 @@ export function RecoveryBanner() {
 						reloadSessions();
 						setOrphans((prev) => prev.filter((o) => o.path !== rec.path));
 						setRecovering(null);
-						showToast("Recording recovered");
+						showToast(tr("Recording recovered"));
 					},
 					onError: (msg) => {
 						showToast(`Error: ${msg}`);
@@ -66,7 +68,7 @@ export function RecoveryBanner() {
 				},
 			);
 		} catch (e) {
-			showToast(`Error: ${(e as Error).message}`);
+			showToast(tr("Error: {message}", undefined, {message:tr((e as Error).message)}));
 			setRecovering(null);
 		}
 	};
@@ -75,9 +77,9 @@ export function RecoveryBanner() {
 		try {
 			await recoveryApi.discard(rec.path);
 			setOrphans((prev) => prev.filter((o) => o.path !== rec.path));
-			showToast("Recording discarded");
+			showToast(tr("Recording discarded"));
 		} catch (e) {
-			showToast(`Error: ${(e as Error).message}`);
+			showToast(tr("Error: {message}", undefined, {message:tr((e as Error).message)}));
 		}
 	};
 
@@ -85,12 +87,12 @@ export function RecoveryBanner() {
 		<div className={styles.banner}>
 			<div className={styles.header}>
 				<span className={styles.title}>
-					{`${orphans.length} unprocessed recording(s) found`}
+					{tr("{count} unprocessed recording(s) found", undefined, {count:orphans.length})}
 				</span>
 				<button className={styles.dismissBtn} onClick={() => setDismissed(true)}>×</button>
 			</div>
 			<p className={styles.subtitle}>
-				{"These recordings weren't processed (the app may have crashed). You can recover or discard them."}
+				{tr("These recordings weren't processed (the app may have crashed). You can recover or discard them.")}
 			</p>
 			<div className={styles.list}>
 				{orphans.map((rec) => (
@@ -99,7 +101,7 @@ export function RecoveryBanner() {
 							<span className={styles.itemDate}>{fmtDate(rec.created)}</span>
 							<span className={styles.itemMeta}>
 								~{fmtDurationShort(rec.duration_estimate_s)} · {rec.size_mb} MB
-								{rec.is_dual ? " · stereo" : ""}
+								{rec.is_dual ? " " + tr("· stereo") : ""}
 							</span>
 						</div>
 						<div className={styles.itemActions}>
@@ -109,15 +111,15 @@ export function RecoveryBanner() {
 								disabled={!!recovering}
 							>
 								{recovering === rec.path
-									? ("Processing...")
-									: ("Recover")}
+									? (tr("Processing..."))
+									: (tr("Recover"))}
 							</button>
 							<button
 								className={styles.discardBtn}
 								onClick={() => handleDiscard(rec)}
 								disabled={!!recovering}
 							>
-								{"Discard"}
+								{tr("Discard")}
 							</button>
 						</div>
 					</div>

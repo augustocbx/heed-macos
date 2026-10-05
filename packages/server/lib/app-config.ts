@@ -19,6 +19,7 @@ export const TEMPLATES_DIR = join(APP_DIR, "templates");
  * unknown keys on write so the old CLI tool keeps working.
  */
 export interface TrxConfig {
+	ui_locale?: "en" | "pt-BR" | "fr" | "de";
 	ollama_model?: string;
 	ollama_num_gpu?: number; // 0 = CPU-only, undefined = let Ollama decide, 999 = all layers on GPU
 	user_name?: string; // label for the user's own (mic) channel; defaults to "Me"

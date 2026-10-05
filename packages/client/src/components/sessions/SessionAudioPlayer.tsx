@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import {useState, useEffect, useRef, type RefObject} from 'react';
 import styles from './SessionDetail.module.css';
 
@@ -10,6 +11,7 @@ interface Props {
 }
 
 export function SessionAudioPlayer({sessionId,available,audioRef,onTime,onDuration}:Props) {
+	useLocale();
  const [error,setError]=useState(false);
  const graph=useRef<AudioContext|null>(null);
  useEffect(()=>{setError(false);},[sessionId,available]);
@@ -29,9 +31,9 @@ export function SessionAudioPlayer({sessionId,available,audioRef,onTime,onDurati
   void graph.current?.resume().catch(()=>setError(true));
   onTime(audio.currentTime);
  };
- if(!available)return <p className={styles.audioMessage}>Audio is unavailable for this session. The transcript remains available.</p>;
+ if(!available)return <p className={styles.audioMessage}>{tr("Audio is unavailable for this session. The transcript remains available.")}</p>;
  return <div className={styles.audioPlayer}>
-  <audio key={sessionId} ref={audioRef} controls preload="metadata" aria-label="Meeting audio"
+  <audio key={sessionId} ref={audioRef} controls preload="metadata" aria-label={tr("Meeting audio")}
    src={`/api/sessions/${encodeURIComponent(sessionId)}/audio`}
    onTimeUpdate={event=>onTime(event.currentTarget.currentTime)}
    onSeeked={event=>onTime(event.currentTarget.currentTime)}
@@ -42,7 +44,7 @@ export function SessionAudioPlayer({sessionId,available,audioRef,onTime,onDurati
    }}
    onError={()=>{setError(true);onTime(null);}}
   />
-  {error ? <p className={styles.audioMessage} role="status">Could not load audio. It may have been removed by the storage limit.</p>
-   : <p className={styles.audioMessage}>Click a transcript segment to play from that point.</p>}
+  {error ? <p className={styles.audioMessage} role="status">{tr("Could not load audio. It may have been removed by the storage limit.")}</p>
+   : <p className={styles.audioMessage}>{tr("Click a transcript segment to play from that point.")}</p>}
  </div>;
 }

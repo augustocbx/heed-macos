@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import { useState, useMemo, useEffect, useRef } from "react";
 import type { Segment } from "@heed/shared";
 import { speakerColor } from "@/lib/colors.ts";
@@ -12,6 +13,7 @@ import styles from "./SpeakerView.module.css";
  * from zero and never snaps abruptly. If the live text grows faster than 1 char/tick, it
  * catches up in proportional steps so the display never falls far behind speech. */
 function TypewriterText({ text, speed = 22 }: { text: string; speed?: number }) {
+	useLocale();
 	const [charCount, setCharCount] = useState(0);
 	const prevText = useRef("");
 
@@ -56,11 +58,12 @@ export function SpeakerView({
 	speakerNames,
 	onRename,
 	onMerge,
-	emptyMessage = "Listening...",
+	emptyMessage = tr("Listening..."),
 	animateEmpty = true,
  playbackTime,
  onSeek,
 }: Props) {
+	useLocale();
 	const showToast = useUIStore((s) => s.showToast);
 	const [mergeMenu, setMergeMenu] = useState<{ x: number; y: number; speaker: string } | null>(null);
 
@@ -107,14 +110,14 @@ export function SpeakerView({
 				<span
 					className={`${styles.placeholderDot} ${animateEmpty ? styles.placeholderDotPulse : styles.placeholderDotStatic}`}
 				/>
-				{emptyMessage}
+				{tr(emptyMessage)}
 			</div>
 		);
 	}
 
 	const handleRename = async (speaker: string) => {
 		const current = speakerNames[speaker] || speaker;
-		const newName = window.prompt(`Rename "${current}" to:`, current);
+		const newName = window.prompt(tr('Rename "{name}" to:', undefined, {name:current}), current);
 		if (!newName?.trim()) return;
 		const finalName = newName.trim();
 		if (finalName === current) return;
@@ -154,13 +157,13 @@ export function SpeakerView({
 	let lastSpeaker = "";
 	return (
 		<div className={styles.container} ref={containerRef} onScroll={onScroll}>
-			<div className={styles.hint}>Click to rename · Right-click to merge with another speaker</div>
+			<div className={styles.hint}>{tr("Click to rename · Right-click to merge with another speaker")}</div>
 			<div className={styles.chips} data-tour="speaker-chips">
 				{speakers.map((s) => (
 					<div
 						key={s}
 						className={styles.chip}
-						title="Click to rename · Right-click to merge"
+						title={tr("Click to rename · Right-click to merge")}
 						onClick={() => handleRename(s)}
 						onContextMenu={(e) => {
 							e.preventDefault();
@@ -170,7 +173,7 @@ export function SpeakerView({
 						<span className={styles.chipDot} style={{ background: colorMap[s] }} />
 						<span>{speakerNames[s] || s}</span>
 						{autoSpeakers.has(s) && (
-							<span className={styles.autoBadge} title="Voice recognized automatically — click to correct">auto</span>
+							<span className={styles.autoBadge} title={tr("Voice recognized automatically — click to correct")}>{tr("auto")}</span>
 						)}
 					</div>
 				))}
@@ -189,13 +192,13 @@ export function SpeakerView({
 						{showHeader && (
 							<div className={styles.speakerHeader} style={{ color }}>
 								{displayName}
-								{seg.auto && <span className={styles.autoBadge} title="Voice recognized automatically — click the speaker chip to correct it">auto</span>}
+								{seg.auto && <span className={styles.autoBadge} title={tr("Voice recognized automatically — click the speaker chip to correct it")}>{tr("auto")}</span>}
 							</div>
 						)}
 						<div className={`${styles.speakerLine} ${animateLast ? styles.speakerLineTyping : ""} ${canSeek ? styles.seekable : ""} ${isActive ? styles.activeSegment : ""}`}
        role={canSeek ? 'button' : undefined} tabIndex={canSeek ? 0 : undefined}
        aria-current={isActive ? 'true' : undefined}
-       title={canSeek ? 'Play this segment' : undefined}
+       title={canSeek ? tr("Play this segment") : undefined}
        onClick={canSeek ? ()=>onSeek?.(seg.start) : undefined}
        onKeyDown={canSeek ? event=>{
         if(event.key==='Enter'||event.key===' '){event.preventDefault();onSeek?.(seg.start);}

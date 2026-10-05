@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import { useState, useEffect } from "react";
 import { useRecordingStore } from "@/stores/recording.ts";
 import { useSessionsStore } from "@/stores/sessions.ts";
@@ -18,6 +19,7 @@ import styles from "./ResultCard.module.css";
 type Tab = "speakers" | "notes";
 
 export function ResultCard() {
+	useLocale();
 	const {
 		transcript, segments, speakers, embeddings, currentSessionId, notesText, setNotes, speakerNames, renameSpeaker,
 	} = useRecordingStore();
@@ -41,8 +43,8 @@ export function ResultCard() {
 	const fitsGpu = currentModel?.gpu_runtime_ok !== false; // true if ok or undefined (no data yet)
 
 	const tabs = [
-		{ id: "speakers", label: "Speakers" },
-		{ id: "notes", label: "AI Notes" },
+		{ id: "speakers", label: tr("Speakers") },
+		{ id: "notes", label: tr("AI Notes") },
 	];
 
 	const handleCopy = () => {
@@ -53,12 +55,12 @@ export function ResultCard() {
 			const text = segments.map((s) => `${speakerNames[s.speaker] || s.speaker}: ${s.text}`).join("\n");
 			navigator.clipboard.writeText(text);
 		}
-		showToast("Copied");
+		showToast(tr("Copied"));
 	};
 
 	const handleCopyPlain = () => {
 		navigator.clipboard.writeText(transcript);
-		showToast("Copied plain text");
+		showToast(tr("Copied plain text"));
 	};
 
 	const handleGenerate = async (forceCpu = false) => {
@@ -90,10 +92,10 @@ export function ResultCard() {
 			);
 		} catch (e) {
 			if ((e as { needsModelSelection?: boolean }).needsModelSelection) {
-				showToast("Choose a notes model before generating notes");
+				showToast(tr("Choose a notes model before generating notes"));
 				openPicker();
 			} else {
-				showToast(`Error: ${(e as Error).message}`);
+				showToast(tr("Error: {message}", undefined, {message:tr((e as Error).message)}));
 			}
 		} finally {
 			setGenerating(false);
@@ -116,7 +118,7 @@ export function ResultCard() {
 					else delete names[original];
 					return { speakerNames: names };
 				});
-				showToast("Could not save the speaker name. Please try again.");
+				showToast(tr("Could not save the speaker name. Please try again."));
 			}
 		}
 	};
@@ -138,7 +140,7 @@ export function ResultCard() {
 			await sessionsApi.patch(currentSessionId, applySpeakerNames(newSegments, newSpeakers, embeddings, useRecordingStore.getState().speakerNames));
 			reloadSessions();
 		}
-		showToast("Merged");
+		showToast(tr("Merged"));
 	};
 
 	const displayNotes = streamingNotes || notesText;
@@ -163,7 +165,7 @@ export function ResultCard() {
 				<NotesView
 					notes={displayNotes}
 					streaming={isStreaming}
-					placeholder='Click "Generate AI notes" below'
+					placeholder={tr("Click \"Generate AI notes\" below")}
 				/>
 			)}
 
@@ -180,9 +182,9 @@ export function ResultCard() {
 			)}
 
 			<div className={styles.actions}>
-				<button className={styles.btn} onClick={handleCopy}>Copy</button>
+				<button className={styles.btn} onClick={handleCopy}>{tr("Copy")}</button>
 				{activeTab === "speakers" && (
-					<button className={styles.btn} onClick={handleCopyPlain}>Copy plain text</button>
+					<button className={styles.btn} onClick={handleCopyPlain}>{tr("Copy plain text")}</button>
 				)}
 				{activeTab === "notes" && (
 					<>
@@ -192,16 +194,16 @@ export function ResultCard() {
 							onChange={(e) => setTemplateId(e.target.value)}
 						>
 							{templates.map((t) => (
-								<option key={t.id} value={t.id}>{t.name}</option>
+								<option key={t.id} value={t.id}>{tr(t.name)}</option>
 							))}
 						</select>
 						{fitsGpu ? (
 							<button className={styles.btn} onClick={() => handleGenerate(false)} disabled={generating}>
-								{generating ? <><Spinner />Generating…</> : `Generate AI notes · ~${estimateNotesSeconds(currentModel?.vram_mb, true)}s`}
+								{generating ? <><Spinner />{tr("Generating…")}</> : tr("Generate AI notes · ~{seconds}s", undefined, {seconds: estimateNotesSeconds(currentModel?.vram_mb, true)})}
 							</button>
 						) : (
 							<button className={styles.btnCpu} onClick={() => handleGenerate(true)} disabled={generating}>
-								{generating ? <><Spinner />Generating on CPU…</> : `Generate on CPU · ~${estimateNotesSeconds(currentModel?.vram_mb, false)}s`}
+								{generating ? <><Spinner />{tr("Generating on CPU…")}</> : tr("Generate on CPU · ~{seconds}s", undefined, {seconds:estimateNotesSeconds(currentModel?.vram_mb, false)})}
 							</button>
 						)}
 					</>

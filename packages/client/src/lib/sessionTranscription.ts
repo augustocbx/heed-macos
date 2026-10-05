@@ -1,3 +1,4 @@
+import { tr } from "./i18n.ts";
 import type { Session, SessionPatch, TranscribeResult } from '@heed/shared';
 import { transcribe, type TranscribeHandlers } from '@/api/transcribe';
 import { applySpeakerNames, reconcileSpeakerNames } from './speakerNames';
@@ -11,13 +12,13 @@ export async function retranscribeSession(
  handlers: Pick<TranscribeHandlers, 'onStep' | 'onProgress'>,
  save: (id: string, patch: SessionPatch) => Promise<void>,
 ) {
- if (!session.files?.wav) throw new Error('The saved audio is unavailable.');
+ if (!session.files?.wav) throw new Error(tr("The saved audio is unavailable."));
  let completed: TranscribeResult | null = null;
  await transcribe({url:session.files.wav,language,diarize:true,recording_finalize:true,final_model:model},
   {...handlers,onResult:result=>{completed=result;}});
  const result = completed as TranscribeResult | null;
  if (!result?.success || !Array.isArray(result.segments) || !result.text?.trim()
-  || !['en','pt'].includes(result.metadata?.language)) throw new Error('No complete English or Portuguese transcript was returned. The existing transcript was kept.');
+  || !['en','pt'].includes(result.metadata?.language)) throw new Error(tr("No complete English or Portuguese transcript was returned. The existing transcript was kept."));
  const names = Object.fromEntries((session.speakers || []).filter(speaker =>
   session.segments.some(segment=>segment.speaker===speaker && segment.auto===false)
   || (!/^(Speaker\s*\d+|Unknown|You|Me)$/i.test(speaker)

@@ -1,3 +1,4 @@
+import { tr, useLocale } from "@/lib/i18n.ts";
 import { buildUrl } from "./client.ts";
 import type { TranscribeResult } from "@heed/shared";
 
@@ -35,11 +36,11 @@ export async function transcribe(opts: TranscribeOptions, handlers: TranscribeHa
 
 	const res = await fetch(buildUrl("/api/transcribe"), { method: "POST", body: form });
 	if (!res.ok) {
-  let message = `Transcription failed (HTTP ${res.status})`;
+  let message = tr("Transcription failed (HTTP {status})", undefined, {status:res.status});
   try {const body = await res.json(); message = body.error || message;} catch {}
   throw new Error(message);
  }
- if (!res.body) throw new Error("No response body");
+ if (!res.body) throw new Error(tr("No response body"));
 
 	const reader = res.body.getReader();
 	const decoder = new TextDecoder();
@@ -62,7 +63,7 @@ export async function transcribe(opts: TranscribeOptions, handlers: TranscribeHa
 					const data = JSON.parse(line.slice(6));
 					switch (currentEvent) {
 						case "step":
-							handlers.onStep?.(data.message);
+							handlers.onStep?.(tr(data.message || ""));
 							break;
 						case "progress":
 							handlers.onProgress?.(data.percent);
@@ -78,8 +79,8 @@ export async function transcribe(opts: TranscribeOptions, handlers: TranscribeHa
        resultReceived = true;
 							break;
 						case "error":
-							finalError = new Error(data.message || "Transcription failed");
-       handlers.onError?.(data.message);
+							finalError = new Error(tr(data.message || "Transcription failed"));
+       handlers.onError?.(tr(data.message || ""));
 							break;
 					}
 				} catch (error) { finalError = error as Error; }
@@ -87,5 +88,5 @@ export async function transcribe(opts: TranscribeOptions, handlers: TranscribeHa
 		}
 	}
  if (finalError) throw finalError;
- if (opts.recording_finalize && !resultReceived) throw new Error("Recovery ended without a final transcript. The audio remains available.");
+ if (opts.recording_finalize && !resultReceived) throw new Error(tr("Recovery ended without a final transcript. The audio remains available."));
 }
