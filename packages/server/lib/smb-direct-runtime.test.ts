@@ -54,3 +54,39 @@ test('launches the detached guardian with isolated imports and sanitized errors'
     expect(JSON.parse(output)).toEqual({ ok: false, error: 'invalid-protocol' });
     expect(output).not.toContain('public-do-not-log-sentinel');
 });
+
+test('verification never runs an unexpected startup hook', async () => {
+    const { existsSync } = await import('node:fs');
+    const hook = join(root, 'runtime/smb/lib/python3.12/site-packages/unreviewed.pth');
+    const marker = join(root, 'unexpected-startup.txt');
+    // Public fixture marker only; no provider input or credentials.
+    writeFileSync(hook, `import sys; open(${JSON.stringify(marker)}, 'w').write('unexpected') if 'verify' in sys.argv else None\n`);
+    try {
+        await expect(verifyDirectSmbRuntime(helper)).rejects.toMatchObject({ code: 'runtime-unavailable' });
+        expect(existsSync(marker)).toBe(false);
+    } finally { rmSync(hook); rmSync(marker, { force: true }); }
+});
+test('a package directory cannot replace the verified guardian module', async () => {
+    const { mkdirSync } = await import('node:fs');
+    const injected = join(root, 'packages/server/native/smb-direct/guardian');
+    mkdirSync(injected);
+    writeFileSync(join(injected, '__init__.py'), 'def main():\n    return None\n');
+    try {
+        let rejected = false;
+        try { const child = await spawnDirectSmbGuardian(helper); (child.stdin as Bun.FileSink).end(); await child.exited; }
+        catch (error) { rejected = (error as {code?:string}).code === 'runtime-unavailable'; }
+        expect(rejected).toBe(true);
+    } finally { rmSync(injected, { recursive: true }); }
+});
+
+test('bootstrap configuration and import-path overrides are refused before startup', async () => {
+    const config = join(root, 'runtime/smb/pyvenv.cfg'), original = readFileSync(config);
+    try {
+        writeFileSync(config, original.toString('utf8').replace(/^home = .+$/m, 'home = /unexpected-public-fixture'));
+        await expect(verifyDirectSmbRuntime(helper)).rejects.toMatchObject({ code: 'runtime-unavailable' });
+    } finally { writeFileSync(config, original); }
+    const extra = join(root, 'runtime/smb/bin/python._pth');
+    writeFileSync(extra, 'unreviewed import path\n');
+    try { await expect(verifyDirectSmbRuntime(helper)).rejects.toMatchObject({ code: 'runtime-unavailable' }); }
+    finally { rmSync(extra); }
+});

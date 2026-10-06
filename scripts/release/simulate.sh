@@ -271,7 +271,7 @@ check "upgrade preserves custom quota in config, Storage API and desktop status"
 step "Direct SMB offline runtime and upgrade preservation"
 SIM_ACTIVE_ROOT="$(cd "$SIM_HOME/.heed/runtime/current" && pwd -P)"
 check "installed direct SMB runtime passes detached pinned-SDK self-test" \
-    "$SIM_ACTIVE_ROOT/runtime/smb/bin/python" -I -B "$SIM_ACTIVE_ROOT/packages/server/native/smb-direct/runtime.py" self-test "$SIM_ACTIVE_ROOT"
+    "$SIM_ACTIVE_ROOT/runtime/smb/bin/python" -I -S -B "$SIM_ACTIVE_ROOT/packages/server/native/smb-direct/runtime.py" self-test "$SIM_ACTIVE_ROOT"
 if HEED_SMB_PYTHON="$SIM/missing-python3.12" bash "$SIM_RELEASES/v$V2/install.sh" --skip-model-warmup --no-permission-prompt > "$SIM/missing-smb-python.log" 2>&1; then die "missing SMB prerequisite installed"; fi
 check "missing Python 3.12 gives an explicit prerequisite refusal" grep -q "Direct SMB requires Python 3.12" "$SIM/missing-smb-python.log"
 check "missing SMB prerequisite does not stop active services" test "$(running_version)" = "$V2"

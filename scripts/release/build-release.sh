@@ -70,7 +70,7 @@ HEED_SMB_CHECK="$HEED_WORK/offline-smb-check"
 mkdir -p "$HEED_SMB_CHECK/packages/server/native"
 cp -R packages/server/native/smb-direct "$HEED_SMB_CHECK/packages/server/native/smb-direct"
 /usr/bin/python3 "$HEED_SMB_CHECK/packages/server/native/smb-direct/runtime.py" install "$HEED_SMB_CHECK" --python "$HEED_SMB_PYTHON"
-"$HEED_SMB_CHECK/runtime/smb/bin/python" -I -B "$HEED_SMB_CHECK/packages/server/native/smb-direct/runtime.py" self-test "$HEED_SMB_CHECK"
+"$HEED_SMB_CHECK/runtime/smb/bin/python" -I -S -B "$HEED_SMB_CHECK/packages/server/native/smb-direct/runtime.py" self-test "$HEED_SMB_CHECK"
 rm -rf "$HEED_SMB_CHECK"
 
 printf '> Installing build dependencies\n'

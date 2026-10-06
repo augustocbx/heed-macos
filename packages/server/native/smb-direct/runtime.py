@@ -222,7 +222,9 @@ def run_checked(args, timeout=90):
 def check_python(python):
     code = "import json,platform,sys;print(json.dumps(dict(python=f'{sys.version_info.major}.{sys.version_info.minor}',architecture=platform.machine(),system=platform.system(),macOS=platform.mac_ver()[0])))"
     try:
-        data = unique_json(run_checked([python, "-I", "-B", "-c", code], timeout=10))
+        data = unique_json(
+            run_checked([python, "-I", "-S", "-B", "-c", code], timeout=10)
+        )
         if (
             data["python"] != "3.12"
             or data["architecture"] != "arm64"
@@ -239,6 +241,28 @@ def source_inventory(root):
     folder = payload_dir(root)
     if (folder / "__pycache__").exists() or (folder / "__pycache__").is_symlink():
         raise RuntimeFailure("payload-invalid")
+    allowed = {
+        "runtime.py",
+        "guardian.py",
+        "transport.py",
+        "identity.py",
+        "protocol.py",
+        "journal.py",
+        "transaction.py",
+        "requirements.lock",
+        "wheel-manifest.json",
+        "wheels",
+    }
+    for child in folder.iterdir():
+        if child.name == "wheels":
+            if child.is_symlink() or not child.is_dir():
+                raise RuntimeFailure("payload-invalid")
+        elif child.name not in allowed and not (
+            child.name.startswith("test_") and child.suffix == ".py"
+        ):
+            raise RuntimeFailure("payload-invalid")
+        elif not child.is_file() or child.is_symlink():
+            raise RuntimeFailure("payload-invalid")
     sources = sorted(
         x.name for x in folder.glob("*.py") if not x.name.startswith("test_")
     )
@@ -267,6 +291,32 @@ def installed_expected(root):
     return files
 
 
+BOOTSTRAP_BIN = {
+    "python",
+    "python3",
+    "python3.12",
+    "activate",
+    "activate.csh",
+    "activate.fish",
+    "Activate.ps1",
+    "cffi-gen-src",
+    "pyspnego-parse",
+}
+
+
+def bootstrap_inventory(target):
+    binary = target / "bin"
+    if binary.is_symlink() or {x.name for x in binary.iterdir()} != BOOTSTRAP_BIN:
+        raise RuntimeFailure("runtime-unavailable")
+    library = target / "lib/python3.12"
+    if library.is_symlink() or {x.name for x in library.iterdir()} != {"site-packages"}:
+        raise RuntimeFailure("runtime-unavailable")
+    return {
+        name: digest(regular(target / name))
+        for name in ["pyvenv.cfg", *("bin/" + x for x in sorted(BOOTSTRAP_BIN))]
+    }
+
+
 def verify_at(root, target, receipt):
     if (
         set(receipt)
@@ -280,6 +330,7 @@ def verify_at(root, target, receipt):
             "payloadSha256",
             "basePython",
             "baseSha256",
+            "bootstrap",
         }
         or receipt["schemaVersion"] != 1
         or receipt["python"] != "3.12"
@@ -295,6 +346,8 @@ def verify_at(root, target, receipt):
         or receipt["payloadSha256"]
         != digest(regular(payload_dir(root) / "wheel-manifest.json"))
     ):
+        raise RuntimeFailure("runtime-unavailable")
+    if receipt["bootstrap"] != bootstrap_inventory(target):
         raise RuntimeFailure("runtime-unavailable")
     binary = regular(target / "bin/python")
     if digest(binary) != receipt["executableSha256"]:
@@ -356,12 +409,12 @@ def self_test(root, python):
     folder = payload_dir(root)
     code = """import importlib.metadata, json, sys
 from pathlib import Path
-sys.path.insert(0, sys.argv[1])
+sys.path[:0] = [sys.argv[1], sys.argv[2]]
 from transport import protected_connection_type, SmbProtocolBackend
 from smbprotocol.file_info import FileInternalInformation, FileRenameInformation, FileDispositionInformation
 from smbprotocol.open import Open, SMB2QueryInfoRequest, SMB2SetInfoRequest
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
-expected = json.loads(sys.argv[2])
+expected = json.loads(sys.argv[3])
 assert all(importlib.metadata.version(k) == v for k,v in expected.items())
 assert protected_connection_type() and callable(SmbProtocolBackend)
 assert all(callable(getattr(Open, k)) for k in ('create', 'read', 'write', 'close', 'flush'))
@@ -374,10 +427,12 @@ print(json.dumps({'ok': True}))
             [
                 python,
                 "-I",
+                "-S",
                 "-B",
                 "-c",
                 code,
                 folder,
+                Path(python).parent.parent / "lib/python3.12/site-packages",
                 json.dumps({name: pin[0] for name, pin in PINNED.items()}),
             ],
             timeout=30,
@@ -448,6 +503,7 @@ def install_runtime(root: Path, python: Path) -> dict:
             payloadSha256=digest(regular(folder / "wheel-manifest.json")),
             basePython=str(python),
             baseSha256=digest(regular(python)),
+            bootstrap=bootstrap_inventory(stage),
         )
         verify_at(root, stage, receipt)
         check_python(stage / "bin/python")
@@ -494,7 +550,12 @@ def main():
             if args.command == "guardian":
                 # Isolated mode removes cwd/script-dir imports. Add only this
                 # verified release's helper directory, never PYTHONPATH or cwd.
-                sys.path.insert(0, str(payload_dir(args.root.resolve())))
+                sys.path[:0] = [
+                    str(payload_dir(args.root.resolve())),
+                    str(
+                        args.root.resolve() / "runtime/smb/lib/python3.12/site-packages"
+                    ),
+                ]
                 from guardian import main as guardian_main
 
                 guardian_main()

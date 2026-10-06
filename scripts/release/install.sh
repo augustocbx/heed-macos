@@ -247,7 +247,7 @@ cd "$HEED_STAGE"
 "$HEED_STAGE/packages/desktop/macos/.build/Heed" --self-test >/dev/null || fail 'The bundled menu app failed its self-test.'
 /usr/bin/python3 "$HEED_STAGE/packages/server/native/smb-direct/runtime.py" install "$HEED_STAGE" --python "$HEED_SMB_PYTHON" \
     || fail 'The offline direct SMB environment could not be prepared; the running installation is preserved.'
-"$HEED_STAGE/runtime/smb/bin/python" -I -B "$HEED_STAGE/packages/server/native/smb-direct/runtime.py" self-test "$HEED_STAGE" \
+"$HEED_STAGE/runtime/smb/bin/python" -I -S -B "$HEED_STAGE/packages/server/native/smb-direct/runtime.py" self-test "$HEED_STAGE" \
     || fail 'The direct SMB runtime failed its detached self-test; the running installation is preserved.'
 "$HEED_PYTHON" -m venv .venv || fail 'Could not create the Python environment.'
 .venv/bin/python3 -m pip install --disable-pip-version-check -r packages/transcription/requirements-core.txt \

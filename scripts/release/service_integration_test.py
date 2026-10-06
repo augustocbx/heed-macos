@@ -60,7 +60,7 @@ class ServiceIntegrationTest(unittest.TestCase):
         shutil.copyfile(ROOT / 'config/service-ports.json', payload / 'config/service-ports.json')
         shutil.copyfile(ROOT / 'scripts/release/heed_release.py', payload / 'scripts/release/heed_release.py')
         script = (ROOT / 'scripts/release/build-release.sh').read_text()
-        cleanup = script.split('# Development material that the installed app never reads.\n', 1)[1].split("printf '> Installing build dependencies", 1)[0]
+        cleanup = script.split('# Development material that the installed app never reads.\n', 1)[1].split("# Validate the full offline payload", 1)[0]
         result = subprocess.run(['bash', '-e', '-c', cleanup], cwd=payload, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         for name in ['service_config.py', 'service_runtime.py', 'service_diagnostics.py']:

@@ -146,6 +146,7 @@ class InstallTests(RuntimeFixture):
             [
                 str(self.root / "runtime/smb/bin/python"),
                 "-I",
+                "-S",
                 "-B",
                 str(self.payload / "runtime.py"),
                 "self-test",

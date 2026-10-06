@@ -5,6 +5,7 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:
@@ -31,12 +32,12 @@ jobs:
           cp -R packages/server/native/smb-direct "$RUNNER_TEMP/heed-smb-detached/packages/server/native/smb-direct"
           python3.12 -I -B "$RUNNER_TEMP/heed-smb-detached/packages/server/native/smb-direct/runtime.py" install "$RUNNER_TEMP/heed-smb-detached" --python "$HEED_SMB_PYTHON"
           cd "$RUNNER_TEMP"
-          heed-smb-detached/runtime/smb/bin/python -I -B heed-smb-detached/packages/server/native/smb-direct/runtime.py self-test "$RUNNER_TEMP/heed-smb-detached"
+          heed-smb-detached/runtime/smb/bin/python -I -S -B heed-smb-detached/packages/server/native/smb-direct/runtime.py self-test "$RUNNER_TEMP/heed-smb-detached"
       - name: Real SDK boundary tests with no skipped cases
         run: |
-          "$RUNNER_TEMP/heed-smb-detached/runtime/smb/bin/python" -I -B - "$GITHUB_WORKSPACE/packages/server/native/smb-direct" <<'PY'
+          "$RUNNER_TEMP/heed-smb-detached/runtime/smb/bin/python" -I -S -B - "$GITHUB_WORKSPACE/packages/server/native/smb-direct" "$RUNNER_TEMP/heed-smb-detached/runtime/smb/lib/python3.12/site-packages" <<'PY'
           import sys,unittest
-          sys.path.insert(0,sys.argv[1])
+          sys.path[:0]=[sys.argv[1],sys.argv[2]]
           suite=unittest.defaultTestLoader.discover(sys.argv[1],pattern='test_transport.py')
           result=unittest.TextTestRunner(verbosity=2).run(suite)
           assert result.wasSuccessful() and not result.skipped
