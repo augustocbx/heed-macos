@@ -43,6 +43,7 @@ import { sessionAudioResponse } from "./lib/session-audio.ts";
 import { SessionTags, TagError, tagResponse } from "./lib/session-tags.ts";
 const sessionTags = new SessionTags(SESSIONS_DIR);
 import { RecordingCoordinator } from "./lib/recording-coordinator.ts";
+import {ProcessingMaintenance} from './lib/processing-maintenance.ts';
 import type { FinalCapture, RecordingSnapshot } from "../shared/types/recording-coordinator.ts";
 import { DesktopPermissions, desktopRequestAllowed as permissionRequestAllowed, permissionAction, permissionReport } from "./lib/desktop-permissions.ts";
 import { removeChannelCopies } from "./lib/audio-retention.ts";
@@ -105,6 +106,22 @@ const FALLBACK_MODEL = process.env.HEED_MODEL || null;
 // App paths + persistent config (loadConfig/saveConfig/micLabel/TrxConfig) now live in
 // ./lib/app-config.ts — single source of truth (the stale lib/config.ts duplicate was deleted).
 ensureAppDirs([UPLOAD_DIR]);
+const processingMaintenance = new ProcessingMaintenance({
+ path:join(APP_DIR,'update-maintenance.json'),
+ active:existingProcessing,
+ setRecording:(acquire,owner)=>{recordingCoordinator.setMaintenance(acquire,owner);},
+});
+function existingProcessing():string[] {
+ const active:string[] = [];
+ if (audioWorkBusy() || recordingCoordinator.snapshot().state === 'recording') active.push('audio');
+ if (manualNotesController || notesService.busy) active.push('notes');
+ if (tasksService.busy) active.push('tasks');
+ if (chatService.busy) active.push('chat');
+ if (libraryChatService.busy) active.push('libraryChat');
+ if (portableRuntime?.isBusy() || smbConnections?.snapshot().syncing || icloudConnections?.snapshot().syncing || oneDriveConnections?.snapshot().busy || googleDrive?.snapshot().busy) active.push('synchronization');
+ if (oneDriveConnections?.snapshot().authorizing || googleDrive?.snapshot().authorizing) active.push('authorization');
+ return active;
+}
 let portableRuntime:PortableLibraryRuntime|undefined;
 let smbConnections:SmbConnections|undefined;
 let oneDriveConnections:OneDriveConnections|undefined;
@@ -133,14 +150,14 @@ export function getPortableLibrary(){return portableRuntime!.get();}
 /** Device preference lives outside the portable schema and managed-meeting quota. */
 export const providerRegistry=new ProviderRegistry({path:join(APP_DIR,'provider-preference.json'),getLibrary:getPortableLibrary});
 synchronizationUnavailable=providerRegistry.unavailable();
-try{smbConnections=new SmbConnections({quota:managedQuota,privateRoot:APP_DIR,path:join(LIBRARY_DIR,'catalog','smb-connections.json'),catalogPath:join(LIBRARY_DIR,'catalog','state.json'),sessions:()=>sessionTags.snapshot().sessions,registry:providerRegistry,get library(){return getPortableLibrary();},busy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
+try{smbConnections=new SmbConnections({quota:managedQuota,privateRoot:APP_DIR,path:join(LIBRARY_DIR,'catalog','smb-connections.json'),catalogPath:join(LIBRARY_DIR,'catalog','state.json'),sessions:()=>sessionTags.snapshot().sessions,registry:providerRegistry,get library(){return getPortableLibrary();},busy:()=>processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
 }catch{synchronizationUnavailable=true;console.error('SMB configuration unavailable. Preserve synchronization configuration for recovery.');}
-try{icloudConnections=new ICloudConnections({quota:managedQuota,privateRoot:APP_DIR,configPath:join(APP_DIR,'icloud-folder.json'),jobsPath:join(LIBRARY_DIR,'catalog','icloud-jobs.json'),library:getPortableLibrary,sessions:()=>sessionTags.snapshot().sessions,providers:providerRegistry,busy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
+try{icloudConnections=new ICloudConnections({quota:managedQuota,privateRoot:APP_DIR,configPath:join(APP_DIR,'icloud-folder.json'),jobsPath:join(LIBRARY_DIR,'catalog','icloud-jobs.json'),library:getPortableLibrary,sessions:()=>sessionTags.snapshot().sessions,providers:providerRegistry,busy:()=>processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
 }catch{synchronizationUnavailable=true;console.error('iCloud configuration unavailable. Preserve synchronization configuration for recovery.');}
-if(CLOUD_CONNECTIONS_ENABLED.googleDrive)try{googleDriveInitializing=true;googleDrive=createGoogleDriveController({appDir:APP_DIR,libraryDir:LIBRARY_DIR,registry:providerRegistry,listSessions:()=>sessionTags.snapshot().sessions,audioBusy:()=>audioWorkBusy()||!!manualNotesController||notesService.busy||tasksService.busy||chatService.busy||libraryChatService.busy});}catch{googleDriveUnavailable=true;console.error('Google Drive unavailable. Preserve its connection configuration for recovery.');}finally{googleDriveInitializing=false;}
+if(CLOUD_CONNECTIONS_ENABLED.googleDrive)try{googleDriveInitializing=true;googleDrive=createGoogleDriveController({appDir:APP_DIR,libraryDir:LIBRARY_DIR,registry:providerRegistry,listSessions:()=>sessionTags.snapshot().sessions,audioBusy:()=>processingMaintenance.blocked() || audioWorkBusy()||!!manualNotesController||notesService.busy||tasksService.busy||chatService.busy||libraryChatService.busy});}catch{googleDriveUnavailable=true;console.error('Google Drive unavailable. Preserve its connection configuration for recovery.');}finally{googleDriveInitializing=false;}
 
 if(CLOUD_CONNECTIONS_ENABLED.oneDrive)try{const vault=createKeychainVault(),auth=new OneDriveAuth({path:join(APP_DIR,'onedrive-account.json'),vault,openBrowser:async url=>{if(process.platform!=='darwin')throw new Error('Microsoft authorization requires macOS');const browser=track(Bun.spawn(['/usr/bin/open',url],{stdin:'ignore',stdout:'ignore',stderr:'ignore'}));if(await browser.exited!==0)throw new Error('Could not open Microsoft authorization');}});
- oneDriveConnections=new OneDriveConnections({path:join(LIBRARY_DIR,'catalog','onedrive','connections.json'),catalogPath:join(LIBRARY_DIR,'catalog','state.json'),sessions:()=>sessionTags.snapshot().sessions,auth,vault,library:getPortableLibrary,registry:providerRegistry,busy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
+ oneDriveConnections=new OneDriveConnections({path:join(LIBRARY_DIR,'catalog','onedrive','connections.json'),catalogPath:join(LIBRARY_DIR,'catalog','state.json'),sessions:()=>sessionTags.snapshot().sessions,auth,vault,library:getPortableLibrary,registry:providerRegistry,busy:()=>processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
 }catch{synchronizationUnavailable=true;console.error('OneDrive synchronization unavailable. Preserve connection configuration for recovery.');}
 if(!synchronizationUnavailable)try{providerRegistry.restore();smbConnections?.start();oneDriveConnections?.startBackground();}catch{synchronizationUnavailable=true;console.error('Synchronization preference could not be restored. Check destination access and storage.');}
 
@@ -2249,6 +2266,7 @@ async function handleHealth(refresh=false): Promise<Response> {
 function desktopRequestAllowed(req: Request): boolean { return permissionRequestAllowed(req,PORT); }
 /** Completed manifests are recovery checkpoints; the meeting store owns later edits/deletion. */
 function hydratedRecordingSnapshot(snapshot: RecordingSnapshot = recordingCoordinator.snapshot()): RecordingSnapshot {
+ snapshot = {...snapshot,maintenance:processingMaintenance.blocked()};
  if (snapshot.state !== "completed") return snapshot;
  const session = snapshot.session ? notesService.get(snapshot.session.id) : null;
  return {...snapshot,session,segments:session?.segments ?? [],speakerNames:{},path:session?.files?.wav || null,
@@ -2258,7 +2276,7 @@ function desktopRecordingStatus() {
  const state = hydratedRecordingSnapshot();
  return {...API_IDENTITY, ...state, snapshot:state, seconds:Math.floor(state.seconds), recording:!!recorderProc && recorderProc.exitCode === null,
   processing:["stopping","finalizing"].includes(state.state) || recordingFinalizationRunning,
-  starting:state.state === "starting", pending:false, audioWork:audioWorkBusy(), clientConnected:true, ready:!state.maintenance,
+  starting:state.state === "starting", pending:false, audioWork:audioWorkBusy(), clientConnected:true, ready:!processingMaintenance.blocked(), maintenance:processingMaintenance.blocked(), maintenanceProtocol:2, processingKinds:processingMaintenance.active(), updateTransactionId:processingMaintenance.transactionId(),
   smbCommand:smbConnections?.desktopCommand()||null,meetingDetection:meetingDetection.status(),language:recordingLanguage,uiLocale:configuredUiLocale(loadConfig()),storage:{...managedQuota.snapshot(),bytes:managedQuota.snapshot().usedBytes},quotaStopped:!!quotaStopResult};
 }
 async function handleRecordingControl(req: Request, pathname: string): Promise<Response> {
@@ -2282,9 +2300,10 @@ async function handleRecordingControl(req: Request, pathname: string): Promise<R
   }
   if (pathname === "/api/recording/maintenance") {
    if (typeof body.acquire !== "boolean" || typeof body.owner !== "string" || !body.owner.trim() || body.owner.length > 128) return Response.json({error:"Choose a valid maintenance owner"},{status:400});
-   // Installers must not replace services while any audio work (including manual transcription) runs.
-   if (body.acquire && audioWorkBusy()) return Response.json({error:"Wait for the current recording or transcription to finish."},{status:409});
-   return Response.json(hydratedRecordingSnapshot(recordingCoordinator.setMaintenance(body.acquire,body.owner)));
+   if (body.transactionId !== undefined && typeof body.transactionId !== 'string') return Response.json({error:'Choose a valid update transaction'},{status:400});
+   if (body.acquire) processingMaintenance.acquire(body.owner,body.transactionId);
+   else processingMaintenance.release(body.owner);
+   return Response.json({...hydratedRecordingSnapshot(),maintenanceProtocol:2,updateTransactionId:processingMaintenance.transactionId()});
   }
   return Response.json({error:"Unknown recording control endpoint"},{status:404});
  } catch (error) { return recordingControlError(error); }
@@ -2347,7 +2366,7 @@ async function handleDesktopPermissions(req: Request, pathname: string): Promise
 // Prune old audio during capture; never remove the ongoing meeting.
 let retentionBusy=false;
 setInterval(async () => {
- if(retentionBusy)return;retentionBusy=true;
+ if(retentionBusy || processingMaintenance.blocked())return;retentionBusy=true;
  try {
   pruneAudio();
   if(recorderProc && recorderPath && !recorderStopping) {
@@ -2375,7 +2394,7 @@ const notesService: AutomaticNotesService = new AutomaticNotesService({
  sessionStore:sessionTags,
  getSettings:() => automaticNotesSettings(loadConfig()),
  loadTemplate:id => loadTemplate(id) || undefined,
- isBusy:() => audioWorkBusy() || !!manualNotesController || tasksService.busy || chatService.busy || libraryChatService.busy,
+ isBusy:() => processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || tasksService.busy || chatService.busy || libraryChatService.busy,
  generate:({session,job,signal,onProgress}) => generateLocalNotes({baseUrl:OLLAMA_HOST,model:job.model,templatePrompt:job.templatePrompt,
   transcript:renderNotesTranscript(session),language:job.language,signal,onProgress,numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))}),
 });
@@ -2383,13 +2402,13 @@ const tasksService: MeetingTasksService = new MeetingTasksService({
  path:join(APP_DIR,"tasks.json"),
  listSessions:() => notesService.list(),
  getSession:id => notesService.get(id),
- isBusy:() => audioWorkBusy() || !!manualNotesController || notesService.busy || chatService.busy || libraryChatService.busy,
+ isBusy:() => processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || chatService.busy || libraryChatService.busy,
  generate:(session,signal) => generateTaskSuggestions(session,signal,{baseUrl:OLLAMA_HOST,model:getCurrentModel() || "",numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))}),
 });
 notesService.recover();
 const chatService: MeetingChatService = new MeetingChatService({
  directory:join(APP_DIR,"chat"), getSession:id=>notesService.get(id),
- isBusy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || libraryChatService.busy,
+ isBusy:()=>processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || libraryChatService.busy,
  generate:generateChatEvidence,
 });
 function generateChatEvidence(input:ChatGenerationRequest) {
@@ -2399,7 +2418,7 @@ function generateChatEvidence(input:ChatGenerationRequest) {
 }
 const libraryChatService: LibraryChatService = new LibraryChatService({
  directory:join(APP_DIR,"library-chat"),listSessions:()=>notesService.list(),
- isBusy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy,
+ isBusy:()=>processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy,
  generate:generateChatEvidence,
 });
 const tasksTimer = setInterval(() => { void tasksService.tick().catch(error => console.error("Task suggestion queue failed:", error)); },1000);
@@ -2409,6 +2428,7 @@ notesTimer.unref();
 
 const recordingCoordinator = new RecordingCoordinator({
  manifestPath:join(APP_DIR,"recording-manifest.json"),
+ maintenanceBlocked:()=>processingMaintenance.blocked(),
  adapter:{
   async start(mode, _meetingId, attachPath) {
    if (transcriptionRequests || recordingFinalizationRunning) throw new Error("Wait for the current transcription to finish");
@@ -2444,6 +2464,7 @@ const recordingCoordinator = new RecordingCoordinator({
   },
  },
 });
+if (processingMaintenance.owner()) recordingCoordinator.setMaintenance(true,processingMaintenance.owner()!);
 const retained = recordingCoordinator.snapshot();
 if (retained.path && retained.state !== "completed") retainedProcessing.set(retained.path,Infinity);
 
@@ -2474,11 +2495,38 @@ const detectionTimer = setInterval(async () => {
 },1000);
 detectionTimer.unref();
 
+/** Keep asynchronous mutations and streamed preparation admitted until their work finishes. */
+async function withProcessingAdmission(req:Request, run:()=>Promise<Response>):Promise<Response> {
+ const path = new URL(req.url).pathname;
+ const mutation = !['GET','HEAD','OPTIONS'].includes(req.method) || path.startsWith('/api/setup/install-') || path.endsWith('/models/pull');
+ if (!mutation || path === '/api/recording/maintenance' || path.startsWith('/api/desktop/permissions') || !desktopRequestAllowed(req)) return run();
+ let release:()=>void;
+ try {release = processingMaintenance.enter(path.includes('/media') ? 'mediaImport' : path.includes('/library') ? 'migration' : 'synchronization');}
+ catch {return Response.json({error:'Heed is being updated. Try again when the update finishes.',code:'maintenance'},{status:409});}
+ let streaming = false;
+ try {
+  const response = await run();
+  if (response.body && response.headers.get('Content-Type')?.startsWith('text/event-stream')) {
+   const reader = response.body.getReader(); streaming = true;
+   const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+     try {const next = await reader.read(); if (next.done) {release(); controller.close();} else controller.enqueue(next.value);}
+     catch (error) {release(); controller.error(error);}
+    },
+    async cancel(reason) {try {await reader.cancel(reason);} finally {release();}},
+   });
+   return new Response(body,{status:response.status,headers:response.headers});
+  }
+  return response;
+ } finally {if (!streaming) release();}
+}
+
 const server = Bun.serve({
 	hostname: "127.0.0.1",
 	port: PORT,
 	idleTimeout: 255, // max allowed — pyannote + whisper can take a while
 	async fetch(req, httpServer) {
+  return withProcessingAdmission(req, async () => {
 		const url = new URL(req.url);
 		const method = req.method;
   if(url.pathname === "/.well-known/heed-service")return desktopRequestAllowed(req)?Response.json(API_IDENTITY,{headers:{"Cache-Control":"no-store"}}):new Response(null,{status:403});
@@ -2553,6 +2601,7 @@ const server = Bun.serve({
 		if (method === "DELETE" && url.pathname === "/api/recovery/discard") return handleDiscardOrphaned(url);
 
 		return serveStatic(url.pathname) || new Response("Not Found", { status: 404 });
+  });
 	},
 });
 

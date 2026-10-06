@@ -91,6 +91,34 @@ test("maintenance atomically blocks capture until explicitly released", async ()
  }
 });
 
+test('an update lease blocks capture through backend restart until its owner releases it', async () => {
+ const transactionId = '11111111-1111-4111-8111-111111111111';
+ const acquired = await request('/api/recording/maintenance', {acquire:true, owner:'restart-updater', transactionId});
+ expect(acquired.status).toBe(200);
+ await restartApp();
+ const state = await request('/api/desktop/control/status');
+ expect(state.body).toMatchObject({maintenance:true, maintenanceProtocol:2, updateTransactionId:transactionId});
+ expect((await request('/api/desktop/control/commands', {action:'start', requestId:'during-update', mode:'mic'})).status).toBe(409);
+ expect((await request('/api/ui-locale', {locale:'fr'})).status).toBe(409);
+ expect((await request('/api/recording/maintenance', {acquire:false, owner:'other'})).status).toBe(409);
+ expect((await request('/api/recording/maintenance', {acquire:false, owner:'restart-updater'})).status).toBe(200);
+});
+
+test('an admitted asynchronous mutation prevents installation before its JSON body finishes', async () => {
+ let controller:ReadableStreamDefaultController<Uint8Array>;
+ const body = new ReadableStream<Uint8Array>({start(value) {controller=value;value.enqueue(new TextEncoder().encode('{"locale":'));}});
+ const pending = fetch(base + '/api/ui-locale', {method:'POST',headers:{'Content-Type':'application/json'},body,duplex:'half'} as RequestInit);
+ try {
+  const deadline = Date.now()+2000;
+  let kinds:string[]=[];
+  while(Date.now()<deadline) {kinds=(await request('/api/desktop/control/status')).body.processingKinds||[];if(kinds.includes('synchronization'))break;await Bun.sleep(10);}
+  expect(kinds).toContain('synchronization');
+  expect((await request('/api/recording/maintenance',{acquire:true,owner:'pending-json'})).status).toBe(409);
+ } finally {controller!.enqueue(new TextEncoder().encode('"en"}'));controller!.close();await pending;}
+ expect((await request('/api/recording/maintenance',{acquire:true,owner:'pending-json'})).status).toBe(200);
+ expect((await request('/api/recording/maintenance',{acquire:false,owner:'pending-json'})).status).toBe(200);
+});
+
 
 test("restart recovery finalizes and saves once without any browser, preserving speaker names", async () => {
  await app.kill(); await app.exited;

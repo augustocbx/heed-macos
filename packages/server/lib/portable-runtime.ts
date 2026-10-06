@@ -6,6 +6,7 @@ export class PortableLibraryRuntime {
  private cache?:{signature:string;entries:Array<{revisionId:string;state:string;deleted:boolean;hash?:string;source?:string}>;migration:string[]};
  constructor(private options:PortableLibraryOptions&{recordingsDir:string;protectedPaths?:()=>string[]}){}
  get():PortableLibrary {return this.library||=(new PortableLibrary(this.options));}
+ isBusy():boolean {return this.library?.isBusy() ?? false;}
  preempt():Promise<void>{return this.library?.preempt()||Promise.resolve();}
  markDeleted(sessionId:string):void {if(this.library||existsSync(join(this.options.root,'catalog','state.json')))this.get().markDeleted(sessionId);}
  protectedPaths(revisionIds?:string[]):string[]{

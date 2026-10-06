@@ -27,7 +27,7 @@ export class RecordingCoordinator {
   private listeners = new Set<(snapshot: RecordingSnapshot) => void>();
   private livePersistedAt = 0;
   private maintenanceOwner:string|undefined;
-  constructor(private options: {manifestPath: string; adapter: RecordingAdapter; now?: () => number; write?: typeof atomicWriteJson}) {
+  constructor(private options: {manifestPath: string; adapter: RecordingAdapter; now?: () => number; write?: typeof atomicWriteJson; maintenanceBlocked?:()=>boolean}) {
     mkdirSync(dirname(options.manifestPath),{recursive:true,mode:0o700});
     if (!existsSync(options.manifestPath)) return;
     const manifest = JSON.parse(readFileSync(options.manifestPath,"utf8")) as Manifest;
@@ -79,7 +79,7 @@ export class RecordingCoordinator {
     return this.command(requestId,`start:${mode}`,async()=>{
       if(!["both","mic","system"].includes(mode))throw new Error("Choose a supported capture mode");
       if(this.startOperation){this.remember(requestId,`start:${mode}`);return this.startOperation;}
-      if(this.value.maintenance)throw new Error("Recording is unavailable during maintenance");
+      if(this.value.maintenance || this.options.maintenanceBlocked?.())throw new Error("Recording is unavailable during maintenance");
       if(this.value.state === "recording" || this.value.state === "starting"){this.remember(requestId,`start:${mode}`);return this.snapshot();}
       if(this.value.state === "failed" && this.value.path && !this.value.session)throw new Error("Recover the interrupted meeting before starting another recording");
       if(this.value.state === "stopping" || this.value.state === "finalizing")throw new Error("Wait for the active meeting to finish");
