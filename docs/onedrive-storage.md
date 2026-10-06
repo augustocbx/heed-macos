@@ -1,5 +1,11 @@
 # OneDrive portable meeting storage
 
+## Connection disabled pending OAuth configuration
+
+Google Drive and OneDrive are fixed off in this release. Settings shows a translated pending notice; account endpoints reject all controls before authorization, native Keychain access, restored provider registration or background synchronization. Existing private state is preserved and conservatively protects managed pending source audio; an installation without cloud state retains ordinary media cleanup. SMB, iCloud and local transcripts remain available.
+
+[Issue #56](https://github.com/augustocbx/heed-macos/issues/56) tracks registration of the public desktop OAuth application IDs, deliberate enablement and owner-performed real-account/two-Mac acceptance. There is no production runtime opt-in. The instructions below document the retained implementation for that future work. Enabled unit/protocol tests continue with synthetic dependencies; full enabled server-startup acceptance must be restored and rerun at enablement.
+
 The connector uses Microsoft Graph directly. It does not require the OneDrive desktop sync client. It supports explicitly selected libraries immediately inside the application's `approot`; it does not claim arbitrary folders, shared shortcuts, sovereign Graph clouds, or SharePoint site selection.
 
 ## Register and connect

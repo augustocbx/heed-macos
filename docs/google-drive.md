@@ -1,5 +1,11 @@
 # Optional Google Drive libraries
 
+## Connection disabled pending OAuth configuration
+
+Google Drive and OneDrive are fixed off in this release. Settings shows a translated pending notice; the server rejects account controls before constructing authorization, Keychain, provider or background-job clients. Existing configuration cannot enable either connector. [Issue #56](https://github.com/augustocbx/heed-macos/issues/56) tracks registered public desktop OAuth IDs, deliberate enablement and owner-performed real-account acceptance on both Macs. No runtime flag or pasted ID bypasses this gate.
+
+Private account configuration, recovery intents, transfer journals and provider preference are preserved. Existing cloud state conservatively protects managed source audio while disabled, without reading credentials or implying publication. Empty unconfigured cloud directories add no blanket media protection. SMB, iCloud and local meeting access remain available. The integration instructions below describe the retained implementation for future enablement, not an active connection workflow. Enabled auth/controller/provider protocol tests remain covered with synthetic dependencies; full enabled server-startup acceptance must be restored and rerun when #56 enables a connector.
+
 Google Drive is optional. Recording, transcription, notes, tasks and local chat continue using local data. Connection does not upload meetings automatically: choose the library, then explicitly queue and publish immutable revisions in Storage Library. Discovery previews remote revisions before quota-aware transcript import; audio downloads require an explicit request. Disconnect preserves local transcripts and pending copies.
 
 ## Registration and access
