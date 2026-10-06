@@ -82,11 +82,11 @@ Separate modules may be refined when SDK constraints require it; record concrete
 - Produce guardian actions `inventory`, `list`, `read`, `write`, `write-pending`, `retire-pending`, `write-fence`, `write-deletion`, `checkpoint`, `close` and `confirm`. Values reuse existing portable schemas; `confirm` consumes `{commit:PortableCommit}` and returns `'remote-confirmed'` only after complete artifact read-back.
 - Private per-binding journals live under the original app directory, record physical owner, exact endpoint/destination/generation, operation and stable receipts before effects. Produce a bounded sanitized `pendingTransactions(binding,appDir)` query; it never trusts a copied journal as physical authority.
 
-- [ ] Write fault tests for exclusive-create/rename collision, competing clients, ancestor replacement, unsupported server sharing, manifest admission before media, partial marker rejection, wrong-length/hash object, fence rejection, copied/foreign journals, lost rename/flush/close acknowledgment, restart and cancellation. Assert unknown remote objects survive and no TTL takeover occurs.
-- [ ] Run `python3.12 -m unittest discover -s packages/server/native/smb-direct -p 'test_transaction.py'`; observe intended failures.
-- [ ] Implement complete claim and parent pinning, durable receipt/journal writes before canonical operations, non-replacing share-relative rename with RootDirectory=0, fenced canonical admission, marker-last visibility, complete read-back and checkpoint-before-release. Preserve unresolved phase and do not touch a later claim.
-- [ ] Re-run Python transport/transaction tests; expected zero failures. Use real disposable SMB probes only after independent source review.
-- [ ] Commit as `feat: implement identity-bound SMB publication and owner recovery`.
+- [x] Write fault tests for exclusive-create/rename collision, competing clients, ancestor replacement, unsupported server sharing, manifest admission before media, partial marker rejection, wrong-length/hash object, fence rejection, copied/foreign journals, lost rename/flush/close acknowledgment, restart and cancellation. Assert unknown remote objects survive and no TTL takeover occurs.
+- [x] Run `python3.12 -m unittest discover -s packages/server/native/smb-direct -p 'test_transaction.py'`; observe intended failures.
+- [x] Implement complete claim and parent pinning, durable receipt/journal writes before canonical operations, non-replacing share-relative rename with RootDirectory=0, fenced canonical admission, marker-last visibility, complete read-back and checkpoint-before-release. Preserve unresolved phase and do not touch a later claim.
+- [x] Re-run Python transport/transaction tests; expected zero failures. Use real disposable SMB probes only after independent source review.
+- [x] Commit as `feat: implement identity-bound SMB publication and owner recovery`.
 
 ### Task 3: Exact deletion and provider/core integration
 
@@ -160,11 +160,12 @@ Separate modules may be refined when SDK constraints require it; record concrete
 - Produce opt-in `scripts/check-synchronization-quota.ts --source-root ROOT --output PUBLIC_REPORT --fixture-root OWNED_TEMP` using isolated configuration/ports, production HTTP/pages and synthetic PCM through actual FFmpeg; no private meeting imports.
 - Report source hash/commit, session/artifact hashes, reserved/used/limit, two-page authoritative value and desktop API independently. Native visible propagation and physical recording are separately observed gates.
 
-- [ ] Extend production HTTP regression tests to exercise graceful quota-pressure finalization rather than just initial denial, retained-media failure and cleanup. Assert one completed durable session, valid WAV, no active recording, released reservations and `used + reserved <= limit`.
-- [ ] Run focused HTTP suite; observe any intended new failure. Fix only reproduced product defects through failing tests.
-- [ ] Implement opt-in acceptance harness; change quota from one page and observe the other and desktop API in all supported locales. Exercise missing/default settings and custom `3_000_000_000` preservation through simulator fresh/upgrade/rollback/reinstall.
+- [x] Extend production HTTP regression tests to exercise graceful quota-pressure finalization rather than just initial denial, retained-media failure and cleanup. Assert one completed durable session, valid WAV, no active recording, released reservations and `used + reserved <= limit`.
+- [x] Run focused HTTP suite; observe any intended new failure. Fix only reproduced product defects through failing tests.
+- [x] Implement opt-in acceptance harness; change quota from one page and observe the other and desktop API in all supported locales. Exercise missing/default settings and custom `3_000_000_000` preservation through simulator fresh/upgrade/rollback/reinstall.
 - [ ] Re-run tests/harness and visible native-menu checks on each available Mac; record exact distinction between synthetic and actual capture.
-- [ ] Commit as `test: validate quota finalization and authoritative settings propagation`.
+- [x] Commit as `test: validate quota finalization and authoritative settings propagation`.
+
 
 ### Task 8: Portable integrity, actual offline AI and iCloud recovery
 

@@ -29,3 +29,24 @@ Exact tested artifact SHA-256 values:
 - Release manifest: `f63497dcd8a8f8e837a8cc048b90459d9d4de39971e266a7608c50929377e4e5`.
 
 [Exact-head Verification run 37518791131](https://github.com/augustocbx/heed-macos/actions/runs/37518791131) passed all project checks, including 614 server tests, 307 interface tests and 30 release-helper tests. Its separate minimum-runtime job ran on **macOS 14.8.9 arm64, Python 3.12.10**, passed the detached offline install/self-test, all 41 actual-SDK transport tests with zero skips, and 17 runtime tests. These results establish runtime execution on the minimum supported OS; real NAS enforcement, physical capture and two-device synchronization remain separate acceptance gates.
+
+## Production quota pressure and two-page controls
+
+The HTTP quota suite passed three tests, including automatic pressure finalization through paced synthetic stereo PCM and real FFmpeg. A held finalization response proved that capture had stopped while reservations and audio remained protected; releasing it saved one durable meeting, cleared reservations/staging, and preserved the finalized WAV across an idempotent stop and server restart. The original initial-denial and retained-startup-failure controls remain. The complete server suite passed **615 tests / 3,586 assertions**; the final focused suite passed **three tests / 181 assertions**. No production capture fix was necessary.
+
+The opt-in `scripts/check-synchronization-quota.ts` completed its default `all` phase on macOS 27.0.1 arm64 with Bun 1.4.2, FFmpeg/FFprobe 8.1.2 and isolated Chromium 147.0.7727.15. It observed a 733,298-byte, 11.456-second PCM s16le stereo 16 kHz WAV, one controlled finalization, 736,862 final used bytes, zero reserved bytes and a test-only 4,000,000-byte limit. All sampled usage remained within the limit; the application stopped its continuous synthetic source. The controlled ASR response does not establish real transcription quality.
+
+Two actual production-source Settings pages passed in English, Brazilian Portuguese, French and German: missing configuration defaulted to decimal 2 GB; reviewed controls persisted 3 GB; the clean second page propagated the value; its unsaved 4 GB draft survived an authoritative 2 GB update; cancel did not persist a change; restart/reload retained 3 GB. Configuration, Storage API and protected desktop API agreed. Eight public quota-card screenshots had matching hashes; the final owned processes/ports were stopped and the fixture removed.
+
+Observed source: `7d750679297ef62e781621c62ab61c5d8804bd7e` plus the recorded working-source hashes, rather than a clean final-head claim. Reproducible harness SHA-256: `c77c7c53c46bc13bb2860e3643dfea4db917780f5f3032246bcc41921442042d`; fixture helper: `9f2fc66cb45111178a90346ee0e08c72b55500ecf9aa4be17915885063208197`; public report: `bfa508c906ff2323c8c219a12790647a7600f7f9eba339623038520acccd28d7`. Raw reports, screenshots and synthetic media remain outside Git.
+
+Run with a new output file and a nonexistent fixture directory under canonical physical parents:
+
+```sh
+bun scripts/check-synchronization-quota.ts \
+  --source-root "$PWD" \
+  --output /private/tmp/heed-quota-public-new.json \
+  --fixture-root /private/tmp/heed-quota-owned-new
+```
+
+Visible native menu propagation, physical capture, actual ASR, both-device installation and real provider round trips remain pending. Browser/API observations do not satisfy those separate clauses.
