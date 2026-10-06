@@ -1,0 +1,12 @@
+# Required local chat response schema
+
+Refs #16 and #17. Authorized bounded correction after actual installed `gemma4:e4b` QA: valid, correctly cited JSON omitted mandatory `notFound` and was correctly rejected. The official Ollama `/api/generate` documentation supports a JSON schema object in `format` (https://docs.ollama.com/api/generate). Keep strict parse, current-revision citation validation, completed-stream checks, input/output/resource caps and local-only transport unchanged.
+
+1. Add failing optional-schema transport and actual single/library HTTP wiring regressions. Preserve rejection of a captured-shape response lacking the required boolean.
+2. Add optional bounded `outputSchema` transport; request-specific chat schema requires `claims` and `notFound`, exact eligible evidence IDs and existing output caps. Share wiring for single and library chat.
+3. Rerun synthetic supported/unsupported bilingual questions, contradictions, quoted attack and broad-to-narrow scope through the installed M1 model. Record runtime observations separately from fake-model mechanical checks; do not claim M4 transport success without completed evidence.
+4. Freeze for independent review, full CI-equivalent checks, clean exact-head PR handoff without auto-closing issues. No private content, model download or installed-app changes.
+
+Installed-runtime compatibility: actual Ollama 0.33.0 accepts required fields, exact evidence-ID enums and array bounds, but rejects a text grammar with `minLength`/`maxLength` (HTTP 400: failed to parse grammar). The decoder therefore uses plain string type; unchanged application validation still enforces nonempty text and the 2000-character cap. The 16 KiB schema cap, model/token/context/output limits and revision-qualified citation validation remain mandatory.
+
+Actual M1 isolated API retakes completed all seven supported/unknown bilingual and broad/narrow/all-label questions. Supported answers preserve ISO and relative deadlines and attribute contradictions; unknown answers invent no amount/date. Narrow scope contains only allowed meetings and returns no excluded code after the broader context; empty labels remain unready. M4 directly executes the same production generators/validators and has completed bilingual tasks and all four single-meeting cases; scoped parity is recorded separately by the QA coordinator. These representative semantic results do not establish physical audio navigation, real recording preemption, universal model quality or installed-app acceptance.
