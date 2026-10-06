@@ -1,0 +1,23 @@
+import {useEffect,useState} from 'react';import type {LibrarySnapshot} from '@heed/shared';import {libraryApi} from '@/api/library';import {useLocale} from '@/lib/i18n';import styles from './PermissionsPage.module.css';
+export function StorageLibrarySettings(){
+ const {tr}=useLocale();const [snapshot,setSnapshot]=useState<LibrarySnapshot|null>(null),[selected,setSelected]=useState<string[]>([]),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState(''),[localMeeting,setLocalMeeting]=useState('');
+ useEffect(()=>{let mounted=true;libraryApi.snapshot().then(value=>{if(mounted)setSnapshot(value);}).catch(()=>{if(mounted)setError('Could not load the portable library.');});return()=>{mounted=false;};},[]);
+ const run=async(operation:()=>Promise<void>)=>{setBusy(true);setError('');setNotice('');try{await operation();}catch(error){setError(/quota|reservation/i.test(String(error))?'Increase the storage limit or select fewer meetings. Retained transcripts are preserved.':'The library is unavailable. Your local meetings are preserved; try again.');}finally{setBusy(false);}};
+ return <article className={styles.card} aria-labelledby="portable-library-title"><h2 id="portable-library-title">{tr('Portable library')}</h2><p>{tr('Complete transcripts stay local for offline AI. Remote audio downloads only when requested.')}</p>
+  {error&&<p role="alert">{tr(error)}</p>}{notice&&<p role="status">{tr(notice)}</p>}
+  {!snapshot?<p>{tr('Loading library…')}</p>:!snapshot.configured?<p>{tr('Choose a destination in its provider settings to discover remote meetings.')}</p>:<>
+   <p>{snapshot.providerName}</p><label htmlFor="library-local-meeting">{tr('Local meeting to publish')}</label><select id="library-local-meeting" value={localMeeting} disabled={busy} onChange={event=>setLocalMeeting(event.target.value)}><option value="">{tr('Select a local meeting')}</option>{snapshot.localMeetings?.slice(0,100).map(meeting=><option key={meeting.id} value={meeting.id}>{meeting.title}</option>)}</select><button disabled={busy||!localMeeting} onClick={()=>void run(async()=>{await libraryApi.queue(localMeeting);setSnapshot(await libraryApi.snapshot());})}>{tr('Queue local revision')}</button><button disabled={busy} onClick={()=>void run(async()=>{setSnapshot(await libraryApi.refresh());})}>{tr('Refresh remote library')}</button>
+   {!snapshot.complete&&<p role="status">{tr('Discovery is incomplete. Previously discovered meetings are preserved.')}</p>}
+   <p>{tr('Imported')}: {snapshot.imported} · {tr('Skipped')}: {snapshot.skipped} · {tr('Pending')}: {snapshot.pending}</p>
+   <ul>{snapshot.previews.slice(0,100).map(item=><li key={`${item.libraryId}/${item.revisionId}`}>
+    <label><input type="checkbox" aria-label={item.title} disabled={busy||item.local||item.state==='conflict'} checked={selected.includes(item.revisionId)} onChange={event=>setSelected(ids=>event.target.checked?[...ids,item.revisionId]:ids.filter(id=>id!==item.revisionId))}/>{item.title}</label>
+    <p>{tr(item.local?'Available to local AI':'Remote only — excluded from local AI')} · {Math.ceil(item.bytes/1024)} KB</p>
+    {item.state==='conflict'?<><p>{tr('Conflicting revisions are preserved. Selecting one creates a merge revision and retains the current local revision.')}</p><button disabled={busy} onClick={()=>void run(async()=>{await libraryApi.resolve(item.revisionId);setSnapshot(await libraryApi.snapshot());})}>{tr('Use this revision')}</button></>:<p>{tr(({'local-saved':'Saved locally',pending:'Pending publication',uploading:'Uploading','provider-confirmed':'Provider confirmed',verified:'Verified',unavailable:'Unavailable',conflict:'Conflict'})[item.state])}</p>}
+    {item.local&&['pending','unavailable'].includes(item.state)&&<button disabled={busy} onClick={()=>void run(async()=>{setSnapshot(await libraryApi.publish(item.revisionId));})}>{tr('Retry publication')}</button>}
+   </li>)}</ul>
+   {snapshot.previews.length>100&&<p>{tr('Showing the first 100 revisions. Select a smaller provider collection for detailed review.')}</p>}
+   <button disabled={busy||!selected.length} onClick={()=>void run(async()=>{setSnapshot(await libraryApi.importSelected(selected));setSelected([]);})}>{tr('Import selected transcripts')}</button>
+  </>}
+  <button disabled={busy} onClick={()=>void run(async()=>{const result=await libraryApi.migrate();setNotice(result.pending?'Some audio migrations remain pending. Original audio is preserved.':'Managed audio migration completed.');})}>{tr('Migrate legacy audio')}</button>
+ </article>;
+}

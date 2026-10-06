@@ -3,6 +3,7 @@ import { CHAT_TRANSLATIONS } from "./translations-chat";
 /** Interface language is independent of transcription language. Missing translations use English. */
 import { useLocaleStore } from "@/stores/locale.ts";
 import { normalizeLocale, storedLocale, type Locale } from "./locale.ts";
+import { LIBRARY_TRANSLATIONS } from "./translations-library";
 import { SHELL_TRANSLATIONS } from "./translations-shell.ts";
 import { TASKS_TRANSLATIONS } from "./translations-tasks.ts";
 import { NOTES_TRANSLATIONS } from "./translations-notes.ts";
@@ -16,7 +17,7 @@ export function useLocale() {
  return {locale,tr:(text:string,vars?:Record<string,string|number>)=>tr(text,locale,vars)};
 }
 import {STORAGE_TRANSLATIONS} from "./translations-storage";
-const TRANSLATIONS={...SHELL_TRANSLATIONS,...CONTENT_TRANSLATIONS,...NOTES_TRANSLATIONS,...TASKS_TRANSLATIONS,...CHAT_TRANSLATIONS,...DETECTION_TRANSLATIONS,...LIBRARY_CHAT_TRANSLATIONS,...STORAGE_TRANSLATIONS};
+const TRANSLATIONS={...SHELL_TRANSLATIONS,...CONTENT_TRANSLATIONS,...NOTES_TRANSLATIONS,...TASKS_TRANSLATIONS,...CHAT_TRANSLATIONS,...DETECTION_TRANSLATIONS,...LIBRARY_CHAT_TRANSLATIONS,...STORAGE_TRANSLATIONS,...LIBRARY_TRANSLATIONS};
 export function tr(text:string,locale:Locale=useLocaleStore.getState().locale,vars?:Record<string,string|number>):string {
  const chosen=normalizeLocale(locale);
  const key=text.trim();

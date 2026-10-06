@@ -1,3 +1,4 @@
+import {libraryApi} from '@/api/library';
 import { tr, useLocale } from "@/lib/i18n.ts";
 import {useState, useEffect, useRef, type RefObject} from 'react';
 import styles from './SessionDetail.module.css';
@@ -5,14 +6,17 @@ import styles from './SessionDetail.module.css';
 interface Props {
  sessionId:string;
  available:boolean;
+ archived?:boolean;
  audioRef:RefObject<HTMLAudioElement|null>;
  onTime:(seconds:number|null)=>void;
  onDuration:(seconds:number)=>void;
 }
 
-export function SessionAudioPlayer({sessionId,available,audioRef,onTime,onDuration}:Props) {
+export function SessionAudioPlayer({sessionId,available,archived,audioRef,onTime,onDuration}:Props) {
 	useLocale();
  const [error,setError]=useState(false);
+ const [downloaded,setDownloaded]=useState(false),[downloading,setDownloading]=useState(false),[downloadError,setDownloadError]=useState('');
+ useEffect(()=>{setDownloaded(false);setDownloadError('');},[sessionId]);
  const graph=useRef<AudioContext|null>(null);
  useEffect(()=>{setError(false);},[sessionId,available]);
  useEffect(()=>()=>{void graph.current?.close();graph.current=null;},[sessionId,available]);
@@ -31,7 +35,8 @@ export function SessionAudioPlayer({sessionId,available,audioRef,onTime,onDurati
   void graph.current?.resume().catch(()=>setError(true));
   onTime(audio.currentTime);
  };
- if(!available)return <p className={styles.audioMessage}>{tr("Audio is unavailable for this meeting. The transcript remains available.")}</p>;
+ if(!available&&!downloaded&&archived)return <div><button disabled={downloading} onClick={()=>{setDownloading(true);setDownloadError('');void libraryApi.audio(sessionId).then(()=>setDownloaded(true)).catch(error=>setDownloadError(/quota|reservation/i.test(String(error))?'Increase the storage limit or select fewer meetings. Retained transcripts are preserved.':'Archived audio is unavailable. The transcript remains available.')).finally(()=>setDownloading(false));}}>{tr(downloading?'Downloading audio…':'Download archived audio')}</button>{downloadError&&<p role="alert">{tr(downloadError)}</p>}</div>;
+ if(!available&&!downloaded)return <p className={styles.audioMessage}>{tr("Audio is unavailable for this meeting. The transcript remains available.")}</p>;
  return <div className={styles.audioPlayer}>
   <audio key={sessionId} ref={audioRef} controls preload="metadata" aria-label={tr("Meeting audio")}
    src={`/api/sessions/${encodeURIComponent(sessionId)}/audio`}

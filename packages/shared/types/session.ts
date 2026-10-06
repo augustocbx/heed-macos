@@ -8,6 +8,8 @@ export interface SessionFiles {
 }
 
 export interface Session {
+ /** Device-local archival availability; never part of portable meeting records. */
+ audioArchived?:boolean;
 	id: string;
 	title: string;
 	createdAt: string;
