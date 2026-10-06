@@ -1,3 +1,5 @@
+import {PortableLibraryRuntime} from './lib/portable-runtime.ts';
+import {libraryResponse} from './lib/portable-http.ts';
 import { LibraryChatService, libraryChatResponse } from "./lib/library-chat.ts";
 import { MeetingTasksService } from "./lib/meeting-tasks.ts";
 import { tasksResponse } from "./lib/tasks-http.ts";
@@ -17,7 +19,7 @@ import {reserveMediaWork} from "./lib/media-budget.ts";
 import { join, resolve, extname } from "node:path";
 import { homedir, cpus } from "node:os";
 import { downloadFromUrl, normalizeAudio } from "./lib/media.ts";
-import { APP_DIR, CONFIG_PATH, SESSIONS_DIR, TEMPLATES_DIR, type TrxConfig, ensureAppDirs, loadConfig, saveConfig, micLabel } from "./lib/app-config.ts";
+import { APP_DIR, LIBRARY_DIR, CONFIG_PATH, SESSIONS_DIR, TEMPLATES_DIR, type TrxConfig, ensureAppDirs, loadConfig, saveConfig, micLabel } from "./lib/app-config.ts";
 import { TRANSCRIPTION_SERVER, pyPost as postJSON } from "./lib/transcription-client.ts";
 import { track, gracefulStop, installShutdownHooks } from "./lib/process.ts";
 import { sseResponse } from "./lib/sse.ts";
@@ -77,9 +79,11 @@ const FALLBACK_MODEL = process.env.HEED_MODEL || null;
 // App paths + persistent config (loadConfig/saveConfig/micLabel/TrxConfig) now live in
 // ./lib/app-config.ts — single source of truth (the stale lib/config.ts duplicate was deleted).
 ensureAppDirs([UPLOAD_DIR]);
+let portableRuntime:PortableLibraryRuntime|undefined;
+const captureProtectedPaths=()=>[...retainedProcessing.keys(),...((recorderPath && (recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning))?[recorderPath]:[])];
 const managedQuota=createAppQuota({
  recordingsDir:UPLOAD_DIR,
- protectedPaths:()=>[...retainedProcessing.keys(),...((recorderPath && (recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning))?[recorderPath]:[])],
+ protectedPaths:()=>[...captureProtectedPaths(),...(portableRuntime?.protectedPaths()||[])],
  onEvicted:paths=>{
   sessionTags.recover();
   for(const session of sessionTags.snapshot().sessions)if(session.files?.wav && paths.includes(session.files.wav)){
@@ -87,6 +91,14 @@ const managedQuota=createAppQuota({
   }
  },
 });
+
+portableRuntime=new PortableLibraryRuntime({root:LIBRARY_DIR,sessions:sessionTags,sessionsDir:SESSIONS_DIR,recordingsDir:UPLOAD_DIR,quota:managedQuota,protectedPaths:captureProtectedPaths});
+/** Connectors lease this single catalog owner for their entire provider tick. */
+export function getPortableLibrary(){return portableRuntime!.get();}
+async function handleLibrary(req:Request):Promise<Response>{
+ if(req.method==='POST'&&!permissionRequestAllowed(req,PORT))return new Response(null,{status:403});
+ try{return await libraryResponse(req,getPortableLibrary(),()=>portableRuntime!.migrate(req.signal),audioWorkBusy);}catch(error){const message=(error as Error).message;return Response.json({error:message,code:/quota|reservation/i.test(message)?'quota-blocked':'unavailable'},{status:/quota|reservation/i.test(message)?409:503});}
+}
 
 async function handleStorage(req:Request):Promise<Response>{
  if(!permissionRequestAllowed(req,PORT))return new Response(null,{status:403});
@@ -1074,6 +1086,7 @@ function handleDeleteSession(url: URL): Response {
  try {
   const id = url.searchParams.get("id");
   if (!id) return Response.json({error:"No id"},{status:400});
+  portableRuntime?.markDeleted(id);
   notesService.delete(id);
   chatService.remove(id);
   return Response.json({ok:true});
@@ -2438,7 +2451,7 @@ const server = Bun.serve({
             if (!desktopRequestAllowed(req)) return new Response(null, {status:403});
             let sessionId: string;
             try { sessionId = decodeURIComponent(audioRoute[1]!); } catch { return new Response(null, {status:403}); }
-            return sessionAudioResponse(req, sessionId, SESSIONS_DIR, UPLOAD_DIR);
+            return sessionAudioResponse(req, sessionId, SESSIONS_DIR, [UPLOAD_DIR,join(LIBRARY_DIR,"media")]);
         }
 		if ((method === "GET" || method === "POST") && url.pathname === "/api/tags") {
       if (!desktopRequestAllowed(req)) return new Response(null, { status: 403 });
@@ -2467,6 +2480,7 @@ const server = Bun.serve({
 		if (url.pathname.startsWith("/api/recording/")) { httpServer.timeout(req,0); return handleRecordingControl(req,url.pathname); }
 		if (url.pathname.startsWith("/api/meeting-detection/")) return meetingDetectionRoute(req,meetingDetection,PORT);
 		if (url.pathname.startsWith("/api/desktop/control/")) { httpServer.timeout(req,0); return handleDesktopControl(req, url.pathname); }
+		if (url.pathname==='/api/library'){httpServer.timeout(req,0);return handleLibrary(req);}
 		if (url.pathname==='/api/storage' || url.pathname.startsWith('/api/storage/')) return handleStorage(req);
 		if (method === "POST" && url.pathname === "/api/desktop/float") return handleDesktopFloat();
 		if (method === "GET" && url.pathname === "/api/meeting-detector") return handleDetectorStream(req);

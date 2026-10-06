@@ -23,11 +23,15 @@ Queuing a local meeting streams the current local WAV to compute its size and ha
 
 Destination registries track their own publication acknowledgments. They can pass additional revision IDs to `protectedPaths` so a copy verified on one destination remains protected while another destination still needs it; existing pending/conflict protections remain included.
 
+Provider registries run each complete discovery/import/publication tick under `withProvider`, an exclusive lease on the single catalog owner. Competing ticks and manual mutations fail busy, and the previously selected provider is restored afterward. Remote-only snapshots are scoped to the current provider; fully validated duplicate discovery can rebind availability to a healthy destination without changing revision identity.
+
 ## Revisions and recovery
 
 Library/meeting identity, not local legacy paths, defines reconciliation. Duplicate UUIDs across different libraries receive different device aliases. Exact revision retries are idempotent. Descendants can advance a head when local content has not changed; ancestors do not replace descendants. Divergent branches and unsynchronized local corrections remain conflicts. Explicitly selecting a conflict preserves the current local correction as an immutable revision, then creates a merge revision whose parents include the current head and preserved conflict candidates. Previously committed content remains recoverable in the private catalog.
 
 Import reserves staged copies, immutable catalog artifacts, session replacement and catalog/index overhead before transfer. The durable commit intent distinguishes a complete-session acknowledgment failure from a missing session. Restart reconciles matching complete data, preserves later user corrections as conflicts and releases abandoned staging claims. Staging uses UUID directories and is bounded per operation; no remote text becomes partially visible to AI. Quota failures skip that revision and report imported/skipped/pending counts, preserving retained text. Text is never automatically replaced by summaries or evicted.
+
+Deleting a local meeting first persists a private per-meeting tombstone. Queued publications require the source to remain present, including immediately before writing the remote commit marker. Automatic imports respect tombstones across restart; explicitly importing selected revisions restores that meeting. Tombstones never leave the device and never delete remote history.
 
 Conflict selection persists a commit intent before replacing the complete local session. Restart preserves the selected merge as pending publication, or retains later local corrections as a conflict if the final catalog acknowledgment failed.
 
@@ -43,7 +47,9 @@ An optional `acknowledgeDiscovery` hook advances a staged provider checkpoint on
 
 SHA-256 provides integrity, not encryption or authentication against a malicious writer able to replace every artifact. Schema v1 has no client-side encryption and exports no keys. Optional client-side encryption requires a separately versioned envelope, authenticated encryption, explicit key creation/storage in macOS Keychain, recovery/export controlled by the user, rotation/revocation semantics and adapters rejecting unknown envelopes. Models, binaries, logs, OS credentials and provider caches remain outside managed meeting quota.
 
-Audio is optional. Imports retain complete text without downloading it. An explicit playback request reserves media/staging/session replacement space, streams only the selected object, rejects overrun/truncation/hash mismatch, fsyncs then exposes the verified local cache. Quota-blocked and unavailable sources are distinct API outcomes. Local cache removal changes device availability only; it is never a remote deletion. Remote deletion requires a future distinct confirmed versioned tombstone action; ordinary discovery and cache cleanup have no delete contract.
+The production library API shares the recording quota service and initializes its catalog lazily. Full protected text can block new library writes without making existing sessions/settings unavailable. Read-only startup protection projects pending source/cache paths and incomplete migration journals before initialization; malformed protection state preserves media for recovery.
+
+Audio is optional. Imports retain complete text without downloading it. An explicit playback request reserves media/staging/session replacement space, streams only the selected object, rejects overrun/truncation/hash mismatch, fsyncs then exposes the verified local cache. Quota-blocked and unavailable sources are distinct API outcomes. Local recordings retain archival availability after publication and cache removal. A successful requested download clears stale expiration flags. Local cache removal changes device availability only; it is never a remote deletion. Remote deletion requires a future distinct confirmed versioned tombstone action; ordinary discovery and cache cleanup have no delete contract.
 
 ## Validation limits
 

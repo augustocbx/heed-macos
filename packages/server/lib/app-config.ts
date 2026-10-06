@@ -14,6 +14,7 @@ import { atomicWriteJson } from "./atomic-json";
 export const APP_DIR = process.env.HEED_APP_DIR || join(homedir(), ".heed-app");
 export const CONFIG_PATH = join(APP_DIR, "config.json");
 export const SESSIONS_DIR = join(APP_DIR, "sessions");
+export const LIBRARY_DIR = join(APP_DIR, "library");
 export const TEMPLATES_DIR = join(APP_DIR, "templates");
 
 /**
