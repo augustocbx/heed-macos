@@ -31,3 +31,23 @@ Global edits stage all original and replacement JSON in a hidden `.tag-transacti
 Automated tests cover normalization, legacy data, global versus assignment-only scope, collisions, revision conflicts, disk failure/restart recovery, stale client responses, inline keyboard interaction, filtering, title shortcuts and all four interface locales. A Chrome smoke test used synthetic meetings and the production interface plus tag/session handlers; recording, ASR and AI services were not started.
 
 Physical acceptance on both the MacBook Air M1 and MacBook Pro M4 Pro, and the full macOS 14+ version range, remains separate from these automated checks. The installed application is not changed by this pull request.
+
+## Opt-in live persistence acceptance
+
+Run `bun scripts/check-tag-persistence.ts --help` for the live acceptance CLI. It requires an explicit synthetic RIFF/WAVE `.wav` file, `--language en|pt`, and an already installed `--model`. Use spoken English or Brazilian Portuguese test text, never a personal recording. Audio and optional evidence paths must be outside the repository and the personal `~/.heed-app` library. No engine is downloaded, installed, started, or restarted. Run sequentially while capture, transcription, and notes generation in other apps are idle.
+
+```sh
+bun scripts/check-tag-persistence.ts \
+  --audio /tmp/heed-synthetic-english.wav \
+  --language en \
+  --model '<installed-local-model>' \
+  --output /tmp/heed-tag-evidence
+```
+
+`--transcription-url` and `--ollama-url` optionally select existing local services (defaults: `http://127.0.0.1:5002` and `http://127.0.0.1:11434`). URLs must be local origins. `--output` creates a unique evidence subdirectory containing the synthetic WAV, report, and isolated server log; without it, temporary files are removed and the result is printed only.
+
+The CLI copies production server/shared TypeScript sources and package metadata unchanged into a temporary runtime, verifies their SHA-256 hashes, and starts the production `packages/server/server.ts` on an available loopback port with an isolated `HEED_APP_DIR`. The copy also isolates the production server's relative recordings directory and retention sweep. It creates a provisional synthetic meeting with several Unicode tags, refreshes it through the API, restarts the server, and calls `/api/transcribe` with `recording_finalize: true` and `final_model: "parakeet-v3"` using the real installed ASR. It saves the returned final transcription fields without writing tags, edits speaker names, enables automatic notes only in the temporary library, and waits for the real installed Ollama worker. A final restart verifies tags, their assignment revision, transcript, speakers, segments, notes, provenance, jobs, and audio metadata remain intact.
+
+Startup and API requests have bounded timeouts; transcription and notes acceptance each have a ten-minute ceiling. The production notes generation timeout also applies. Started Heed processes are stopped on success, failure, or interruption, with forced termination only for the isolated process if graceful shutdown times out. Existing engine services are preserved; an external engine request may finish after a client timeout. A failed shutdown retains the temporary runtime and reports its path instead of removing active process files.
+
+Exit zero proves the recorded synthetic API persistence checks completed. It does not prove physical capture, browser interaction, interrupted-write/crash recovery, exclusive use of shared engines, transcription accuracy, or semantic notes quality. Review the retained synthetic transcript and generated notes separately when those qualities matter.
