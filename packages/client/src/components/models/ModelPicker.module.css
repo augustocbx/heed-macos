@@ -1,25 +1,5 @@
-.backdrop {
-	position: fixed;
-	inset: 0;
-	background: rgba(15, 23, 42, 0.55);
-	backdrop-filter: blur(4px);
-	z-index: 200;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	padding: 24px;
-}
-
-.modal {
-	background: var(--white);
-	border-radius: var(--radius-lg);
-	max-width: 880px;
-	width: 100%;
-	max-height: 88vh;
-	overflow-y: auto;
-	padding: 28px 32px;
-	box-shadow: 0 24px 64px rgba(0, 0, 0, 0.2);
-}
+.modal { width: min(55rem, calc(100% - 2rem)); }
+.error { color: #b91c1c; margin: 0.75rem 0; }
 
 .head {
 	display: flex;
@@ -32,7 +12,7 @@
 }
 
 .title {
-	font-size: 20px;
+	font-size: 1.25rem;
 	font-weight: 700;
 	margin: 0 0 4px 0;
 	color: var(--text);
@@ -40,7 +20,7 @@
 
 .subtitle {
 	font-family: var(--mono);
-	font-size: 11px;
+	font-size: 0.8125rem;
 	color: var(--text-3);
 	margin: 0;
 }
@@ -69,7 +49,7 @@
 
 .section {
 	font-family: var(--mono);
-	font-size: 11px;
+	font-size: 0.8125rem;
 	font-weight: 700;
 	color: var(--text-2);
 	text-transform: uppercase;
@@ -86,12 +66,12 @@
 	text-transform: none;
 	letter-spacing: normal;
 	color: var(--text-3);
-	font-size: 10px;
+	font-size: 0.75rem;
 }
 
 .grid {
 	display: grid;
-	grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+	grid-template-columns: repeat(auto-fill, minmax(min(100%, 16.25rem), 1fr));
 	gap: 12px;
 }
 
@@ -104,9 +84,7 @@
 	background: var(--white);
 }
 
-.cardClickable {
-	cursor: pointer;
-}
+
 
 .cardClickable:hover {
 	border-color: var(--blue);
@@ -136,7 +114,7 @@
 
 .name {
 	font-weight: 700;
-	font-size: 14px;
+	font-size: 0.875rem;
 	color: var(--text);
 }
 
@@ -147,7 +125,7 @@
 	border: 1px solid rgba(37, 99, 235, 0.22);
 	color: #1d4ed8;
 	font-family: var(--mono);
-	font-size: 9px;
+	font-size: 0.75rem;
 	font-weight: 700;
 	padding: 2px 7px;
 	border-radius: 999px;
@@ -160,7 +138,7 @@
 	background: var(--green);
 	color: white;
 	font-family: var(--mono);
-	font-size: 9px;
+	font-size: 0.75rem;
 	font-weight: 700;
 	padding: 2px 6px;
 	border-radius: 999px;
@@ -171,14 +149,14 @@
 	background: var(--border-light);
 	color: var(--text-2);
 	font-family: var(--mono);
-	font-size: 9px;
+	font-size: 0.75rem;
 	padding: 2px 6px;
 	border-radius: 999px;
 }
 
 .meta {
 	font-family: var(--mono);
-	font-size: 10px;
+	font-size: 0.75rem;
 	color: var(--text-3);
 	display: flex;
 	gap: 4px;
@@ -195,7 +173,7 @@
 
 .tag {
 	font-family: var(--mono);
-	font-size: 9px;
+	font-size: 0.75rem;
 	padding: 2px 7px;
 	border-radius: 999px;
 	background: var(--border-light);
@@ -212,7 +190,7 @@
 .gpuOff { background: rgba(148, 163, 184, 0.2); color: var(--text-3); }
 
 .desc {
-	font-size: 11px;
+	font-size: 0.8125rem;
 	color: var(--text-2);
 	line-height: 1.5;
 	margin-top: 4px;
@@ -222,7 +200,7 @@
 	margin-top: 10px;
 	width: 100%;
 	font-family: var(--mono);
-	font-size: 11px;
+	font-size: 0.8125rem;
 	font-weight: 600;
 	padding: 7px 12px;
 	border: 1px solid var(--border-light);
@@ -269,7 +247,7 @@
 	align-items: center;
 	justify-content: center;
 	font-family: var(--mono);
-	font-size: 10px;
+	font-size: 0.75rem;
 	color: var(--text);
 	font-weight: 600;
 }

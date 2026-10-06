@@ -3,6 +3,7 @@ import { useState, type ReactNode } from "react";
 import type { SetupCheckResult, InstallProgress } from "@heed/shared";
 import { setupApi } from "@/api/setup.ts";
 import { useUIStore } from "@/stores/ui.ts";
+import { Dialog } from "./Dialog.tsx";
 import styles from "./StatusFix.module.css";
 import {useHealthStore} from '@/stores/health';
 import {ServiceNotice,ServiceDiagnosisUnavailable} from './ServiceNotices';
@@ -41,11 +42,14 @@ function OllamaFix({ setup, onClose, onFixed }: Props) {
 	const showToast = useUIStore((s) => s.showToast);
 	const [busy, setBusy] = useState(false);
 	const [progress, setProgress] = useState<InstallProgress[]>([]);
+	const [error, setError] = useState<string | null>(null);
+	const reportError = (message: string) => { setError(message); showToast(message); };
 	const installed = setup?.ollama.installed ?? false;
 
 	const start = async () => {
 		if (busy) return;
 		setBusy(true);
+		setError(null);
 		try {
 			const r = await setupApi.startOllama();
 			if (r.running) {
@@ -53,10 +57,10 @@ function OllamaFix({ setup, onClose, onFixed }: Props) {
 				onFixed();
 				onClose();
 			} else {
-				showToast(r.error || tr("Could not start Ollama"));
+				reportError(r.error || tr("Could not start Ollama"));
 			}
 		} catch (e) {
-			showToast((e as Error).message);
+			reportError((e as Error).message);
 		} finally {
 			setBusy(false);
 		}
@@ -65,6 +69,7 @@ function OllamaFix({ setup, onClose, onFixed }: Props) {
 	const install = () => {
 		if (busy) return;
 		setBusy(true);
+		setError(null);
 		setProgress([]);
 		setupApi.installOllama((evt) => {
 			setProgress((p) => [...p, evt]);
@@ -74,18 +79,19 @@ function OllamaFix({ setup, onClose, onFixed }: Props) {
 					showToast(tr("Ollama installed"));
 					onFixed();
 				} else {
-					showToast(tr("Install failed"));
+					reportError(tr("Install failed"));
 				}
 			}
 			if (evt.status === "error") {
 				setBusy(false);
-				showToast(`Install failed: ${evt.error}`);
+				reportError(`${tr("Install failed")}: ${evt.error}`);
 			}
 		});
 	};
 
 	return (
 		<>
+			{error && <p role="alert" className={styles.error}>{error}</p>}
 			<p className={styles.body}>
 				{installed
 					? tr("Ollama is installed but not running. It's the local engine that writes your AI notes.")
@@ -158,15 +164,12 @@ export function StatusFix({ target, setup, onClose, onFixed }: Props) {
 	}
 
 	return (
-		<>
-			<div className={styles.backdrop} onClick={onClose} />
-			<div className={styles.popover} role="dialog" aria-label={title}>
-				<div className={styles.head}>
-					<span className={styles.title}>{title}</span>
-					<button className={styles.close} onClick={onClose} aria-label={tr("Close")}>×</button>
-				</div>
-				{content}
+		<Dialog label={title} onClose={onClose} className={styles.popover}>
+			<div className={styles.head}>
+				<span className={styles.title}>{title}</span>
+				<button className={styles.close} onClick={onClose} aria-label={tr("Close")}>×</button>
 			</div>
-		</>
+			{content}
+		</Dialog>
 	);
 }
