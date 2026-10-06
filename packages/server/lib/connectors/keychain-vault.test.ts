@@ -17,3 +17,12 @@ test('unavailable, locked, oversized and invalid-reference vault operations fail
  await expect(vault.get('not-ref')).rejects.toThrow('Invalid secret reference');await expect(vault.put({token:'secret'})).rejects.toThrow('Protected credential storage is unavailable');
  await expect(vault.put({token:'s'.repeat(70000)})).rejects.toThrow('Secret exceeds');
 });
+test('native pipe failure reaps its isolated helper before rejecting the vault request',async()=>{
+ const {runNativeVault}=await import('./keychain-vault');let child:Bun.Subprocess|undefined;
+ const running=runNativeVault(['/isolated/helper'],'SECRET_STDIN_FIXTURE',()=>{
+  child=Bun.spawn(['node','-e','setInterval(()=>{},1000)'],{stdin:'pipe',stdout:'pipe',stderr:'ignore'});
+  return {stdin:child.stdin as Bun.FileSink,stdout:new ReadableStream({start(controller){controller.error(new Error('synthetic pipe failure'));}}),exited:child.exited,kill:()=>child!.kill('SIGKILL')};
+ });
+ try{await expect(running).rejects.toThrow();expect(()=>process.kill(child!.pid,0)).toThrow();}
+ finally{child?.kill('SIGKILL');await child?.exited;}
+});
