@@ -117,6 +117,7 @@ export async function unloadLocalNotesModel(baseUrl: string, model: string, opti
 }
 
 export interface LocalStructuredInput extends TransportOptions {
+ outputSchema?: Record<string, unknown>;
  baseUrl: string;
  model: string;
  system: string;
@@ -132,8 +133,13 @@ export interface LocalStructuredInput extends TransportOptions {
 /** Structured local output shares the installed-model and completed-stream guards. */
 export function generateLocalStructured(input: LocalStructuredInput): Promise<string> {
  const prompt = JSON.stringify(input.data);
+ if (input.outputSchema !== undefined) {
+  if (!input.outputSchema || typeof input.outputSchema !== 'object' || Array.isArray(input.outputSchema)) return Promise.reject(new NotesGenerationError('generation-failed'));
+  let encoded: string; try { encoded = JSON.stringify(input.outputSchema); } catch { return Promise.reject(new NotesGenerationError('generation-failed')); }
+  if (new TextEncoder().encode(encoded).length > 16384) return Promise.reject(new NotesGenerationError('context-limit'));
+ }
  if (input.maxInputBytes && new TextEncoder().encode(input.system + prompt).length > input.maxInputBytes) return Promise.reject(new NotesGenerationError("context-limit"));
- return generateLocalOutput({ ...input, prompt, format: "json" });
+ return generateLocalOutput({ ...input, prompt, format: input.outputSchema ?? "json" });
 }
 
 export function generateLocalNotes(input: LocalNotesInput): Promise<string> {
@@ -144,7 +150,7 @@ export function generateLocalNotes(input: LocalNotesInput): Promise<string> {
 }
 
 interface LocalGenerationInput extends TransportOptions {
- baseUrl: string; model: string; system: string; prompt: string; format?: "json"; requireCompletion?: boolean;
+ baseUrl: string; model: string; system: string; prompt: string; format?: "json" | Record<string, unknown>; requireCompletion?: boolean;
  contextTokens?: number;
  maxInputBytes?: number;
  numGpu?: number; numThread?: number; onProgress?: (characters: number) => void; onToken?: (token: string) => void;

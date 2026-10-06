@@ -16,7 +16,7 @@ import { LibraryChatService, libraryChatResponse } from "./lib/library-chat.ts";
 import { MeetingTasksService } from "./lib/meeting-tasks.ts";
 import { tasksResponse } from "./lib/tasks-http.ts";
 import { generateTaskSuggestions } from "./lib/task-generation.ts";
-import { MeetingChatService, CHAT_SYSTEM, chatApiResponse, type ChatGenerationRequest } from "./lib/meeting-chat.ts";
+import { MeetingChatService, CHAT_SYSTEM, chatResponseSchema, chatApiResponse, type ChatGenerationRequest } from "./lib/meeting-chat.ts";
 import { MeetingDetectionController } from "./lib/meeting-detection.ts";
 import { meetingDetectionRoute } from "./lib/meeting-detection-http.ts";
 import { AutomaticNotesService, notesHash, renderNotesTranscript } from "./lib/automatic-notes.ts";
@@ -2377,7 +2377,7 @@ const chatService: MeetingChatService = new MeetingChatService({
  generate:generateChatEvidence,
 });
 function generateChatEvidence(input:ChatGenerationRequest) {
- return generateLocalStructured({baseUrl:OLLAMA_HOST,model:input.model,system:CHAT_SYSTEM,requireCompletion:true,contextTokens:8192,maxInputBytes:5500,
+ return generateLocalStructured({baseUrl:OLLAMA_HOST,model:input.model,system:CHAT_SYSTEM,outputSchema:chatResponseSchema(input.evidence),requireCompletion:true,contextTokens:8192,maxInputBytes:5500,
   data:{question:input.question,history:input.history.slice(-2).map(turn=>({question:turn.question.slice(0,100),answer:turn.answer?.claims.slice(0,2).map(claim=>claim.text).join("\n").slice(0,200)})),evidence:input.evidence},signal:input.signal,
   numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))});
 }

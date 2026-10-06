@@ -131,3 +131,11 @@ test("chat context is explicit and oversized inputs fail before sending transcri
  const body=JSON.parse(fake.requests.at(-1)!.init!.body as string);expect(body.options.num_ctx).toBe(8192);expect(body.options.num_predict).toBe(1800);
  const oversized=transport();await expect(generateLocalStructured({baseUrl:input.baseUrl,model:input.model,system:"Grounded",data:{text:"x".repeat(6000)},contextTokens:8192,maxInputBytes:5500,fetch:oversized.fetcher})).rejects.toThrow("context-limit");expect(oversized.requests).toHaveLength(0);
 });
+
+test('structured output sends the requested required-field schema without changing local guards or resource caps',async()=>{
+ const {generateLocalStructured}=await import('./ollama-notes');const fake=transport({show:{details:{family:'llama'},capabilities:['completion'],model_info:{'llama.context_length':8192}},stream:'{"response":"{}","done":true,"done_reason":"stop"}'});
+ const schema={type:'object',required:['claims','notFound'],additionalProperties:false,properties:{claims:{type:'array',maxItems:12},notFound:{type:'boolean'}}};
+ await generateLocalStructured({baseUrl:input.baseUrl,model:input.model,system:'Grounded',data:{question:'Budget?'},requireCompletion:true,contextTokens:8192,maxInputBytes:5500,outputSchema:schema,fetch:fake.fetcher});
+ const body=JSON.parse(fake.requests.at(-1)!.init!.body as string);expect(body.format).toEqual(schema);expect(body.keep_alive).toBe(0);expect(body.options).toMatchObject({num_ctx:8192,num_predict:1800});
+ const oversized=transport();await expect(generateLocalStructured({baseUrl:input.baseUrl,model:input.model,system:'Grounded',data:{},outputSchema:{description:'x'.repeat(16385)},fetch:oversized.fetcher})).rejects.toThrow('context-limit');expect(oversized.requests).toHaveLength(0);
+});
