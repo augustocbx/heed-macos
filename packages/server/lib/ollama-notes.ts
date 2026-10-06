@@ -74,11 +74,13 @@ async function installedModels(request: (path: string, init?: RequestInit) => Pr
  if (!Array.isArray(data?.models)) return fail("ollama-unavailable");
  return data.models.flatMap((model: any) => typeof model?.name === "string" && model.name.trim() ? [model.name] : []);
 }
-async function verifyLocalModel(model: string, request: (path: string, init?: RequestInit) => Promise<Response>, signal: AbortSignal): Promise<void> {
+async function verifyLocalModel(model: string, request: (path: string, init?: RequestInit) => Promise<Response>, signal: AbortSignal, requireCompletion = false, minContext = 0): Promise<void> {
  if (cloudModelName(model)) return fail("local-only");
  const data = await json(await request("/api/show", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model }) }), signal);
  if (!data || typeof data !== "object" || Array.isArray(data)) return fail("ollama-unavailable");
  if (hasRemoteMetadata(data)) return fail("local-only");
+ if (requireCompletion && (!Array.isArray(data.capabilities) || !data.capabilities.includes("completion"))) return fail("model-incompatible");
+ if (minContext && !Object.entries(data.model_info ?? {}).some(([key,value]) => key.endsWith(".context_length") && typeof value === "number" && value >= minContext)) return fail("model-incompatible");
  if (!((data.details && typeof data.details === "object") || (data.model_info && typeof data.model_info === "object") || typeof data.modelfile === "string")) return fail("ollama-unavailable");
 }
 
@@ -89,6 +91,18 @@ export async function listLocalNotesModels(baseUrl: string, options: TransportOp
   for (const model of names) {
    try { await verifyLocalModel(model, request, signal); local.push(model); }
    catch (error) { if (!(error instanceof NotesGenerationError) || error.reason !== "local-only") throw error; }
+  }
+  return local;
+ });
+}
+
+/** Chat supports installed completion models only, never embedding-only models. */
+export async function listLocalChatModels(baseUrl: string, options: TransportOptions = {}): Promise<string[]> {
+ return withTransport(baseUrl, { timeoutMs: 15_000, ...options }, async (request, signal) => {
+  const local: string[] = [];
+  for (const model of await installedModels(request, signal)) {
+   try { await verifyLocalModel(model, request, signal, true, 8192); local.push(model); }
+   catch (error) { if (!(error instanceof NotesGenerationError) || !["local-only", "model-incompatible"].includes(error.reason)) throw error; }
   }
   return local;
  });
@@ -107,6 +121,9 @@ export interface LocalStructuredInput extends TransportOptions {
  model: string;
  system: string;
  data: unknown;
+ requireCompletion?: boolean;
+ contextTokens?: number;
+ maxInputBytes?: number;
  numGpu?: number;
  numThread?: number;
  onToken?: (token: string) => void;
@@ -114,7 +131,9 @@ export interface LocalStructuredInput extends TransportOptions {
 
 /** Structured local output shares the installed-model and completed-stream guards. */
 export function generateLocalStructured(input: LocalStructuredInput): Promise<string> {
- return generateLocalOutput({ ...input, prompt: JSON.stringify(input.data), format: "json" });
+ const prompt = JSON.stringify(input.data);
+ if (input.maxInputBytes && new TextEncoder().encode(input.system + prompt).length > input.maxInputBytes) return Promise.reject(new NotesGenerationError("context-limit"));
+ return generateLocalOutput({ ...input, prompt, format: "json" });
 }
 
 export function generateLocalNotes(input: LocalNotesInput): Promise<string> {
@@ -125,7 +144,9 @@ export function generateLocalNotes(input: LocalNotesInput): Promise<string> {
 }
 
 interface LocalGenerationInput extends TransportOptions {
- baseUrl: string; model: string; system: string; prompt: string; format?: "json";
+ baseUrl: string; model: string; system: string; prompt: string; format?: "json"; requireCompletion?: boolean;
+ contextTokens?: number;
+ maxInputBytes?: number;
  numGpu?: number; numThread?: number; onProgress?: (characters: number) => void; onToken?: (token: string) => void;
 }
 
@@ -136,9 +157,10 @@ async function generateLocalOutput(input: LocalGenerationInput): Promise<string>
   if (cloudModelName(input.model)) return fail("local-only");
   if (!input.system?.trim() || !input.prompt?.trim()) return fail("generation-failed");
   if (!(await installedModels(request, signal)).includes(input.model)) return fail("model-missing");
-  await verifyLocalModel(input.model, request, signal);
+  await verifyLocalModel(input.model, request, signal, input.requireCompletion, input.contextTokens);
 
   const options: Record<string, number> = { temperature: 0.2 };
+  if (input.contextTokens) { options.num_ctx = input.contextTokens; options.num_predict = 1800; }
   if (input.numGpu !== undefined) options.num_gpu = Math.max(0, Math.floor(input.numGpu));
   if (input.numThread !== undefined) options.num_thread = Math.max(1, Math.floor(input.numThread));
   try {
@@ -155,6 +177,7 @@ async function generateLocalOutput(input: LocalGenerationInput): Promise<string>
    if ((data.response !== undefined && typeof data.response !== "string") || typeof data.done !== "boolean") return fail("incomplete-output");
    text += data.response || "";
    if (text.length > 2_000_000) return fail("incomplete-output");
+   if (input.format && data.done && data.done_reason === "length") return fail("context-limit");
    done = data.done;
    input.onProgress?.(text.length);
    if (data.response) input.onToken?.(data.response);

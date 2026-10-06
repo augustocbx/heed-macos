@@ -49,6 +49,7 @@ interface Props {
 	animateEmpty?: boolean;
  editingDisabled?: boolean;
  playbackTime?: number|null;
+ focusedSegmentIndex?: number;
  onSeek?: (seconds:number)=>void;
 }
 
@@ -63,6 +64,7 @@ export function SpeakerView({
 	animateEmpty = true,
  editingDisabled = false,
  playbackTime,
+ focusedSegmentIndex,
  onSeek,
 }: Props) {
 	useLocale();
@@ -81,7 +83,7 @@ export function SpeakerView({
 		const el = containerRef.current;
 		if (el && stickToBottom.current && !onSeek) el.scrollTop = el.scrollHeight;
 	}, [segments,onSeek]);
- const activeSegments=segments.map((segment,index)=>playbackTime != null &&
+ const activeSegments=segments.map((segment,index)=>(playbackTime == null && index===focusedSegmentIndex) || playbackTime != null &&
   Number.isFinite(segment.start) && Number.isFinite(segment.end) &&
   segment.start<=playbackTime && playbackTime<segment.end ? index : -1).filter(index=>index>=0);
  const activeKey=activeSegments.join(',');

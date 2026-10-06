@@ -1,7 +1,8 @@
 import { TasksPanel } from "@/components/tasks/TasksPanel";
+import { MeetingChat } from "@/components/chat/MeetingChat";
 import { tr, useLocale } from "@/lib/i18n.ts";
 import { useState, useEffect, useRef } from "react";
-import type { Session } from "@heed/shared";
+import type { Session, TranscriptEvidence } from "@heed/shared";
 import { useSessionsStore } from "@/stores/sessions.ts";
 import { useTemplatesStore } from "@/stores/templates.ts";
 import { useModelsStore } from "@/stores/models.ts";
@@ -29,7 +30,7 @@ interface Props {
   onTagClick?: (tag: string) => void;
 }
 
-type TabId = "speakers" | "notes" | "tasks";
+type TabId = "speakers" | "notes" | "tasks" | "chat";
 
 export function SessionDetail({ session, onBack, onTagClick }: Props) {
  const notesBusy = automaticNotesBusy(session);
@@ -50,6 +51,10 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 	const [streamingNotes, setStreamingNotes] = useState("");
 	const [speakerNames, setSpeakerNames] = useState<Record<string, string>>({});
  const audioRef = useRef<HTMLAudioElement>(null);
+ const [focusedSource,setFocusedSource]=useState<{segmentIndex:number|null;paragraphIndex:number|null}|null>(null);
+ const textRef=useRef<HTMLDivElement>(null);
+ useEffect(()=>{setFocusedSource(null);},[session.id,session.transcriptRevision]);
+ useEffect(()=>{if(activeTab==="speakers")textRef.current?.querySelector<HTMLElement>('[aria-current="true"]')?.scrollIntoView?.({block:"center"});},[activeTab,focusedSource]);
  const [playbackTime,setPlaybackTime] = useState<number|null>(null);
  const [audioDuration,setAudioDuration] = useState<number|null>(null);
  useEffect(()=>{setPlaybackTime(null);setAudioDuration(null);setSpeakerNames({});},[session.id]);
@@ -69,7 +74,13 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 	const currentModel = modelsData?.models.find((m) => m.id === modelsData.current?.id);
 	const fitsGpu = currentModel?.gpu_runtime_ok !== false;
 
-	const meta = [
+	const openCitation=(citation:TranscriptEvidence)=>{
+  if(citation.sessionId!==session.id||citation.sourceRevision!==session.transcriptRevision){showToast(tr("The transcript changed. Refresh before asking or retrying."));return;}
+  setFocusedSource({segmentIndex:citation.segmentIndex,paragraphIndex:citation.paragraphIndex});setActiveTab("speakers");
+  if(session.files?.wav&&citation.start!==null)seekAudio(citation.start);
+ };
+
+ const meta = [
 		fmtDate(session.createdAt),
 		(audioDuration ?? session.duration) ? fmtDuration(Math.floor(audioDuration ?? session.duration)) : null,
 		session.language ? sessionLanguageLabel(session.language) : null,
@@ -81,6 +92,7 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 		{ id: "speakers", label: tr("Speakers") },
 		{ id: "notes", label: tr("AI Notes") },
   { id:"tasks",label:tr("Tasks") },
+  { id: "chat", label: tr("Chat") },
 	];
 
 
@@ -187,7 +199,7 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
    <Tabs tabs={tabs} active={activeTab} onChange={(id) => setActiveTab(id as TabId)} />
 
 			{activeTab === "tasks" && <TasksPanel session={session} onSeek={session.files?.wav?seekAudio:undefined} onShowTranscript={()=>setActiveTab("speakers")}/>}
-   {activeTab === "speakers" && (
+			{activeTab === "speakers" && (session.segments?.length ?
 				<SpeakerView
 					segments={session.segments || []}
 					speakers={session.speakers || []}
@@ -198,17 +210,14 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 					emptyMessage={tr("No speaker segments in this meeting yet.")}
 					animateEmpty={false}
      playbackTime={playbackTime}
+     focusedSegmentIndex={focusedSource?.segmentIndex ?? undefined}
      onSeek={session.files?.wav ? seekAudio : undefined}
-				/>
+				/> : <div ref={textRef} className={styles.textTranscript}>{session.transcript ? session.transcript.split(/\n\s*\n/).map((paragraph,index)=><p key={index} aria-current={focusedSource?.paragraphIndex===index ? "true" : undefined}>{paragraph}</p>) : <p>{tr("No speaker segments in this meeting yet.")}</p>}</div>
 			)}
 
-			{activeTab === "notes" && (
-				<NotesView
-					notes={displayNotes}
-					streaming={isStreaming}
-					placeholder={tr("Click \"Generate AI notes\" below")}
-				/>
-			)}
+   {activeTab === "chat" && <MeetingChat session={session} onCitation={openCitation}/>}
+
+   {activeTab === "notes" && <NotesView notes={displayNotes} streaming={isStreaming} placeholder={tr("Click \"Generate AI notes\" below")}/>}
 
 			{activeTab === "notes" && fitsGpu && !generating && (
 				<NotesHardwareHint model={currentModel} modelsData={modelsData} fitsGpu={fitsGpu} />
@@ -222,9 +231,9 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 				</div>
 			)}
 
-			<div className={styles.actionsRow} style={{ marginTop: "12px" }}>
+			<div className={styles.actionsRow} style={{ marginTop: "12px" }} hidden={activeTab==="chat"}>
 				<button hidden={activeTab === "tasks"} className={styles.btn} onClick={handleCopy}>{tr("Copy")}</button>
-    {activeTab === "speakers" && (
+				{activeTab === "speakers" && (
 					<button className={styles.btn} onClick={handleCopyPlain}>{tr("Copy plain text")}</button>
 				)}
 				{activeTab === "notes" && (

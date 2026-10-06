@@ -146,6 +146,7 @@ export class AutomaticNotesService {
   session.notesJobs![old.id] = this.snapshot(session, old, options);
   return this.save(session);
  }
+ get busy(): boolean { return !!this.active; }
  async preempt(): Promise<void> {
   const active = this.active; if (!active) return;
   const session = this.get(active.sessionId); const job = session?.notesJobs?.[active.jobId];

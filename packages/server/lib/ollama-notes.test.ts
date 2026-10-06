@@ -114,3 +114,20 @@ test("structured generation retains local-only and completed-stream checks witho
  expect(JSON.parse(body.prompt)).toEqual({ question: "Approved?", evidence: [] });
  expect(body.format).toBe("json");
 });
+
+test("chat model selection excludes installed embedding-only models", async () => {
+ const { listLocalChatModels } = await import("./ollama-notes");
+ const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
+  if(String(url).endsWith("/api/tags"))return Response.json({models:[{name:"answer:latest"},{name:"embed:latest"}]});
+  const model=JSON.parse(String(init?.body)).model;
+  return Response.json({details:{family:"llama"},model_info:{"llama.context_length":8192},capabilities:model==="answer:latest" ? ["completion"] : ["embedding"]});
+ }) as typeof fetch;
+ expect(await listLocalChatModels(input.baseUrl,{fetch:fetcher})).toEqual(["answer:latest"]);
+});
+
+test("chat context is explicit and oversized inputs fail before sending transcript", async () => {
+ const {generateLocalStructured}=await import("./ollama-notes");const fake=transport({show:{details:{family:"llama"},capabilities:["completion"],model_info:{"llama.context_length":8192}},stream:'{"response":"{}","done":true,"done_reason":"stop"}'});
+ await generateLocalStructured({baseUrl:input.baseUrl,model:input.model,system:"Grounded",data:{question:"Budget?"},requireCompletion:true,contextTokens:8192,maxInputBytes:5500,fetch:fake.fetcher});
+ const body=JSON.parse(fake.requests.at(-1)!.init!.body as string);expect(body.options.num_ctx).toBe(8192);expect(body.options.num_predict).toBe(1800);
+ const oversized=transport();await expect(generateLocalStructured({baseUrl:input.baseUrl,model:input.model,system:"Grounded",data:{text:"x".repeat(6000)},contextTokens:8192,maxInputBytes:5500,fetch:oversized.fetcher})).rejects.toThrow("context-limit");expect(oversized.requests).toHaveLength(0);
+});
