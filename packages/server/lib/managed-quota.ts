@@ -82,7 +82,8 @@ export class ManagedQuota {
    if(stat.isDirectory()){for(const name of readdirSync(path).sort())visit(join(path,name),category);return;}
    if(!stat.isFile() || resolve(path)===resolve(this.options.ledgerPath))return;
    const identity=`${stat.dev}:${stat.ino}`;if(seen.has(identity))return;seen.add(identity);
-   files.push({path:resolve(path),bytes:stat.size,modified:stat.mtimeMs,category,identity});
+   const actualCategory=category==='media' && !/\.(wav|mp3|mp4|m4a|aac|flac|ogg|webm|mov)$/i.test(path)?'text':category;
+   files.push({path:resolve(path),bytes:stat.size,modified:stat.mtimeMs,category:actualCategory,identity});
   };
   for(const [category,roots] of Object.entries(this.options.roots))for(const root of roots){
    visit(root,category as ManagedCategory);

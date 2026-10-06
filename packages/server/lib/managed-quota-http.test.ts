@@ -24,9 +24,13 @@ test('settings persist the decimal default, preserve changes after restart, and 
  app.kill();await app.exited;await start();expect((await request('')).body.limitBytes).toBe(3_000_000_000);
 });
 test('reductions review eligible local media and protect transcripts; changed previews fail closed',async()=>{
- writeFileSync(join(root,'sessions','large-text.json'),'x'.repeat(1_100_000));writeFileSync(join(root,'media','old.wav'),'x'.repeat(1_100_000));
+ writeFileSync(join(root,'media','old.wav'),'x'.repeat(1_100_000));
+ const created=await fetch(`${base}/api/sessions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'quota-text',transcript:'x'.repeat(1_100_000),transcriptFinalized:true,files:{wav:join(root,'media','old.wav')}})});expect(created.status).toBe(200);
  expect((await request('/preview',{limitBytes:1_048_576})).status).toBe(409);
  const preview=await request('/preview',{limitBytes:1_500_000});expect(preview.body.removals).toHaveLength(1);
  writeFileSync(join(root,'media','later.wav'),'x');expect((await request('/settings',{limitBytes:1_500_000,token:preview.body.token})).status).toBe(409);
  expect((await request('')).body.limitBytes).toBe(3_000_000_000);
+ const reviewed=await request('/preview',{limitBytes:1_500_000});expect((await request('/settings',{limitBytes:1_500_000,token:reviewed.body.token})).status).toBe(200);
+ const sessions=await (await fetch(`${base}/api/sessions`)).json();expect(sessions.find((s:any)=>s.id==='quota-text')).toMatchObject({transcript:'x'.repeat(1_100_000),audioExpired:true,files:{wav:''}});
+
 });

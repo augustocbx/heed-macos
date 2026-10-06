@@ -10,7 +10,9 @@ import { automaticNotesSettings, validateNotesSettings } from "./lib/notes-setti
 import { generateLocalNotes, listLocalNotesModels, generateLocalStructured, listLocalChatModels } from "./lib/ollama-notes.ts";
 import { configuredUiLocale, supportedUiLocale } from "./lib/ui-locale.ts";
 import { finalRecordingResult, recordingFinalizationOptions } from "./lib/final-recording.ts";
-import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, statSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, statSync, rmSync } from "node:fs";
+import {randomUUID} from "node:crypto";
+import {reserveMediaWork} from "./lib/media-budget.ts";
 import { join, resolve, extname } from "node:path";
 import { homedir, cpus } from "node:os";
 import { downloadFromUrl, normalizeAudio } from "./lib/media.ts";
@@ -47,6 +49,7 @@ async function preemptNotes() {
  manualNotesController?.abort();
  await Promise.all([notesService.preempt(), tasksService.preempt(), chatService.preempt(), libraryChatService.preempt(), manualNotesDone]);
 }
+function cleanupCaptureWork(id:string){if(!/^[a-zA-Z0-9_-]{1,180}$/.test(id))return;const directory=join(APP_DIR,'library','staging',`capture-${id}`);rmSync(directory,{recursive:true,force:true});if(recordingWorkDirectory===directory)recordingWorkDirectory=null;}
 function protectAudio(path: string) { retainedProcessing.set(path, Date.now() + 120_000); }
 function pruneAudio() {
  sessionTags.recover();
@@ -314,6 +317,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 	let language = "auto";
 	let diarize = true;
 	let inputFilePath: string | null = null;
+ let uploadFile:File|null=null;
  let recordingFinalize = false;
  let finalModelOverride: string | null = null;
 
@@ -329,11 +333,8 @@ async function handleTranscribe(req: Request): Promise<Response> {
 		diarize = formData.get("diarize") !== "false";
 
 		if (file && file.size > 0) {
-			const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-			inputFilePath = join(UPLOAD_DIR, `${Date.now()}-${safeName}`);
-			const buffer = await file.arrayBuffer();
-			writeFileSync(inputFilePath, Buffer.from(buffer));
-			input = inputFilePath;
+   uploadFile=file;
+   input=file.name;
 		} else if (url) {
 			input = url;
 		} else {
@@ -353,17 +354,26 @@ async function handleTranscribe(req: Request): Promise<Response> {
   try { recordingFinalizationOptions(language, finalModelOverride); } catch (error) { return Response.json({error:(error as Error).message}, {status:400}); }
   if (recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning) return Response.json({error:"Wait for the current recording or final transcription to finish"}, {status:409});
  }
- if (resolve(input) === recorderPath || retainedProcessing.get(resolve(input)) === Infinity) {
+ if (!uploadFile && retainedProcessing.get(resolve(input)) === Infinity) {
   return Response.json({error:"This audio is still recording or processing. Wait until it finishes before recovery."}, {status:409});
  }
 
 	// For URLs, first download with yt-dlp then clean audio with ffmpeg
-	let wavPath = input;
-	const isUrl = /^https?:\/\//i.test(input);
-
+ const isUrl = !uploadFile && /^https?:\/\//i.test(input);
+ const directRecovery=!uploadFile && !isUrl && input.endsWith(".wav") && (recordingFinalize || /(?:^|\/)dual-capture-/.test(input));
+ const jobId=randomUUID(),workDirectory=join(APP_DIR,'library','staging',`media-${jobId}`);
+ let wavPath=directRecovery?resolve(input):join(UPLOAD_DIR,`import-${jobId}.wav`);
+ let mediaClaim:ReturnType<typeof reserveMediaWork>;
+ try{
+  const knownSize=uploadFile?.size ?? (!isUrl?statSync(input).size:undefined);
+  mediaClaim=reserveMediaWork(managedQuota,jobId,wavPath,workDirectory,knownSize);
+  mkdirSync(workDirectory,{recursive:true,mode:0o700});
+  if(uploadFile){const safeName=uploadFile.name.replace(/[^a-zA-Z0-9._-]/g,'_');inputFilePath=join(workDirectory,safeName);writeFileSync(inputFilePath,Buffer.from(await uploadFile.arrayBuffer()));input=inputFilePath;}
+ }catch(error){if(mediaClaim!)mediaClaim.release();rmSync(workDirectory,{recursive:true,force:true});return Response.json({error:(error as Error).message},{status:409});}
  if (recordingFinalize) recordingFinalizationRunning = true;
  transcriptionRequests++;
  try { await preemptNotes(); } catch (error) {
+  mediaClaim.release();rmSync(workDirectory,{recursive:true,force:true});
   transcriptionRequests--;
   if (recordingFinalize) recordingFinalizationRunning = false;
   return Response.json({error:"Could not release the notes model. Please try again."},{status:503});
@@ -385,18 +395,13 @@ async function handleTranscribe(req: Request): Promise<Response> {
 				// If URL, download with yt-dlp first
 				if (isUrl) {
 					send("step", { message: "Downloading media..." });
-					const downloaded = await downloadFromUrl(input, UPLOAD_DIR);
+					const downloaded = await downloadFromUrl(input, workDirectory,{directory:workDirectory,maxBytes:mediaClaim.maxSourceBytes,signal:req.signal});
 					input = downloaded.filePath;
 				}
 
 				// Normalize audio (clean noise, mono 16kHz)
 				send("step", { message: "Cleaning audio..." });
-				if (!input.endsWith(".wav")) {
-					wavPath = join(UPLOAD_DIR, `clean-${Date.now()}.wav`);
-					await normalizeAudio(input, wavPath);
-				} else {
-					wavPath = input;
-				}
+    if(!directRecovery)await normalizeAudio(input,wavPath,{directory:wavPath,maxBytes:mediaClaim.maxSourceBytes,signal:req.signal});
 
 				send("step", { message: "Processing audio..." });
 
@@ -407,7 +412,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 
     if (recordingFinalize) {
      send("step", {message:"Detecting meeting language and retranscribing the complete recording..."});
-     const fin = await postJSON("/finalize", {wav_path:wavPath, ...recordingFinalizationOptions(language, finalModelOverride), allowed_languages:["en","pt"], dual:isDualChannel, mic_name:micLabel()});
+     const fin = await postJSON("/finalize", {wav_path:wavPath,work_directory:workDirectory, ...recordingFinalizationOptions(language, finalModelOverride), allowed_languages:["en","pt"], dual:isDualChannel, mic_name:micLabel()});
      send("result", finalRecordingResult(fin, wavPath));
      return;
     }
@@ -422,6 +427,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 						language,
 						diarize,
 						dual_channel: isDualChannel,
+      work_directory:workDirectory,
 					}),
 				});
 
@@ -500,6 +506,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 				send("error", { message: (e as Error).message });
 			} finally {
     removeChannelCopies(wavPath); protectAudio(wavPath);
+    rmSync(workDirectory,{recursive:true,force:true});mediaClaim.release();
     if (recordingFinalize) recordingFinalizationRunning = false;
     transcriptionRequests--;
 				controller.close();
@@ -2199,6 +2206,7 @@ async function handleRecordingControl(req: Request, pathname: string): Promise<R
   if (pathname === "/api/recording/abandon") {
    const previous=recordingCoordinator.snapshot();
    const state=await recordingCoordinator.abandon(controlRequestId(body),body.meetingId);
+   cleanupCaptureWork(body.meetingId);
    releaseCapture(managedQuota,body.meetingId);
    if (previous.path && state.state === "idle") {
     retainedProcessing.delete(previous.path);
@@ -2362,7 +2370,7 @@ const recordingCoordinator = new RecordingCoordinator({
   },
   save(session) {
    const saved = notesService.create(session);
-   if (saved.files?.wav) { retainedProcessing.delete(saved.files.wav); removeChannelCopies(saved.files.wav); releaseCapture(managedQuota,saved.id); }
+   if (saved.files?.wav) { retainedProcessing.delete(saved.files.wav); removeChannelCopies(saved.files.wav); cleanupCaptureWork(saved.id); releaseCapture(managedQuota,saved.id); }
    return saved;
   },
  },
