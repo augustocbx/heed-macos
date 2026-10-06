@@ -1,10 +1,48 @@
 import {test,expect,spyOn} from 'bun:test';
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync,realpathSync} from 'node:fs';
-import {join} from 'node:path';import {tmpdir} from 'node:os';import {randomUUID,createHash} from 'node:crypto';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync,realpathSync,watch} from 'node:fs';
+import {join,dirname} from 'node:path';import {tmpdir} from 'node:os';import {randomUUID,createHash} from 'node:crypto';
 import {SmbProvider,MacSmbNative,type SmbBinding} from './smb-provider';
 import {fileURLToPath} from 'node:url';
 const digest=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
-test('lost checkpoint acknowledgement with admitted metadata exposes release-only recovery without publication replay',async()=>{const f=fixture(),deviceId=randomUUID(),b=bundle(deviceId),context={operationId:randomUUID(),deviceId,kind:'publish' as const},controller=new AbortController();try{const wrapper=join(f.root,'guardian.py'),flag=join(f.root,'checkpoint-fault');writeFileSync(wrapper,readFileSync(wrapper,'utf8').replace('m.serve_transaction(r,',`import time\nfrom pathlib import Path\noriginal=m.Transaction.checkpoint\ndef interrupted(self):\n    original(self)\n    flag=Path(${JSON.stringify(flag)})\n    if self.journal['admissions'] and not flag.exists():\n        flag.write_text('fault')\n        time.sleep(60)\nm.Transaction.checkpoint=interrupted\nm.serve_transaction(r,`));const operation=f.provider.withTransaction!(context,async tx=>{await f.provider.writeImmutable(b.marker.manifestPath,b.manifest);await tx.checkpoint();},controller.signal);for(let i=0;i<100&&!existsSync(flag);i++)await Bun.sleep(10);expect(existsSync(flag)).toBe(true);controller.abort();await expect(operation).rejects.toThrow();expect(f.provider.pendingTransactions()[0]).toMatchObject({operationId:context.operationId,releaseOnly:true,recoverable:true});await f.provider.withTransaction!(context,tx=>tx.checkpoint());expect(existsSync(join(f.share,'.heed-v2-lease'))).toBe(false);expect(readFileSync(join(f.share,b.marker.manifestPath))).toEqual(b.manifest);}finally{await f.cleanup();}});
+async function waitForFixtureFlag(flag:string,operation:Promise<unknown>,timeoutMs=5000){
+ let watcher:ReturnType<typeof watch>|undefined,timer:ReturnType<typeof setTimeout>|undefined;
+ try {
+  await new Promise<void>((resolve,reject)=>{
+   watcher=watch(dirname(flag),()=>{if(existsSync(flag))resolve();});
+   watcher.on('error',reject);
+   timer=setTimeout(()=>reject(Error('Synthetic guardian did not reach the injected fault before the readiness deadline')),timeoutMs);
+   // Observe errors immediately, rather than mistaking invalid Python or native failures for slow startup.
+   operation.then(()=>reject(Error('Synthetic guardian completed before the injected fault')),reject);
+   if(existsSync(flag))resolve();
+  });
+ } finally {clearTimeout(timer);watcher?.close();}
+}
+
+test.each([0,1250])('lost checkpoint acknowledgement with admitted metadata exposes release-only recovery without publication replay (startup delay %ims)',async startupDelayMs=>{
+ const f=fixture(),deviceId=randomUUID(),b=bundle(deviceId),context={operationId:randomUUID(),deviceId,kind:'publish' as const},controller=new AbortController();
+ try {
+  const wrapper=join(f.root,'guardian.py'),flag=join(f.root,'checkpoint-fault');
+  const interrupted=readFileSync(wrapper,'utf8').replace('m.serve_transaction(r,',`import time\nfrom pathlib import Path\noriginal=m.Transaction.checkpoint\ndef interrupted(self):\n    original(self)\n    flag=Path(${JSON.stringify(flag)})\n    if self.journal['admissions'] and not flag.exists():\n        flag.write_text('fault')\n        time.sleep(60)\nm.Transaction.checkpoint=interrupted\nm.serve_transaction(r,`);
+  // Exercise cold fixture startup without changing production guardian deadlines.
+  writeFileSync(wrapper, startupDelayMs ? `import time\ntime.sleep(${startupDelayMs/1000})\n${interrupted}` : interrupted);
+  const operation=f.provider.withTransaction!(context,async tx=>{await f.provider.writeImmutable(b.marker.manifestPath,b.manifest);await tx.checkpoint();},controller.signal);
+  await waitForFixtureFlag(flag,operation);
+  expect(existsSync(flag)).toBe(true);
+  controller.abort();await expect(operation).rejects.toThrow();
+  expect(f.provider.pendingTransactions()[0]).toMatchObject({operationId:context.operationId,releaseOnly:true,recoverable:true});
+  await f.provider.withTransaction!(context,tx=>tx.checkpoint());
+  expect(existsSync(join(f.share,'.heed-v2-lease'))).toBe(false);
+  expect(readFileSync(join(f.share,b.marker.manifestPath))).toEqual(b.manifest);
+ } finally {await f.cleanup();}
+},15000);
+test('fixture readiness reports an invalid guardian immediately instead of a startup timeout',async()=>{
+ const f=fixture();
+ try {
+  writeFileSync(join(f.root,'guardian.py'),'invalid Python syntax!\n');
+  const operation=f.provider.withTransaction!({operationId:randomUUID(),deviceId:randomUUID(),kind:'read'},tx=>tx.checkpoint());
+  await expect(waitForFixtureFlag(join(f.root,'never-created'),operation)).rejects.toThrow('SMB operation unavailable');
+ } finally {await f.cleanup();}
+});
 test('lost whole-claim release acknowledgement resumes only original cleanup and returns success without replay',async()=>{const f=fixture(),context={operationId:randomUUID(),deviceId:randomUUID(),kind:'read' as const};try{const wrapper=join(f.root,'guardian.py'),flag=join(f.root,'release-fault');writeFileSync(wrapper,readFileSync(wrapper,'utf8').replace('m.serve_transaction(r,',`from pathlib import Path\noriginal=m.Transaction.finish_release\ndef interrupted(self):\n    flag=Path(${JSON.stringify(flag)})\n    if not flag.exists():\n        flag.write_text('fault')\n        raise OSError('Injected release cleanup interruption')\n    return original(self)\nm.Transaction.finish_release=interrupted\nm.serve_transaction(r,`));await expect(f.provider.withTransaction!(context,tx=>tx.checkpoint())).rejects.toThrow();expect(f.provider.pendingTransactions()[0]).toMatchObject({operationId:context.operationId,releaseOnly:true,recoverable:true});await f.provider.withTransaction!(context,async tx=>{await tx.checkpoint();await expect(f.provider.read('objects/'+'a'.repeat(64),100)).rejects.toThrow('closed');});expect(f.provider.pendingTransactions()).toEqual([]);expect(existsSync(join(f.share,'.heed-v2-lease'))).toBe(false);}finally{await f.cleanup();}});
 test('persistent guardian has no fixed lifetime deadline and idle checkpointed cancellation releases it',async()=>{const f=fixture(),controller=new AbortController(),timer=spyOn(globalThis,'setTimeout');let resolve!:()=>void;try{const operation=f.provider.withTransaction!({operationId:randomUUID(),deviceId:randomUUID(),kind:'publish'},async()=>{await new Promise<void>(r=>resolve=r);},controller.signal);for(let i=0;i<100&&!resolve;i++)await Bun.sleep(10);expect(timer.mock.calls.filter(args=>args[1]===120_000)).toHaveLength(1);controller.abort(Error('Recording priority'));resolve();await operation;expect(existsSync(join(f.share,'.heed-v2-lease'))).toBe(false);expect((await Promise.all(f.children.map(child=>child.exited))).every(code=>typeof code==='number')).toBe(true);}finally{timer.mockRestore();await f.cleanup();}});
 test('interrupted empty publication and deletion review expose exact release-only recovery; changed generation remains visible and blocked',async()=>{const f=fixture(),deviceId=randomUUID(),context={operationId:randomUUID(),deviceId,kind:'publish' as const},entered=join(f.root,'rpc-entered');try{const wrapper=join(f.root,'guardian.py');writeFileSync(wrapper,readFileSync(wrapper,'utf8').replace('m.serve_transaction(r,',`import time\nfrom pathlib import Path\ndef blocked(self,*args):\n    Path(${JSON.stringify(entered)}).write_text('entered')\n    time.sleep(60)\nm.Transaction.inventory=blocked\nm.serve_transaction(r,`));const controller=new AbortController(),operation=f.provider.withTransaction!(context,tx=>tx.inventory(controller.signal),controller.signal);for(let i=0;i<100&&!existsSync(entered);i++)await Bun.sleep(10);controller.abort();await expect(operation).rejects.toThrow();expect(f.provider.pendingTransactions()[0]).toMatchObject({operationId:context.operationId,recoverable:true,releaseOnly:true});const changed=new SmbProvider({...f.binding,connectionGeneration:randomUUID()},new MacSmbNative(),undefined,f.app);expect(changed.pendingTransactions()[0]).toMatchObject({operationId:context.operationId,recoverable:false,blockedReason:expect.any(String)});await f.provider.withTransaction!(context,tx=>tx.checkpoint());expect(existsSync(join(f.share,'.heed-v2-lease'))).toBe(false);rmSync(entered);const review={operationId:randomUUID(),deviceId,kind:'delete' as const},reviewAbort=new AbortController(),reviewRun=f.provider.withTransaction!(review,tx=>tx.inventory(reviewAbort.signal),reviewAbort.signal);for(let i=0;i<100&&!existsSync(entered);i++)await Bun.sleep(10);reviewAbort.abort();await expect(reviewRun).rejects.toThrow();expect(f.provider.pendingTransactions()[0]).toMatchObject({operationId:review.operationId,kind:'delete',releaseOnly:true,recoverable:true});await f.provider.withTransaction!(review,tx=>tx.checkpoint());expect(f.provider.pendingTransactions()).toEqual([]);}finally{await f.cleanup();}});
