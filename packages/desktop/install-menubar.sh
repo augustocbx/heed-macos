@@ -6,8 +6,10 @@ HEED_BUILD="${TMPDIR:-/tmp}/heed-menubar-build"
 mkdir -p "$HEED_BUILD"
 if [ "${1:-}" = "--build-only" ]; then
     HEED_KEYCHAIN_BUILD_DIR="$HEED_BUILD/keychain" bash "$HEED_DESKTOP/native-keychain/build.sh" --build-only
+    HEED_ICLOUD_OUTPUT="$HEED_BUILD/heed-icloud" bash "$HEED_DESKTOP/icloud-folder/build.sh"
 else
     bash "$HEED_DESKTOP/native-keychain/build.sh"
+    bash "$HEED_DESKTOP/icloud-folder/build.sh"
 fi
 swiftc -O -target arm64-apple-macosx14.0 "$HEED_DESKTOP"/macos/*.swift -o "$HEED_BUILD/Heed" -framework AppKit
 "$HEED_BUILD/Heed" --self-test
@@ -52,6 +54,7 @@ mkdir -p "$HEED_APP/Contents/MacOS" "$HEED_APP/Contents/Resources"
 cp "$HEED_BUILD/Heed" "$HEED_APP/Contents/MacOS/Heed.new"
 mv -f "$HEED_APP/Contents/MacOS/Heed.new" "$HEED_APP/Contents/MacOS/Heed"
 cp "$HEED_DESKTOP/native-keychain/.build/heed-keychain" "$HEED_APP/Contents/Resources/heed-keychain"
+cp "$HEED_DESKTOP/icloud-folder/.build/heed-icloud" "$HEED_APP/Contents/Resources/heed-icloud"
 cp "$HEED_DESKTOP/macos/start-services.sh" "$HEED_APP/Contents/Resources/start-services.sh"
 printf '%s\n' "$HEED_PROJECT_ROOT" > "$HEED_APP/Contents/Resources/heed-root.txt"
 cat > "$HEED_APP/Contents/Info.plist" <<'PLIST'

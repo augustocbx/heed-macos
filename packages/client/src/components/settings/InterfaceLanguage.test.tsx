@@ -36,3 +36,4 @@ vi.mock("@/api/storage",()=>({storageApi:{status:vi.fn(async()=>({limitBytes:2_0
 vi.mock('./StorageLibrarySettings',()=>({StorageLibrarySettings:()=>null}));
 
 vi.mock("./SmbSettings", () => ({ SmbSettings: () => null }));
+vi.mock('./ICloudFolderSettings',()=>({ICloudFolderSettings:()=>null}));

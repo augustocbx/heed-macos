@@ -34,12 +34,16 @@ jobs:
       - name: Build interface
         run: bun run build
       - name: Check installers
-        run: bash -n install-macos.sh packages/desktop/install-menubar.sh packages/desktop/macos/start-services.sh packages/desktop/native-keychain/build.sh
+        run: bash -n install-macos.sh packages/desktop/install-menubar.sh packages/desktop/macos/start-services.sh packages/desktop/native-keychain/build.sh packages/desktop/icloud-folder/build.sh
       - name: Validate native capture without physical devices
         run: |
           swiftc -O -target "$(uname -m)-apple-macos14.0" packages/transcription/native/heed-parakeet/Sources/heed-syscap/*.swift -o "$RUNNER_TEMP/heed-syscap-check"
           "$RUNNER_TEMP/heed-syscap-check" --self-test
       - name: Validate native protected credential helper without Keychain access
         run: HEED_KEYCHAIN_BUILD_DIR="$RUNNER_TEMP/heed-keychain-check" bash packages/desktop/native-keychain/build.sh --build-only
+      - name: Validate scoped iCloud folder without a private account
+        run: |
+          HEED_ICLOUD_OUTPUT="$RUNNER_TEMP/heed-icloud-check" bash packages/desktop/icloud-folder/build.sh
+          "$RUNNER_TEMP/heed-icloud-check" --self-test
       - name: Build menu app
         run: bash packages/desktop/install-menubar.sh --build-only

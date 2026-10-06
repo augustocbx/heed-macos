@@ -1,7 +1,7 @@
 import Foundation
 import AppKit
 
-struct CloudObservation: Codable {
+struct CloudObservation: Encodable {
     let ubiquitous: Bool
     let uploaded: Bool?
     let uploading: Bool?
@@ -17,6 +17,17 @@ struct CloudObservation: Codable {
         return "pending-upload"
     }
     var remoteChecksumVerified: Bool { false }
+    enum CodingKeys: String, CodingKey { case ubiquitous, uploaded, uploading, downloaded, errorCode, state, remoteChecksumVerified }
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(ubiquitous, forKey: .ubiquitous)
+        try container.encodeIfPresent(uploaded, forKey: .uploaded)
+        try container.encodeIfPresent(uploading, forKey: .uploading)
+        try container.encodeIfPresent(downloaded, forKey: .downloaded)
+        try container.encodeIfPresent(errorCode, forKey: .errorCode)
+        try container.encode(state, forKey: .state)
+        try container.encode(false, forKey: .remoteChecksumVerified)
+    }
 }
 func observe(_ url: URL) throws -> CloudObservation {
     // A one-shot read outside a coordinated accessor cannot prevent the provider's coordinated work.
@@ -30,6 +41,8 @@ func selfTests() throws {
     let pending = CloudObservation(ubiquitous:true,uploaded:false,uploading:false,downloaded:nil,errorCode:nil)
     let uploaded = CloudObservation(ubiquitous:true,uploaded:true,uploading:false,downloaded:nil,errorCode:nil)
     try check(pending.state == "pending-upload" && !pending.remoteChecksumVerified,"Local saved data is not a remote receipt")
+    let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(uploaded)) as! [String: Any]
+    try check(encoded["state"] as? String == "system-reported-uploaded" && encoded["remoteChecksumVerified"] as? Bool == false, "Native protocol carries honest observation state")
     try check(uploaded.state == "system-reported-uploaded" && !uploaded.remoteChecksumVerified,"System upload status is distinct from remote checksum verification")
     try check(CloudObservation(ubiquitous:true,uploaded:true,uploading:false,downloaded:nil,errorCode:4354).state == "cloud-full","Provider errors outrank an old upload flag")
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("heed-icloud-prototype-\(UUID().uuidString)")

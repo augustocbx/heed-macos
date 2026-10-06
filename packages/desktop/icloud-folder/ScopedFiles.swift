@@ -41,6 +41,7 @@ final class ScopedFiles {
             return current
         } catch { close(current); throw error }
     }
+    func ensureParents(_ path: String) throws { let parent = try self.parent(artifactPath(path), create: true); close(parent) }
     func stream(_ path: String, max: Int, validate: () throws -> Void = {}, emit: (Data) throws -> Void) throws {
         let parts = try artifactPath(path), parent = try self.parent(parts, create: false); defer { close(parent) }
         let file = openat(parent, parts.last!, O_RDONLY | O_NOFOLLOW | O_CLOEXEC); guard file >= 0 else { throw CloudFailure("Artifact unavailable or not hydrated") }; defer { close(file) }
@@ -50,7 +51,7 @@ final class ScopedFiles {
         try validate(); guard received == info.st_size else { throw CloudFailure("Artifact changed during read") }
     }
     func read(_ path: String, max: Int) throws -> Data { var data = Data(); try stream(path, max: max) { data.append($0) }; return data }
-    func write(_ path: String, bytes: Int, digest expected: String, stagingId: String = "synthetic-test", validate: () throws -> Void = {}, input: (Int) throws -> Data) throws {
+    func write(_ path: String, bytes: Int, digest expected: String, stagingId: String = "synthetic-test", afterPublication: () throws -> Void = {}, validate: () throws -> Void = {}, input: (Int) throws -> Data) throws {
         let parts = try artifactPath(path), parent = try self.parent(parts, create: true); defer { close(parent) }
         guard bytes >= 0, bytes <= 8_000_000_000_000, expected.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw CloudFailure("Invalid object bounds") }
         guard stagingId.range(of: "^[A-Za-z0-9-]{1,64}$", options: .regularExpression) != nil else { throw CloudFailure("Invalid staging owner") }
@@ -84,6 +85,7 @@ final class ScopedFiles {
             try stream(path, max: bytes) { chunk in length += chunk.count; existing.update(data: chunk) }
             guard length == bytes, existing.finalize().map({ String(format: "%02x", $0) }).joined() == expected else { throw CloudFailure("Immutable artifact conflict") }
         }
+        try afterPublication()
         guard fsync(parent) == 0 else { throw CloudFailure("Artifact directory synchronization failed") }
     }
     func listCommits() throws -> [String] {
