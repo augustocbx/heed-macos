@@ -6,7 +6,7 @@ This ledger preserves the original acceptance requirements. An unchecked criteri
 
 ## Delivery order
 
-- [ ] Correct the SMB documentation for v2 destinations, explicit confirmed metadata deletion, retained shared audio and unsupported mounted-filesystem capabilities.
+- [x] Correct the SMB documentation for v2 destinations, explicit confirmed metadata deletion, retained shared audio and unsupported mounted-filesystem capabilities. See [SMB synchronization](../smb-synchronization.md); this documentation correction does not complete mounted-provider acceptance.
 - [ ] Complete the local quota acceptance slice (#27): installation/update persistence, authoritative Settings/tab/menu status, and bounded recording/finalization under quota pressure. Use isolated disposable data before physical retakes.
 - [ ] Complete offline imported-transcript AI acceptance (#18 criterion 2 / #25 criterion 4), including actual cited answers from fully imported English/Portuguese transcripts with the provider unavailable.
 - [ ] Resolve the macOS mounted SMB write blocker before claiming writable publication, remote deletion or between-Mac round trips. An alternative SMB server is not a proven workaround: the mounted client interface lacks the required exclusive rename capability. Evaluate a new versioned exclusive-create protocol or a public direct SMB transport under a reviewed design; keep unsupported v2 operations refused in the meantime.
@@ -95,12 +95,14 @@ Current state: closed as not planned; 8/12 original criteria addressed.
 
 ## Concrete implementation and environment findings
 
-- [ ] Fix failed capture-start cleanup when quota rejects before an audio writer exists. On source `d48244d`, two isolated 1 MiB quota start attempts returned HTTP 409 with `failed` state, null audio path and zero reservations, but left one then two empty `library/staging/capture-*` directories. Release only the current failed attempt's staging and allocations; preserve any retained audio and its recovery state.
-- [ ] Add a regression for repeated pre-capture quota rejection, plus a retained-audio failure control that proves recovery data is preserved.
-- [ ] Expand isolated installer verification to preserve a non-default 3 GB setting through release migration/upgrade/reinstall and compare persisted config with `/api/storage` and `/api/desktop/control/status`. Verify missing-field/default behavior separately. These checks supplement, rather than replace, actual two-Mac installation and visible menu acceptance.
-- [ ] Update `docs/smb-synchronization.md`: new destination headers use v2, while existing v1 remains unchanged; the document still describes v1 only.
-- [ ] Update the same document: confirmed v2 metadata deletion now exists; the document still says there is no remote deletion API. Link the exact-version preview/confirmation and original-owner recovery policy.
+- [x] Fix failed capture-start cleanup when quota rejects before an audio writer exists. On source `d48244d`, two isolated 1 MiB quota start attempts returned HTTP 409 with `failed` state, null audio path and zero reservations, but left one then two empty `library/staging/capture-*` directories. Release only the current failed attempt's staging and allocations; preserve any retained audio and its recovery state.
+- [x] Add a regression for repeated pre-capture quota rejection, plus a retained-audio failure control that proves recovery data is preserved.
+- [x] Expand isolated installer verification to preserve a non-default 3 GB setting through release migration/upgrade/reinstall and compare persisted config with `/api/storage` and `/api/desktop/control/status`. Verify missing-field/default behavior separately. These checks supplement, rather than replace, actual two-Mac installation and visible menu acceptance.
+- [x] Update [SMB synchronization](../smb-synchronization.md): new destination headers use v2, while existing v1 remains unchanged.
+- [x] Document explicit confirmed v2 metadata deletion, exact-version preview/confirmation, retained shared audio and the [original-owner recovery policy](../remote-deletion.md), replacing the obsolete no-deletion-API statement.
+
 Preserve explicit no-overwrite publication and canonical deletion fences. Both actual macOS NAS mounts rejected exclusive rename/hardlink primitives; signing/authentication passing does not resolve this filesystem capability.
+
 Retain shared audio in production until cross-host freshness and object-liveness acceptance is established. SMB shared-audio garbage collection stays disabled; iCloud shared-layout audio stays retained.
 
 ## Evidence and completion rules
@@ -116,3 +118,9 @@ This ledger contains **22 pending original criteria in open issues** (including 
 Baseline evidence: [remaining acceptance](remaining-acceptance.md), [original snapshot](original-acceptance-snapshot.md), [confirmed deletion](../remote-deletion.md), merged [PR #76](https://github.com/augustocbx/heed-macos/pull/76), and the updated roadmap review.
 
 Baseline local verification in this dedicated worktree passed **18 quota/capture-allocation/installer-initialization tests, 74 assertions**. The pre-fix production HTTP reproduction used only disposable local data and controlled sidecar responses; no native capture, real account, mounted-share write or installed-app change was performed. Its owned API/sidecar were stopped and the disposable data was removed.
+
+## Approved first implementation follow-up
+
+[PR #78](https://github.com/augustocbx/heed-macos/pull/78), head `6433bf3`, implements the three checked quota cleanup/regression/installer-verification tasks above. The new production-HTTP regression failed on abandoned staging before correction; repeated rejection, unrelated-transfer preservation and retained-WAV/checkpoint/reservation recovery now pass. Fresh local validation passed 586 server tests / 3,324 assertions, 307 interface tests, the production build and 30 release/helper tests on both available and system Python. Independent review found no blockers. Exact-head CI and merge remain separate gates.
+
+The expanded complete release simulator was not executed. No physical capture, installed app, account or real mounted provider was changed. The original pending criteria and full quota/provider milestones remain unchecked: a completed implementation task does not complete the original physical/two-Mac acceptance.
