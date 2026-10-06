@@ -20,6 +20,54 @@ class Handler(BaseHTTPRequestHandler):
   self.send_response(200);self.end_headers();self.wfile.write(self.payload)
  def log_message(self,*args):pass
 class RuntimeTests(unittest.TestCase):
+ def test_explicit_lifecycle_base_uses_only_its_validated_destination(self):
+  root=pathlib.Path(__file__).resolve().parents[1]
+  servers=[];threads=[];requests={'default':[],'explicit':[]}
+  def responder(name,checkout):
+   class LifecycleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+     requests[name].append(('GET',self.path))
+     self.send_response(200);self.end_headers()
+     self.wfile.write(json.dumps({'service':'heed-api','protocolVersion':1,'checkoutRoot':str(checkout),'pid':os.getpid()}).encode())
+    def do_POST(self):
+     payload=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+     requests[name].append(('POST',self.path,payload))
+     self.send_response(200);self.end_headers()
+     self.wfile.write(json.dumps({'maintenance':payload['acquire']}).encode())
+    def log_message(self,*args):pass
+   server=ThreadingHTTPServer(('127.0.0.1',0),LifecycleHandler)
+   self.assertGreaterEqual(server.server_port,49152,'Use only allowed disposable fixture ports')
+   thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+   servers.append(server);threads.append(thread);return server
+  try:
+   foreign=responder('default',root/'different-checkout')
+   destination=responder('explicit',root)
+   environment={**os.environ,'HEED_API_PORT':str(foreign.server_port),'PORT':str(foreign.server_port),'HEED_UI_PORT':'48101','HEED_TRANSCRIPTION_PORT':'48102'}
+   command=[sys.executable,str(root/'packages/desktop/guard-lifecycle.py'),'acquire','--base-url',f'http://127.0.0.1:{destination.server_port}','--owner','synthetic-explicit-target']
+   result=subprocess.run(command,env=environment,capture_output=True,text=True,timeout=10)
+   self.assertEqual(result.returncode,0,result.stderr)
+   self.assertEqual(requests['default'],[],'An explicit target must not inspect or control the configured default')
+   self.assertEqual(requests['explicit'],[('GET','/.well-known/heed-service'),('POST','/api/recording/maintenance',{'acquire':True,'owner':'synthetic-explicit-target'})])
+   self.assertTrue(module.occupied(foreign.server_port),'The unrelated default listener must be preserved')
+   # Argument presence, rather than comparison to the configured URL, selects explicit routing.
+   requests['explicit'].clear();environment.update(HEED_API_PORT=str(destination.server_port),PORT=str(destination.server_port))
+   result=subprocess.run(command,env=environment,capture_output=True,text=True,timeout=10)
+   self.assertEqual(result.returncode,0,result.stderr)
+   self.assertEqual([entry[0] for entry in requests['explicit']],['GET','POST'])
+   # Explicit routing retains the canonical checkout-identity gate before any control request.
+   requests['explicit'].clear();command[4]=f'http://127.0.0.1:{foreign.server_port}'
+   result=subprocess.run(command,env=environment,capture_output=True,text=True,timeout=10)
+   self.assertEqual(result.returncode,1)
+   self.assertIn('no matching Heed identity',result.stderr)
+   self.assertEqual(requests['default'],[('GET','/.well-known/heed-service')])
+   self.assertEqual(requests['explicit'],[])
+   result=subprocess.run([*command[:3],*command[5:]],env=environment,capture_output=True,text=True,timeout=10)
+   self.assertEqual(result.returncode,1,'Omitting --base-url must preserve default process-ownership discovery')
+   self.assertIn('belongs to another application',result.stderr)
+   self.assertEqual(requests['explicit'],[],'Default discovery must not control an unowned responder even with matching identity')
+  finally:
+   for server in servers:server.shutdown();server.server_close()
+   for thread in threads:thread.join(timeout=3);self.assertFalse(thread.is_alive())
  def test_framework_python_process_uses_exact_checkout_script_and_complete_arguments(self):
   with tempfile.TemporaryDirectory(prefix='heed-framework-command-') as directory:
    root=pathlib.Path(directory)/('synthetic-checkout-'+('a'*90))

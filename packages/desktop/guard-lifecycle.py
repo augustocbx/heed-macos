@@ -57,16 +57,18 @@ def guard(action, base_url, owner, legacy_owned=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=["acquire", "release"])
-    parser.add_argument("--base-url", default=f"http://127.0.0.1:{service_config()['api']}")
+    parser.add_argument("--base-url")
     parser.add_argument("--owner", default=os.environ.get("HEED_LIFECYCLE_GUARD_TOKEN"))
     arguments = parser.parse_args()
     try:
-        ports=service_config()
-        previous=saved_service_ports()
-        targets=control_targets(str(ROOT),ports,{port:process_records(port) for port in set([ports['api'],LEGACY['api'],*([] if previous is None else [previous['api']])])},previous)
-        if arguments.base_url!=f"http://127.0.0.1:{ports['api']}":
+        if arguments.base_url is not None:
+            # An explicit destination is independently identity-checked by guard().
+            # Unrelated configured/legacy listeners must not influence this request.
             guard(arguments.action,arguments.base_url.rstrip('/'),arguments.owner)
         else:
+            ports=service_config()
+            previous=saved_service_ports()
+            targets=control_targets(str(ROOT),ports,{port:process_records(port) for port in set([ports['api'],LEGACY['api'],*([] if previous is None else [previous['api']])])},previous)
             for port in targets:
                 guard(arguments.action,f'http://127.0.0.1:{port}',arguments.owner,legacy_owned=port==LEGACY['api'])
             if not targets and occupied(ports['api']):raise ValueError('The configured API listener is not checkout-owned Heed. No services were changed.')
