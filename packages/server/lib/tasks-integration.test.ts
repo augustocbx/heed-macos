@@ -3,7 +3,7 @@ import {mkdtempSync,writeFileSync,rmSync,renameSync,mkdirSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import type {Session,TasksSnapshot} from '../../shared/types';
-let pauseTasks=false;let unloadStarted=false;let finishUnload:(()=>void)|undefined;
+let pauseTasks=false;let taskStreamStarted=false;let unloadStarted=false;let finishUnload:(()=>void)|undefined;
 let directory:string;let app:ReturnType<typeof Bun.spawn>;let model:ReturnType<typeof Bun.serve>;let base:string;let meeting:Session;
 async function until<T>(read:()=>Promise<T>,check:(value:T)=>boolean):Promise<T>{const deadline=Date.now()+8000;while(Date.now()<deadline){try{const value=await read();if(check(value))return value;}catch{}await Bun.sleep(25);}throw new Error('Isolated task server timed out');}
 async function command(body:unknown){const response=await fetch(`${base}/api/tasks`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});return {status:response.status,body:await response.json() as TasksSnapshot};}
@@ -12,10 +12,10 @@ async function start(){app=Bun.spawn([process.execPath,resolve(import.meta.dir,'
 beforeAll(async()=>{
  directory=mkdtempSync(join(tmpdir(),'heed-tasks-http-'));writeFileSync(join(directory,'config.json'),JSON.stringify({ollama_model:'fixture:1b'}));
  model=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(request){const path=new URL(request.url).pathname;
-  if(path==='/api/tags')return Response.json({models:[{name:'fixture:1b'}]});if(path==='/api/show')return Response.json({details:{family:'fixture'}});
+  if(path==='/api/tags')return Response.json({models:[{name:'fixture:1b'}]});if(path==='/api/show'){if(pauseTasks)await Bun.sleep(100);return Response.json({details:{family:'fixture'}});}
   if(path==='/api/generate'){const body=await request.json() as {prompt:string};if(!body.prompt){if(pauseTasks){unloadStarted=true;await new Promise<void>(resolve=>{finishUnload=resolve;});}return Response.json({done:true});}
    const segments=JSON.parse(body.prompt).segments;if(!segments)return new Response(JSON.stringify({response:'Grounded notes',done:true})+'\n');
-   if(pauseTasks)return new Response(new ReadableStream({start(controller){controller.enqueue(new TextEncoder().encode('{"response":"partial","done":false}\n'));}}));
+   if(pauseTasks){taskStreamStarted=true;return new Response(new ReadableStream({start(controller){controller.enqueue(new TextEncoder().encode('{"response":"partial","done":false}\n'));}}));}
    const suggestions=segments[0].text==='No actions today.'?[]:segments.map((segment:any,i:number)=>({title:`Task ${i+1}`,description:segment.text,kind:i===0?'explicit':'inferred',assignee:null,dueDate:i===0?'2026-10-09':null,dateQuote:i===0?'2026-10-09':i===1?'next Friday':null,evidence:[{segmentIndex:i,quote:segment.text}]}));
    return new Response(JSON.stringify({response:JSON.stringify({suggestions}),done:true})+'\n');
   }return Response.json({whisper:true});
@@ -51,9 +51,11 @@ test('a meeting with no tasks yields a durable empty review',async()=>{
 });
 
 test('manual notes reserve resources before awaiting task model preemption',async()=>{
- pauseTasks=true;unloadStarted=false;
+ pauseTasks=true;taskStreamStarted=false;unloadStarted=false;
  await fetch(`${base}/api/sessions`,{method:'POST',body:JSON.stringify({id:'preemption-fixture',transcriptFinalized:true,transcript:'I will prepare the report tomorrow.',segments:[{speaker:'Ana',text:'I will prepare the report tomorrow.',start:0,end:1}]})});
  await until(()=>snapshot('preemption-fixture'),value=>value.review?.status==='running');
+ // A durable running receipt precedes model validation; preempt an actual generation.
+ await until(async()=>taskStreamStarted,value=>value);
  const input={transcript:'I will prepare the report tomorrow.',language:'en',templateId:'general'};
  const first=fetch(`${base}/api/summarize`,{method:'POST',body:JSON.stringify(input)});
  await until(async()=>unloadStarted,value=>value);
