@@ -115,11 +115,11 @@ Separate modules may be refined when SDK constraints require it; record concrete
 - Produce `/api/smb/direct` GET snapshot and POST actions `test`, `connect`, `rename`, `enable`, `disconnect`, `sync`, each strict-field validated and desktop-origin protected. Every existing-connection mutation includes generation. Return sanitized 400 input, 409 stale/busy/recovery, 503 unavailable, with `Cache-Control:no-store`.
 - Snapshot contains only public connection IDs/generation/name/endpoint/destination/capabilities/progress/sanitized error; never credential references or identities/private paths/secrets.
 
-- [ ] Write durable transition and HTTP tests: Keychain put/get/remove faults, configuration/registry failure rollback, interrupted transition startup, stale tab, duplicate receipt, rapid reconnect, eight-connection and 10,000-job bounds, exponential retry capped at one hour, disable/disconnect preserving recordings, pending original recovery guard, cleanup drain before optional retry, secret-free responses/state/logs.
-- [ ] Run `bun test packages/server/lib/smb-direct-connections.test.ts packages/server/lib/smb-direct-http.test.ts`; observe intended failures.
-- [ ] Implement protected durable transitions and background queue using existing library mutation ownership. Register before registry restore; wire all preemption/shutdown and private pending quota protection in `server.ts`. Failed rollback conservatively blocks synchronization.
-- [ ] Re-run tests plus server/provider-registry integration suites; expected zero failures.
-- [ ] Commit as `feat: add protected direct SMB connections and bounded synchronization`.
+- [x] Write durable transition and HTTP tests: Keychain put/get/remove faults, configuration/registry failure rollback, interrupted transition startup, stale tab, duplicate receipt, rapid reconnect, eight-connection and 10,000-job bounds, exponential retry capped at one hour, disable/disconnect preserving recordings, pending original recovery guard, cleanup drain before optional retry, secret-free responses/state/logs.
+- [x] Run `bun test packages/server/lib/smb-direct-connections.test.ts packages/server/lib/smb-direct-http.test.ts`; observe intended failures.
+- [x] Implement protected durable transitions and background queue using existing library mutation ownership. Register before registry restore; wire all preemption/shutdown and private pending quota protection in `server.ts`. Failed rollback conservatively blocks synchronization.
+- [x] Re-run tests plus server/provider-registry integration suites; expected zero failures.
+- [x] Commit as `feat: add protected direct SMB connections and bounded synchronization`.
 
 ### Task 5: Offline dependency payload and installed runtime
 
