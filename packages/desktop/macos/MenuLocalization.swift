@@ -5,6 +5,10 @@ struct MenuLocalization {
     static func normalize(_ locale: String?) -> String { locales.contains(locale ?? "") ? locale! : "en" }
     private static let translations: [String: [String: String]] = [
         "pt-BR": [
+            "Recover system audio permission?": "Recuperar a permissão de áudio do sistema?",
+            "Heed will clear only its screen and system audio permission, then restart. macOS will ask you to authorize it again. Meetings, settings and other permissions are preserved.": "O Heed redefinirá apenas sua permissão de tela e áudio do sistema e reiniciará. O macOS solicitará uma nova autorização. Reuniões, configurações e outras permissões serão preservadas.",
+            "Recover and restart": "Recuperar e reiniciar",
+            "System audio permission recovery could not finish. Reopen Heed and try again after active work or updates finish.": "Não foi possível concluir a recuperação da permissão de áudio do sistema. Reabra o Heed e tente novamente após o processamento ou as atualizações terminarem.",
             "Updates": "Atualizações",
             "Installed version: %@": "Versão instalada: %@",
             "Available version: %@": "Versão disponível: %@",
@@ -128,6 +132,10 @@ struct MenuLocalization {
             "A recording command is already pending": "Já há um comando de gravação pendente"
         ],
         "fr": [
+            "Recover system audio permission?": "Rétablir l’autorisation audio système ?",
+            "Heed will clear only its screen and system audio permission, then restart. macOS will ask you to authorize it again. Meetings, settings and other permissions are preserved.": "Heed réinitialisera uniquement son autorisation d’écran et d’audio système, puis redémarrera. macOS vous demandera de l’autoriser à nouveau. Les réunions, les réglages et les autres autorisations seront conservés.",
+            "Recover and restart": "Rétablir et redémarrer",
+            "System audio permission recovery could not finish. Reopen Heed and try again after active work or updates finish.": "Le rétablissement de l’autorisation audio système n’a pas pu aboutir. Rouvrez Heed et réessayez après la fin du traitement ou des mises à jour.",
             "Updates": "Mises à jour",
             "Installed version: %@": "Version installée : %@",
             "Available version: %@": "Version disponible : %@",
@@ -251,6 +259,10 @@ struct MenuLocalization {
             "A recording command is already pending": "Une commande d’enregistrement est déjà en attente"
         ],
         "de": [
+            "Recover system audio permission?": "Systemaudio-Berechtigung wiederherstellen?",
+            "Heed will clear only its screen and system audio permission, then restart. macOS will ask you to authorize it again. Meetings, settings and other permissions are preserved.": "Heed setzt nur seine Bildschirm- und Systemaudio-Berechtigung zurück und startet neu. macOS bittet Sie erneut um Erlaubnis. Besprechungen, Einstellungen und andere Berechtigungen bleiben erhalten.",
+            "Recover and restart": "Wiederherstellen und neu starten",
+            "System audio permission recovery could not finish. Reopen Heed and try again after active work or updates finish.": "Die Systemaudio-Berechtigung konnte nicht wiederhergestellt werden. Öffnen Sie Heed erneut und versuchen Sie es nach Abschluss der Verarbeitung oder der Updates noch einmal.",
             "Updates": "Updates",
             "Installed version: %@": "Installierte Version: %@",
             "Available version: %@": "Verfügbare Version: %@",

@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { DesktopPermissions, desktopRequestAllowed, permissionAction, permissionReport } from './desktop-permissions';
+import { DesktopPermissions, desktopRequestAllowed, permissionAction, permissionReport, permissionRecoverySummary } from './desktop-permissions';
 import { DesktopControl } from './desktop-control';
 const snapshot = { microphone:'authorized' as const, screenCapture:true, slackLogs:false, slackAutoRecord:true };
 
@@ -90,4 +90,37 @@ test('permission queue is independent of recording', () => {
  permissions.report({permissions:snapshot,commandId:id},1002);
  expect(recording.pending).toBe(true);
  expect(permissions.status(1002).pending).toBe(false);
+});
+
+test('recovery requires explicit fresh native support and idle processing', () => {
+ const bridge = new DesktopPermissions();
+ const state = {active:[] as string[],maintenance:false};
+ expect(bridge.recovery(state,1000).recoveryAvailable).toBe(false);
+ bridge.report({permissions:{...snapshot,screenCapture:false},build:{version:'1.0.0',commit:null,instanceId:'menu'},recoverySupported:true},1000);
+ expect(bridge.recovery(state,1001)).toEqual({recoveryAvailable:true});
+ expect(bridge.recovery({...state,active:['chat']},1001).recoveryBlockedReason).toContain('processing');
+ expect(bridge.recovery({...state,maintenance:true},1001).recoveryBlockedReason).toContain('maintenance');
+ expect(bridge.recovery(state,13000).recoveryAvailable).toBe(false);
+ bridge.report({permissions:{...snapshot,screenCapture:false},recoverySupported:true},13000);
+ expect(bridge.recovery(state,13000).recoveryAvailable).toBe(false);
+ bridge.report({permissions:{...snapshot,screenCapture:false}},13001);
+ expect(bridge.recovery(state,13002).recoveryAvailable).toBe(false);
+ bridge.report({permissions:snapshot,recoverySupported:true},13003);
+ expect(bridge.recovery(state,13004).recoveryAvailable).toBe(false);
+});
+test('recovery capability is validated and recovery acknowledgement never invents a grant', () => {
+ for(const recoverySupported of [null,'true',1,{}]) expect(permissionReport({permissions:snapshot,recoverySupported})).toBeNull();
+ expect(permissionAction({action:'recoverScreenCapture'})).toBe('recoverScreenCapture');
+ const report = permissionReport({permissions:{...snapshot,screenCapture:false},recoverySupported:true});
+ expect(report?.recoverySupported).toBe(true);
+ const bridge = new DesktopPermissions();
+ const id = bridge.enqueue('recoverScreenCapture',1000);
+ bridge.report({...report!,commandId:id},1001);
+ expect(bridge.status(1002).pending).toBe(false);
+ expect(bridge.status(1002).permissions?.screenCapture).toBe(false);
+});
+
+test('recovery summary excludes saved meeting content while retaining every admission field', () => {
+ const fields = {recording:false,processing:false,starting:false,pending:false,audioWork:false,maintenance:false,maintenanceProtocol:2,processingKinds:[],updateTransactionId:null,permissionRequest:{id:'command',action:'recoverScreenCapture'}};
+ expect(permissionRecoverySummary({...fields,segments:[{text:'private'}],session:{transcript:'private'},snapshot:{segments:[]},path:'/private/audio.wav'})).toEqual(fields);
 });
