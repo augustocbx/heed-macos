@@ -201,6 +201,36 @@ verify_custom_quota() {
         --api-base "http://127.0.0.1:$HEED_API_PORT"
 }
 
+step "Refusal: checkout predates safe service configuration"
+legacy_digest() {
+    (cd "$SIM_HOME" && find .heed-app Applications/Heed.app "${LEGACY#$SIM_HOME/}" \
+        "${SIM_HOST#$SIM_HOME/}" -type f -exec shasum {} + | sort)
+}
+LEGACY_BEFORE="$(legacy_digest)"
+touch "$SIM/calls.log"
+cp "$SIM/calls.log" "$SIM/calls-before-legacy-refusal.log"
+if (cd "$SIM_RELEASES/v$V1" && bash install.sh --payload "heed-macos-$V1-arm64.tar.gz" \
+    --skip-model-warmup --no-permission-prompt) > "$SIM/install-legacy-refusal.log" 2>&1; then
+    die "unsupported legacy checkout was replaced"
+fi
+check "unsupported checkout has an actionable migration error" grep -q \
+    'The previous checkout predates safe service-port configuration' "$SIM/install-legacy-refusal.log"
+check "refusal preserves checkout, app, browser bridge, settings and meeting data" test "$(legacy_digest)" = "$LEGACY_BEFORE"
+check "refusal creates no installed release or installation receipt" bash -c \
+    "test ! -e '$SIM_HOME/.heed/runtime/current' && test ! -e '$SIM_HOME/.heed/install.json'"
+check "refusal performs no launchd, credential or permission operations" cmp -s \
+    "$SIM/calls-before-legacy-refusal.log" "$SIM/calls.log"
+
+# The supported migration fixture has the real configuration and lifecycle helpers.
+# Keep the incompatible checkout control above rather than bypassing the installer gate.
+mkdir -p "$LEGACY/scripts" "$LEGACY/config" "$LEGACY/packages/desktop"
+cp "$HEED_REPO_ROOT/scripts/service_config.py" "$HEED_REPO_ROOT/scripts/service_runtime.py" "$LEGACY/scripts/"
+cp "$HEED_REPO_ROOT/config/service-ports.json" "$LEGACY/config/"
+cp "$HEED_REPO_ROOT/packages/desktop/guard-lifecycle.py" "$LEGACY/packages/desktop/"
+# This disposable device already uses the simulator's ports. Persist them so
+# migration never inspects another installation's production-default listeners.
+/usr/bin/python3 "$LEGACY/scripts/service_config.py" api --save >/dev/null
+
 step "Fresh release installation $V1 from a downloaded archive (replacing the checkout installation)"
 permissions authorized false
 SIM_STATUS=0

@@ -87,7 +87,11 @@ private func meetingDetectionForeignServiceSelfTest() throws {
     defer { session.invalidateAndCancel() }
     let suite = "heed-foreign-detection-\(UUID().uuidString)", defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
-    let client = MeetingDetectionClient(session: session, defaults: defaults)
+    // A prebuilt CLI self-test cannot depend on the removed build-source directory.
+    let endpoints = try ServiceEndpoints.resolve(
+        configData: Data("{\"api\":48100,\"ui\":48101,\"transcription\":48102,\"forbiddenRanges\":[[3000,3999],[5000,5999],[7000,7999],[8000,8999]]}".utf8),
+        checkoutRoot: "/synthetic/heed", environment: [:])
+    let client = MeetingDetectionClient(session: session, defaults: defaults, endpoints: endpoints)
     var accepted: Bool?
     client.configure(app: "zoom", enabled: true) { accepted = $0 }
     let deadline = Date().addingTimeInterval(3)
