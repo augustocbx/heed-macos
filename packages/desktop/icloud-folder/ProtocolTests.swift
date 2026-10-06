@@ -1,6 +1,18 @@
 import Foundation
 final class CoordinatedFixtureResult { var data: Data?; let lock = NSLock() }
 func protocolTests() throws {
+    // No account or bookmark lookup is involved in failure serialization tests.
+    let sentinel = "/private/sentinel-root SECRET_BOOKMARK localized diagnostic"
+    for code in [CloudIssue.accountUnavailable, .accountChanged, .bookmarkStale, .folderUnavailable, .permissionDenied, .hydrationPending, .unavailable] {
+        let bytes = try cloudFailureEnvelope(CloudFailure(sentinel, issue: code))
+        guard let value = try JSONSerialization.jsonObject(with: bytes) as? [String: Any], value.count == 3, value["code"] as? String == code.rawValue, !String(decoding: bytes, as: UTF8.self).contains(sentinel) else { throw CloudFailure("Failure protocol must preserve only the allowlisted issue") }
+    }
+    for domain in [NSCocoaErrorDomain, NSPOSIXErrorDomain, "UnknownPrivateDomain"] {
+        let known = domain == NSCocoaErrorDomain ? NSFileReadNoPermissionError : Int(EACCES)
+        let issue = cloudIssue(NSError(domain: domain, code: known, userInfo: [NSLocalizedDescriptionKey: sentinel]))
+        guard issue == (domain == "UnknownPrivateDomain" ? .unavailable : .permissionDenied) else { throw CloudFailure("Only known permission domains may classify a failure") }
+    }
+    guard cloudIssue(NSError(domain: NSCocoaErrorDomain, code: 999999, userInfo: [NSLocalizedDescriptionKey: "iCloud account changed " + sentinel])) == .unavailable else { throw CloudFailure("Raw descriptions cannot classify failures") }
     try remoteDeletionTests(); try admissionRecoveryTests()
     func check(_ value: Bool, _ message: String) throws { if !value { throw CloudFailure(message) } }
     func rejects(_ operation: () throws -> Void) throws {

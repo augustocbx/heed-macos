@@ -16,7 +16,14 @@ export interface CloudNative {
  stream(request:CloudRequest,max:number,signal?:AbortSignal):AsyncIterable<Uint8Array>;
  write(request:CloudRequest,source:AsyncIterable<Uint8Array>,signal?:AbortSignal):Promise<void>;
 }
-export const cloudUnavailable=()=>new Error('iCloud folder unavailable. Check sign-in, folder access, download status and library integrity.');
+export const CLOUD_ISSUES=['unavailable','account-unavailable','account-changed','bookmark-stale','folder-unavailable','permission-denied','hydration-pending'] as const;
+export type CloudIssue=typeof CLOUD_ISSUES[number];
+export class CloudFolderError extends Error {constructor(readonly code:CloudIssue='unavailable'){super('iCloud folder unavailable. Check sign-in, folder access, download status and library integrity.');}}
+export const cloudUnavailable=(code:CloudIssue='unavailable')=>new CloudFolderError(code);
+export function cloudIssue(error:unknown):CloudIssue {return error instanceof CloudFolderError&&CLOUD_ISSUES.includes(error.code)?error.code:'unavailable';}
+/** Drain the whole pipe to avoid deadlock; retain only a bounded protocol response. */
+async function boundedOutput(stream:AsyncIterable<Uint8Array>,max:number){const chunks:Uint8Array[]=[];let size=0;for await(const chunk of stream){size+=chunk.length;if(size<=max)chunks.push(chunk);}return size>max?null:Buffer.concat(chunks);}
+function nativeFailure(data:Buffer|null){try{const value=JSON.parse(data?.toString('utf8')??'');if(value&&Object.keys(value).sort().join(',')==='code,protocol,version'&&value.protocol==='heed-icloud-failure'&&value.version===1&&CLOUD_ISSUES.includes(value.code))return cloudUnavailable(value.code);}catch{}return cloudUnavailable();}
 const hash=(value:Uint8Array)=>createHash('sha256').update(value).digest('hex');
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 function path(value:string){if(value.length>512||! /^(meetings|objects|commits)\/[A-Za-z0-9_./-]+$/.test(value)||value.split('/').some(p=>!p||p==='.'||p==='..'))throw cloudUnavailable();return value;}
@@ -28,10 +35,29 @@ export function cloudHeader(value:unknown):{format:'heed-portable-library';schem
 export function cloudBinding(value:unknown):CloudBinding {const b=value as CloudBinding;if(!b||Object.keys(b).sort().join(',')!=='account,bookmark,identity'||![b.account,b.bookmark].every(v=>typeof v==='string'&&v.length>0&&v.length<=65536&&/^[A-Za-z0-9+/]+=*$/.test(v))||typeof b.identity!=='string'||!/^\d+:\d+$/.test(b.identity))throw cloudUnavailable();return b;}
 export class MacCloudNative implements CloudNative {
  constructor(private helper=fileURLToPath(new URL('../../../desktop/icloud-folder/.build/heed-icloud',import.meta.url))){}
- private async spawn(request:CloudRequest,signal?:AbortSignal){signal?.throwIfAborted();const process=track(Bun.spawn([this.helper],{stdin:'pipe',stdout:'pipe',stderr:'ignore'}));let termination:ReturnType<typeof setTimeout>|undefined;const abort=()=>{try{process.kill('SIGTERM');}catch{}termination??=setTimeout(()=>{try{process.kill('SIGKILL');}catch{}},1000);};const timer=setTimeout(abort,request.action==='pick'?120000:Math.min(3600000,30000+Math.ceil((request.bytes??request.maxBytes??0)/1_000_000)*1000));signal?.addEventListener('abort',abort,{once:true});try{process.stdin.write(JSON.stringify(request)+'\n');}catch{abort();await process.exited;clearTimeout(timer);signal?.removeEventListener('abort',abort);throw cloudUnavailable();}return {process,abort,clean(){clearTimeout(timer);if(termination)clearTimeout(termination);signal?.removeEventListener('abort',abort);}};}
- async *stream(request:CloudRequest,max:number,signal?:AbortSignal){const {process,abort,clean}=await this.spawn(request,signal);let size=0;try{process.stdin.end();for await(const chunk of process.stdout){signal?.throwIfAborted();size+=chunk.length;if(size>max)throw cloudUnavailable();yield chunk;}if(await process.exited!==0)throw cloudUnavailable();signal?.throwIfAborted();}finally{abort();await process.exited;clean();}}
- async json(request:CloudRequest,signal?:AbortSignal){const chunks:Uint8Array[]=[];for await(const chunk of this.stream(request,['list','inventory'].includes(request.action)?2_000_000:150000,signal))chunks.push(chunk);try{return JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{throw cloudUnavailable();}}
- async write(request:CloudRequest,source:AsyncIterable<Uint8Array>,signal?:AbortSignal){const {process,abort,clean}=await this.spawn(request,signal);const response=new Response(process.stdout).arrayBuffer();let size=0;try{for await(const chunk of source){signal?.throwIfAborted();size+=chunk.length;if(size>(request.bytes??0))throw cloudUnavailable();await process.stdin.write(chunk);await process.stdin.flush();}if(size!==request.bytes)throw cloudUnavailable();process.stdin.end();if(await process.exited!==0||(await response).byteLength>4096)throw cloudUnavailable();signal?.throwIfAborted();}finally{try{process.stdin.end();}catch{}abort();await process.exited;await response.catch(()=>{});clean();}}
+ private async spawn(request:CloudRequest,signal?:AbortSignal){
+  signal?.throwIfAborted();const process=track(Bun.spawn([this.helper],{stdin:'pipe',stdout:'pipe',stderr:'pipe'}));
+  const diagnostic=boundedOutput(process.stderr,4096).catch(()=>null);let termination:ReturnType<typeof setTimeout>|undefined;
+  const abort=()=>{try{process.kill('SIGTERM');}catch{}termination??=setTimeout(()=>{try{process.kill('SIGKILL');}catch{}},1000);};
+  const timer=setTimeout(abort,request.action==='pick'?120000:Math.min(3600000,30000+Math.ceil((request.bytes??request.maxBytes??0)/1_000_000)*1000));signal?.addEventListener('abort',abort,{once:true});
+  const clean=()=>{clearTimeout(timer);if(termination)clearTimeout(termination);signal?.removeEventListener('abort',abort);};
+  try{process.stdin.write(JSON.stringify(request)+'\n');}catch{abort();await process.exited;await diagnostic;clean();throw cloudUnavailable();}
+  return {process,diagnostic,abort,clean};
+ }
+ private async *read(request:CloudRequest,max:number,signal?:AbortSignal,typed=false){
+  const {process,diagnostic,abort,clean}=await this.spawn(request,signal);let size=0;
+  try{process.stdin.end();for await(const chunk of process.stdout){signal?.throwIfAborted();size+=chunk.length;if(size>max)throw cloudUnavailable();yield chunk;}
+   const exit=await process.exited;signal?.throwIfAborted();if(exit!==0)throw typed?nativeFailure(await diagnostic):cloudUnavailable();
+  }finally{abort();await process.exited;await diagnostic;clean();}
+ }
+ stream(request:CloudRequest,max:number,signal?:AbortSignal){return this.read(request,max,signal);}
+ async json(request:CloudRequest,signal?:AbortSignal){const chunks:Uint8Array[]=[];for await(const chunk of this.read(request,['list','inventory'].includes(request.action)?2_000_000:150000,signal,true))chunks.push(chunk);try{return JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{throw cloudUnavailable();}}
+ async write(request:CloudRequest,source:AsyncIterable<Uint8Array>,signal?:AbortSignal){
+  const {process,diagnostic,abort,clean}=await this.spawn(request,signal);const response=boundedOutput(process.stdout,4096).catch(()=>null);let size=0;
+  try{for await(const chunk of source){signal?.throwIfAborted();size+=chunk.length;if(size>(request.bytes??0))throw cloudUnavailable();await process.stdin.write(chunk);await process.stdin.flush();}
+   if(size!==request.bytes)throw cloudUnavailable();process.stdin.end();const exit=await process.exited;signal?.throwIfAborted();if(exit!==0)throw nativeFailure(await diagnostic);if(await response===null)throw cloudUnavailable();
+  }finally{try{process.stdin.end();}catch{}abort();await process.exited;await Promise.all([response,diagnostic]);clean();}
+ }
 }
 /** macOS upload observations never release the sole private pending copy. */
 export class ICloudFolderProvider implements LibraryProvider {
@@ -39,9 +65,10 @@ export class ICloudFolderProvider implements LibraryProvider {
  readonly deletionCapabilities:DeletionCapabilities;
  private transaction=new AsyncLocalStorage<{active:boolean}>();private active=false;
  private observations=new Map<string,CloudObservation>();
+ failureIssue?:CloudIssue;
  statusFor(revisionId:string){return this.observations.get(revisionId);}
  readonly capabilities:{read:true;write:true;remoteDeletion:boolean;durability:'local-only'};
- constructor(readonly id:string,readonly name:string,private binding:CloudBinding,private destinationId:string,private native:CloudNative=new MacCloudNative(),private guard?:()=>void,private destinationVersion:1|2=1,connectionGeneration:string=id,private privateRoot?:string,private quota?:QuotaBudget){this.capabilities={read:true,write:true,remoteDeletion:destinationVersion===2,durability:'local-only'};this.deletionCapabilities={connectionGeneration,destinationVersion,destinationId,revisionMetadata:destinationVersion===2,sharedAudioGC:false,exclusion:destinationVersion===2?'local-coordination':'none',confirmation:destinationVersion===2?'pending-propagation':'disabled',...(destinationVersion===1?{blockedReason:'Physical deletion requires a new v2 library'}:{})};}
+ constructor(readonly id:string,readonly name:string,private binding:CloudBinding,private destinationId:string,private native:CloudNative=new MacCloudNative(),private guard?:()=>void,private destinationVersion:1|2=1,connectionGeneration:string=id,private privateRoot?:string,private quota?:QuotaBudget){const owner=this,delegate=this.native;this.native={json:async(request,signal)=>{try{return await delegate.json(request,signal);}catch(error){owner.failureIssue=cloudIssue(error);throw error;}},stream:async function*(request,max,signal){try{yield* delegate.stream(request,max,signal);}catch(error){owner.failureIssue=cloudIssue(error);throw error;}},write:async(request,source,signal)=>{try{await delegate.write(request,source,signal);}catch(error){owner.failureIssue=cloudIssue(error);throw error;}}};this.capabilities={read:true,write:true,remoteDeletion:destinationVersion===2,durability:'local-only'};this.deletionCapabilities={connectionGeneration,destinationVersion,destinationId,revisionMetadata:destinationVersion===2,sharedAudioGC:false,exclusion:destinationVersion===2?'local-coordination':'none',confirmation:destinationVersion===2?'pending-propagation':'disabled',...(destinationVersion===1?{blockedReason:'Physical deletion requires a new v2 library'}:{})};}
  private request(action:CloudRequest['action'],extra:Partial<CloudRequest>={}):CloudRequest{return {action,binding:this.binding,destinationId:this.destinationId,stagingId:this.id,destinationVersion:this.destinationVersion,...(this.privateRoot?{privateRoot:this.privateRoot,connectionGeneration:this.deletionCapabilities.connectionGeneration}:{}),...extra};}
  private async access(signal?:AbortSignal){this.guard?.();if(this.destinationVersion===2&&!this.transaction.getStore()?.active)throw new Error('A whole iCloud transaction is required');const probe=await this.native.json(this.request('probe'),signal) as any;const header=cloudHeader(probe?.header);if(header?.destinationId!==this.destinationId||header.schemaVersion!==this.destinationVersion||probe.remoteChecksumVerified!==false)throw cloudUnavailable();}
  async withTransaction<T>(_context:TransactionContext,run:(tx:RemoteTransaction)=>Promise<T>,signal?:AbortSignal):Promise<T>{

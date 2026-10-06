@@ -2,7 +2,17 @@ import Foundation
 import CryptoKit
 import Darwin
 
-struct CloudFailure: Error { let message: String; init(_ message: String) { self.message = message } }
+enum CloudIssue: String, Encodable { case unavailable, accountUnavailable = "account-unavailable", accountChanged = "account-changed", bookmarkStale = "bookmark-stale", folderUnavailable = "folder-unavailable", permissionDenied = "permission-denied", hydrationPending = "hydration-pending" }
+struct CloudFailure: Error { let message: String; let issue: CloudIssue; init(_ message: String, issue: CloudIssue = .unavailable) { self.message = message; self.issue = issue } }
+func cloudIssue(_ error: Error) -> CloudIssue {
+    if let failure = error as? CloudFailure { return failure.issue }
+    let value = error as NSError
+    if value.domain == NSCocoaErrorDomain && [NSFileReadNoPermissionError, NSFileWriteNoPermissionError].contains(value.code) { return .permissionDenied }
+    if value.domain == NSPOSIXErrorDomain && [Int(EACCES), Int(EPERM)].contains(value.code) { return .permissionDenied }
+    return .unavailable
+}
+struct CloudFailureEnvelope: Encodable { let `protocol` = "heed-icloud-failure"; let version = 1; let code: CloudIssue }
+func cloudFailureEnvelope(_ error: Error) throws -> Data { try JSONEncoder().encode(CloudFailureEnvelope(code: cloudIssue(error))) }
 func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 func artifactPath(_ path: String) throws -> [String] {
     let parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
@@ -22,7 +32,7 @@ final class ScopedFiles {
     init(root: URL, expected: String? = nil) throws {
         self.root = root
         fd = open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { throw CloudFailure("Selected folder unavailable") }
+        guard fd >= 0 else { throw CloudFailure("Selected folder unavailable", issue: [EACCES, EPERM].contains(errno) ? .permissionDenied : errno == ENOENT ? .folderUnavailable : .unavailable) }
         do { identity = try descriptorIdentity(fd); if let expected = expected, identity != expected { throw CloudFailure("Selected folder identity changed") } }
         catch { close(fd); throw error }
     }

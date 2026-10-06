@@ -1,0 +1,4 @@
+import {test,expect,vi,afterEach} from 'vitest';import {icloudApi} from './icloud';
+afterEach(()=>vi.unstubAllGlobals());
+test.each(['account-unavailable','bookmark-stale','hydration-pending'])('client retains only allowlisted %s failure',async issue=>{vi.stubGlobal('fetch',vi.fn().mockResolvedValue(Response.json({issue,error:'/private/sentinel SECRET_TOKEN'},{status:503})));await expect(icloudApi.request({action:'select'})).rejects.toMatchObject({issue});try{await icloudApi.request();}catch(error){expect(String(error)).not.toContain('SECRET_TOKEN');}});
+test.each([{}, {issue:'/private/sentinel SECRET_TOKEN'}, {issue:'account-unavailable',raw:'/private/sentinel SECRET_TOKEN'}])('unknown response shape uses generic recovery guidance',async body=>{vi.stubGlobal('fetch',vi.fn().mockResolvedValue(Response.json(body,{status:503})));await expect(icloudApi.request()).rejects.toMatchObject({issue:'unavailable'});});

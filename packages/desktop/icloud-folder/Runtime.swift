@@ -2,7 +2,7 @@ import Foundation
 import AppKit
 
 func accountToken() throws -> Data {
-    guard let token = FileManager.default.ubiquityIdentityToken else { throw CloudFailure("iCloud account unavailable") }
+    guard let token = FileManager.default.ubiquityIdentityToken else { throw CloudFailure("iCloud account unavailable", issue: .accountUnavailable) }
     return try NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: false)
 }
 func sameAccount(_ archived: Data) throws -> Bool {
@@ -28,29 +28,34 @@ func selectedBinding() throws -> CloudBinding {
     guard panel.runModal() == .OK, let selected = panel.url else { throw CloudFailure("Folder selection cancelled") }
     let root = selected.resolvingSymlinksInPath().standardizedFileURL
     let access = root.startAccessingSecurityScopedResource(); defer { if access { root.stopAccessingSecurityScopedResource() } }
-    guard try observe(root).ubiquitous else { throw CloudFailure("Selected folder is not available as iCloud Drive") }
-    guard try sameAccount(token) else { throw CloudFailure("iCloud account changed during selection") }
+    guard try observe(root).ubiquitous else { throw CloudFailure("Selected folder is not available as iCloud Drive", issue: .folderUnavailable) }
+    guard try sameAccount(token) else { throw CloudFailure("iCloud account changed during selection", issue: .accountChanged) }
     let files = try ScopedFiles(root: root)
     let bookmark = try root.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
     return CloudBinding(bookmark: bookmark.base64EncodedString(), account: token.base64EncodedString(), identity: files.identity)
 }
 func withBinding<T>(_ binding: CloudBinding, operation: (URL) throws -> T) throws -> T {
     guard binding.bookmark.utf8.count <= 65536, binding.account.utf8.count <= 65536,
-          let bookmark = Data(base64Encoded: binding.bookmark), let account = Data(base64Encoded: binding.account),
-          try sameAccount(account) else { throw CloudFailure("iCloud account unavailable or changed") }
+          let bookmark = Data(base64Encoded: binding.bookmark), let account = Data(base64Encoded: binding.account) else { throw CloudFailure("Invalid private binding") }
+    try requireAccount(account)
     var stale = false
     let root = try URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale)
-    guard !stale else { throw CloudFailure("Folder bookmark needs renewed access") }
+    guard !stale else { throw CloudFailure("Folder bookmark needs renewed access", issue: .bookmarkStale) }
     let access = root.startAccessingSecurityScopedResource(); defer { if access { root.stopAccessingSecurityScopedResource() } }
     let files = try ScopedFiles(root: root, expected: binding.identity)
-    guard files.identity == binding.identity, try observe(root).ubiquitous else { throw CloudFailure("Selected iCloud folder unavailable") }
+    guard files.identity == binding.identity, try observe(root).ubiquitous else { throw CloudFailure("Selected iCloud folder unavailable", issue: .folderUnavailable) }
     let value = try operation(root)
     try checkpoint(root: root, binding: binding)
     return value
 }
+func requireAccount(_ archived: Data) throws {
+    guard FileManager.default.ubiquityIdentityToken != nil else { throw CloudFailure("iCloud account unavailable", issue: .accountUnavailable) }
+    guard try sameAccount(archived) else { throw CloudFailure("iCloud account changed", issue: .accountChanged) }
+}
 func checkpoint(root: URL, binding: CloudBinding) throws {
-    guard let token = Data(base64Encoded: binding.account), try sameAccount(token),
-          try ScopedFiles(root: root, expected: binding.identity).identity == binding.identity else { throw CloudFailure("iCloud account or selected folder changed") }
+    guard let token = Data(base64Encoded: binding.account) else { throw CloudFailure("Invalid private account binding") }
+    try requireAccount(token)
+    guard try ScopedFiles(root: root, expected: binding.identity).identity == binding.identity else { throw CloudFailure("Selected folder changed") }
 }
 func coordinated<T>(_ root: URL, binding: CloudBinding, path: String = "heed-library.json", temporary: String? = nil, write: Bool, deleting: Bool = false, operation: @escaping (ScopedFiles) throws -> T) throws -> T {
     var coordinatorError: NSError?, result: Result<T, Error>?
@@ -159,7 +164,9 @@ func asynchronousObservation(root: URL, target: URL, binding: CloudBinding) thro
     guard query.start() else { throw CloudFailure("Provider observation unavailable") }
     let deadline = Date().addingTimeInterval(1)
     while !changed && !accountChanged && Date() < deadline { _ = RunLoop.current.run(mode: .default, before: min(deadline, Date().addingTimeInterval(0.05))) }
-    guard !accountChanged, let token = Data(base64Encoded: binding.account), try sameAccount(token) else { throw CloudFailure("iCloud account changed") }
+    guard !accountChanged else { throw CloudFailure("iCloud account changed", issue: .accountChanged) }
+    guard let token = Data(base64Encoded: binding.account) else { throw CloudFailure("Invalid private account binding") }
+    try requireAccount(token)
     return try observe(target)
 }
 func runtime() throws {
@@ -211,12 +218,14 @@ func runtime() throws {
                     try checkpoint(root: root, binding: binding)
                     try FileManager.default.startDownloadingUbiquitousItem(at: target)
                 }
-                try outputJSON(request.action == "watch" ? asynchronousObservation(root: root, target: target, binding: binding) : observe(target)); return
+                let observation = try request.action == "watch" ? asynchronousObservation(root: root, target: target, binding: binding) : observe(target)
+                if request.action == "hydrate", observation.ubiquitous, ![URLUbiquitousItemDownloadingStatus.current.rawValue, URLUbiquitousItemDownloadingStatus.downloaded.rawValue].contains(observation.downloaded ?? "") { throw CloudFailure("Artifact hydration pending", issue: .hydrationPending) }
+                try outputJSON(observation); return
             }
             if request.action == "read" {
                 guard let max = request.maxBytes, max >= 0, max <= 8_000_000_000_000 else { throw CloudFailure("Invalid read bounds") }
                 let state = try observe(root.appendingPathComponent(path))
-                if state.ubiquitous && ![URLUbiquitousItemDownloadingStatus.current.rawValue, URLUbiquitousItemDownloadingStatus.downloaded.rawValue].contains(state.downloaded ?? "") { throw CloudFailure("Artifact hydration pending") }
+                if state.ubiquitous && ![URLUbiquitousItemDownloadingStatus.current.rawValue, URLUbiquitousItemDownloadingStatus.downloaded.rawValue].contains(state.downloaded ?? "") { throw CloudFailure("Artifact hydration pending", issue: .hydrationPending) }
                 try coordinated(root, binding: binding, path: path, write: false) { files in try requireHeader(files, destinationId: request.destinationId, version: request.destinationVersion ?? 1); try files.stream(path, max: max, validate: { try checkpoint(root: root, binding: binding) }) { FileHandle.standardOutput.write($0) } }
             } else {
                 guard let bytes = request.bytes, let hash = request.sha256 else { throw CloudFailure("Missing object bounds") }
