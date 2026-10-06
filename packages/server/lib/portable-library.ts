@@ -17,6 +17,8 @@ const meetingKey=(m:PortableManifest|PortableCommit)=>`${m.libraryId}/${m.meetin
 /** A complete SessionTags write is the only AI visibility boundary; remote previews never enter it. */
 export class PortableLibrary {
  private state:Catalog;private statePath:string;private active=false;private activeTask?:OptionalTask;private providerTask?:OptionalTask;private providerSignal?:AbortSignal;private preemption?:Promise<void>;private lease?:symbol;private mutationLease?:symbol;private leaseContext=new AsyncLocalStorage<symbol>();
+ // Nested defaults may reuse only the exact live lease and provider transaction.
+ private transactionContext=new AsyncLocalStorage<{lease:symbol;provider:LibraryProvider;context:TransactionContext}>();
  private deletion?:RemoteDeletion;
  constructor(private options:PortableLibraryOptions){
   for(const category of ['catalog','media','indexes','staging'])mkdirSync(join(options.root,category),{recursive:true,mode:0o700});
@@ -55,14 +57,18 @@ export class PortableLibrary {
  private signal(controller:AbortController,external?:AbortSignal,lease?:AbortSignal):AbortSignal {return AbortSignal.any([controller.signal,...(external?[external]:[]),...(lease?[lease]:[])]);}
  /** Recording waits for optional transfers and their cleanup; credential mutations are independent. */
  preempt():Promise<void> {if(this.preemption)return this.preemption;const tasks=[this.activeTask,this.providerTask].filter((task):task is OptionalTask=>!!task);if(!tasks.length)return Promise.resolve();const pending=Promise.all(tasks.map(task=>task.done)).then(()=>{});this.preemption=pending.finally(()=>{this.preemption=undefined;});for(const task of tasks)task.controller.abort(new Error('Library transfer interrupted for recording'));return this.preemption;}
- private async operation<T>(run:(signal:AbortSignal,tx?:RemoteTransaction)=>Promise<T>,external?:AbortSignal,kind:TransactionContext['kind']='read',operationId:string=randomUUID(),remote=true):Promise<T>{
+ private async operation<T>(run:(signal:AbortSignal,tx?:RemoteTransaction)=>Promise<T>,external?:AbortSignal,kind:TransactionContext['kind']='read',operationId?:string,remote=true):Promise<T>{
   external?.throwIfAborted();if(this.preemption)throw new Error('Library transfers are paused for recording');if(this.active||(this.lease&&this.leaseContext.getStore()!==this.lease))throw new Error('A library operation is already running');
   const task=this.task(),signal=this.signal(task.controller,external,this.providerSignal);signal.throwIfAborted();this.active=true;if(!this.mutationLease)this.activeTask=task;
   try {
-   const provider=this.options.provider;
+   const provider=this.options.provider,owned=this.transactionContext.getStore();
+   const ownsTransaction=owned&&owned.lease===this.lease&&
+    this.leaseContext.getStore()===owned.lease&&owned.provider===provider&&
+    (owned.context.kind==='publish'&&kind!=='delete'||owned.context.kind==='read'&&kind==='read');
+   const effectiveId=operationId??(ownsTransaction?owned.context.operationId:randomUUID());
    if(remote&&provider&&coordinatedProvider(provider)){
     if(!provider.withTransaction)throw new Error('Remote coordination is unavailable');
-    return await provider.withTransaction!({operationId,deviceId:this.state.deviceId,kind},async tx=>{
+    return await provider.withTransaction!({operationId:effectiveId,deviceId:this.state.deviceId,kind},async tx=>{
      if(provider.deletionCapabilities?.destinationVersion===3&&typeof tx.observationDigest!=='function')throw Error('Remote coordination observation is unavailable');
      try{const result=await run(signal,tx);if(kind!=='delete')await tx.checkpoint();signal.throwIfAborted();return result;}
      catch(error){if(kind==='read')await tx.checkpoint();throw error;}
@@ -75,7 +81,60 @@ export class PortableLibrary {
  isMutationOwner():boolean{return !this.active&&!!this.mutationLease&&this.lease===this.mutationLease&&this.leaseContext.getStore()===this.mutationLease;}
  async withMutation<T>(run:(library:PortableLibrary)=>Promise<T>,signal?:AbortSignal):Promise<T>{signal?.throwIfAborted();if(this.active||this.lease||this.preemption)throw new Error('A library operation is already running');const lease=Symbol('mutation');this.lease=this.mutationLease=lease;try{return await this.leaseContext.run(lease,()=>run(this));}finally{this.mutationLease=undefined;this.lease=undefined;}}
 
- async withProvider<T>(provider:LibraryProvider,run:(library:PortableLibrary,signal:AbortSignal)=>Promise<T>,external?:AbortSignal):Promise<T>{external?.throwIfAborted();if(this.active||this.lease||this.preemption)throw new Error('A library operation is already running');const lease=Symbol('provider'),previous=this.options.provider,task=this.task(),signal=this.signal(task.controller,external);this.lease=lease;this.providerTask=task;this.providerSignal=signal;this.options.provider=provider;try{const invoke=()=>this.leaseContext.run(lease,()=>run(this,signal));const result=coordinatedProvider(provider)?await provider.withTransaction!({operationId:randomUUID(),deviceId:this.state.deviceId,kind:'publish'},async tx=>{if(provider.deletionCapabilities?.destinationVersion===3&&typeof tx.observationDigest!=='function')throw Error('Remote coordination observation is unavailable');const value=await invoke();await tx.checkpoint();return value;},signal):await invoke();signal.throwIfAborted();return result;}finally{this.options.provider=previous;this.providerTask=undefined;this.providerSignal=undefined;this.lease=undefined;task.finish();}}
+  async withProvider<T>(
+    provider: LibraryProvider,
+    run: (library: PortableLibrary, signal: AbortSignal) => Promise<T>,
+    external?: AbortSignal,
+  ): Promise<T> {
+    external?.throwIfAborted();
+    if (this.active || this.lease || this.preemption)
+      throw new Error('A library operation is already running');
+    const lease = Symbol('provider'),
+      previous = this.options.provider,
+      task = this.task(),
+      signal = this.signal(task.controller, external);
+    this.lease = lease;
+    this.providerTask = task;
+    this.providerSignal = signal;
+    this.options.provider = provider;
+    try {
+      const context: TransactionContext = {
+        operationId: randomUUID(),
+        deviceId: this.state.deviceId,
+        kind: 'publish',
+      };
+      const invoke = () =>
+        this.leaseContext.run(lease, () =>
+          this.transactionContext.run({ lease, provider, context }, () =>
+            run(this, signal),
+          ),
+        );
+      const result = coordinatedProvider(provider)
+        ? await provider.withTransaction!(
+            context,
+            async (tx) => {
+              if (
+                provider.deletionCapabilities?.destinationVersion === 3 &&
+                typeof tx.observationDigest !== 'function'
+              )
+                throw Error('Remote coordination observation is unavailable');
+              const value = await invoke();
+              await tx.checkpoint();
+              return value;
+            },
+            signal,
+          )
+        : await invoke();
+      signal.throwIfAborted();
+      return result;
+    } finally {
+      this.options.provider = previous;
+      this.providerTask = undefined;
+      this.providerSignal = undefined;
+      this.lease = undefined;
+      task.finish();
+    }
+  }
  runMaintenance<T>(run:(signal:AbortSignal)=>Promise<T>,signal?:AbortSignal):Promise<T>{return this.operation(run,signal,'read',randomUUID(),false);}
  selectProvider(provider?:LibraryProvider):void{if(this.active||this.lease&&!this.isMutationOwner())throw new Error('A library operation is already running');this.options.provider=provider;}
  markDeleted(sessionId:string):void {const keys=Object.keys(this.state.aliases).filter(key=>this.state.aliases[key]===sessionId);if(keys.length)this.edit(next=>{next.tombstones||={};for(const key of keys)next.tombstones[key]=true;});}
@@ -111,18 +170,92 @@ export class PortableLibrary {
   return known?{...job,releaseAvailable:true,...(!this.recoveryEntries(job)?{releaseOnly:true}:{})}:job;
  }
  recoveryTransactions(){const destructive=new Set(this.deletionEngine().jobs().map(job=>job.id));return (this.options.provider?.pendingTransactions?.()||[]).map(job=>this.recoveryMode(job)).filter(job=>job.deviceId===this.state.deviceId&&(job.kind!=='delete'||job.releaseOnly||!destructive.has(job.operationId))).map(job=>({operationId:job.operationId,kind:job.kind,recoverable:!!this.recoveryEntries(job),...(job.releaseOnly?{releaseOnly:true}:{}),...('releaseAvailable' in job&&job.releaseAvailable?{releaseAvailable:true}:{}),...(job.blockedReason?{blockedReason:job.blockedReason}:{})}));}
- async reconcileTransaction(operationId:string,external?:AbortSignal,releaseOnly=false,providerOverride?:LibraryProvider):Promise<LibrarySnapshot>{
-  if(!UUID.test(operationId))throw new Error('Invalid original remote operation');external?.throwIfAborted();if(this.active||this.lease||this.preemption)throw new Error('A library operation is already running');
-  const provider=providerOverride??this.provider(),previous=this.options.provider;if(providerOverride&&!coordinatedProvider(provider))throw new Error('Original operation coordination is unavailable');const original=provider.pendingTransactions?.().find(item=>item.operationId===operationId);let job=original&&this.recoveryMode(original);if(job&&releaseOnly){if(!job.releaseOnly&&!('releaseAvailable' in job&&job.releaseAvailable))throw new Error('Original release-only recovery cannot be proven');job={...job,releaseOnly:true};}const entries=job&&this.recoveryEntries(job);
-  if(!job||!entries||!provider.withTransaction)throw new Error('Original operation recovery is required; preserve its journal and destination');
-  const lease=Symbol('recovery'),task=this.task(),signal=this.signal(task.controller,external);this.lease=lease;this.providerTask=task;this.providerSignal=signal;this.options.provider=provider;
-  try{return await this.leaseContext.run(lease,()=>provider.withTransaction!({operationId,deviceId:this.state.deviceId,kind:job.kind},async tx=>{
-   if(provider.deletionCapabilities?.destinationVersion===3&&typeof tx.observationDigest!=='function')throw Error('Remote coordination observation is unavailable');
-   if(job.releaseOnly){await tx.checkpoint();return this.snapshot();}
-   if(job.kind==='read')await this.discover(signal);else for(const entry of entries){await this.publish(entry.manifest.revisionId,signal);if(this.state.entries[entryKey(entry.manifest)]?.preview.state!=='verified')throw Error('Original publication remains incomplete; preserve its exact job');}
-   await tx.checkpoint();return this.snapshot();
-  },signal));}finally{this.options.provider=previous;this.lease=undefined;this.providerTask=undefined;this.providerSignal=undefined;task.finish();}
- }
+  async reconcileTransaction(
+    operationId: string,
+    external?: AbortSignal,
+    releaseOnly = false,
+    providerOverride?: LibraryProvider,
+  ): Promise<LibrarySnapshot> {
+    if (!UUID.test(operationId))
+      throw new Error('Invalid original remote operation');
+    external?.throwIfAborted();
+    if (this.active || this.lease || this.preemption)
+      throw new Error('A library operation is already running');
+    const provider = providerOverride ?? this.provider(),
+      previous = this.options.provider;
+    const lease = Symbol('recovery'),
+      task = this.task(),
+      signal = this.signal(task.controller, external);
+    this.lease = lease;
+    this.providerTask = task;
+    this.providerSignal = signal;
+    this.options.provider = provider;
+    try {
+      return await this.leaseContext.run(lease, async () => {
+        if (providerOverride && !coordinatedProvider(provider))
+          throw new Error('Original operation coordination is unavailable');
+        const original = provider
+          .pendingTransactions?.()
+          .find((item) => item.operationId === operationId);
+        let job = original && this.recoveryMode(original);
+        if (job && releaseOnly) {
+          if (
+            !job.releaseOnly &&
+            !('releaseAvailable' in job && job.releaseAvailable)
+          )
+            throw new Error('Original release-only recovery cannot be proven');
+          job = { ...job, releaseOnly: true };
+        }
+        const entries = job && this.recoveryEntries(job);
+        if (!job || !entries || !provider.withTransaction)
+          throw new Error(
+            'Original operation recovery is required; preserve its journal and destination',
+          );
+        const context: TransactionContext = {
+          operationId,
+          deviceId: this.state.deviceId,
+          kind: job.kind,
+        };
+        return this.transactionContext.run({ lease, provider, context }, () =>
+          provider.withTransaction!(
+            context,
+            async (tx) => {
+              if (
+                provider.deletionCapabilities?.destinationVersion === 3 &&
+                typeof tx.observationDigest !== 'function'
+              )
+                throw Error('Remote coordination observation is unavailable');
+              if (job.releaseOnly) {
+                await tx.checkpoint();
+                return this.snapshot();
+              }
+              if (job.kind === 'read') await this.discover(signal);
+              else
+                for (const entry of entries) {
+                  await this.publish(entry.manifest.revisionId, signal);
+                  if (
+                    this.state.entries[entryKey(entry.manifest)]?.preview
+                      .state !== 'verified'
+                  )
+                    throw Error(
+                      'Original publication remains incomplete; preserve its exact job',
+                    );
+                }
+              await tx.checkpoint();
+              return this.snapshot();
+            },
+            signal,
+          ),
+        );
+      });
+    } finally {
+      this.options.provider = previous;
+      this.lease = undefined;
+      this.providerTask = undefined;
+      this.providerSignal = undefined;
+      task.finish();
+    }
+  }
  deletionJobs(){return this.deletionEngine().jobs(this.options.provider);}
  snapshot():LibrarySnapshot {const deletedSources=new Set(Object.entries(this.state.aliases).filter(([key])=>this.state.tombstones?.[key]).map(([,id])=>id));const previews=Object.values(this.state.entries).filter(entry=>!this.options.provider||!entry.providerId||entry.providerId===this.options.provider.id||!!entry.sessionId&&!!this.options.sessions.read(entry.sessionId)).map(entry=>({...entry.preview,deleted:!!this.state.tombstones?.[meetingKey(entry.manifest)],remoteDeleted:this.remoteDeleted(entry.manifest),local:!!entry.sessionId&&!!this.options.sessions.read(entry.sessionId),remoteAvailable:!!this.options.provider&&(entry.providerId===this.options.provider.id||!!entry.localPublications?.[this.publicationScope(this.options.provider)])}));return {localMeetings:this.options.sessions.snapshot().sessions.filter(s=>s.transcriptFinalized===true&&!deletedSources.has(s.id)&&!Object.values(this.state.entries).some(e=>e.sessionId===s.id&&this.state.heads[meetingKey(e.manifest)]===e.manifest.revisionId&&this.remoteDeleted(e.manifest))).map(s=>({id:s.id,title:s.title})),configured:!!this.options.provider,providerId:this.options.provider?.id,readOnly:this.options.provider?.readOnly,capabilities:this.options.provider?.capabilities,deletionCapabilities:this.options.provider?.deletionCapabilities,providerName:this.options.provider?.name,previews:previews.sort((a,b)=>Date.parse(b.createdAt)-Date.parse(a.createdAt)||a.meetingId.localeCompare(b.meetingId)||a.revisionId.localeCompare(b.revisionId)),imported:this.state.imported,skipped:this.state.skipped,pending:previews.filter(p=>!p.local||['pending','uploading','unavailable'].includes(p.state)).length,complete:this.state.complete,error:this.state.error};}
  async discover(signal?:AbortSignal):Promise<LibrarySnapshot>{return this.operation(async(signal,tx)=>{

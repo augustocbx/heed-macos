@@ -469,3 +469,128 @@ test('unproved native reaping never produces a stopped receipt',async()=>{
  try{await new PythonDirectSmbNative({runner}).open(binding,credentials,context);}catch(error){failure=error;}finally{if(proxy)untrack(proxy);}
  expect(failure?.code).toBe('transaction-unavailable');expect(failure?.guardianStopped).toBeUndefined();expect(await h.child.exited).not.toBeNull();
 },6000);
+
+test('I4 oneshot post-start receipt rejection proves child reaping before private stopped evidence', async () => {
+  const h = helper(
+    `${start}console.log(JSON.stringify({ok:true,value:${JSON.stringify(probe)}}));`,
+  );
+  let failure: any;
+  try {
+    await new PythonDirectSmbNative({ runner: h.runner }).probe(
+      { ...endpoint, requireEncryption: true },
+      credentials,
+    );
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure.code).toBe('unsupported-security');
+  expect(await h.child.exited).not.toBeNull();
+  expect(failure.guardianStopped).toBe(true);
+  expect(Object.keys(failure)).not.toContain('guardianStopped');
+});
+test('I4 no-helper runner refusal carries stopped evidence without raw diagnostics', async () => {
+  let error: any;
+  try {
+    await new PythonDirectSmbNative({
+      runner: () => {
+        throw Object.assign(Error('secret-never-log'), {
+          code: 'runtime-unavailable',
+        });
+      },
+    }).probe(endpoint, credentials);
+  } catch (e) {
+    error = e;
+  }
+  expect(error.code).toBe('runtime-unavailable');
+  expect(error.guardianStopped).toBe(true);
+  expect(error.message).not.toContain('secret-never-log');
+});
+
+test('I4 oneshot unproved child exit never returns stopped evidence for probe initialization or pending', async () => {
+  for (const action of ['probe', 'initialize', 'pending']) {
+    const value =
+        action === 'pending'
+          ? []
+          : {
+              ...probe,
+              identity: { ...identity, rootId: '0000000000000011' },
+              destinationId: binding.destinationId,
+              destinationVersion: 3,
+              empty: false,
+            },
+      h = helper(
+        `for await(const c of Bun.stdin.stream()){}console.log(JSON.stringify({ok:true,value:${JSON.stringify(value)}}));`,
+      );
+    let proxy: any, failure: any;
+    const runner = () => {
+      const child = h.runner();
+      proxy = new Proxy(child, {
+        get(target, key) {
+          if (key === 'exited') return new Promise(() => {});
+          const v = Reflect.get(target, key);
+          return typeof v === 'function' ? v.bind(target) : v;
+        },
+      });
+      return proxy;
+    };
+    const native = new PythonDirectSmbNative({ runner, timeoutMs: 50 });
+    try {
+      if (action === 'probe') await native.probe(endpoint, credentials);
+      else if (action === 'initialize')
+        await native.initialize(
+          endpoint,
+          credentials,
+          identity,
+          binding.destinationId,
+        );
+      else await native.pending(binding, context.appDir);
+    } catch (e) {
+      failure = e;
+    } finally {
+      if (proxy) untrack(proxy);
+    }
+    expect(failure.code).toBe('transaction-unavailable');
+    expect(failure.guardianStopped).toBeUndefined();
+    expect(await h.child.exited).not.toBeNull();
+  }
+}, 10000);
+
+test('I4 prelaunch validation and cancellation prove no helper while preserving cancellation identity', async () => {
+  let launches = 0;
+  const native = new PythonDirectSmbNative({
+    runner: () => {
+      launches++;
+      throw Error('Unexpected helper');
+    },
+  });
+  for (const action of ['probe', 'initialize', 'pending']) {
+    let failure: any;
+    try {
+      if (action === 'probe')
+        await native.probe(
+          { ...endpoint, server: 'invalid/name' },
+          credentials,
+        );
+      else if (action === 'initialize')
+        await native.initialize(endpoint, credentials, identity, 'invalid');
+      else await native.pending({ ...binding, id: 'invalid' }, context.appDir);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure.code).toBe('invalid-input');
+    expect(failure.guardianStopped).toBe(true);
+    expect(Object.keys(failure)).not.toContain('guardianStopped');
+  }
+  const controller = new AbortController(),
+    reason = Error('Explicit cancellation');
+  controller.abort(reason);
+  let cancellation: any;
+  try {
+    await native.probe(endpoint, credentials, controller.signal);
+  } catch (error) {
+    cancellation = error;
+  }
+  expect(cancellation).toBe(reason);
+  expect(cancellation.guardianStopped).toBe(true);
+  expect(launches).toBe(0);
+});

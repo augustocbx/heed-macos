@@ -225,7 +225,7 @@ export class DirectSmbConnections {
   private running = false;
   private closed = false;
   private native: DirectSmbNative;
-  private vault: SecretVault;
+  private vault?: SecretVault;
   private receipts = new Map<string, Receipt>();
   private providers = new Map<string, DirectSmbProvider>();
   private factories = new Map<string, () => DirectSmbProvider>();
@@ -235,7 +235,7 @@ export class DirectSmbConnections {
   private draining?: Promise<void>;
   constructor(private options: Options) {
     this.native = options.native ?? new PythonDirectSmbNative();
-    this.vault = options.vault ?? createKeychainVault();
+    this.vault = options.vault;
     mkdirSync(dirname(options.path), { recursive: true, mode: 0o700 });
     try {
       if (existsSync(options.path))
@@ -257,6 +257,9 @@ export class DirectSmbConnections {
       ? this.options.library()
       : this.options.library;
   }
+  private secretVault() {
+    return (this.vault ??= createKeychainVault());
+  }
   private now() {
     return this.options.now?.() ?? Date.now();
   }
@@ -264,7 +267,8 @@ export class DirectSmbConnections {
     return this.recovery;
   }
   private basicAvailable() {
-    if (this.recovery) throw directConnectionError("recovery-required");
+    if (this.recovery || this.unsafeDrain)
+      throw directConnectionError("recovery-required");
     if (this.closed) throw directConnectionError("runtime-unavailable");
   }
   private available() {
@@ -370,6 +374,17 @@ export class DirectSmbConnections {
       })),
     };
   }
+  private async nativeOneShot<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (error) {
+      if ((error as { guardianStopped?: unknown })?.guardianStopped !== true) {
+        this.unsafeDrain = true;
+        throw directConnectionError("recovery-required");
+      }
+      throw error;
+    }
+  }
   private operationNative(c: Connection): DirectSmbNative {
     const generation = c.binding.connectionGeneration,
       id = c.binding.id;
@@ -392,10 +407,12 @@ export class DirectSmbConnections {
       }
     };
     const pending = async (...args: Parameters<DirectSmbNative["pending"]>) => {
-      const jobs = validateDirectPending(await this.native.pending(...args));
+      const jobs = validateDirectPending(
+        await this.nativeOneShot(() => this.native.pending(...args)),
+      );
       if (
         completed &&
-        (!mustCheckpoint || checkpointed) &&
+        checkpointed &&
         !jobs.some((job) => job.operationId === completed)
       ) {
         receipt(null);
@@ -404,8 +421,9 @@ export class DirectSmbConnections {
       return jobs;
     };
     return {
-      probe: (...args) => this.native.probe(...args),
-      initialize: (...args) => this.native.initialize(...args),
+      probe: (...args) => this.nativeOneShot(() => this.native.probe(...args)),
+      initialize: (...args) =>
+        this.nativeOneShot(() => this.native.initialize(...args)),
       pending,
       open: async (binding, credentials, context, signal) => {
         this.available();
@@ -445,7 +463,9 @@ export class DirectSmbConnections {
             (error as { guardianStopped?: unknown })?.guardianStopped === true
           ) {
             const jobs = validateDirectPending(
-              await this.native.pending(binding, this.options.appDir),
+              await this.nativeOneShot(() =>
+                this.native.pending(binding, this.options.appDir),
+              ),
             );
             if (
               !mustCheckpoint &&
@@ -459,13 +479,26 @@ export class DirectSmbConnections {
         }
         return {
           command: async (...args) => {
+            if (
+              [
+                "write-deletion",
+                "write-fence",
+                "write-pending",
+                "retire-pending",
+                "remove-exact",
+              ].includes(args[0])
+            )
+              checkpointed = false;
             const result = await session.command(...args);
             if (args[0] === "checkpoint") checkpointed = true;
             return result;
           },
           read: (...args) => session.read(...args),
           stream: (...args) => session.stream(...args),
-          write: (...args) => session.write(...args),
+          write: (...args) => {
+            checkpointed = false;
+            return session.write(...args);
+          },
           close: async () => {
             try {
               await session.close();
@@ -495,7 +528,7 @@ export class DirectSmbConnections {
           throw directConnectionError("stale-generation");
         let value: unknown;
         try {
-          value = await this.vault.get(selected.binding.credentialRef);
+          value = await this.secretVault().get(selected.binding.credentialRef);
         } catch {
           throw directConnectionError("credential-unavailable");
         }
@@ -613,7 +646,7 @@ export class DirectSmbConnections {
     try {
       return await this.owned(async (effective) => {
         const probe = this.protectedProbe(
-          await this.native.probe(e, c, effective),
+          await this.nativeOneShot(() => this.native.probe(e, c, effective)),
           e,
         );
         effective.throwIfAborted();
@@ -647,14 +680,14 @@ export class DirectSmbConnections {
   private async cleanup() {
     for (const reference of [...this.state.cleanup]) {
       try {
-        await this.vault.remove(reference);
+        await this.secretVault().remove(reference);
+        this.edit((s) => {
+          s.cleanup = s.cleanup.filter((r) => r !== reference);
+        });
       } catch {
         this.recovery = true;
         throw directConnectionError("recovery-required");
       }
-      this.edit((s) => {
-        s.cleanup = s.cleanup.filter((r) => r !== reference);
-      });
     }
   }
   private async transition(
@@ -736,7 +769,8 @@ export class DirectSmbConnections {
         this.options.registry.withMutation(() => run(signal), signal),
       );
     } catch (error) {
-      if (this.recovery) throw directConnectionError("recovery-required");
+      if (this.recovery || this.unsafeDrain)
+        throw directConnectionError("recovery-required");
       if (this.library().isBusy() || this.options.busy())
         throw directConnectionError("destination-busy");
       throw directConnectionError(directConnectionCode(error));
@@ -794,7 +828,9 @@ export class DirectSmbConnections {
         : undefined;
       if (old) await this.originalRecovered(old, signal);
       const probe = this.protectedProbe(
-        await this.native.probe(receipt.endpoint, receipt.credentials, signal),
+        await this.nativeOneShot(() =>
+          this.native.probe(receipt.endpoint, receipt.credentials, signal),
+        ),
         receipt.endpoint,
       );
       if (
@@ -823,7 +859,7 @@ export class DirectSmbConnections {
         async () => {
           try {
             if (
-              (await this.vault.put(receipt.credentials, reference)) !==
+              (await this.secretVault().put(receipt.credentials, reference)) !==
               reference
             )
               throw new Error();
@@ -833,12 +869,14 @@ export class DirectSmbConnections {
           let reviewed = probe;
           if (!probe.destinationId) {
             reviewed = this.protectedProbe(
-              await this.native.initialize(
-                receipt.endpoint,
-                receipt.credentials,
-                probe.identity,
-                randomUUID(),
-                signal,
+              await this.nativeOneShot(() =>
+                this.native.initialize(
+                  receipt.endpoint,
+                  receipt.credentials,
+                  probe.identity,
+                  randomUUID(),
+                  signal,
+                ),
               ),
               receipt.endpoint,
             );
@@ -986,6 +1024,7 @@ export class DirectSmbConnections {
     return { revisionIds, pending, uncertain };
   }
   protectedRevisionIds() {
+    if (!this.state.connections.length) return [];
     const protection = this.pendingProtection(),
       ids = new Set([
         ...this.state.connections.flatMap((c) => Object.keys(c.jobs)),
@@ -1138,7 +1177,7 @@ export class DirectSmbConnections {
             for (const meeting of library.snapshot().localMeetings ?? []) {
               effective.throwIfAborted();
               const revision = await library.queueLocal(meeting.id, effective);
-              if (revision.state === "verified") continue;
+              if (library.hasLocalPublication(revision.revisionId)) continue;
               this.edit((s) => {
                 const current = s.connections.find(
                   (c) => c.binding.id === provider.id,
@@ -1164,7 +1203,10 @@ export class DirectSmbConnections {
               const p = library
                 .snapshot()
                 .previews.find((p) => p.revisionId === revisionId);
-              if (p?.state !== "verified")
+              if (
+                p?.state !== "verified" ||
+                !library.hasLocalPublication(revisionId)
+              )
                 throw directConnectionError("recovery-required");
               this.edit((s) => {
                 const c = s.connections.find(

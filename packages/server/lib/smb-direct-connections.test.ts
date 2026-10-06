@@ -9,10 +9,12 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { directSmbResponse } from "./smb-direct-http";
 import { DirectSmbConnections } from "./smb-direct-connections";
 import { ProviderRegistry } from "./provider-registry";
 import { PortableLibrary } from "./portable-library";
 import { SessionTags } from "./session-tags";
+import { sha256 } from "./portable-schema";
 import { atomicWriteJson } from "./atomic-json";
 import type {
   DirectSmbNative,
@@ -482,7 +484,10 @@ test("a failed native pending refresh prevents both provider activation and fres
   const f = fixture(),
     c = await connect(f);
   f.native.pending = async () => {
-    throw Error("private-account pending failed");
+    throw Object.assign(Error("private-account pending failed"), {
+      code: "transport-unavailable",
+      guardianStopped: true,
+    });
   };
   await f.controls.sync(c.id, c.generation);
   expect(f.contexts).toHaveLength(0);
@@ -736,8 +741,13 @@ test("10000 durable jobs are accepted but the next actual local revision is refu
   );
   await restarted.sync(c.id, c.generation);
   expect(restarted.snapshot().connections[0]!.error?.code).toBe(
-    "bounds-exceeded",
+    "recovery-required",
   );
+  expect(restarted.snapshot().recoveryRequired).toBe(true);
+  expect(
+    JSON.parse(readFileSync(f.path, "utf8")).connections[0].uncertainty
+      .operationId,
+  ).toBe(f.contexts[0]);
   expect(restarted.snapshot().connections[0]!.progress.pending).toBe(10000);
   expect(
     readFileSync(join(f.root, "sessions", "new-meeting.json"), "utf8"),
@@ -1084,4 +1094,387 @@ test("invalid destination names are refused before credential storage or explici
   ).rejects.toMatchObject({ code: "invalid-input" });
   expect(f.events).toEqual([]);
   expect(f.secrets.size).toBe(0);
+});
+
+test("I7 cleanup acknowledgement persistence failure stays unavailable in-process and after restart", async () => {
+  const f = fixture(),
+    c = await connect(f),
+    reference = [...f.secrets.keys()][0]!;
+  let rejected = false;
+  f.options.write = (path, value) => {
+    const next = value as {
+      cleanup: string[];
+      connections: unknown[];
+      transition?: unknown;
+    };
+    if (
+      !rejected &&
+      next.cleanup.length === 0 &&
+      next.connections.length === 0 &&
+      !next.transition &&
+      f.events.includes("remove")
+    ) {
+      rejected = true;
+      throw Error("Cleanup acknowledgement disk failure");
+    }
+    atomicWriteJson(path, value);
+  };
+  await expect(f.controls.disconnect(c.id, c.generation)).rejects.toMatchObject(
+    { code: "recovery-required" },
+  );
+  expect(f.controls.unavailable()).toBe(true);
+  expect(f.controls.snapshot().recoveryRequired).toBe(true);
+  expect(f.secrets.has(reference)).toBe(false);
+  expect(JSON.parse(readFileSync(f.path, "utf8")).cleanup).toEqual([reference]);
+  await expect(
+    f.controls.connect({ name: "NAS", receipt: randomUUID(), create: false }),
+  ).rejects.toMatchObject({ code: "recovery-required" });
+  const response = await directSmbResponse(
+    new Request("http://localhost:3000/api/smb/direct", {
+      headers: { Origin: "http://localhost:3000" },
+    }),
+    f.controls,
+  );
+  expect(response.status).toBe(503);
+  expect(response.headers.get("Cache-Control")).toBe("no-store");
+  expect(await response.json()).toMatchObject({ code: "recovery-required" });
+  const restart = new DirectSmbConnections(f.options);
+  expect(restart.unavailable()).toBe(true);
+});
+
+test("I6 empty direct protection preserves lazy quota admission without constructing a catalog", () => {
+  const f = fixture();
+  let reads = 0;
+  const controls = new DirectSmbConnections({
+    ...f.options,
+    library: () => {
+      reads++;
+      throw Error("Quota full before lazy catalog admission");
+    },
+  });
+  expect(controls.protectedRevisionIds()).toEqual([]);
+  expect(controls.protectedLocalPaths()).toEqual([]);
+  expect(reads).toBe(0);
+});
+
+test("I3 an opened guardian without successful checkpoint retains uncertainty despite verified close and absent journal", async () => {
+  const f = fixture(),
+    c = await connect(f),
+    open = f.native.open;
+  let checkpoints = 0;
+  f.native.open = async (...args) => {
+    const session = await open(...args);
+    return {
+      ...session,
+      async command(action, value, signal) {
+        if (action === "checkpoint") {
+          checkpoints++;
+          throw Object.assign(Error("Checkpoint acknowledgement unavailable"), {
+            code: "transport-unavailable",
+          });
+        }
+        return session.command(action, value, signal);
+      },
+    };
+  };
+  await f.controls.sync(c.id, c.generation);
+  expect(checkpoints).toBeGreaterThan(0);
+  expect(f.controls.snapshot().recoveryRequired).toBe(true);
+  const original = f.contexts[0];
+  expect(
+    JSON.parse(readFileSync(f.path, "utf8")).connections[0].uncertainty
+      .operationId,
+  ).toBe(original);
+  await expect(f.controls.sync(c.id, c.generation)).rejects.toMatchObject({
+    code: "recovery-required",
+  });
+  expect(f.contexts).toEqual([original]);
+});
+
+function publicationFixture() {
+  const f = fixture(),
+    opened = f.native.open;
+  const remote = new Map<string, Map<string, Uint8Array>>(),
+    reads: string[] = [],
+    writes: string[] = [];
+  f.native.open = async (binding, credentials, context, signal) => {
+    const original = await opened(binding, credentials, context, signal);
+    let files = remote.get(binding.destinationId);
+    if (!files) {
+      files = new Map();
+      remote.set(binding.destinationId, files);
+    }
+    const destination = files;
+    return {
+      ...original,
+      async command(action, value, s) {
+        if (action === "inventory")
+          return {
+            commits: [...destination.entries()]
+              .filter(([p]) => p.startsWith("commits/"))
+              .map(([, b]) => JSON.parse(Buffer.from(b).toString("utf8"))),
+            deletions: [],
+            pending: [],
+            complete: true,
+          };
+        if (action === "confirm") return "remote-confirmed";
+        return original.command(action, value, s);
+      },
+      async write(path, bytes, hash, source, s) {
+        const chunks: Uint8Array[] = [];
+        for await (const chunk of source) {
+          s?.throwIfAborted();
+          chunks.push(chunk);
+        }
+        const data = Buffer.concat(chunks);
+        expect(data.length).toBe(bytes);
+        expect(sha256(data)).toBe(hash);
+        const existing = destination.get(path);
+        if (existing) expect(existing).toEqual(data);
+        destination.set(path, data);
+        writes.push(binding.destinationId + "/" + path);
+      },
+      async read(path, max, s) {
+        s?.throwIfAborted();
+        reads.push(binding.destinationId + "/" + path);
+        const data = destination.get(path);
+        if (!data || data.length > max)
+          throw Error("Missing or oversized fixture artifact");
+        return data;
+      },
+      async *stream(path, max, s) {
+        s?.throwIfAborted();
+        const data = destination.get(path);
+        if (!data || data.length > max)
+          throw Error("Missing or oversized fixture artifact");
+        yield data;
+      },
+    };
+  };
+  new SessionTags(join(f.root, "sessions")).save({
+    id: "meeting-1",
+    title: "Synthetic publication",
+    createdAt: "2026-01-01T00:00:00Z",
+    duration: 1,
+    language: "en",
+    transcript: "Exact nonempty published transcript",
+    speakers: [],
+    segments: [],
+    aiNotes: "",
+    summary: "",
+    tags: [],
+    pinned: false,
+    transcriptFinalized: true,
+    transcriptionModel: "fixture",
+  });
+  return { ...f, remote, reads, writes };
+}
+test("I1 nonempty controller publication uses one owned original UUID through actual artifact readback", async () => {
+  const f = publicationFixture(),
+    c = await connect(f);
+  await f.controls.sync(c.id, c.generation);
+  expect(f.controls.snapshot().connections[0]!.error).toBeNull();
+  expect(f.controls.snapshot().connections[0]!.progress.pending).toBe(0);
+  expect(f.contexts).toHaveLength(1);
+  expect(f.writes.filter((p) => p.endsWith("/meeting.json"))).toHaveLength(1);
+  expect(
+    f.reads.filter((p) => p.endsWith("/meeting.json")).length,
+  ).toBeGreaterThan(0);
+  const payload = [...f.remote.values()][0]!.entries();
+  expect(
+    [...payload].find(([p]) => p.endsWith("/meeting.json"))?.[1].toString(),
+  ).toContain("Exact nonempty published transcript");
+  expect(f.library.snapshot().previews[0]!.state).toBe("verified");
+});
+
+test("I2 global verified preview still publishes to a second destination and a replacement binding generation", async () => {
+  const f = publicationFixture(),
+    a = await connect(f);
+  await f.controls.sync(a.id, a.generation);
+  const first = f.binding()!.destinationId;
+  expect(f.library.snapshot().previews[0]!.state).toBe("verified");
+  f.destination(randomUUID());
+  const receipt = await f.controls.test(endpoint, credentials),
+    secondSnapshot = await f.controls.connect({
+      name: "Second NAS",
+      receipt: receipt.receipt,
+      create: false,
+    }),
+    b = secondSnapshot.connections.find((c) => c.id !== a.id)!;
+  await f.controls.sync(b.id, b.generation);
+  const second = f.binding()!.destinationId;
+  expect(second).not.toBe(first);
+  expect(f.remote.get(second)?.size).toBe(3);
+  expect(
+    f.writes.filter(
+      (p) => p.startsWith(second + "/") && p.endsWith("/meeting.json"),
+    ),
+  ).toHaveLength(1);
+  expect(
+    f.reads.filter(
+      (p) => p.startsWith(second + "/") && p.endsWith("/meeting.json"),
+    ).length,
+  ).toBeGreaterThan(0);
+  const newReceipt = await f.controls.test(endpoint, credentials),
+    thirdSnapshot = await f.controls.connect({
+      name: "Replacement NAS",
+      receipt: newReceipt.receipt,
+      create: false,
+      connectionId: b.id,
+      generation: b.generation,
+    }),
+    replacement = thirdSnapshot.connections.find((c) => c.id === b.id)!;
+  expect(replacement.id).toBe(b.id);
+  expect(replacement.generation).not.toBe(b.generation);
+  const before = f.writes.length;
+  await f.controls.sync(replacement.id, replacement.generation);
+  expect(f.writes.length).toBe(before + 3);
+  expect(
+    f.controls.snapshot().connections.find((c) => c.id === replacement.id)!
+      .progress.pending,
+  ).toBe(0);
+});
+
+test("I4 failed probe without stop proof latches helper drain and prevents another native attempt", async () => {
+  const f = fixture();
+  let calls = 0;
+  f.native.probe = async () => {
+    calls++;
+    throw Object.assign(Error("Unproved probe close"), {
+      code: "transaction-unavailable",
+    });
+  };
+  await expect(f.controls.test(endpoint, credentials)).rejects.toMatchObject({
+    code: "recovery-required",
+  });
+  expect(f.controls.snapshot().recoveryRequired).toBe(true);
+  await expect(f.controls.preempt()).rejects.toMatchObject({
+    code: "recovery-required",
+  });
+  await expect(f.controls.test(endpoint, credentials)).rejects.toMatchObject({
+    code: "recovery-required",
+  });
+  expect(calls).toBe(1);
+});
+test("I4 proven stopped probe refusal preserves its sanitized cause and permits a reviewed retry", async () => {
+  const f = fixture(),
+    probe = f.native.probe;
+  f.native.probe = async () => {
+    throw Object.assign(Error("Proven prelaunch refusal"), {
+      code: "runtime-unavailable",
+      guardianStopped: true,
+    });
+  };
+  await expect(f.controls.test(endpoint, credentials)).rejects.toMatchObject({
+    code: "runtime-unavailable",
+  });
+  expect(f.controls.snapshot().recoveryRequired).toBe(false);
+  await f.controls.preempt();
+  f.native.probe = probe;
+  expect((await f.controls.test(endpoint, credentials)).receipt).toBeString();
+});
+test("I4 credential-free pending query with unproved stop prevents enable and local capture admission", async () => {
+  const f = fixture(),
+    c = await connect(f);
+  f.native.pending = async () => {
+    throw Object.assign(Error("Unproved pending helper close"), {
+      code: "transaction-unavailable",
+    });
+  };
+  await f.controls.sync(c.id, c.generation);
+  expect(f.controls.snapshot().recoveryRequired).toBe(true);
+  await expect(f.controls.preempt()).rejects.toMatchObject({
+    code: "recovery-required",
+  });
+  await expect(
+    f.controls.enable(c.id, c.generation, false),
+  ).rejects.toMatchObject({ code: "recovery-required" });
+  expect(f.contexts).toEqual([]);
+});
+test("I4 initialization helper with unproved stop stays latched after transition rollback", async () => {
+  const f = fixture();
+  f.destination(null);
+  const r = await f.controls.test(endpoint, credentials);
+  f.native.initialize = async () => {
+    throw Object.assign(Error("Unproved initialization close"), {
+      code: "transaction-unavailable",
+    });
+  };
+  await expect(
+    f.controls.connect({ name: "New NAS", receipt: r.receipt, create: true }),
+  ).rejects.toMatchObject({ code: "recovery-required" });
+  expect(f.controls.snapshot().recoveryRequired).toBe(true);
+  await expect(f.controls.preempt()).rejects.toMatchObject({
+    code: "recovery-required",
+  });
+});
+
+test("I1 restart nonempty original recovery publishes and reads back under only the retained UUID", async () => {
+  const f = publicationFixture(),
+    c = await connect(f),
+    revision = await f.library.queueLocal("meeting-1"),
+    r = restartOriginal(f, c),
+    state = JSON.parse(
+      readFileSync(join(f.root, "library/catalog/state.json"), "utf8"),
+    ),
+    entry = Object.values(state.entries)[0] as any;
+  f.pending([
+    {
+      operationId: r.operationId,
+      deviceId: state.deviceId,
+      kind: "publish",
+      recoverable: true,
+      admissions: [
+        {
+          meetingId: revision.meetingId,
+          revisionId: revision.revisionId,
+          manifestHash: entry.marker.manifestHash,
+        },
+      ],
+    },
+  ]);
+  await r.restart.ready();
+  await r.restart.sync(c.id, c.generation);
+  expect(f.contexts).toEqual([r.operationId]);
+  expect(f.writes).toHaveLength(3);
+  expect(f.reads.some((p) => p.endsWith("/meeting.json"))).toBe(true);
+  expect(r.restart.snapshot().recoveryRequired).toBe(false);
+  expect(
+    JSON.parse(readFileSync(f.path, "utf8")).connections[0].uncertainty,
+  ).toBeNull();
+});
+
+test("I1 unrelated calls cannot borrow an owned publication UUID and later cycles receive fresh scoped UUIDs", async () => {
+  const f = publicationFixture(),
+    c = await connect(f),
+    open = f.native.open;
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>((r) => (entered = r)),
+    hold = new Promise<void>((r) => (release = r));
+  f.native.open = async (...args) => {
+    const session = await open(...args);
+    return {
+      ...session,
+      async write(...values) {
+        entered();
+        await hold;
+        return session.write(...values);
+      },
+    };
+  };
+  const running = f.controls.sync(c.id, c.generation);
+  await started;
+  await expect(f.library.publish(randomUUID())).rejects.toThrow(
+    "already running",
+  );
+  await expect(
+    f.library.withProvider({ id: "unrelated" } as any, async () => {}),
+  ).rejects.toThrow("already running");
+  expect(f.contexts).toHaveLength(1);
+  release();
+  await running;
+  f.native.open = open;
+  await f.controls.sync(c.id, c.generation);
+  expect(f.contexts).toHaveLength(2);
+  expect(f.contexts[1]).not.toBe(f.contexts[0]);
 });

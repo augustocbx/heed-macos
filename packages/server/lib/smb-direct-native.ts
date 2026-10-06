@@ -59,10 +59,16 @@ function responseError(value: unknown) {
 	return directSmbError(code);
 }
 /** Private local receipt; never serialized as provider/API state. */
-function stoppedFailure(error:unknown) {
- const failure=responseError((error as {code?:unknown})?.code);
- Object.defineProperty(failure,'guardianStopped',{value:true,enumerable:false});
- return failure;
+function stoppedFailure(error: unknown, preserve = false) {
+  const failure =
+    preserve && error instanceof Error
+      ? error
+      : responseError((error as { code?: unknown })?.code);
+  Object.defineProperty(failure, 'guardianStopped', {
+    value: true,
+    enumerable: false,
+  });
+  return failure;
 }
 function rpcValue(action: string, value: Record<string, unknown>) {
 	if (
@@ -568,53 +574,98 @@ export class PythonDirectSmbNative implements DirectSmbNative {
 		if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 1800000)
 			throw directSmbError('invalid-input');
 	}
-	private async start<T=DirectSmbProbe>(
+	private async start<T = DirectSmbProbe>(
 		request: Record<string, unknown>,
 		transaction: boolean,
 		signal?: AbortSignal,
-        decode?:(value:unknown)=>T,
+		decode?: (value: unknown) => T,
 	) {
-		signal?.throwIfAborted();
+		if (signal?.aborted) throw stoppedFailure(signal.reason, true);
 		let child: Child;
 		try {
 			child = track(await this.runner(this.helper));
 		} catch (error) {
-			throw responseError((error as { code?: unknown })?.code);
+			throw stoppedFailure(error);
 		}
 		const session = new DirectRpcSession(child, this.timeoutMs, signal);
 		try {
-			const probe = await session.startup<T>({ protocol: 1, ...request }, transaction, signal,decode);
+			const probe = await session.startup<T>(
+				{ protocol: 1, ...request },
+				transaction,
+				signal,
+				decode,
+			);
 			return { session, probe };
 		} catch (error) {
-            // If stopping cannot prove reaping, close throws and no stop receipt exists.
+			// If stopping cannot prove reaping, close throws and no stop receipt exists.
 			await session.close();
+			throw stoppedFailure(error, signal?.aborted && error === signal.reason);
+		}
+	}
+	private prelaunch<T>(run: () => T): T {
+		try {
+			return run();
+		} catch (error) {
 			throw stoppedFailure(error);
 		}
 	}
- async pending(binding:DirectSmbBinding,appDir:string,signal?:AbortSignal):Promise<PendingRemoteTransaction[]> {
-  const b=validateDirectBinding(binding);validateDirectContext({operationId:b.id,deviceId:b.id,kind:'read',appDir});
-  const {session,probe}=await this.start<PendingRemoteTransaction[]>({action:'pending',binding:b,appDir},false,signal,validateDirectPending);
-  try{return probe!;}finally{await session.close();}
- }
+	private async oneshot<T>(
+		session: DirectSmbSession,
+		run: () => T,
+	): Promise<T> {
+		let result: T;
+		try {
+			result = run();
+		} catch (error) {
+			await session.close();
+			throw stoppedFailure(error);
+		}
+		await session.close();
+		return result;
+	}
+	async pending(
+		binding: DirectSmbBinding,
+		appDir: string,
+		signal?: AbortSignal,
+	): Promise<PendingRemoteTransaction[]> {
+		const b = this.prelaunch(() => {
+			const b = validateDirectBinding(binding);
+			validateDirectContext({
+				operationId: b.id,
+				deviceId: b.id,
+				kind: 'read',
+				appDir,
+			});
+			return b;
+		});
+		const { session, probe } = await this.start<PendingRemoteTransaction[]>(
+			{ action: 'pending', binding: b, appDir },
+			false,
+			signal,
+			validateDirectPending,
+		);
+		return this.oneshot(session, () => probe!);
+	}
 
 	async probe(
 		endpoint: DirectSmbEndpoint,
 		credentials: DirectSmbCredentials,
 		signal?: AbortSignal,
 	): Promise<DirectSmbProbe> {
-		const e = validateDirectEndpoint(endpoint);
-		const c = validateDirectCredentials(credentials);
+		const { e, c } = this.prelaunch(() => ({
+			e: validateDirectEndpoint(endpoint),
+			c: validateDirectCredentials(credentials),
+		}));
 		const { session, probe } = await this.start(
 			{ action: 'probe', endpoint: e, credentials: c },
 			false,
 			signal,
 		);
-		try {
-			if (e.requireEncryption && !probe!.encrypted) throw directSmbError('unsupported-security');
+		return this.oneshot(session, () => {
+			if (e.requireEncryption && !probe!.encrypted)
+				throw directSmbError('unsupported-security');
 			return probe!;
-		} finally {
-			await session.close();
-		}
+		});
 	}
 	async initialize(
 		endpoint: DirectSmbEndpoint,
@@ -623,16 +674,28 @@ export class PythonDirectSmbNative implements DirectSmbNative {
 		destinationId: string,
 		signal?: AbortSignal,
 	): Promise<DirectSmbProbe> {
-		const e = validateDirectEndpoint(endpoint);
-		const c = validateDirectCredentials(credentials);
-		const identity = validateDirectIdentity(expectedIdentity);
-		if (!DIRECT_SMB_UUID.test(destinationId)) throw directSmbError('invalid-input');
+		const { e, c } = this.prelaunch(() => ({
+			e: validateDirectEndpoint(endpoint),
+			c: validateDirectCredentials(credentials),
+		}));
+		const identity = this.prelaunch(() => {
+			const identity = validateDirectIdentity(expectedIdentity);
+			if (!DIRECT_SMB_UUID.test(destinationId))
+				throw directSmbError('invalid-input');
+			return identity;
+		});
 		const { session, probe } = await this.start(
-			{ action: 'initialize', endpoint: e, credentials: c, identity, destinationId },
+			{
+				action: 'initialize',
+				endpoint: e,
+				credentials: c,
+				identity,
+				destinationId,
+			},
 			false,
 			signal,
 		);
-		try {
+		return this.oneshot(session, () => {
 			if (
 				!sameDirectIdentity(identity, probe!.identity) ||
 				probe!.destinationId !== destinationId ||
@@ -642,9 +705,7 @@ export class PythonDirectSmbNative implements DirectSmbNative {
 			)
 				throw directSmbError('identity-changed');
 			return probe!;
-		} finally {
-			await session.close();
-		}
+		});
 	}
 	async open(
 		binding: DirectSmbBinding,
@@ -652,14 +713,17 @@ export class PythonDirectSmbNative implements DirectSmbNative {
 		context: DirectSmbTransactionContext,
 		signal?: AbortSignal,
 	): Promise<DirectSmbSession> {
-        const {b,c,appDir,operation}=(()=>{
-            try {
-                signal?.throwIfAborted();
-                const b=validateDirectBinding(binding), c=validateDirectCredentials(credentials);
-                const {appDir,...operation}=validateDirectContext(context);
-                return {b,c,appDir,operation};
-            } catch(error) {throw stoppedFailure(error);}
-        })();
+		const { b, c, appDir, operation } = (() => {
+			try {
+				signal?.throwIfAborted();
+				const b = validateDirectBinding(binding),
+					c = validateDirectCredentials(credentials);
+				const { appDir, ...operation } = validateDirectContext(context);
+				return { b, c, appDir, operation };
+			} catch (error) {
+				throw stoppedFailure(error, signal?.aborted && error === signal.reason);
+			}
+		})();
 		const { session } = await this.start(
 			{
 				action: 'transaction',

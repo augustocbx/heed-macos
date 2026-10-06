@@ -125,3 +125,115 @@ function originalRecoveryFixture(){const f=fixture(),id=randomUUID(),operationId
 test('temporary original recovery keeps the original UUID and restores selected provider after checkpoint',async()=>{const f=originalRecoveryFixture();await f.library.reconcileTransaction(f.operationId,undefined,false,f.override);expect(f.contexts).toEqual([f.operationId]);expect(f.library.snapshot().providerId).toBe(f.provider.id);});
 test('temporary original recovery restores provider on native failure and refuses concurrent mutation',async()=>{const f=originalRecoveryFixture();let resolve!:()=>void;f.hold(new Promise(r=>resolve=r));f.fail();const pending=f.library.reconcileTransaction(f.operationId,undefined,false,f.override);await Bun.sleep(1);expect(f.library.snapshot().providerId).toBe(f.override.id);await expect(f.library.withMutation(async()=>{})).rejects.toThrow('already running');resolve();await expect(pending).rejects.toThrow('Original recovery failed');expect(f.library.snapshot().providerId).toBe(f.provider.id);expect(f.contexts).toEqual([f.operationId]);});
 test('temporary recovery validation failure never changes the selected provider',async()=>{const f=originalRecoveryFixture();await expect(f.library.reconcileTransaction(randomUUID(),undefined,false,f.override)).rejects.toThrow('Original operation recovery');expect(f.library.snapshot().providerId).toBe(f.provider.id);expect(f.contexts).toEqual([]);});
+
+test('I5 nonempty original publication recovers destination B despite unrelated deletion on selected A and reuses its UUID', async () => {
+  const f = fixture();
+  f.sessions.create(meeting());
+  const revision = await f.library.queueLocal('session-1'),
+    path = join(f.root, 'library/catalog/state.json'),
+    state = JSON.parse(readFileSync(path, 'utf8')),
+    entry = Object.values(state.entries)[0] as any,
+    original = randomUUID(),
+    aDestination = randomUUID(),
+    bDestination = randomUUID();
+  (f.provider as any).deletionCapabilities = {
+    destinationVersion: 3,
+    destinationId: aDestination,
+    revisionMetadata: true,
+    exclusion: 'exclusive-create',
+    connectionGeneration: 'a'.repeat(64),
+  };
+  state.remoteDeletions = {
+    [`${f.provider.id}/${aDestination}/${entry.manifest.libraryId}/${revision.meetingId}/${revision.revisionId}`]:
+      {
+        libraryId: entry.manifest.libraryId,
+        meetingId: revision.meetingId,
+        revisionId: revision.revisionId,
+        manifestHash: entry.marker.manifestHash,
+        parents: [],
+      },
+  };
+  atomicWriteJson(path, state);
+  const library = new PortableLibrary(f.options),
+    b = new Provider(),
+    contexts: string[] = [],
+    tx = {
+      observationDigest: async () => 'a'.repeat(64),
+      inventory: async () => ({
+        commits: [],
+        deletions: [],
+        pending: [],
+        complete: true,
+      }),
+      checkpoint: async () => {},
+      writePending: async () => {},
+      retirePending: async () => {},
+    };
+  b.id = 'destination-b';
+  let active = false;
+  Object.assign(b, {
+    deletionCapabilities: {
+      destinationVersion: 3,
+      destinationId: bDestination,
+      revisionMetadata: true,
+      exclusion: 'exclusive-create',
+      connectionGeneration: 'b'.repeat(64),
+    },
+    pendingTransactions: () => [
+      {
+        operationId: original,
+        deviceId: state.deviceId,
+        kind: 'publish',
+        recoverable: true,
+        admissions: [
+          {
+            meetingId: revision.meetingId,
+            revisionId: revision.revisionId,
+            manifestHash: entry.marker.manifestHash,
+          },
+        ],
+      },
+    ],
+    withTransaction: async (context: any, run: any) => {
+      contexts.push(context.operationId);
+      if (active) {
+        if (context.operationId !== original)
+          throw Error('Borrowed original UUID mismatch');
+        return run(tx);
+      }
+      active = true;
+      try {
+        return await run(tx);
+      } finally {
+        active = false;
+      }
+    },
+  });
+  await library.reconcileTransaction(original, undefined, false, b);
+  expect(b.writes).toHaveLength(3);
+  expect(b.reads.some((p) => p.endsWith('/meeting.json'))).toBe(true);
+  expect(contexts).toEqual([original, original]);
+  expect(library.snapshot().providerId).toBe(f.provider.id);
+  expect(library.isBusy()).toBe(false);
+});
+
+test('I5 destination-dependent validation holds the override lease and restores selection on validation error', async () => {
+  const f = originalRecoveryFixture();
+  let mutation: Promise<unknown> | undefined;
+  f.override.pendingTransactions = () => {
+    expect(f.library.snapshot().providerId).toBe(f.override.id);
+    expect(f.library.isBusy()).toBe(true);
+    mutation = f.library.withMutation(async () => {}).catch((error) => error);
+    throw Error('Invalid original destination journal');
+  };
+  await expect(
+    f.library.reconcileTransaction(f.operationId, undefined, false, f.override),
+  ).rejects.toThrow('Invalid original destination journal');
+  expect((await mutation!) as Error).toHaveProperty(
+    'message',
+    'A library operation is already running',
+  );
+  expect(f.library.snapshot().providerId).toBe(f.provider.id);
+  expect(f.library.isBusy()).toBe(false);
+  expect(f.contexts).toEqual([]);
+});
