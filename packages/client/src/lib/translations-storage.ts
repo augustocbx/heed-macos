@@ -1,4 +1,24 @@
 export const STORAGE_TRANSLATIONS: Record<string, Record<string,string>> = {
+  "Remote storage": {
+    "pt-BR": "Armazenamento remoto",
+    "fr": "Stockage distant",
+    "de": "Remotespeicher"
+  },
+  "Remote storage provider": {
+    "pt-BR": "Provedor de armazenamento remoto",
+    "fr": "Fournisseur de stockage distant",
+    "de": "Anbieter für Remotespeicher"
+  },
+  "Choose remote storage": {
+    "pt-BR": "Escolha o armazenamento remoto",
+    "fr": "Choisir le stockage distant",
+    "de": "Remotespeicher auswählen"
+  },
+  "Choose a provider to view its settings. Your existing connections keep their current configuration.": {
+    "pt-BR": "Escolha um provedor para ver suas configurações. As conexões existentes mantêm a configuração atual.",
+    "fr": "Choisissez un fournisseur pour afficher ses paramètres. Vos connexions existantes conservent leur configuration actuelle.",
+    "de": "Wählen Sie einen Anbieter, um seine Einstellungen anzuzeigen. Ihre bestehenden Verbindungen behalten ihre aktuelle Konfiguration."
+  },
   "Local meeting storage": {
     "pt-BR": "Armazenamento local de reuniões",
     "fr": "Stockage local des réunions",

@@ -29,3 +29,12 @@
 .card dl div {display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px;font-size:13px;}
 .card dd {margin:0;font-variant-numeric:tabular-nums;color:var(--text-2);}
 @media(max-width:640px){.card dl {grid-template-columns:1fr;}}
+
+.remoteStorage { display: grid; gap: 16px; margin: 24px 0; min-width: 0; }
+.providerChoice label { margin-top: 20px; margin-bottom: 8px; }
+.providerChoice select { width: 100%; }
+.card .storageField { display: grid; gap: 8px; margin-top: 20px; min-width: 0; }
+.card .storageField label { margin: 0; }
+.card .storageField input { width: 100%; min-width: 0; box-sizing: border-box; }
+.card .storageActions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.page .storageActions button { margin-top: 0; max-width: 100%; overflow-wrap: anywhere; }
