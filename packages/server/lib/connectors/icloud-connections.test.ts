@@ -20,3 +20,9 @@ test('deleted old-folder jobs cannot block publication of a newer folder source'
  await c.sync();expect(published).toEqual([f.rev,fresh]);expect(c.protectedRevisionIds()).toEqual([fresh]);
  }finally{f.close();}
 });
+
+test('connected local-only folder protects finalized audio before queue preparation',async()=>{
+ const f=fixture();try{const c=new ICloudConnections({...f.options,sessions:()=>[{transcriptFinalized:true,files:{wav:'/synthetic/final.wav'}},{transcriptFinalized:false,files:{wav:'/synthetic/working.wav'}}]});
+ expect(c.protectedLocalPaths()).toEqual([]);const selected=await c.select();await c.connect({name:'Pending copy',receipt:selected.receipt,create:false});expect(c.protectedLocalPaths()).toEqual(['/synthetic/final.wav']);await c.enable(false);expect(c.protectedLocalPaths()).toEqual([]);
+ }finally{f.close();}
+});
