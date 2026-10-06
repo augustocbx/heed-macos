@@ -10,6 +10,22 @@ export interface QuotaFixture {
  probe:(path:string)=>any;
 }
 
+export class QuotaCleanupError extends Error{
+ constructor(){super('Owned quota services did not all stop; fixture retained');this.name='QuotaCleanupError';}
+}
+export async function finishOwnedQuotaServices(shutdowns:Array<()=>void|Promise<void>>){
+ const results=await Promise.allSettled(shutdowns.map(shutdown=>Promise.resolve().then(shutdown)));
+ if(results.some(result=>result.status==='rejected'))throw new QuotaCleanupError();
+}
+
+export function removeOwnedQuotaFixture(path:string,receipt:{dev:number;ino:number},options:{keep:boolean;servicesVerified:boolean}){
+ const current=lstatSync(path);
+ if(!current.isDirectory()||current.dev!==receipt.dev||current.ino!==receipt.ino)throw Error('Fixture cleanup authority changed; directory retained');
+ if(options.keep)return 'retained-by-request';
+ if(!options.servicesVerified)return 'retained-unverified';
+ rmSync(path,{recursive:true});return 'removed';
+}
+
 /** Owned, synthetic source only; the production writer and server are unchanged. */
 export async function withCaptureQuotaFixture(options:{sourceRoot:string;limit:number;fixtureRoot?:string;keepFixture?:boolean;includeClient?:boolean;holdFinalization?:boolean},run:(fixture:QuotaFixture)=>Promise<void>){
  const repository=realpathSync(options.sourceRoot);
@@ -24,6 +40,7 @@ export async function withCaptureQuotaFixture(options:{sourceRoot:string;limit:n
  mkdirSync(root);mkdirSync(join(source,'packages'),{recursive:true});
  writeFileSync(join(temporary,'ownership.json'),JSON.stringify({version:1,kind:'synthetic-quota',pid:process.pid,source:repository}));
  let app:Bun.Subprocess|undefined,base='',diagnostics:Promise<string>|undefined,finalizeCount=0;
+ let externallyUnverified=false;
  let releaseFinalize!:()=>void;const finalGate=new Promise<void>(done=>{releaseFinalize=done;});
  if(!options.holdFinalization)releaseFinalize();
  const probe=(path:string)=>{
@@ -87,12 +104,16 @@ await Bun.write(Bun.stdout,pcm);chunks++;await Bun.sleep(100);}
    return {status:response.status,body:await response.json()};
   };
   await start();await run({root,source,temporary,base:()=>base,request,restart:async()=>{await stop();await start();},finalizeCount:()=>finalizeCount,releaseFinalize,probe});
+ }catch(error){
+  externallyUnverified=error instanceof QuotaCleanupError;throw error;
  }finally{
   releaseFinalize();
-  await stop();sidecar?.stop(true);
+  await finishOwnedQuotaServices([stop,()=>{sidecar?.stop(true);}]);
+  for(const port of [base?Number(new URL(base).port):undefined,sidecar?.port])if(port){
+   try{const lease=Bun.serve({hostname:'127.0.0.1',port,fetch:()=>new Response()});lease.stop(true);}
+   catch{throw new QuotaCleanupError();}
+  }
   // Only the receipt-created temporary directory is removed.
-  const current=lstatSync(temporary);
-  if(!current.isDirectory()||current.dev!==owned.dev||current.ino!==owned.ino)throw Error('Fixture cleanup authority changed; directory retained');
-  if(!options.keepFixture)rmSync(temporary,{recursive:true});
+  removeOwnedQuotaFixture(temporary,owned,{keep:!!options.keepFixture,servicesVerified:!externallyUnverified});
  }
 }

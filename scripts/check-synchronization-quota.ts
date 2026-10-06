@@ -5,7 +5,7 @@ import {closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFi
 import {basename, dirname, join, resolve, sep} from 'node:path';
 import {arch, release} from 'node:os';
 import {chromium, type Browser, type Page} from 'playwright';
-import {withCaptureQuotaFixture, type QuotaFixture} from '../packages/server/lib/qa/capture-quota-fixture';
+import {finishOwnedQuotaServices,removeOwnedQuotaFixture,withCaptureQuotaFixture, type QuotaFixture} from '../packages/server/lib/qa/capture-quota-fixture';
 
 const help = 'Usage: bun scripts/check-synchronization-quota.ts --source-root ROOT --output NEW_PUBLIC_REPORT.json --fixture-root NONEXISTENT_PHYSICAL_DIR [--phase pressure|pages|all] [--keep-fixture]';
 function requireFact(condition: unknown, message: string): asserts condition { if (!condition) throw Error(message); }
@@ -189,8 +189,10 @@ async function pages(fixture: QuotaFixture, screenshotRoot: string, ports: {api:
  } catch (error) {
   writeFileSync(join(fixture.temporary,'page-error.txt'),String((error as Error).stack).slice(0,64000),{flag:'wx',mode:0o600});throw error;
  } finally {
-  await browser?.close();vite.kill();
-  await Promise.race([vite.exited,Bun.sleep(5000).then(() => {throw Error('Owned UI process did not stop');})]);await diagnostics;requireFreePorts([port]);
+  await finishOwnedQuotaServices([
+   async()=>{await Promise.race([browser?.close(),Bun.sleep(5000).then(()=>{throw Error('Owned browser did not stop');})]);},
+   async()=>{vite.kill();await Promise.race([vite.exited,Bun.sleep(5000).then(()=>{throw Error('Owned UI process did not stop');})]);await diagnostics;requireFreePorts([port]);},
+  ]);
  }
 }
 
@@ -234,9 +236,7 @@ async function main() {
  } finally {
   report.finishedAt = new Date().toISOString();report.ownedServicesStopped = servicesVerified ? true : 'not-verified-by-report';
   try {
-   const current = lstatSync(root);requireFact(current.dev === receipt.dev && current.ino === receipt.ino && current.isDirectory(),'Fixture cleanup authority changed');
-   if (options['--keep-fixture'] !== true) rmSync(root,{recursive:true});
-   report.fixtureCleanup = options['--keep-fixture'] === true ? 'retained-by-request' : 'removed';
+   report.fixtureCleanup=removeOwnedQuotaFixture(root,receipt,{keep:options['--keep-fixture']===true,servicesVerified});
   } catch {
    report.status = 'failed';report.fixtureCleanup = 'refused-or-incomplete';process.exitCode = 1;
   }
