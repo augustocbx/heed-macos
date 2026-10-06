@@ -117,7 +117,7 @@ def command_configuration_root(args):
     return 0
 
 
-def fetch_json(url, timeout=3.0, method="GET", body=None):
+def fetch_json(url, timeout=3.0, method="GET", body=None, max_bytes=65536):
     """Return (status, parsed JSON or None, raw text). Connection errors return status None."""
     data = None if body is None else json.dumps(body).encode()
     request = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
@@ -128,8 +128,11 @@ def fetch_json(url, timeout=3.0, method="GET", body=None):
                 return None
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
         with opener.open(request, timeout=timeout) as response:
-            raw = response.read(65536).decode("utf-8", "replace")
+            payload = response.read(max_bytes + 1)
             status = response.status
+            if len(payload) > max_bytes:
+                return status, None, ""
+            raw = payload.decode("utf-8", "replace")
     except urllib.error.HTTPError as error:
         raw = error.read(65536).decode("utf-8", "replace")
         status = error.code
@@ -231,11 +234,15 @@ def command_wait_api(args):
 
 # audioWork covers manual transcription and every other job that holds audio.
 BUSY_KEYS = ["recording", "processing", "pending", "starting", "audioWork"]
+# The desktop status includes the last saved session and its transcript snapshot.
+# Keep reads bounded while allowing normal meeting history during an upgrade.
+STATUS_RESPONSE_LIMIT = 16 * 1024 * 1024
 
 
 def command_busy(args):
     """Exit 0 when Heed is idle or not running, 1 when audio work is active, 2 when the state is unknown."""
-    status, data, _ = fetch_json("http://127.0.0.1:%d/api/desktop/control/status" % args.api_port)
+    status, data, _ = fetch_json("http://127.0.0.1:%d/api/desktop/control/status" % args.api_port,
+                               max_bytes=STATUS_RESPONSE_LIMIT)
     if status is None:
         if listener_pids(args.api_port):
             print("The configured API listener did not return recording status. Nothing was stopped.", file=sys.stderr)

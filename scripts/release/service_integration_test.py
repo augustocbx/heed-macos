@@ -9,6 +9,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import heed_release
@@ -17,6 +20,43 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 class ServiceIntegrationTest(unittest.TestCase):
+    @contextlib.contextmanager
+    def status_server(self, state):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                data = ({'service': 'heed-api', 'protocolVersion': 1,
+                         'checkoutRoot': str(ROOT.resolve()), 'pid': os.getpid()}
+                        if self.path == '/.well-known/heed-service' else state)
+                body = json.dumps(data).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+            def log_message(self, *args):
+                pass
+
+        for port in range(49010, 49110):
+            try:
+                server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
+                break
+            except OSError:
+                continue
+        else:
+            self.fail('No isolated test port is available')
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield SimpleNamespace(api_port=port, root=str(ROOT))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.directory = pathlib.Path(self.temp.name)
@@ -236,6 +276,27 @@ class ServiceIntegrationTest(unittest.TestCase):
             self.assertEqual(heed_release.command_busy(arguments), 2)
         self.assertIn('incomplete or unsupported recording status', diagnostics.getvalue())
         self.assertNotIn('another application', diagnostics.getvalue())
+
+    def test_idle_upgrade_accepts_a_status_with_a_long_saved_transcript(self):
+        state = {'recording': False, 'processing': False, 'pending': False,
+                 'starting': False, 'audioWork': False,
+                 'session': {'transcript': 'Synthetic meeting transcript. ' * 6000}}
+        with self.status_server(state) as arguments:
+            self.assertEqual(heed_release.command_busy(arguments), 0)
+
+    def test_long_status_still_refuses_active_audio_work(self):
+        state = {'recording': False, 'processing': False, 'pending': False,
+                 'starting': False, 'audioWork': True,
+                 'session': {'transcript': 'Synthetic meeting transcript. ' * 6000}}
+        with self.status_server(state) as arguments:
+            self.assertEqual(heed_release.command_busy(arguments), 1)
+
+    def test_oversized_status_remains_unknown(self):
+        state = {'recording': False, 'processing': False, 'pending': False,
+                 'starting': False, 'audioWork': False,
+                 'session': {'transcript': 'x' * (20 * 1024 * 1024)}}
+        with self.status_server(state) as arguments:
+            self.assertEqual(heed_release.command_busy(arguments), 2)
 
     def test_restore_previous_absence_removes_only_the_installers_exact_ports(self):
         app = pathlib.Path(self.env['HEED_APP_DIR'])
