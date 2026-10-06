@@ -1,0 +1,11 @@
+import {expect,test} from 'bun:test';import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join,resolve} from 'node:path';
+test('production router and desktop poll expose correlated SMB folder controls without capture or private data',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'heed-smb-router-'));const sidecar=Bun.serve({hostname:'127.0.0.1',port:0,fetch:()=>Response.json({whisper:true})});const reservation=Bun.serve({hostname:'127.0.0.1',port:0,fetch:()=>new Response()});const base=`http://127.0.0.1:${reservation.port}`;reservation.stop(true);
+ const child=Bun.spawn([process.execPath,resolve(import.meta.dir,'../server.ts')],{cwd:resolve(import.meta.dir,'../../..'),env:{...process.env,PORT:base.split(':').at(-1)!,HEED_APP_DIR:root,HEED_RECORDINGS_DIR:join(root,'recordings'),HEED_TRANSCRIPTION_URL:`http://127.0.0.1:${sidecar.port}`},stdout:'ignore',stderr:'pipe'});
+ const request=(path:string,body?:unknown,origin?:string)=>fetch(base+path,{method:body?'POST':'GET',headers:{'content-type':'application/json',...(origin?{origin}:{})},body:body?JSON.stringify(body):undefined});
+ try{const deadline=Date.now()+8000;let ready=false;while(Date.now()<deadline){try{if((await request('/api/smb')).ok){ready=true;break;}}catch{}await Bun.sleep(30);}expect(ready).toBe(true);
+  expect((await request('/api/smb',undefined,'https://outside.example')).status).toBe(403);expect((await request('/api/smb',{action:'folder'},'https://outside.example')).status).toBe(403);
+  expect((await (await request('/api/smb',{action:'folder'})).json()).desktopPending).toBe(true);const poll=await (await request('/api/desktop/control/poll',{client:'synthetic'})).json();expect(poll.command).toBeNull();expect(poll.status.smbCommand.action).toBe('folder');expect(poll.status.recording).toBe(false);
+  expect((await request('/api/smb',{action:'desktop-report',id:poll.status.smbCommand.id,folder:root,failed:false})).status).toBe(200);const failed=await request('/api/smb',{action:'test',folder:root});expect(failed.status).toBe(503);expect(await failed.text()).not.toContain(root);expect((await (await request('/api/recording/status')).json()).state).toBe('idle');expect((await request('/api/library')).status).toBe(200);
+ }finally{child.kill();await child.exited;sidecar.stop(true);rmSync(root,{recursive:true,force:true});}
+},12000);

@@ -2,8 +2,8 @@ import {desktopRequestAllowed} from './desktop-permissions';import type {SmbConn
 const string=(value:unknown,max:number):value is string=>typeof value==='string'&&value.length>0&&value.length<=max;
 const ids=(value:unknown):value is string=>string(value,100);
 export async function smbResponse(request:Request,connections:SmbConnections):Promise<Response>{
- if(request.method==='GET')return Response.json(connections.snapshot());if(request.method!=='POST')return new Response(null,{status:405});
  if(!desktopRequestAllowed(request,new URL(request.url).port))return Response.json({error:'Synchronization controls are only available from this Mac.'},{status:403});
+ if(request.method==='GET')return Response.json(connections.snapshot());if(request.method!=='POST')return new Response(null,{status:405});
  try{
   if(Number(request.headers.get('content-length'))>16384)throw new Error('Invalid SMB request.');const text=await request.text();if(text.length>16384)throw new Error('Invalid SMB request.');const body=JSON.parse(text);if(!body||typeof body!=='object'||Array.isArray(body))throw new Error('Invalid SMB request.');
   const fields:Record<string,string[]>={test:['action','folder'],connect:['action','name','receipt','create','connectionId'],rename:['action','id','name'],enable:['action','id','enabled'],disconnect:['action','id'],sync:['action'],folder:['action'],mount:['action','address'],'desktop-report':['action','id','folder','failed']};
@@ -21,8 +21,8 @@ export async function smbResponse(request:Request,connections:SmbConnections):Pr
   }
  }catch(error){
   const message=error instanceof Error?error.message:'';
-  const invalid=/^Invalid|^Enter a credential-free/.test(message);const conflict=/expired|already pending|Confirm creation|Wait for|limit reached|not found|identity changed|changed after/.test(message);
-  const safe=/^Invalid|^Enter a credential-free|^The access test|^Confirm creation|^Wait for|^Synchronization destination|^Destination identity|^The SMB destination|^The macOS request|^A macOS connection|^SMB destination|^SMB signing|^A read-only|^Unsupported or corrupt/.test(message);
+  const invalid=/^Invalid|^Enter a credential-free/.test(message);const conflict=/expired|already pending|Confirm creation|Wait for|already running|limit reached|not found|identity changed|changed after/.test(message);
+  const safe=/^Invalid|^A library operation|^Enter a credential-free|^The access test|^Confirm creation|^Wait for|^Synchronization destination|^Destination identity|^The SMB destination|^The macOS request|^A macOS connection|^SMB destination|^SMB signing|^A read-only|^Unsupported or corrupt/.test(message);
   return Response.json({error:safe?message:'SMB operation unavailable. Check the selected mount, access and library integrity.'},{status:invalid?400:conflict?409:503});
  }
  return new Response(null,{status:400});

@@ -1,3 +1,6 @@
+import {SmbConnections} from './lib/smb-connections.ts';
+import {smbResponse} from './lib/smb-http.ts';
+import {ProviderRegistry} from './lib/provider-registry.ts';
 import {PortableLibraryRuntime} from './lib/portable-runtime.ts';
 import {libraryResponse} from './lib/portable-http.ts';
 import { LibraryChatService, libraryChatResponse } from "./lib/library-chat.ts";
@@ -80,10 +83,11 @@ const FALLBACK_MODEL = process.env.HEED_MODEL || null;
 // ./lib/app-config.ts — single source of truth (the stale lib/config.ts duplicate was deleted).
 ensureAppDirs([UPLOAD_DIR]);
 let portableRuntime:PortableLibraryRuntime|undefined;
+let smbConnections:SmbConnections|undefined;
 const captureProtectedPaths=()=>[...retainedProcessing.keys(),...((recorderPath && (recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning))?[recorderPath]:[])];
 const managedQuota=createAppQuota({
  recordingsDir:UPLOAD_DIR,
- protectedPaths:()=>[...captureProtectedPaths(),...(portableRuntime?.protectedPaths()||[])],
+ protectedPaths:()=>[...captureProtectedPaths(),...(smbConnections?.protectedLocalPaths()||[]),...(portableRuntime?.protectedPaths(smbConnections?.protectedRevisionIds())||[])],
  onEvicted:paths=>{
   sessionTags.recover();
   for(const session of sessionTags.snapshot().sessions)if(session.files?.wav && paths.includes(session.files.wav)){
@@ -95,6 +99,12 @@ const managedQuota=createAppQuota({
 portableRuntime=new PortableLibraryRuntime({root:LIBRARY_DIR,sessions:sessionTags,sessionsDir:SESSIONS_DIR,recordingsDir:UPLOAD_DIR,quota:managedQuota,protectedPaths:captureProtectedPaths});
 /** Connectors lease this single catalog owner for their entire provider tick. */
 export function getPortableLibrary(){return portableRuntime!.get();}
+/** Device preference lives outside the portable schema and managed-meeting quota. */
+export const providerRegistry=new ProviderRegistry({path:join(APP_DIR,'provider-preference.json'),getLibrary:getPortableLibrary});
+smbConnections=new SmbConnections({path:join(LIBRARY_DIR,'catalog','smb-connections.json'),catalogPath:join(LIBRARY_DIR,'catalog','state.json'),sessions:()=>sessionTags.snapshot().sessions,registry:providerRegistry,get library(){return getPortableLibrary();},busy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
+// Restore only the selected registered connector. Other connector startup registrations share this registry.
+if(providerRegistry.preferredId())try{providerRegistry.restore();}catch{console.error('Synchronization preference could not be restored. Check storage and destination access.');}
+smbConnections.start();
 async function handleLibrary(req:Request):Promise<Response>{
  if(req.method==='POST'&&!permissionRequestAllowed(req,PORT))return new Response(null,{status:403});
  try{return await libraryResponse(req,getPortableLibrary(),()=>portableRuntime!.migrate(req.signal),audioWorkBusy);}catch(error){const message=(error as Error).message;return Response.json({error:message,code:/quota|reservation/i.test(message)?'quota-blocked':'unavailable'},{status:/quota|reservation/i.test(message)?409:503});}
@@ -2209,7 +2219,7 @@ function desktopRecordingStatus() {
  return {...state, snapshot:state, seconds:Math.floor(state.seconds), recording:!!recorderProc && recorderProc.exitCode === null,
   processing:["stopping","finalizing"].includes(state.state) || recordingFinalizationRunning,
   starting:state.state === "starting", pending:false, clientConnected:true, ready:!state.maintenance,
-  meetingDetection:meetingDetection.status(),language:recordingLanguage,uiLocale:configuredUiLocale(loadConfig()),storage:{...managedQuota.snapshot(),bytes:managedQuota.snapshot().usedBytes},quotaStopped:!!quotaStopResult};
+  smbCommand:smbConnections?.desktopCommand()||null,meetingDetection:meetingDetection.status(),language:recordingLanguage,uiLocale:configuredUiLocale(loadConfig()),storage:{...managedQuota.snapshot(),bytes:managedQuota.snapshot().usedBytes},quotaStopped:!!quotaStopResult};
 }
 async function handleRecordingControl(req: Request, pathname: string): Promise<Response> {
  if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
@@ -2480,6 +2490,7 @@ const server = Bun.serve({
 		if (url.pathname.startsWith("/api/recording/")) { httpServer.timeout(req,0); return handleRecordingControl(req,url.pathname); }
 		if (url.pathname.startsWith("/api/meeting-detection/")) return meetingDetectionRoute(req,meetingDetection,PORT);
 		if (url.pathname.startsWith("/api/desktop/control/")) { httpServer.timeout(req,0); return handleDesktopControl(req, url.pathname); }
+		if(url.pathname==='/api/smb'){httpServer.timeout(req,0);return smbResponse(req,smbConnections!);}
 		if (url.pathname==='/api/library'){httpServer.timeout(req,0);return handleLibrary(req);}
 		if (url.pathname==='/api/storage' || url.pathname.startsWith('/api/storage/')) return handleStorage(req);
 		if (method === "POST" && url.pathname === "/api/desktop/float") return handleDesktopFloat();
@@ -2500,7 +2511,7 @@ const server = Bun.serve({
 // Never leave an orphaned ffmpeg/syscap holding the mic: on SIGINT/SIGTERM/exit, gracefully reap
 // every tracked child (the recorder, the system-audio capture, the level meter). Previously there
 // was NO signal handler — a server crash/exit left ffmpeg running and the mic "stuck busy".
-installShutdownHooks(() => { clearInterval(notesTimer); clearInterval(tasksTimer); manualNotesController?.abort(); void notesService.preempt(); void tasksService.preempt(); void chatService.preempt(); void libraryChatService.preempt(); stopLiveTranscribe(); });
+installShutdownHooks(() => { smbConnections?.close();clearInterval(notesTimer); clearInterval(tasksTimer); manualNotesController?.abort(); void notesService.preempt(); void tasksService.preempt(); void chatService.preempt(); void libraryChatService.preempt(); stopLiveTranscribe(); });
 
 console.log(`
   ┌──────────────────────────────────┐

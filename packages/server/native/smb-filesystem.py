@@ -14,6 +14,7 @@ import subprocess
 import sys
 import uuid
 import signal
+import fcntl
 
 MAX_BYTES = 8_000_000_000_000
 CHUNK = 131072
@@ -233,9 +234,22 @@ class SafeShare:
         if staging_id is not None:
             uuid.UUID(staging_id)
         temporary = ".heed-" + (staging_id or str(uuid.uuid4())) + "-" + digest[:16]
-        fd = -1
+        fd, lock_fd, locked = -1, -1, False
         try:
             self.check(parent, write=True)
+            if staging_id:
+                # A stable separate lock survives publication renames. Hold it
+                # through stage cleanup so another retry cannot lose its inode.
+                lock_fd = os.open(".heed-" + staging_id + ".lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+                lock_info = os.fstat(lock_fd)
+                if not stat.S_ISREG(lock_info.st_mode) or lock_info.st_nlink != 1:
+                    raise ShareError("invalid-lock")
+                self.check(lock_fd, write=True)
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    raise ShareError("staging-busy")
+                locked = True
             if staging_id:
                 # Reclaim only this connection's exact interrupted temporary
                 # object. Stable names bound retry debris without deleting any
@@ -284,10 +298,15 @@ class SafeShare:
             if fd != -1:
                 os.close(fd)
             try:
-                os.unlink(temporary, dir_fd=parent)
-            except FileNotFoundError:
-                pass
-            os.close(parent)
+                if not staging_id or locked:
+                    try:
+                        os.unlink(temporary, dir_fd=parent)
+                    except FileNotFoundError:
+                        pass
+            finally:
+                if lock_fd != -1:
+                    os.close(lock_fd)
+                os.close(parent)
 
     def write(self, path, source, count, digest, staging_id=None):
         self.check(write=True)
@@ -396,7 +415,7 @@ def main():
                 raise ShareError("invalid-library")
             uuid.UUID(header["destinationId"])
             # Do not adopt arbitrary existing content as a new shared library.
-            if os.listdir(fs.fd):
+            if any(name != ".DS_Store" for name in os.listdir(fs.fd)):
                 raise ShareError("nonempty-library")
             content = json.dumps(header, separators=(",", ":")).encode()
             import io
@@ -411,6 +430,7 @@ def main():
             try:
                 fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fs.fd)
                 fs.check(fd, write=True)
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 os.write(fd, b"Heed access probe")
                 os.fsync(fd)
                 os.close(fd)

@@ -96,6 +96,29 @@ class FilesystemTests(unittest.TestCase):
         self.assertEqual(other.read_bytes(), b"retain")
         self.assertEqual((self.root / "objects" / digest).read_bytes(), b"complete")
 
+    def test_same_owner_concurrent_retry_never_reclaims_live_stage(self):
+        import hashlib
+        import uuid
+        owner = str(uuid.uuid4())
+        content = b"complete"
+        digest = hashlib.sha256(content).hexdigest()
+        attempts = []
+        outer = self
+
+        class Interleaved(io.BytesIO):
+            def read(self, size=-1):
+                if not attempts:
+                    try:
+                        outer.fs.write("objects/" + digest, io.BytesIO(content), len(content), digest, owner)
+                        attempts.append("unexpected success")
+                    except module.ShareError:
+                        attempts.append("busy")
+                return super().read(size)
+
+        self.fs.write("objects/" + digest, Interleaved(content), len(content), digest, owner)
+        self.assertEqual(attempts, ["busy"])
+        self.assertEqual((self.root / "objects" / digest).read_bytes(), content)
+
     @unittest.skipUnless(os.sys.platform == "darwin", "Public Darwin filesystem metadata")
     def test_native_statfs_rejects_fixture_local_volume(self):
         info = module.mounted_share(self.fs.fd)
