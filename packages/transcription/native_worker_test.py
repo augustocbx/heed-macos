@@ -12,8 +12,12 @@ import subprocess
 from unittest.mock import patch
 
 
+# Allow interpreter scheduling for successful fixtures; timeout tests override this.
+WORKER_FIXTURE_STARTUP_SECONDS = 5
+
+
 class NativeWorkerTests(unittest.TestCase):
-    def worker(self, code, startup=0.3):
+    def worker(self, code, startup=WORKER_FIXTURE_STARTUP_SECONDS):
         worker = NativeWorker([sys.executable, '-u', '-c', code], startup_timeout=startup,
                               shutdown_timeout=0.1)
         self.addCleanup(worker.close)
@@ -135,6 +139,12 @@ class NativeWorkerTests(unittest.TestCase):
         worker = self.worker('import time;print("E5RT telemetry {\\\"status\\\":\\\"loading\\\"}");print("{\\\"ready\\\":1}");time.sleep(.03);print("{\\\"ready\\\":true}");time.sleep(30)')
         self.assertTrue(worker.alive)
 
+    def test_delayed_valid_startup_still_allows_a_bounded_request(self):
+        # Positive protocol checks must tolerate interpreter scheduling before readiness.
+        worker = self.worker('import sys,time;time.sleep(.4);print(\'{"ready":true}\');sys.stdin.readline();print(\'{"ok":true}\');time.sleep(30)')
+        self.assertEqual(worker.request({'cmd': 'one'}, timeout=.5), {'ok': True})
+        self.assertTrue(worker.alive)
+
 
     def test_truthy_nonboolean_ready_cannot_admit_requests(self):
         with self.assertRaises(TimeoutError):
@@ -195,7 +205,7 @@ class NativeWorkerTests(unittest.TestCase):
         with patch('native_worker.registry', owned):
             worker = NativeWorker([sys.executable, '-u', '-c',
                                    'import time;print("{\\\"ready\\\":true}");time.sleep(30)'],
-                                  startup_timeout=.3, shutdown_timeout=.1)
+                                  startup_timeout=WORKER_FIXTURE_STARTUP_SECONDS, shutdown_timeout=.1)
             worker.proc.kill()
             worker.proc.wait(timeout=1)
             with patch('native_worker.os.killpg') as send:
