@@ -71,7 +71,7 @@ export function PermissionsPage() {
    {localeError && <p role="alert">{tr("Could not save interface language. Check that Heed is running and try again.")}</p>}
   </article>
   <AutomaticNotesSettings />
-  <SmbSettings />
+  <SmbSettings onProviderChanged={()=>setLibrarySelection(value=>value+1)}/>
   <GoogleDriveSettings onProviderChanged={()=>setLibrarySelection(value=>value+1)}/>
   <MeetingDetectionSettings />
   <StorageSettings />

@@ -1,9 +1,9 @@
 import {useCallback,useEffect,useRef,useState} from 'react';import {smbApi,type SmbSnapshot,type SmbTest} from '@/api/smb';import {useLocale} from '@/lib/i18n';import styles from './PermissionsPage.module.css';
-export function SmbSettings(){
+export function SmbSettings({onProviderChanged}:{onProviderChanged?:()=>void}={}){
  const {tr}=useLocale();const [snapshot,setSnapshot]=useState<SmbSnapshot|null>(null);const [name,setName]=useState('');const [folder,setFolder]=useState('');const [address,setAddress]=useState('');const [test,setTest]=useState<SmbTest|null>(null);const [create,setCreate]=useState(false);const [connectionId,setConnectionId]=useState<string|undefined>();const [busy,setBusy]=useState(false);const [error,setError]=useState(false);const [edits,setEdits]=useState<Record<string,string>>({});const chosen=useRef<string|null>(null);
  const refresh=useCallback(async()=>{try{const next=await smbApi.status();if(!next||!Array.isArray(next.connections))throw new Error('Invalid synchronization status');setSnapshot(next);if(next.selectedFolder&&next.selectedFolder!==chosen.current){chosen.current=next.selectedFolder;setFolder(next.selectedFolder);setTest(null);setCreate(false);setConnectionId(undefined);}}catch{setError(true);}},[]);
  useEffect(()=>{void refresh();const timer=window.setInterval(()=>void refresh(),3000);return()=>clearInterval(timer);},[refresh]);
- const run=async(action:()=>Promise<SmbSnapshot>)=>{setBusy(true);setError(false);try{setSnapshot(await action());}catch{setError(true);}finally{setBusy(false);}};
+ const run=async(action:()=>Promise<SmbSnapshot>)=>{setBusy(true);setError(false);try{setSnapshot(await action());onProviderChanged?.();}catch{setError(true);}finally{setBusy(false);}};
  const check=async(value=folder,id?:string)=>{setBusy(true);setError(false);setTest(null);setCreate(false);setConnectionId(id);try{setTest(await smbApi.test(value));}catch{setError(true);}finally{setBusy(false);}};
  const connect=()=>run(async()=>{const next=await smbApi.connect(name,test!.receipt,create,connectionId);setTest(null);setCreate(false);return next;});
  return <article className={styles.card} aria-labelledby="smb-title">
