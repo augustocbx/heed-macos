@@ -30,7 +30,11 @@ export function useDesktopControl(controls:{start:(language?:string)=>Promise<bo
     if (!executing && !cancelled) {
      const local = useRecordingStore.getState();
      if (status.recording && !local.recording) local.startRecording();
-     useRecordingStore.setState({recording:status.recording === true, seconds:Math.max(0, Number(status.seconds) || 0)});
+     // An idle controller's old duration must not repopulate an empty recording screen.
+     const seconds = status.recording || local.recording
+      ? Math.max(0, Number(status.seconds) || 0)
+      : local.processing || local.segments.length > 0 || !!local.transcript ? local.seconds : 0;
+     useRecordingStore.setState({recording:status.recording === true, seconds});
     }
     if (command && !cancelled && !executing) {
      const cmd = command as DesktopCommand & {id:string};
