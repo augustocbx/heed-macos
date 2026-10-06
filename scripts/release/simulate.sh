@@ -167,6 +167,16 @@ check "release payload excludes personal and development files" bash -c \
 check "release payload carries the prebuilt binaries" bash -c \
     "tar -tzf '$SIM_RELEASES/v$V1/heed-macos-$V1-arm64.tar.gz' | grep -q 'heed-parakeet/.build/release/heed-syscap\$'"
 
+# Check missing-field initialization separately from the existing custom-quota installation.
+step "Default quota initialization in an isolated configuration"
+SIM_DEFAULT_APP="$SIM/default-quota"
+mkdir -p "$SIM_DEFAULT_APP"
+printf '{"ui_locale":"pt-BR"}\n' > "$SIM_DEFAULT_APP/config.json"
+check "missing quota field initializes to decimal 2 GB" env HEED_APP_DIR="$SIM_DEFAULT_APP" \
+    "$REAL_BUN" "$HEED_REPO_ROOT/scripts/init-managed-quota.ts"
+check "initialized default is persisted" /usr/bin/python3 "$HEED_REPO_ROOT/scripts/release/verify_quota.py" \
+    --config "$SIM_DEFAULT_APP/config.json" --expected-bytes 2000000000
+
 # --- Existing checkout installation with user data ------------------------------------------
 step "Existing checkout installation with recordings, transcripts, speaker names and settings"
 LEGACY="$SIM_HOME/heed-checkout"
@@ -176,7 +186,7 @@ head -c 48000 /dev/urandom > "$LEGACY/recordings/dual-capture-1.wav"
 printf '{"id":"session-1","title":"Planning","transcript":"Hello","speakers":["Ana"],"files":{"wav":"%s"}}\n' "$LEGACY/recordings/dual-capture-1.wav" \
     > "$SIM_HOME/.heed-app/sessions/session-1.json"
 printf '{"Ana":[0.1,0.2]}\n' > "$SIM_HOME/.heed-app/voices.json"
-printf '{"ui_locale":"pt-BR","storage_limit_bytes":2000000000}\n' > "$SIM_HOME/.heed-app/config.json"
+printf '{"ui_locale":"pt-BR","storage_limit_bytes":3000000000}\n' > "$SIM_HOME/.heed-app/config.json"
 printf '%s\n' "$LEGACY" > "$SIM_HOME/Applications/Heed.app/Contents/Resources/heed-root.txt"
 SIM_HOST="$SIM_HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/local.heed.meet.json"
 mkdir -p "$(dirname "$SIM_HOST")"
@@ -185,6 +195,11 @@ data_digest() { (cd "$SIM_HOME" && find .heed-app/sessions .heed-app/voices.json
 DATA_BEFORE="$(data_digest)"
 running_version() { /usr/bin/curl -s -m 3 "http://127.0.0.1:$HEED_API_PORT/api/version" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' 2>/dev/null || true; }
 current_version() { /usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$SIM_HOME/.heed/runtime/current/release.json" 2>/dev/null || true; }
+verify_custom_quota() {
+    /usr/bin/python3 "$HEED_REPO_ROOT/scripts/release/verify_quota.py" \
+        --config "$SIM_HOME/.heed-app/config.json" --expected-bytes 3000000000 \
+        --api-base "http://127.0.0.1:$HEED_API_PORT"
+}
 
 step "Fresh release installation $V1 from a downloaded archive (replacing the checkout installation)"
 permissions authorized false
@@ -205,6 +220,7 @@ check "Meet browser bridge now points to the release" grep -q "$SIM_HOME/.heed/r
 check "recordings, transcripts and speaker names are unchanged" test "$(data_digest)" = "$DATA_BEFORE"
 check "the checkout itself was not modified" test -f "$LEGACY/package.json"
 check "API lists the existing meeting" bash -c "/usr/bin/curl -s 'http://127.0.0.1:$HEED_API_PORT/api/sessions' | grep -q session-1"
+check "installation preserves custom quota in config, Storage API and desktop status" verify_custom_quota
 
 step "Upgrade $V1 -> $V2 with the standalone install.sh (download + checksum)"
 permissions authorized true
@@ -217,6 +233,7 @@ check "current link points to $V2" test "$(current_version)" = "$V2"
 check "previous version is kept for rollback" bash -c "ls '$SIM_HOME/.heed/runtime/versions' | grep -q '^$V1-'"
 check "data preserved across the upgrade" test "$(data_digest)" = "$DATA_BEFORE"
 check "settings preserved across the upgrade" grep -q '"ui_locale":"pt-BR"' "$SIM_HOME/.heed-app/config.json"
+check "upgrade preserves custom quota in config, Storage API and desktop status" verify_custom_quota
 
 step "Failure: corrupted download"
 cp -R "$SIM_RELEASES/v$V3" "$SIM/v$V3-good"
@@ -274,6 +291,7 @@ bash "$SIM_RELEASES/v$V2/install.sh" --skip-model-warmup --no-permission-prompt 
 check "reinstalled Heed $V2 is running" test "$(running_version)" = "$V2"
 check "reinstall keeps using the recordings folder" grep -qx "$LEGACY/recordings" "$SIM_HOME/Applications/Heed.app/Contents/Resources/heed-recordings-dir.txt"
 check "data preserved across reinstall" test "$(data_digest)" = "$DATA_BEFORE"
+check "reinstall preserves custom quota in config, Storage API and desktop status" verify_custom_quota
 mkdir -p "$SIM_HOME/Library/Application Support/Heed/backups" "$SIM_HOME/Library/Caches/local.heed.menubar"
 touch "$SIM_HOME/Library/Preferences/local.heed.menubar.plist" 2>/dev/null || { mkdir -p "$SIM_HOME/Library/Preferences"; touch "$SIM_HOME/Library/Preferences/local.heed.menubar.plist"; }
 if bash "$SIM_HOME/.heed/bin/uninstall.sh" < /dev/null > "$SIM/uninstall-2.log" 2>&1; then die "uninstall ran without confirmation"; fi

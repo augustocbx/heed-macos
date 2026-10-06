@@ -22,6 +22,9 @@ test('settings persist the decimal default, preserve changes after restart, and 
  const preview=await request('/preview',{limitBytes:3_000_000_000});expect(preview.status).toBe(200);
  expect((await request('/settings',{limitBytes:3_000_000_000,token:preview.body.token})).status).toBe(200);
  app.kill();await app.exited;await start();expect((await request('')).body.limitBytes).toBe(3_000_000_000);
+ expect((await (await fetch(`${base}/api/desktop/control/status`)).json()).storage.limitBytes).toBe(3_000_000_000);
+ const verify=Bun.spawn(['python3',resolve(import.meta.dir,'../../../scripts/release/verify_quota.py'),'--config',join(root,'config.json'),'--expected-bytes','3000000000','--api-base',base],{stdout:'ignore',stderr:'pipe'});
+ expect(await verify.exited).toBe(0);
 });
 test('reductions review eligible local media and protect transcripts; changed previews fail closed',async()=>{
  writeFileSync(join(root,'media','old.wav'),'x'.repeat(1_100_000));
