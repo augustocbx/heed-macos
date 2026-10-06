@@ -146,11 +146,11 @@ Separate modules may be refined when SDK constraints require it; record concrete
 - Show separate direct and mounted options, server/share/folder/domain/account/password and optional encryption requirement. Review preview distinguishes authentication, dialect, encryption/signing, read-only, namespace safety and destination creation; require explicit empty-folder creation confirmation.
 - Preserve credentials in component memory only during the explicit test/connect flow; clear password on success/cancel/unmount. All reviewed controls submit ID/generation.
 
-- [ ] Write component tests for explicit creation review, direct v3 read-only coordination refusal with preserved mounted read-only import, capability rejection, stale-generation conflict refresh, rename/disable/disconnect, busy/recovery states, password clearing and no browser persistence. Verify dictionary key equality and actual translated copy in all four locales.
-- [ ] Run client focused tests; observe intended failures.
-- [ ] Implement typed API, focused settings component and translation dictionary without changing existing mounted controls or recording settings.
-- [ ] Re-run focused tests, full client suite and production build; expected zero failures.
-- [ ] Commit as `feat: expose reviewed direct SMB controls in four locales`.
+- [x] Write component tests for explicit creation review, direct v3 read-only coordination refusal with preserved mounted read-only import, capability rejection, stale-generation conflict refresh, rename/disable/disconnect, busy/recovery states, password clearing and no browser persistence. Verify dictionary key equality and actual translated copy in all four locales.
+- [x] Run client focused tests; observe intended failures.
+- [x] Implement typed API, focused settings component and translation dictionary without changing existing mounted controls or recording settings.
+- [x] Re-run focused tests, full client suite and production build; expected zero failures.
+- [x] Commit as `feat: expose reviewed direct SMB controls in four locales`.
 
 ### Task 7: Quota pressure and persisted interface acceptance
 
