@@ -1,3 +1,4 @@
+import {configuredServicePorts} from './service-ports';
 export type PermissionAction = 'microphone' | 'screenCapture' | 'slackLogs' | 'accessibility';
 export type MicrophonePermission = 'authorized' | 'denied' | 'restricted' | 'notDetermined' | 'unknown';
 export interface DesktopPermissionSnapshot {
@@ -22,7 +23,7 @@ export function desktopRequestAllowed(req: Request, port: number | string): bool
  try {
   const source = new URL(origin);
   return ['http:', 'https:'].includes(source.protocol) && local(source.hostname)
-   && ['5170', String(port)].includes(source.port);
+   && [String(configuredServicePorts().ui), String(port)].includes(source.port);
  } catch { return false; }
 }
 

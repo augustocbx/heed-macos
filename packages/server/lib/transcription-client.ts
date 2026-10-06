@@ -1,14 +1,17 @@
+import {localServiceUrl} from '../../shared/lib/service-config';
+import {isTranscriptionHealth} from '../../shared/lib/service-identity';
 /**
- * Thin typed client for the Python transcription sidecar (the only thing that talks to :5002).
+ * Thin typed client for the Python transcription sidecar (the only thing that talks to the configured loopback sidecar).
  * Centralizes the base URL and the `postJSON` helper that was inlined in server.ts, and names the
  * sidecar operations so call sites read as intent (`tx.diarize(wav)`) instead of stringly-typed
  * POSTs. Keeps the network adapter in one module (hexagonal "driven adapter"), so the recording
  * orchestration depends on an interface, not on `fetch` string paths.
  */
+import {configuredServicePorts} from './service-ports';
 import { logger } from "./logger.ts";
 
 const log = logger("tx-client");
-export const TRANSCRIPTION_SERVER = process.env.HEED_TRANSCRIPTION_URL || "http://127.0.0.1:5002";
+export const TRANSCRIPTION_SERVER = process.env.HEED_TRANSCRIPTION_URL !== undefined ? localServiceUrl(process.env.HEED_TRANSCRIPTION_URL,"Transcription service") : `http://127.0.0.1:${configuredServicePorts().transcription}`;
 
 /** POST JSON to the sidecar; returns parsed JSON, or null on any failure (logged at debug). */
 export async function pyPost<T = any>(path: string, body: unknown): Promise<T | null> {
@@ -29,7 +32,9 @@ export async function pyPost<T = any>(path: string, body: unknown): Promise<T | 
 export async function pyGet<T = any>(path: string): Promise<T | null> {
 	try {
 		const r = await fetch(`${TRANSCRIPTION_SERVER}${path}`);
-		return r.ok ? ((await r.json()) as T) : null;
+		if(!r.ok)return null;
+		const data=await r.json();
+		return path === "/health" && !isTranscriptionHealth(data) ? null : data as T;
 	} catch {
 		return null;
 	}

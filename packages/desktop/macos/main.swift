@@ -55,6 +55,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private var localizedItems: [(NSMenuItem, String)] = []
     private var localeItems: [NSMenuItem] = []
     private func text(_ key: String) -> String { MenuLocalization.text(key, locale: locale) }
+    private let endpoints = try? ServiceEndpoints.load()
     private var state: ControlStatus?
     private var sending = false
     private var polling = false
@@ -80,7 +81,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 6
-        return URLSession(configuration: config)
+        return ServiceEndpoints.session(configuration: config)
     }()
     func applicationDidFinishLaunching(_ notification: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -130,17 +131,19 @@ final class MenuController: NSObject, NSApplicationDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.poll() }
     }
     private func bootServices() {
-        guard let script = Bundle.main.path(forResource: "start-services", ofType: "sh") else { return }
+        guard let endpoints = endpoints, let script = Bundle.main.path(forResource: "start-services", ofType: "sh") else { return }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = [script]
+        process.environment = endpoints.launchEnvironment(base: ProcessInfo.processInfo.environment)
         try? process.run()
     }
     private func poll() {
         guard !polling else { return }
+        guard let endpoints = endpoints else { self.state = nil; self.statusMenu.title = self.text("Service unavailable — open the interface"); self.updateMenu(); return }
         polling = true
-        let url = URL(string: "http://127.0.0.1:5001/api/desktop/control/status")!
-        session.dataTask(with: url) { [weak self] data, response, error in
+        let request = URLRequest(url: endpoints.apiURL("/api/desktop/control/status"))
+        endpoints.perform(session: session, request: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.polling = false
@@ -159,7 +162,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
                 self.checkMeetings()
                 self.reportPermissions()
             }
-        }.resume()
+        }
     }
     private func updateMenu() {
         if let storage = state?.storage {
@@ -230,19 +233,19 @@ final class MenuController: NSObject, NSApplicationDelegate {
     }
     private var captureAuthorized: Bool { microphonePermission == "authorized" && CGPreflightScreenCaptureAccess() }
     private func reportPermissions(commandID: String? = nil, error: String? = nil) {
-        guard !reportingPermissions || commandID != nil else { return }
+        guard let endpoints = endpoints, !reportingPermissions || commandID != nil else { return }
         reportingPermissions = true
         var payload: [String: Any] = ["permissions": ["microphone": microphonePermission,
             "screenCapture": CGPreflightScreenCaptureAccess(), "slackLogs": slackAutoEnabled ? slackDetector.canReadLogs as Any : NSNull(),
             "slackAutoRecord": slackAutoEnabled]]
         if let commandID = commandID { payload["commandId"] = commandID }
         if let error = error { payload["error"] = error }
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:5001/api/desktop/permissions/report")!)
+        var request = URLRequest(url: endpoints.apiURL("/api/desktop/permissions/report"))
         request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-        session.dataTask(with: request) { [weak self] _, _, _ in
+        endpoints.perform(session: session, request: request) { [weak self] _, _, _ in
             DispatchQueue.main.async { self?.reportingPermissions = false }
-        }.resume()
+        }
     }
     private func executePermissionRequest(_ request: PermissionRequest) {
         guard permissionCommandID == nil, lastPermissionCommandID != request.id else { return }
@@ -285,16 +288,16 @@ final class MenuController: NSObject, NSApplicationDelegate {
         } else { try? line.write(to: file, options: .atomic) }
     }
     private func command(_ action: String) {
-        guard !sending else { return }
+        guard let endpoints = endpoints, !sending else { return }
         sending = true; updateMenu()
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:5001/api/desktop/control/commands")!)
+        var request = URLRequest(url: endpoints.apiURL("/api/desktop/control/commands"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 600
         var payload: [String: Any] = ["action": action, "language": "en", "requestId": UUID().uuidString]
         if action == "stop", let meetingId = state?.meetingId { payload["meetingId"] = meetingId }
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-        session.dataTask(with: request) { [weak self] data, response, error in
+        endpoints.perform(session: session, request: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.sending = false
@@ -306,14 +309,14 @@ final class MenuController: NSObject, NSApplicationDelegate {
                     self.updateMenu()
                 }
             }
-        }.resume()
+        }
     }
     @objc private func selectLocale(_ sender: NSMenuItem) {
-        guard let selected = sender.representedObject as? String, MenuLocalization.locales.contains(selected) else { return }
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:5001/api/ui-locale")!)
+        guard let endpoints = endpoints, let selected = sender.representedObject as? String, MenuLocalization.locales.contains(selected) else { return }
+        var request = URLRequest(url: endpoints.apiURL("/api/ui-locale"))
         request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["locale": selected])
-        session.dataTask(with: request) { [weak self] data, response, _ in
+        endpoints.perform(session: session, request: request) { [weak self] data, response, _ in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 if (response as? HTTPURLResponse)?.statusCode == 200,
@@ -322,12 +325,23 @@ final class MenuController: NSObject, NSApplicationDelegate {
                     self.locale = MenuLocalization.normalize(saved); self.updateMenu(); self.poll()
                 } else { self.statusMenu.title = self.text("Could not save the interface language. Try again.") }
             }
-        }.resume()
+        }
     }
     @objc private func startRecording() { command("start") }
     @objc private func stopRecording() { command("stop") }
-    @objc private func openInterface() { bootServices(); NSWorkspace.shared.open(URL(string: "http://localhost:5170")!) }
-    @objc private func openSettings() { bootServices(); NSWorkspace.shared.open(URL(string: "http://localhost:5170/#settings")!) }
+    private func openVerifiedInterface(settings: Bool) {
+        bootServices()
+        guard let endpoints = endpoints else { statusMenu.title = text("Service unavailable — open the interface"); return }
+        endpoints.verify(session: session, service: "heed-ui") { [weak self] verified in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if verified { NSWorkspace.shared.open(endpoints.interfaceURL(settings: settings)) }
+                else { self.statusMenu.title = self.text("Service unavailable — open the interface") }
+            }
+        }
+    }
+    @objc private func openInterface() { openVerifiedInterface(settings: false) }
+    @objc private func openSettings() { openVerifiedInterface(settings: true) }
     @objc private func toggleSlackAuto() { configureDetection(app: "slack", enabled: !slackAutoEnabled) }
     @objc private func toggleMeetingAuto(_ sender: NSMenuItem) {
         guard let app = sender.representedObject as? String else { return }
@@ -360,7 +374,8 @@ final class MenuController: NSObject, NSApplicationDelegate {
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // Fresh backend state covers capture/finalization started from another tab or menu.
-        session.dataTask(with: URL(string: "http://127.0.0.1:5001/api/desktop/control/status")!) { [weak self] data, response, error in
+        guard let endpoints = endpoints else { statusMenu.title = text("Could not check recording status. Try again before quitting."); return .terminateCancel }
+        endpoints.perform(session: session, request: URLRequest(url: endpoints.apiURL("/api/desktop/control/status"))) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self = self else { sender.reply(toApplicationShouldTerminate: false); return }
                 let latest = data.flatMap { try? JSONDecoder().decode(ControlStatus.self, from: $0) }
@@ -371,7 +386,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
                 }
                 sender.reply(toApplicationShouldTerminate: allowed)
             }
-        }.resume()
+        }
         return .terminateLater
     }
     @objc private func quitApp() { NSApplication.shared.terminate(nil) }
@@ -412,6 +427,7 @@ if CommandLine.arguments.contains("--self-test") {
     try slackHuddleDetectorSelfTests()
     try slackLogAccessSelfTests()
     try accessibleMeetingDetectorSelfTests()
+    try serviceEndpointsSelfTests()
     try meetingDetectionClientSelfTests()
     try smbFolderAccessSelfTests()
     print("Heed menubar self-tests passed")

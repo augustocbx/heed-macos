@@ -2,7 +2,7 @@
 """
 heed transcription + diarization server
 Keeps models loaded in memory for instant processing.
-Runs as an HTTP server on port 5002.
+Runs on the validated loopback transcription port (default 48102).
 
 Endpoints:
   POST /transcribe  {wav_path, language, srt_output}  → {text, srt_path, segments}
@@ -36,7 +36,11 @@ warnings.filterwarnings("ignore")
 # HF_HUB_OFFLINE is set AFTER model loading in load_models() so that
 # first-time downloads (auto-picked whisper models) can reach HuggingFace.
 
-PORT = int(os.environ.get("HEED_TRANSCRIPTION_PORT", "5002"))
+import pathlib
+sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[2]/"scripts"))
+from service_config import service_config
+PORT = service_config()["transcription"]
+SERVICE_IDENTITY = {"service":"heed-transcription","protocolVersion":1,"checkoutRoot":str(pathlib.Path(__file__).resolve().parents[2]),"pid":os.getpid()}
 
 # Stable-by-default profile to prioritize transcript quality/reliability.
 # Set HEED_TRANSCRIPTION_PROFILE=adaptive to re-enable aggressive auto-tuning.
@@ -2381,6 +2385,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             self._json({
+                **SERVICE_IDENTITY,
                 "ready": all(models_ready.values()),
                 "warm": models_warm,
                 **models_ready,
@@ -2871,11 +2876,15 @@ def _load_models_guarded():
 
 
 if __name__ == "__main__":
+    # Bind before model work: an occupied port must not start a second model loader.
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    except OSError as error:
+        sys.exit(f"Heed transcription port {PORT} is unavailable. Preserve the other application and choose an allowed HEED_TRANSCRIPTION_PORT: {error}")
     # Load models in background
     loader = threading.Thread(target=_load_models_guarded, daemon=True)
     loader.start()
 
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"[heed] Transcription server on :{PORT}", flush=True)
 
     try:

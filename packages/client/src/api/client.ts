@@ -1,8 +1,9 @@
+import {localServiceUrl} from '@heed/shared';
 /**
  * Typed HTTP client. All API calls go through here.
  * Switch backends by setting VITE_API_BASE.
  */
-const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) || "";
+const API_BASE = import.meta.env.VITE_API_BASE ? localServiceUrl(import.meta.env.VITE_API_BASE as string,"API endpoint") : "";
 
 export class ApiError extends Error {
 	constructor(message: string, public status?: number) {

@@ -2,14 +2,18 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath, URL } from "node:url";
 
-const SERVER_URL = process.env.VITE_API_BASE || "http://localhost:5001";
+import {localServiceUrl} from "../shared/lib/service-config";
+import {realpathSync} from "node:fs";
+import {configuredServicePorts} from "../server/lib/service-ports";
+const ports=configuredServicePorts();
+const SERVER_URL=process.env.VITE_API_BASE !== undefined ? localServiceUrl(process.env.VITE_API_BASE,"API proxy") : `http://127.0.0.1:${ports.api}`;
+const identity={service:"heed-ui",protocolVersion:1,checkoutRoot:realpathSync(fileURLToPath(new URL("../..",import.meta.url))),pid:process.pid};
 
 export default defineConfig({
-	plugins: [react()],
+	plugins: [react(),{name:"heed-readiness",configureServer(server){server.middlewares.use((req,res,next)=>{if(req.url!=="/.well-known/heed-service")return next();res.setHeader("Content-Type","application/json");res.setHeader("Cache-Control","no-store");res.end(JSON.stringify(identity));});}}],
 	server: {
-		// 5170 (not 5000): macOS AirPlay Receiver squats on :5000, so a fresh Mac whose browser resolves
-		// localhost to IPv4 would hit AirPlay instead of heed. 5170 is free and Vite-adjacent (default 5173).
-		port: 5170,
+		host: "127.0.0.1",
+		port: ports.ui,
 		strictPort: true,
 		proxy: {
 			"/api": {

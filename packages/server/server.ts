@@ -1,3 +1,5 @@
+import {configuredServicePorts} from './lib/service-ports';
+import {isTranscriptionHealth} from '../shared/lib/service-identity';
 import {createGoogleDriveController} from './lib/connectors/google-drive-runtime';
 import {CLOUD_CONNECTIONS_ENABLED,CLOUD_CONNECTIONS_PENDING_NOTICE} from '@heed/shared';
 import {disabledCloudProtectedPaths} from './lib/disabled-cloud-protection';
@@ -24,7 +26,7 @@ import { automaticNotesSettings, validateNotesSettings } from "./lib/notes-setti
 import { generateLocalNotes, listLocalNotesModels, generateLocalStructured, listLocalChatModels } from "./lib/ollama-notes.ts";
 import { configuredUiLocale, supportedUiLocale } from "./lib/ui-locale.ts";
 import { finalRecordingResult, recordingFinalizationOptions } from "./lib/final-recording.ts";
-import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, statSync, rmSync } from "node:fs";
+import { realpathSync, readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, statSync, rmSync } from "node:fs";
 import {randomUUID} from "node:crypto";
 import {validateProcessingWave} from "./lib/processing-wave.ts";
 import {reserveMediaWork} from "./lib/media-budget.ts";
@@ -82,7 +84,8 @@ function pruneAudio() {
  const current=managedQuota.snapshot();return {...current,bytes:current.usedBytes,removed:[],overLimit:current.usedBytes+current.reservedBytes>current.limitBytes};
 }
 
-const PORT = Number(process.env.PORT) || 5001;
+const PORT = configuredServicePorts().api;
+const API_IDENTITY = {service:"heed-api",protocolVersion:1,checkoutRoot:realpathSync(resolve(import.meta.dir,"../..")),pid:process.pid};
 
 const STATIC_ROOT = join(import.meta.dir, "..", "client", "dist");
 // Recordings stored in the project root
@@ -1577,6 +1580,7 @@ async function refreshLiveTuning() {
 		const r = await fetch(`${TRANSCRIPTION_SERVER}/health`, { signal: AbortSignal.timeout(2000) });
 		if (r.ok) {
 			const h = await r.json() as { live_tuning?: { chunk_s?: number; interval_ms?: number; mode?: "chunk" | "full" | "stream"; model?: string }; whisper_info?: {live_model?: string} };
+			if(!isTranscriptionHealth(h))return;
 			recordingLiveModel = h.live_tuning?.model || h.whisper_info?.live_model;
 			if (h.live_tuning?.chunk_s && h.live_tuning?.interval_ms) {
 				liveTuning = { chunk_s: h.live_tuning.chunk_s, interval_ms: h.live_tuning.interval_ms, mode: h.live_tuning.mode || "chunk" };
@@ -1671,7 +1675,7 @@ async function processStreamLive(
 	if (!liveWarmLatched) {
 		try {
 			const h = await fetch(`${TRANSCRIPTION_SERVER}/health`, { signal: AbortSignal.timeout(1000) }).then((r) => r.json()).catch(() => null);
-			if (h?.warm) liveWarmLatched = true;
+			if (isTranscriptionHealth(h) && h.warm) liveWarmLatched = true;
 			else return; // not warm yet — skip this tick, recorder still capturing
 		} catch { return; }
 	}
@@ -2219,7 +2223,7 @@ async function handleHealth(): Promise<Response> {
 	} catch {}
 	try {
 		const res = await fetch(`${TRANSCRIPTION_SERVER}/health`, { signal: AbortSignal.timeout(3000) });
-		txServer = await res.json();
+		const health = await res.json(); txServer = res.ok && isTranscriptionHealth(health) ? health : {ready:false};
 	} catch {}
 	return Response.json({
 		ollama: ollamaOk,
@@ -2242,7 +2246,7 @@ function hydratedRecordingSnapshot(snapshot: RecordingSnapshot = recordingCoordi
 }
 function desktopRecordingStatus() {
  const state = hydratedRecordingSnapshot();
- return {...state, snapshot:state, seconds:Math.floor(state.seconds), recording:!!recorderProc && recorderProc.exitCode === null,
+ return {...API_IDENTITY, ...state, snapshot:state, seconds:Math.floor(state.seconds), recording:!!recorderProc && recorderProc.exitCode === null,
   processing:["stopping","finalizing"].includes(state.state) || recordingFinalizationRunning,
   starting:state.state === "starting", pending:false, clientConnected:true, ready:!state.maintenance,
   smbCommand:smbConnections?.desktopCommand()||null,meetingDetection:meetingDetection.status(),language:recordingLanguage,uiLocale:configuredUiLocale(loadConfig()),storage:{...managedQuota.snapshot(),bytes:managedQuota.snapshot().usedBytes},quotaStopped:!!quotaStopResult};
@@ -2278,7 +2282,7 @@ async function handleDesktopControl(req: Request, pathname: string): Promise<Res
  try {
   if (req.method === "GET" && pathname.endsWith("/status")) {
    const status = desktopRecordingStatus();
-   try { const health = await fetch(`${TRANSCRIPTION_SERVER}/health`,{signal:AbortSignal.timeout(1500)}); const data=await health.json(); status.ready = !status.maintenance && data.whisper === true; } catch {status.ready=false;}
+   try { const health = await fetch(`${TRANSCRIPTION_SERVER}/health`,{signal:AbortSignal.timeout(1500)}); const data=await health.json(); status.ready = health.ok && isTranscriptionHealth(data) && !status.maintenance && data.whisper === true; } catch {status.ready=false;}
    return Response.json({...status,permissionRequest:desktopPermissions.request()});
   }
   const body = await req.json();
@@ -2449,7 +2453,7 @@ const detectionTimer = setInterval(async () => {
   const detection = meetingDetection.status();
   const needsModel = detection.sources.some(source => detection.enabled[source.app] && source.state === "active");
   if (needsModel) {
-   try { const response = await fetch(`${TRANSCRIPTION_SERVER}/health`,{signal:AbortSignal.timeout(1500)}); const health = await response.json(); detectionModelReady = response.ok && health.whisper === true; }
+   try { const response = await fetch(`${TRANSCRIPTION_SERVER}/health`,{signal:AbortSignal.timeout(1500)}); const health = await response.json(); detectionModelReady = response.ok && isTranscriptionHealth(health) && health.whisper === true; }
    catch { detectionModelReady = false; }
   } else detectionModelReady = false;
   await meetingDetection.tick();
@@ -2465,6 +2469,7 @@ const server = Bun.serve({
 	async fetch(req, httpServer) {
 		const url = new URL(req.url);
 		const method = req.method;
+  if(url.pathname === "/.well-known/heed-service")return desktopRequestAllowed(req)?Response.json(API_IDENTITY,{headers:{"Cache-Control":"no-store"}}):new Response(null,{status:403});
   const chatResponse=await chatApiResponse(req,chatService,()=>listLocalChatModels(OLLAMA_HOST),desktopRequestAllowed(req));
   if(chatResponse)return chatResponse;
   const libraryChatResult=await libraryChatResponse(req,libraryChatService,desktopRequestAllowed(req));
