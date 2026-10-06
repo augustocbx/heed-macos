@@ -154,6 +154,35 @@ console.log(JSON.stringify({pid:process.pid,port:server.port}));
             self.configure(**{'/api/recording/maintenance':{'body':body}})
             self.assertNotEqual(self.guard().returncode,0)
 
+    def test_compact_acknowledgement_cannot_omit_all_identity_or_use_legacy_bound(self):
+        status={**self.identity,**self.idle,'maintenance':False}
+        for body in [{'maintenance':True},{'maintenance':True,**self.idle,'audioWork':True},{**status,'maintenance':True,'session':{'private':self.private}}]:
+            with self.subTest(keys=list(body)):
+                self.configure(**{'/api/recording/lifecycle':{'body':status},'/api/recording/maintenance':{'body':body}})
+                result=self.guard()
+                self.assertNotEqual(result.returncode,0)
+                self.assertNotIn('SYNTHETIC_PRIVATE_SENTINEL',result.stderr+result.stdout)
+                self.assertNotIn('/api/desktop/control/status',[c['path'] for c in json.loads(self.log.read_text())])
+
+    def test_compact_acquire_and_release_require_complete_matching_acknowledgements(self):
+        status={**self.identity,**self.idle,'maintenance':False}
+        for action in ['acquire','release']:
+            acknowledgement={**status,'maintenance':action=='acquire'}
+            self.configure(**{'/api/recording/lifecycle':{'body':{**status,'maintenance':action=='release'}},'/api/recording/maintenance':{'body':acknowledgement}})
+            result=self.guard(action);self.assertEqual(result.returncode,0,result.stderr)
+            for body in [{'maintenance':action=='acquire'},{**acknowledgement,'pid':1},{**acknowledgement,'checkoutRoot':'/wrong'},{**acknowledgement,'protocolVersion':2},{**acknowledgement,'audioWork':None}]:
+                with self.subTest(action=action,body=body):
+                    self.configure(**{'/api/recording/lifecycle':{'body':status},'/api/recording/maintenance':{'body':body}})
+                    self.assertNotEqual(self.guard(action).returncode,0)
+
+    def test_compact_acknowledgement_malformed_json_and_deadline_refuse(self):
+        status={**self.identity,**self.idle,'maintenance':False}
+        for route in [{'raw':'{"maintenance":true'},{'body':{**status,'maintenance':True},'delay':6000}]:
+            self.configure(**{'/api/recording/lifecycle':{'body':status},'/api/recording/maintenance':route})
+            started=time.monotonic();result=self.guard()
+            self.assertNotEqual(result.returncode,0)
+            self.assertLess(time.monotonic()-started,8)
+
     def test_restart_never_signals_or_spawns_for_missing_or_active_audio_work(self):
         from unittest.mock import patch
         records=service_runtime.process_records(self.port)

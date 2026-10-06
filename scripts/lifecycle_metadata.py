@@ -219,9 +219,10 @@ def valid_identity(data, root, pid=None):
             and (pid is None or data['pid'] == pid))
 
 
-def read_status(base, identity):
+def read_status_with_capability(base, identity):
     code, data = request(base, '/api/recording/lifecycle', max_bytes=65536)
-    if code in (404, 405):
+    legacy_negotiated = code in (404, 405)
+    if legacy_negotiated:
         code, data = request(base, '/api/desktop/control/status')
         # Identity is independently verified by the caller. Old snapshots may lack
         # identity, but any supplied identity must match completely.
@@ -229,4 +230,8 @@ def read_status(base, identity):
     elif not valid_identity(data, identity['checkoutRoot'], identity['pid']) or type(data.get('maintenance')) is not bool:
         raise ValueError(ERROR)
     if code != 200 or not isinstance(data, dict) or not all(type(data.get(key)) is bool for key in BUSY_KEYS): raise ValueError(ERROR)
-    return data
+    return data, legacy_negotiated
+
+
+def read_status(base, identity):
+    return read_status_with_capability(base, identity)[0]

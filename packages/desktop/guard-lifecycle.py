@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/"scripts"))
 from service_config import service_config,saved_service_ports,local_service_url,ROOT
 from service_runtime import process_records,control_targets,LEGACY,occupied,verified_api_identity
-from lifecycle_metadata import BUSY_KEYS, IDENTITY_KEYS, read_status, request, valid_identity
+from lifecycle_metadata import BUSY_KEYS, IDENTITY_KEYS, read_status_with_capability, request, valid_identity
 
 
 def guard(action, base_url, owner, expected_root=None):
@@ -24,15 +24,17 @@ def guard(action, base_url, owner, expected_root=None):
     records = process_records(port,timeout=2)
     if not records and not occupied(port): return
     identity = verified_api_identity(base_url, root)
-    state = read_status(base_url, identity)
+    state, legacy_negotiated = read_status_with_capability(base_url, identity)
     if action == 'acquire' and any(state[key] for key in BUSY_KEYS):
         raise ValueError('An active meeting prevents installing or updating Heed.')
     # Recheck the independently expected PID/root immediately before mutation.
     if verified_api_identity(base_url, root) != identity:
         raise ValueError('The Heed listener changed. No control request was sent.')
     code, state = request(base_url, '/api/recording/maintenance',
-                          {'acquire':action == 'acquire','owner':owner,'projection':'lifecycle'})
-    if state and any(key in state for key in IDENTITY_KEYS):
+                          {'acquire':action == 'acquire','owner':owner,'projection':'lifecycle'},
+                          max_bytes=16*1024*1024 if legacy_negotiated else 65536)
+    # A compact-capable backend cannot downgrade its acknowledgement by omitting identity.
+    if not legacy_negotiated or (state and any(key in state for key in IDENTITY_KEYS)):
         if not valid_identity(state,root,identity['pid']) or not all(type(state.get(key)) is bool for key in BUSY_KEYS) or (action == 'acquire' and any(state[key] for key in BUSY_KEYS)):
             raise ValueError('The backend returned an invalid compact maintenance acknowledgement.')
     if code != 200 or not state or state.get('maintenance') is not (action == 'acquire'):
