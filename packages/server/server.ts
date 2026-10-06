@@ -5,7 +5,7 @@ import {OneDriveConnections} from './lib/connectors/onedrive-connections';
 import {oneDriveResponse} from './lib/connectors/onedrive-http';
 import {createKeychainVault} from './lib/connectors/keychain-vault';
 import {ICloudConnections,icloudResponse} from './lib/connectors/icloud-connections.ts';
-import {SmbConnections} from './lib/smb-connections.ts';
+import {SmbConnections,SMB_SETTINGS_RECOVERY_NOTICE} from './lib/smb-connections.ts';
 import {smbResponse} from './lib/smb-http.ts';
 import {ProviderRegistry} from './lib/provider-registry.ts';
 import {PortableLibraryRuntime} from './lib/portable-runtime.ts';
@@ -136,7 +136,7 @@ if(!synchronizationUnavailable)try{providerRegistry.restore();smbConnections?.st
 
 async function handleLibrary(req:Request):Promise<Response>{
  if(!permissionRequestAllowed(req,PORT))return new Response(null,{status:403});
- if(synchronizationUnavailable||icloudConnections?.unavailable())return Response.json({error:'Synchronization unavailable. Preserve its configuration for recovery.',code:'unavailable'},{status:503});
+ if(synchronizationUnavailable||icloudConnections?.unavailable()||smbConnections?.unavailable())return Response.json({error:'Synchronization unavailable. Preserve its configuration for recovery.',code:'unavailable'},{status:503});
  try{return await libraryResponse(req,getPortableLibrary(),()=>portableRuntime!.migrate(req.signal),audioWorkBusy);}catch(error){const message=(error as Error).message;return Response.json({error:message,code:/quota|reservation/i.test(message)?'quota-blocked':'unavailable'},{status:/quota|reservation/i.test(message)?409:503});}
 }
 
@@ -2516,7 +2516,7 @@ const server = Bun.serve({
 		if (url.pathname.startsWith("/api/desktop/control/")) { httpServer.timeout(req,0); return handleDesktopControl(req, url.pathname); }
 		if(url.pathname==='/api/google-drive'){httpServer.timeout(req,0);if(!permissionRequestAllowed(req,PORT))return new Response(null,{status:403});return synchronizationUnavailable||googleDriveUnavailable||!googleDrive?Response.json({error:'Google Drive unavailable. Preserve its configuration for recovery.',code:'unavailable'},{status:503,headers:{'Cache-Control':'no-store'}}):googleDriveResponse(req,googleDrive,PORT);}
 		if(url.pathname==='/api/connectors/onedrive'){httpServer.timeout(req,0);if(!desktopRequestAllowed(req))return new Response(null,{status:403});return synchronizationUnavailable||!oneDriveConnections||oneDriveConnections.unavailable()?Response.json({error:'OneDrive synchronization unavailable. Preserve its configuration for recovery.'},{status:503}):oneDriveResponse(req,oneDriveConnections);}
-		if(url.pathname==='/api/smb'){httpServer.timeout(req,0);if(!desktopRequestAllowed(req))return new Response(null,{status:403});return synchronizationUnavailable||!smbConnections?Response.json({error:'Synchronization unavailable. Preserve its configuration for recovery.'},{status:503}):smbResponse(req,smbConnections);}
+		if(url.pathname==='/api/smb'){httpServer.timeout(req,0);if(!desktopRequestAllowed(req))return new Response(null,{status:403});return synchronizationUnavailable||!smbConnections||smbConnections.unavailable()?Response.json({error:SMB_SETTINGS_RECOVERY_NOTICE,code:'recovery-required'},{status:503,headers:{'Cache-Control':'no-store'}}):smbResponse(req,smbConnections);}
 		if(url.pathname==='/api/icloud'){httpServer.timeout(req,0);if(!desktopRequestAllowed(req))return new Response(null,{status:403});return synchronizationUnavailable||!icloudConnections?Response.json({error:'iCloud synchronization unavailable. Preserve private configuration and pending jobs for recovery.'},{status:503}):icloudResponse(req,icloudConnections);}
 		if (url.pathname==='/api/library'){httpServer.timeout(req,0);return handleLibrary(req);}
 		if (url.pathname==='/api/storage' || url.pathname.startsWith('/api/storage/')) return handleStorage(req);
