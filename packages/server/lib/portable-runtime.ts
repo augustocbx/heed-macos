@@ -6,6 +6,7 @@ export class PortableLibraryRuntime {
  private cache?:{signature:string;entries:Array<{revisionId:string;state:string;deleted:boolean;hash?:string;source?:string}>;migration:string[]};
  constructor(private options:PortableLibraryOptions&{recordingsDir:string;protectedPaths?:()=>string[]}){}
  get():PortableLibrary {return this.library||=(new PortableLibrary(this.options));}
+ preempt():Promise<void>{return this.library?.preempt()||Promise.resolve();}
  markDeleted(sessionId:string):void {if(this.library||existsSync(join(this.options.root,'catalog','state.json')))this.get().markDeleted(sessionId);}
  protectedPaths(revisionIds?:string[]):string[]{
   const fallback=[this.options.recordingsDir,join(this.options.root,'media')];
@@ -21,5 +22,5 @@ export class PortableLibraryRuntime {
    const requested=new Set(revisionIds);return [...(this.library?this.library.protectedPaths(revisionIds):this.cache.entries.filter(e=>!e.deleted&&(e.state!=='verified'||requested.has(e.revisionId))).flatMap(e=>e.hash?[join(this.options.root,'media',`${e.hash}.wav`),...(e.source?[e.source]:[])]:[])),...this.cache.migration];
   }catch{return fallback;}
  }
- async migrate(signal?:AbortSignal){return this.get().runMaintenance(()=>migrateLegacyAudio({libraryRoot:this.options.root,recordingsDir:this.options.recordingsDir,sessionsDir:this.options.sessionsDir,sessions:this.options.sessions,quota:this.options.quota,protectedPaths:()=>[...this.get().protectedPaths(),...(this.options.protectedPaths?.()||[])],signal}),signal);}
+ async migrate(signal?:AbortSignal){return this.get().runMaintenance(effective=>migrateLegacyAudio({libraryRoot:this.options.root,recordingsDir:this.options.recordingsDir,sessionsDir:this.options.sessionsDir,sessions:this.options.sessions,quota:this.options.quota,protectedPaths:()=>[...this.get().protectedPaths(),...(this.options.protectedPaths?.()||[])],signal:effective}),signal);}
 }
