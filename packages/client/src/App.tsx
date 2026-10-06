@@ -1,4 +1,5 @@
 import {LibraryChat} from "@/components/chat/LibraryChat";
+import {ServiceNotices} from '@/components/layout/ServiceNotices';
 import { TasksPanel } from "@/components/tasks/TasksPanel";
 import { useLocaleStore } from "@/stores/locale.ts";
 import { useEffect } from "react";
@@ -38,6 +39,7 @@ export function App() {
 		<>
 			<Nav />
 			<main className={styles.main}>
+    <ServiceNotices/>
 				<RecoveryBanner />
 				<div hidden={currentPage !== "record"}><RecordPage /></div>
 				{currentPage === "sessions" && <SessionsPage />}

@@ -20,6 +20,26 @@ class Handler(BaseHTTPRequestHandler):
   self.send_response(200);self.end_headers();self.wfile.write(self.payload)
  def log_message(self,*args):pass
 class RuntimeTests(unittest.TestCase):
+ def test_framework_python_process_uses_exact_checkout_script_and_complete_arguments(self):
+  with tempfile.TemporaryDirectory(prefix='heed-framework-command-') as directory:
+   root=pathlib.Path(directory)/('synthetic-checkout-'+('a'*90))
+   folder=root/'packages/transcription';folder.mkdir(parents=True)
+   script=folder/'transcription_server.py';script.write_text('import socket,time\ns=socket.socket();s.bind(("127.0.0.1",0));s.listen();print(s.getsockname()[1],flush=True);time.sleep(60)\n')
+   child=subprocess.Popen([sys.executable,'-u',str(script)],cwd=root,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,text=True)
+   try:
+    port=int(child.stdout.readline());records=module.process_records(port)
+    self.assertTrue(any(record['pid']==child.pid and module.owned_process(str(root),'transcription',record['cwd'],record['command']) for record in records))
+   finally:child.terminate();child.wait(timeout=3);child.stdout.close()
+  command='/Library/Frameworks/Python.framework/Resources/Python.app/Contents/MacOS/Python -u /qa/packages/transcription/transcription_server.py'
+  self.assertTrue(module.owned_process('/qa','transcription','/qa',command))
+  for wrong in ['ruby -u /qa/packages/transcription/transcription_server.py','Python -u /other/packages/transcription/transcription_server.py','Python --eval /qa/packages/transcription/transcription_server.py','Python -u /qa/packages/transcription/transcription_server.py --unknown']:
+   self.assertFalse(module.owned_process('/qa','transcription','/qa',wrong))
+ def setUp(self):
+  self.app=tempfile.TemporaryDirectory(prefix='heed-bootstrap-status-')
+  self.environment=patch.dict(os.environ,{'HEED_APP_DIR':self.app.name})
+  self.environment.start()
+ def tearDown(self):
+  self.environment.stop();self.app.cleanup()
  def test_rejects_arbitrary_http_success_and_wrong_identity(self):
   server=ThreadingHTTPServer(('127.0.0.1',0),Handler);thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
   try:
@@ -38,6 +58,14 @@ class RuntimeTests(unittest.TestCase):
   self.assertTrue(module.owned_process('/qa','transcription','/qa','python3 -u /qa/packages/transcription/transcription_server.py'))
   self.assertFalse(module.owned_process('/qa','api','/qa','bun another.ts'))
   self.assertTrue(module.owned_process('/qa','api','/qa','bun run packages/server/server.ts'))
+ def test_documented_bun_watch_hot_and_exact_server_entries_share_the_owned_authorizer(self):
+  for command in ['bun --watch packages/server/server.ts','bun --hot run /qa/packages/server/server.ts','bun run --watch packages/server/server.ts','/safe/bin/bun run /qa/packages/server/server.ts']:
+   self.assertTrue(module.owned_process('/qa','api','/qa',command),command)
+  self.assertTrue(module.owned_process('/qa','api','/qa/packages/server','bun --hot server.ts'))
+  for command in ['bun --eval packages/server/server.ts','bun run packages/server/server.ts --unknown','bun run /other/packages/server/server.ts','bun --watch other.ts','ruby packages/server/server.ts']:
+   self.assertFalse(module.owned_process('/qa','api','/qa',command),command)
+  self.assertFalse(module.owned_process('/qa','api','/qa/packages/client','bun run server.ts'))
+  self.assertFalse(module.owned_process('/qa','api','/other','bun run /qa/packages/server/server.ts'))
  def test_restart_preflight_never_kills_partial_owned_set_when_foreign_target_conflicts(self):
   with self.assertRaisesRegex(RuntimeError,'another application'):
    module.restart_plan('/qa',{'api':48100,'ui':48101,'transcription':48102},{48100:[{'pid':20,'cwd':'/qa','command':'bun run packages/server/server.ts'}],48102:[{'pid':99,'cwd':'/other','command':'ruby other.rb'}]},lambda port:{'recording':False,'processing':False,'pending':False,'starting':False})
@@ -60,6 +88,29 @@ class RuntimeTests(unittest.TestCase):
   self.assertEqual(set(module.restart_plan('/qa',ports,records,lambda port:{'recording':False,'processing':False,'pending':False,'starting':False},previous)),{20,21})
  def test_failed_startup_reaps_wrapper_and_listening_grandchild(self):
   self.assert_startup_tree_rollback(wrapper_exit=False)
+ def test_rollback_inspection_failure_preserves_unverified_group_but_reaps_other_owned_children(self):
+  original=subprocess.Popen;children=[];signalled=[]
+  def launch(command,*args,**kwargs):
+   if command[0] in ('ps','pgrep'):return original(command,*args,**kwargs)
+   if len(children)==2:raise OSError('injected third-service spawn failure')
+   child=original([sys.executable,'-c','import time;time.sleep(60)'],start_new_session=True,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+   children.append(child);return child
+  signal_group=module.signal_owned_group
+  def inspect(group,kind):
+   if group==children[0].pid:raise RuntimeError('injected ownership inspection failure')
+   signalled.append(group);return signal_group(group,kind)
+  try:
+   with tempfile.TemporaryDirectory(prefix='heed-rollback-fault-') as directory,patch.object(module,'read_identity',return_value=None),patch.object(module,'process_records',return_value=[]),patch.object(module,'occupied',return_value=False),patch.object(module.subprocess,'Popen',side_effect=launch),patch.object(module,'signal_owned_group',side_effect=inspect):
+    with self.assertRaises((OSError,RuntimeError)):
+     module.start(directory,{'api':48100,'ui':48101,'transcription':48102},pathlib.Path(directory)/'logs')
+   self.assertEqual(len(children),2)
+   self.assertIsNotNone(children[1].poll(),'An inspection failure in one group must not orphan another verified owned service')
+   self.assertIsNone(children[0].poll(),'An unverified group must not be signalled')
+   self.assertNotIn(children[0].pid,signalled)
+  finally:
+   for child in children:
+    if child.poll() is None:child.terminate()
+    child.wait(timeout=3)
  def test_explicit_ipv6_sidecar_is_external_even_at_the_same_ipv4_port(self):
   with tempfile.TemporaryDirectory(prefix='heed-external-origin-') as directory:
    calls=[]
@@ -94,6 +145,11 @@ class RuntimeTests(unittest.TestCase):
     with patch.object(module,'process_records',return_value=[]),patch.object(module.subprocess,'Popen',side_effect=launch):
      with self.assertRaisesRegex(OSError,'second-service'):module.start(directory,ports,pathlib.Path(directory)/'logs')
     self.assertFalse(module.occupied(ports['api']),'startup rollback left a checkout-owned grandchild listener')
+    checkpoint_path=pathlib.Path(self.app.name)/'service-startup.json'
+    self.assertTrue(checkpoint_path.exists(),'Startup failures need a bounded private diagnostic checkpoint')
+    checkpoint=json.loads(checkpoint_path.read_text())
+    self.assertEqual(checkpoint['phase'],'failed','Failed startup must not leave a forever-starting notice')
+    self.assertEqual(checkpoint['ports'],ports)
    finally:
     for child in children:
      try:os.killpg(child.pid,signal.SIGKILL)
