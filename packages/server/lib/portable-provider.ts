@@ -1,5 +1,7 @@
 import type {PortableCommit,ProviderCapabilities,DeletionCapabilities,RemoteInventory,DeletionRecord,PublicationIntent,ArtifactIdentity,RevisionDeletionFence} from '@heed/shared';
 export interface RemoteTransaction {
+ /** Private v3 preview binding; raw native object receipts never enter portable state. */
+ observationDigest?():Promise<string>;
  /** Authorize release only after the caller's durable job/catalog checkpoint. */
  checkpoint():Promise<void>;
  inventory(signal?:AbortSignal):Promise<RemoteInventory>;
@@ -32,4 +34,12 @@ export interface LibraryProvider {
 export interface QuotaBudget {reserve(id:string,bytes:number,paths:string[]):void;release(id:string):void}
 export function providerPath(path:string):string {
  if(typeof path!=='string'||path.length>512||path.includes('\\')||path.includes('%')||path.startsWith('/')||path.split('/').some(part=>!part||part==='.'||part==='..')||!(/^(meetings|commits|objects)\/[A-Za-z0-9_./-]+$/.test(path)))throw new Error('Invalid provider artifact path');return path;
+}
+
+/** Coordination versions are admitted explicitly; unknown versions never fall back to legacy I/O. */
+export function coordinatedProvider(provider:LibraryProvider):boolean {
+ const caps=provider.deletionCapabilities;if(!caps||caps.destinationVersion===1)return false;
+ if(caps.destinationVersion===2){if(!provider.withTransaction)throw Error('Remote coordination is unavailable');return true;}
+ if(caps.destinationVersion===3&&caps.revisionMetadata&&caps.exclusion==='exclusive-create'&&provider.withTransaction&&!provider.readOnly)return true;
+ throw Error('Remote coordination is unavailable for this destination');
 }

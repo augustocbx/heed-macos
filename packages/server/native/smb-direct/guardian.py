@@ -191,6 +191,10 @@ def serve(source, sink, backend_factory=None):
                 transaction.write_deletion(request["value"])
             elif action == "confirm":
                 value = transaction.confirm(request["commit"])
+            elif action == "remove-exact":
+                value = transaction.remove_exact(request["jobId"],request["artifact"])
+            elif action == "observation-digest":
+                value = transaction.observation_digest()
             elif action == "checkpoint":
                 transaction.checkpoint()
             elif action == "close":

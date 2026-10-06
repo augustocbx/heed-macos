@@ -3,7 +3,7 @@
 Completed claim archives intentionally remain on the share. At 10,000 root
 entries new work refuses; archive reclamation needs a separately reviewed exact
 owner operation. No TTL, path-unlink, copied-receipt, or overwrite fallback exists.
-Task 3 adds exact confirmed deletion using the journal/handle authority below.
+Exact deletion uses separate removal receipts and the permanent immutable intent.
 """
 
 import hashlib
@@ -192,15 +192,28 @@ def deletion(value):
     for key in ("revisions", "artifacts"):
         if not isinstance(value[key], list) or not 0 < len(value[key]) <= MAX_ENTRIES:
             raise SmbError("bounds-exceeded")
+    if len(value["revisions"]) > 1000:
+        raise SmbError("bounds-exceeded")
+    selected = set()
     for r in value["revisions"]:
         revision(r, True)
+        key = tuple(r[k] for k in ("libraryId", "meetingId", "revisionId"))
+        if key in selected or len(r["parents"]) > 32 or r["revisionId"] in r["parents"]:
+            raise SmbError("invalid-input")
+        selected.add(key)
+    paths = set()
     for a in value["artifacts"]:
         artifact(a)
-        if not (
-            MANIFEST.fullmatch(a["path"])
-            or PAYLOAD.fullmatch(a["path"])
-            or COMMIT.fullmatch(a["path"])
-        ):
+        match = MANIFEST.fullmatch(a["path"]) or PAYLOAD.fullmatch(a["path"])
+        commit_match = COMMIT.fullmatch(a["path"])
+        if a["path"] in paths or not 0 < a["bytes"] <= 8000000000000:
+            raise SmbError("invalid-input")
+        paths.add(a["path"])
+        if match:
+            matches = [r for r in value["revisions"] if (r["meetingId"],r["revisionId"]) == match.groups()]
+            if not matches or MANIFEST.fullmatch(a["path"]) and any(r["manifestHash"] != a["sha256"] for r in matches):
+                raise SmbError("invalid-input")
+        elif not commit_match or not any(r["revisionId"] == commit_match[2] for r in value["revisions"]):
             raise SmbError("invalid-input")
     return value
 
@@ -237,6 +250,8 @@ class Transaction:
         self.closed = False
         self.handles = []
         self.released = False
+        self.targets = {}
+        self.observations = {}
         try:
             if binding["destinationVersion"] != 3:
                 raise SmbError("unsupported-destination")
@@ -411,6 +426,48 @@ class Transaction:
                 )
                 self.transport.pin(prefix, True)
 
+    def target(self, path):
+        """Delete-kind scans retain the exact effect handle, without delete-on-close."""
+        parent = path.rsplit("/", 1)[0]
+        self.transport.pin(parent, True)
+        if path in self.targets:
+            h, prior = self.targets[path]
+            now = validate_metadata(self.backend.metadata(h), False)
+            if not same_object(prior, now) or prior["bytes"] != now["bytes"]:
+                raise SmbError("identity-changed")
+            return h
+        h, metadata = self.open_handle(path, access="delete")
+        self.targets[path] = (h, metadata)
+        return h
+
+    def verify_parent_namespace(self, full, prior):
+        if len(self.handles) + len(self.transport.pins) >= MAX_HANDLES:
+            raise SmbError("bounds-exceeded")
+        h = self.backend.open(full, directory=True, access="read", verification=True)
+        self.handles.append(h)
+        current = validate_metadata(self.backend.metadata(h), True)
+        self.close_handle(h)
+        if not same_object(prior, current):
+            raise SmbError("identity-changed")
+
+    def observation_digest(self):
+        self.check()
+        stable = {}
+        for path, prior in sorted(self.observations.items()):
+            current = self.observe(path)
+            if current is None or not same_object(prior, current) or prior["bytes"] != current["bytes"]:
+                raise SmbError("identity-changed")
+            stable[path] = prior
+        directories = {}
+        for full, handle, meta in self.transport.pins:
+            if meta["directory"]:
+                self.verify_parent_namespace(full, meta)
+                # Root and all ancestors have canonical identities, independent of claims.
+                directories[full] = {k:meta[k] for k in ("objectId","created","volumeSerial","volumeCreated","directory")}
+        value = dict(endpoint=self.binding["endpoint"],identity=self.binding["identity"],
+                     destinationId=self.binding["destinationId"],targets=stable,parents=directories)
+        return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(",",":")).encode()).hexdigest()
+
     def read(self, path, maximum):
         return b"".join(self.stream(path, maximum))
 
@@ -420,8 +477,10 @@ class Transaction:
         parent = path.rsplit("/", 1)[0] if "/" in path else ""
         if parent:
             self.transport.pin(parent, True)
-        h = self.transport.pin(path)
+        h = self.target(path) if self.context["kind"] == "delete" and (MANIFEST.fullmatch(path) or PAYLOAD.fullmatch(path) or COMMIT.fullmatch(path)) else self.transport.pin(path)
         initial = validate_metadata(self.backend.metadata(h), False)
+        if MANIFEST.fullmatch(path) or PAYLOAD.fullmatch(path) or COMMIT.fullmatch(path):
+            self.observations[path] = initial
         # Retained read pins deny mutation for the complete operation.
         if initial["bytes"] > maximum:
             raise SmbError("bounds-exceeded")
@@ -757,15 +816,100 @@ class Transaction:
             or value["destinationId"] != self.binding["destinationId"]
         ):
             raise SmbError("invalid-input")
+        self.begin_effect("delete")
+        for selected in value["artifacts"]:
+            path = selected["path"]
+            prior = self.journal.data["removals"].get(path)
+            if prior is not None:
+                if prior["artifact"] != selected:
+                    raise SmbError("recovery-required")
+                continue
+            h = self.target(path)
+            metadata = validate_metadata(self.backend.metadata(h), False)
+            self.verify(path, selected["bytes"], selected["sha256"])
+            if not same_object(metadata, self.observe(path) or {}):
+                raise SmbError("identity-changed")
+            parent = path.rsplit("/", 1)[0]
+            parent_metadata = validate_metadata(self.backend.metadata(self.transport.pin(parent, True)), True)
+            self.journal.data["removals"][path] = dict(
+                artifact=selected,
+                metadata=metadata,
+                parent=parent,
+                parentMetadata=parent_metadata,
+                parents={full: meta for full, _, meta in self.transport.pins if meta["directory"]},
+                state="selected",
+            )
+            self.journal.save()
+        # This immutable record is the permanent v3 barrier, verified before deletion.
         self.write_control(f"control/deletions/{value['jobId']}.json", value, "delete")
 
     def own_deletion(self, job_id):
         if self.context["kind"] != "delete" or job_id != self.context["operationId"]:
             raise SmbError("unsupported-coordination")
-        value = deletion(self.read_json(f"control/deletions/{uuid(job_id)}.json", 2_000_000))
+        path = f"control/deletions/{uuid(job_id)}.json"
+        receipt = self.journal.data["allocations"].get(path)
+        if not receipt or receipt["state"] != "published" or not same_object(receipt["metadata"] or {}, self.observe(path) or {}):
+            raise SmbError("recovery-required")
+        self.verify(path, receipt["bytes"], receipt["sha256"])
+        value = deletion(self.read_json(path, 2_000_000))
         if value["jobId"] != job_id or value["destinationId"] != self.binding["destinationId"]:
             raise SmbError("identity-changed")
         return value
+
+    def remove_exact(self, job_id, selected):
+        artifact(selected)
+        record = self.own_deletion(job_id)
+        if selected not in record["artifacts"]:
+            raise SmbError("invalid-input")
+        path = selected["path"]
+        receipt = self.journal.data["removals"].get(path)
+        if not receipt or receipt["artifact"] != selected:
+            raise SmbError("recovery-required")
+        self.check()
+        for full, prior in receipt["parents"].items():
+            retained = self.transport.pin(full, True, share_relative=True)
+            if not same_object(prior, validate_metadata(self.backend.metadata(retained), True)):
+                raise SmbError("identity-changed")
+            self.verify_parent_namespace(full, prior)
+        parent = self.transport.pin(receipt["parent"], True)
+        if not same_object(receipt["parentMetadata"],validate_metadata(self.backend.metadata(parent), True)) or not same_object(receipt["parentMetadata"],self.observe(receipt["parent"], True) or {}):
+            raise SmbError("identity-changed")
+        current = self.observe(path)
+        if current is None:
+            if receipt["state"] not in ("disposing", "removed"):
+                raise SmbError("recovery-required")
+            receipt["state"] = "removed"
+            self.journal.save()
+            return "already-removed"
+        if receipt["state"] == "removed":
+            # The new canonical manifest fence is owned allocation authority, never deletion authority.
+            allocation = self.journal.data["allocations"].get(path)
+            if allocation and allocation["state"] == "published" and same_object(allocation["metadata"], current):
+                stored = fence(self.read_json(path))
+                if stored["jobId"] == job_id and stored["artifact"] == selected:
+                    return "already-removed"
+            raise SmbError("identity-changed")
+        if not same_object(receipt["metadata"], current):
+            raise SmbError("identity-changed")
+        h = self.target(path)
+        actual = validate_metadata(self.backend.metadata(h), False)
+        if not same_object(receipt["metadata"], actual):
+            raise SmbError("identity-changed")
+        self.verify(path, selected["bytes"], selected["sha256"])
+        self.own_deletion(job_id)
+        self.begin_effect("delete")
+        receipt["state"] = "disposing"
+        self.journal.save()
+        self.backend.disposition(h)
+        self.close_handle(h)
+        del self.targets[path]
+        # Delete-pending, access-denied, failed CLOSE or unknown state is not absence.
+        if self.observe(path) is not None:
+            raise SmbError("recovery-required")
+        self.check()
+        receipt["state"] = "removed"
+        self.journal.save()
+        return "removed"
 
     def write_fence(self, value):
         fence(value)
@@ -776,6 +920,9 @@ class Transaction:
             or value["artifact"] not in record["artifacts"]
         ):
             raise SmbError("invalid-input")
+        removal = self.journal.data["removals"].get(value["artifact"]["path"])
+        if not removal or removal["state"] != "removed":
+            raise SmbError("recovery-required")
         self.write_control(value["artifact"]["path"], value, "delete")
 
     def control_files(self, path, nested, budget=None):
@@ -828,6 +975,9 @@ class Transaction:
     def reopen_read(self, path):
         """Acquire the new read pin before closing the old pin: no sharing gap."""
         self.check()
+        if self.context["kind"] == "delete" and (MANIFEST.fullmatch(path) or PAYLOAD.fullmatch(path) or COMMIT.fullmatch(path)):
+            self.target(path)
+            return
         try:
             old = self.transport.pin(path)
         except FileNotFoundError:
@@ -939,7 +1089,7 @@ class Transaction:
         if self.journal.data["phase"] == "releasing":
             return
         # Uncertain canonical effects must be reconciled by their original command.
-        if any(a["state"] != "published" for a in self.journal.data["allocations"].values()):
+        if any(a["state"] != "published" for a in self.journal.data["allocations"].values()) or any(r["state"] == "disposing" for r in self.journal.data["removals"].values()):
             raise SmbError("recovery-required")
         self.journal.data["phase"] = "checkpointed"
         self.journal.save()

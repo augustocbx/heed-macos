@@ -1,6 +1,6 @@
 import { domainToASCII } from 'node:url';
 import { isIP } from 'node:net';
-import type { TransactionContext } from './portable-provider';
+import type { PendingRemoteTransaction, TransactionContext } from './portable-provider';
 
 export interface DirectSmbEndpoint {
 	server: string;
@@ -60,6 +60,7 @@ export interface DirectSmbSession {
 }
 export type DirectSmbTransactionContext = TransactionContext & { appDir: string };
 export interface DirectSmbNative {
+ pending(binding:DirectSmbBinding,appDir:string,signal?:AbortSignal):Promise<PendingRemoteTransaction[]>;
 	probe(
 		endpoint: DirectSmbEndpoint,
 		credentials: DirectSmbCredentials,

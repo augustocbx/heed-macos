@@ -111,3 +111,10 @@ test('local source eligibility remains independent of the selected destination a
  expect(f.library.snapshot().previews.some(p=>p.revisionId===queued.revisionId)).toBe(false);
  expect(f.library.hasLocalRevision(queued.revisionId)).toBe(false);expect(f.library.hasLocalRevision(randomUUID())).toBe(false);
 });
+
+test('direct v3 discovery refuses missing exclusion or transaction admission before provider reads',async()=>{
+ for(const exclusion of ['none','exclusive-create'] as const){const f=fixture();(f.provider as any).deletionCapabilities={destinationVersion:3,exclusion,revisionMetadata:true};await expect(f.library.discover()).rejects.toThrow('coordination');expect(f.provider.reads).toHaveLength(0);expect(f.provider.acknowledgments).toBe(0);}
+});
+test('direct v3 discovery runs within the admitted whole-operation transaction and durable checkpoint',async()=>{
+ const f=fixture();(f.provider as any).deletionCapabilities={destinationVersion:3,exclusion:'exclusive-create',revisionMetadata:true};(f.provider as any).observationDigest=async()=> '1'.repeat(64);let active=false,checkpoints=0;const list=f.provider.list.bind(f.provider);f.provider.list=async(...args)=>{if(!active)throw Error('Uncoordinated discovery');return list(...args);};(f.provider as any).withTransaction=async(_context:any,run:any)=>{active=true;try{return await run({observationDigest:async()=> '1'.repeat(64),inventory:async()=>({commits:[],deletions:[],pending:[],complete:true}),checkpoint:async()=>{checkpoints++;}});}finally{active=false;}};const snapshot=await f.library.discover();expect(snapshot.complete).toBe(true);expect(checkpoints).toBe(1);
+});

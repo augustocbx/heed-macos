@@ -1,3 +1,4 @@
+import {untrack} from './process';
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -451,3 +452,20 @@ describe('bounded protected guardian protocol', () => {
 		});
 	});
 });
+
+test('native pending query uses credential-free bounded EOF startup and rejects malformed native hints',async()=>{
+ const h=helper(`let data='';for await(const c of Bun.stdin.stream())data+=Buffer.from(c);const req=JSON.parse(data);if(req.action!=='pending'||req.credentials!==undefined||req.appDir!=='/private/tmp/heed-task1')process.exit(2);process.stdout.write(JSON.stringify({ok:true,value:[]})+'\\n');`);
+ const native=new PythonDirectSmbNative({runner:h.runner});expect(typeof (native as any).pending).toBe('function');expect(await (native as any).pending(binding,context.appDir)).toEqual([]);
+ const bad=helper(`for await(const c of Bun.stdin.stream()){}process.stdout.write(JSON.stringify({ok:true,value:[{operationId:'invalid',deviceId:'invalid',kind:'delete',recoverable:true,admissions:[]}]})+'\\n');`);await expect((new PythonDirectSmbNative({runner:bad.runner}) as any).pending(binding,context.appDir)).rejects.toThrow();
+});
+test('failed native startup reports its private stop receipt only after the helper is reaped',async()=>{
+ const h=helper(`let data='';for await(const c of Bun.stdin.stream()){data+=Buffer.from(c);if(data.includes('\\n')){console.log(JSON.stringify({ok:false,error:'access-denied'}));break;}}`);
+ let failure:any;try{await new PythonDirectSmbNative({runner:h.runner}).open(binding,credentials,context);}catch(error){failure=error;}
+ expect(failure?.code).toBe('access-denied');expect(await h.child.exited).not.toBeNull();expect(failure?.guardianStopped).toBe(true);expect(Object.keys(failure)).not.toContain('guardianStopped');
+});
+
+test('unproved native reaping never produces a stopped receipt',async()=>{
+ const h=helper(`let data='';for await(const c of Bun.stdin.stream()){data+=Buffer.from(c);if(data.includes('\\n')){console.log(JSON.stringify({ok:false,error:'access-denied'}));break;}}`);let proxy:any;const runner=()=>{const child=h.runner();proxy=new Proxy(child,{get(target,key){if(key==='exited')return new Promise(()=>{});const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value;}});return proxy;};let failure:any;
+ try{await new PythonDirectSmbNative({runner}).open(binding,credentials,context);}catch(error){failure=error;}finally{if(proxy)untrack(proxy);}
+ expect(failure?.code).toBe('transaction-unavailable');expect(failure?.guardianStopped).toBeUndefined();expect(await h.child.exited).not.toBeNull();
+},6000);

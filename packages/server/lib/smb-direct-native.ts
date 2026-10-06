@@ -1,3 +1,4 @@
+import type {PendingRemoteTransaction} from './portable-provider';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomBytes } from 'node:crypto';
 import { track, untrack, killTree } from './process';
@@ -56,6 +57,12 @@ function responseError(value: unknown) {
 	const code =
 		typeof value === 'string' && DIRECT_SMB_CODES.has(value) ? value : 'transport-unavailable';
 	return directSmbError(code);
+}
+/** Private local receipt; never serialized as provider/API state. */
+function stoppedFailure(error:unknown) {
+ const failure=responseError((error as {code?:unknown})?.code);
+ Object.defineProperty(failure,'guardianStopped',{value:true,enumerable:false});
+ return failure;
 }
 function rpcValue(action: string, value: Record<string, unknown>) {
 	if (
@@ -275,7 +282,7 @@ class DirectRpcSession implements DirectSmbSession {
 			if (onAbort) signal?.removeEventListener('abort', onAbort);
 		}
 	}
-	async startup(request: Record<string, unknown>, transaction: boolean, signal?: AbortSignal) {
+	async startup<T=DirectSmbProbe>(request: Record<string, unknown>, transaction: boolean, signal?: AbortSignal, decode:(value:unknown)=>T=validateDirectProbe as (value:unknown)=>T) {
 		return this.bounded(async () => {
 			const data = Buffer.from(JSON.stringify(request));
 			if (data.length > FRAME) throw directSmbError('bounds-exceeded');
@@ -284,7 +291,7 @@ class DirectRpcSession implements DirectSmbSession {
 			await sink.write('\n');
 			await sink.flush();
 			if (!transaction) sink.end();
-			const response = await this.frame(FRAME);
+			const response = await this.frame(request.action==='pending'?RESULT:FRAME);
 			if (response.ok === false) {
 				exactObject(response, ['ok', 'error']);
 				throw responseError(response.error);
@@ -311,7 +318,7 @@ class DirectRpcSession implements DirectSmbSession {
 			}
 			exactObject(response, ['ok', 'value']);
 			if (response.ok !== true) throw directSmbError('invalid-protocol');
-			const result = validateDirectProbe(response.value);
+			const result = decode(response.value);
 			while (true) {
 				const next = await this.reader.read();
 				if (next.done) break;
@@ -561,10 +568,11 @@ export class PythonDirectSmbNative implements DirectSmbNative {
 		if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 1800000)
 			throw directSmbError('invalid-input');
 	}
-	private async start(
+	private async start<T=DirectSmbProbe>(
 		request: Record<string, unknown>,
 		transaction: boolean,
 		signal?: AbortSignal,
+        decode?:(value:unknown)=>T,
 	) {
 		signal?.throwIfAborted();
 		let child: Child;
@@ -575,13 +583,20 @@ export class PythonDirectSmbNative implements DirectSmbNative {
 		}
 		const session = new DirectRpcSession(child, this.timeoutMs, signal);
 		try {
-			const probe = await session.startup({ protocol: 1, ...request }, transaction, signal);
+			const probe = await session.startup<T>({ protocol: 1, ...request }, transaction, signal,decode);
 			return { session, probe };
 		} catch (error) {
+            // If stopping cannot prove reaping, close throws and no stop receipt exists.
 			await session.close();
-			throw error;
+			throw stoppedFailure(error);
 		}
 	}
+ async pending(binding:DirectSmbBinding,appDir:string,signal?:AbortSignal):Promise<PendingRemoteTransaction[]> {
+  const b=validateDirectBinding(binding);validateDirectContext({operationId:b.id,deviceId:b.id,kind:'read',appDir});
+  const {session,probe}=await this.start<PendingRemoteTransaction[]>({action:'pending',binding:b,appDir},false,signal,validateDirectPending);
+  try{return probe!;}finally{await session.close();}
+ }
+
 	async probe(
 		endpoint: DirectSmbEndpoint,
 		credentials: DirectSmbCredentials,
@@ -637,9 +652,14 @@ export class PythonDirectSmbNative implements DirectSmbNative {
 		context: DirectSmbTransactionContext,
 		signal?: AbortSignal,
 	): Promise<DirectSmbSession> {
-		const b = validateDirectBinding(binding);
-		const c = validateDirectCredentials(credentials);
-		const { appDir, ...operation } = validateDirectContext(context);
+        const {b,c,appDir,operation}=(()=>{
+            try {
+                signal?.throwIfAborted();
+                const b=validateDirectBinding(binding), c=validateDirectCredentials(credentials);
+                const {appDir,...operation}=validateDirectContext(context);
+                return {b,c,appDir,operation};
+            } catch(error) {throw stoppedFailure(error);}
+        })();
 		const { session } = await this.start(
 			{
 				action: 'transaction',
@@ -654,4 +674,14 @@ export class PythonDirectSmbNative implements DirectSmbNative {
 		);
 		return session;
 	}
+}
+
+/** Native validates physical journal authority; this validates only its bounded public hints. */
+export function validateDirectPending(value:unknown):PendingRemoteTransaction[] {
+ if(!Array.isArray(value)||value.length>10000||Buffer.byteLength(JSON.stringify(value))>1900000)throw directSmbError('bounds-exceeded');
+ let admissions=0;const operations=new Set<string>();
+ for(const raw of value){const keys=['operationId','deviceId','kind','recoverable','admissions'];if(raw&&Object.hasOwn(raw,'releaseOnly'))keys.push('releaseOnly');if(raw&&Object.hasOwn(raw,'blockedReason'))keys.push('blockedReason');const job=exactObject(raw,keys);
+  if(!DIRECT_SMB_UUID.test(String(job.operationId))||!DIRECT_SMB_UUID.test(String(job.deviceId))||operations.has(String(job.operationId))||!['read','publish','delete'].includes(String(job.kind))||typeof job.recoverable!=='boolean'||job.releaseOnly!==undefined&&job.releaseOnly!==true||job.blockedReason!==undefined&&(typeof job.blockedReason!=='string'||job.blockedReason.length>512)||!Array.isArray(job.admissions))throw directSmbError('invalid-protocol');operations.add(String(job.operationId));
+  for(const admission of job.admissions){if(++admissions>10000)throw directSmbError('bounds-exceeded');const a=exactObject(admission,['meetingId','revisionId','manifestHash']);if(!DIRECT_SMB_UUID.test(String(a.meetingId))||!DIRECT_SMB_UUID.test(String(a.revisionId))||typeof a.manifestHash!=='string'||!/^[a-f0-9]{64}$/.test(a.manifestHash))throw directSmbError('invalid-protocol');}
+ }return structuredClone(value) as PendingRemoteTransaction[];
 }

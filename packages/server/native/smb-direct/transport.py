@@ -425,6 +425,19 @@ class SmbProtocolBackend:
         except ObjectNameCollision:
             raise SmbError("destination-exists") from None
 
+    def disposition(self, handle):
+        """Only the validated exact handle receives disposition; no path unlink fallback."""
+        from smbprotocol.file_info import FileDispositionInformation
+        from smbprotocol.open import SMB2SetInfoRequest
+        info = FileDispositionInformation()
+        info["delete_pending"] = True
+        request = SMB2SetInfoRequest()
+        request["info_type"] = info.INFO_TYPE
+        request["file_info_class"] = info.INFO_CLASS
+        request["file_id"] = handle.file_id
+        request["buffer"] = info.pack()
+        self.connection.receive(self.connection.send(request,sid=self.session.session_id,tid=self.tree.tree_connect_id),resolve_symlinks=False)
+
     def flush(self, handle):
         handle.flush()
 

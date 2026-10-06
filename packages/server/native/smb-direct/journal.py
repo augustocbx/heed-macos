@@ -172,6 +172,7 @@ def validate_job(job):
             "admissions",
             "effects",
             "confirmed",
+            "removals",
         ),
     )
     if job["version"] != 1 or type(job["version"]) is not int or job["phase"] not in PHASES:
@@ -233,7 +234,7 @@ def validate_job(job):
 
     if type(job["effects"]) is not int or not 0 <= job["effects"] <= 100000:
         raise SmbError("recovery-required")
-    for key in ("allocations", "admissions", "confirmed"):
+    for key in ("allocations", "admissions", "confirmed", "removals"):
         if not isinstance(job[key], dict) or len(job[key]) > MAX_ENTRIES:
             raise SmbError("bounds-exceeded")
     for path, item in job["admissions"].items():
@@ -284,6 +285,29 @@ def validate_job(job):
             or not re.fullmatch("[a-f0-9]{64}", digest)
         ):
             raise SmbError("recovery-required")
+    for path, item in job["removals"].items():
+        validate_path(path)
+        exact(item, ("artifact", "metadata", "parent", "parentMetadata", "parents", "state"))
+        exact(item["artifact"], ("path", "bytes", "sha256"))
+        a = item["artifact"]
+        if (a["path"] != path or type(a["bytes"]) is not int or not 0 < a["bytes"] <= 8000000000000
+                or not isinstance(a["sha256"], str) or not re.fullmatch("[a-f0-9]{64}", a["sha256"])
+                or item["state"] not in ("selected", "disposing", "removed")
+                or item["parent"] != path.rsplit("/", 1)[0]
+                or not (re.fullmatch(r"commits/[a-f0-9-]{36}/[a-f0-9-]{36}\.json", path)
+                        or re.fullmatch(r"meetings/[a-f0-9-]{36}/revisions/[a-f0-9-]{36}/(?:meeting|manifest)\.json", path))):
+            raise SmbError("recovery-required")
+        validate_metadata(item["metadata"], False)
+        validate_metadata(item["parentMetadata"], True)
+        if not isinstance(item["parents"],dict) or not 0 < len(item["parents"]) <= 512:
+            raise SmbError("recovery-required")
+        for full, metadata in item["parents"].items():
+            validate_path(full, True)
+            validate_metadata(metadata, True)
+        if item["metadata"]["bytes"] != a["bytes"]:
+            raise SmbError("recovery-required")
+        if scope["kind"] != "delete":
+            raise SmbError("recovery-required")
     return job
 
 
@@ -333,6 +357,7 @@ class Journal:
                     admissions={},
                     effects=0,
                     confirmed={},
+                    removals={},
                 )
                 self.save()
         except BaseException:
@@ -380,7 +405,7 @@ class Journal:
         content = json.dumps(self.data, separators=(",", ":")).encode()
         if len(content) > MAX_JOURNAL:
             raise SmbError("bounds-exceeded")
-        name = "." + self.name + "." + str(uuid4())
+        name = self.name + "." + str(uuid4()) + ".tmp"
         fd = os.open(
             name,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
@@ -485,7 +510,17 @@ def pending_transactions(binding, app_dir):
             pinned = bool(job["claim"] and job["claim"].get("metadata")) and all(
                 a["metadata"] or a["state"] == "planned" for a in job["allocations"].values()
             )
-            recoverable = bool(authority and binding_matches and pinned)
+            prepared_zero_effect = (
+                job["phase"] == "prepared"
+                and job["claim"] is None
+                and job["effects"] == 0
+                and all(not job[key] for key in (
+                    "allocations", "admissions", "removals", "confirmed"
+                ))
+            )
+            recoverable = bool(
+                authority and binding_matches and (pinned or prepared_zero_effect)
+            )
             release_only = (
                 job["phase"] in ("checkpointed", "releasing", "released")
                 or not job["admissions"]

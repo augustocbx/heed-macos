@@ -446,7 +446,7 @@ class TransportTests(unittest.TestCase):
         read_frame(source)
         self.assertEqual(
             read_frame(source),
-            dict(id=1, nonce="e" * 64, ok=False, error="unsupported-coordination"),
+            dict(id=1, nonce="e" * 64, ok=False, error="invalid-input"),
         )
 
     def test_malformed_later_request_never_reuses_previous_correlation(self):

@@ -204,6 +204,8 @@ def validate_rpc(value, sequence):
         "write-fence": ("value",),
         "write-deletion": ("value",),
         "confirm": ("commit",),
+        "remove-exact": ("jobId", "artifact"),
+        "observation-digest": (),
     }
     if action not in fields:
         raise SmbError("unsupported-coordination")

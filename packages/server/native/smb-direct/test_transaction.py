@@ -168,9 +168,22 @@ class MemoryServer:
             self.fault = None
             raise SmbError()
 
+    def disposition(self,h):
+        if h.closed or h.access != "delete":raise AssertionError("unowned disposition")
+        h.node["deletePending"]=True
+        self.events.append(("disposition",h.path))
+        if self.fault=="disposition":
+            self.fault=None
+            raise SmbError()
+
     def close_handle(self, h):
         h.closed = True
         self.events.append(("close", h.path))
+        if h.node["deletePending"] and self.fault != "pending" and not any(not other.closed and other.node is h.node for other in self.handles):
+            if self.nodes.get(h.path) is h.node:del self.nodes[h.path]
+        if self.fault == "delete-close" and h.node["deletePending"]:
+            self.fault=None
+            raise SmbError()
         if self.fault == "close" or self.fault == ("close", h.path):
             self.fault = None
             raise SmbError()
@@ -314,6 +327,186 @@ class TransactionTests(unittest.TestCase):
         self.write(tx, PREFIX + "/meeting.json", body)
         self.write(tx, MARKER, encoded(marker))
         return marker, intent
+
+    def deletion_fixture(self):
+        publication = self.transaction()
+        marker, intent_value = self.publish(publication, audio=False)
+        publication.confirm(marker)
+        publication.retire_pending(intent_value)
+        publication.checkpoint()
+        publication.close()
+        self.context = dict(self.context, operationId=str(uuid4()), kind="delete")
+        tx = self.transaction()
+        tx.inventory()
+        body, manifest_data, _, _, _ = self.bundle(False)
+        record = dict(version=1, jobId=self.context["operationId"], destinationId=DEST,
+                      revisions=[dict(libraryId=LIBRARY,meetingId=MEETING,revisionId=REVISION,manifestHash=digest(manifest_data),parents=[])],
+                      artifacts=[dict(path=p,bytes=len(b),sha256=digest(b)) for p,b in ((MARKER,encoded(marker)),(PREFIX+"/meeting.json",body),(MANIFEST,manifest_data))])
+        return tx, record
+
+    def test_exact_deletion_requires_original_receipt_and_permanent_verified_barrier(self):
+        tx, record = self.deletion_fixture()
+        self.assertTrue(callable(getattr(tx, "remove_exact", None)), "exact deletion missing")
+        with self.assertRaises(SmbError):
+            tx.remove_exact(record["jobId"],record["artifacts"][0])
+        tx.write_deletion(record)
+        for item in record["artifacts"]:
+            self.assertEqual(tx.remove_exact(record["jobId"],item), "removed")
+            self.assertNotIn("library/"+item["path"],self.server.nodes)
+            self.assertEqual(tx.remove_exact(record["jobId"],item), "already-removed")
+        self.assertIn("library/control/deletions/"+record["jobId"]+".json",self.server.nodes)
+
+    def test_unknown_same_bytes_after_receipt_never_gets_removed(self):
+        tx, record = self.deletion_fixture()
+        self.assertTrue(callable(getattr(tx, "remove_exact", None)), "exact deletion missing")
+        tx.write_deletion(record)
+        item=record["artifacts"][0];path="library/"+item["path"]
+        unknown=self.server.add(path,self.server.nodes[path]["data"])
+        with self.assertRaises(SmbError):tx.remove_exact(record["jobId"],item)
+        self.assertIs(self.server.nodes[path],unknown)
+        self.assertFalse(any(e[0]=="disposition" for e in self.server.events))
+
+    def test_exact_deletion_refuses_changed_parent_multi_link_or_failed_barrier(self):
+        for fault in ("parent","links","fence"):
+            with self.subTest(fault=fault):
+                self.server=MemoryServer();self.context=dict(self.context,operationId=str(uuid4()),kind="publish");tx,record=self.deletion_fixture()
+                self.assertTrue(callable(getattr(tx,"remove_exact",None)),"exact deletion missing")
+                tx.write_deletion(record);item=record["artifacts"][0]
+                if fault=="parent":self.server.add("library/commits/"+DEVICE,directory=True)
+                elif fault=="links":self.server.nodes["library/"+item["path"]]["links"]=2
+                else:self.server.nodes["library/control/deletions/"+record["jobId"]+".json"]["data"]=b"changed"
+                with self.assertRaises(SmbError):tx.remove_exact(record["jobId"],item)
+                self.assertIn("library/"+item["path"],self.server.nodes)
+                self.assertFalse(any(e[0]=="disposition" for e in self.server.events))
+
+    def test_changed_selected_grandparent_refuses_exact_deletion_before_disposition(self):
+        tx,record=self.deletion_fixture();tx.write_deletion(record)
+        self.server.add("library/meetings/"+MEETING,directory=True)
+        with self.assertRaises(SmbError):tx.remove_exact(record["jobId"],record["artifacts"][1])
+        self.assertFalse(any(e[0]=="disposition" for e in self.server.events))
+
+    def test_delete_pending_and_lost_set_or_close_ack_retain_original_job_until_absence(self):
+        for fault in ("pending","disposition","delete-close"):
+            with self.subTest(fault=fault):
+                self.server=MemoryServer();self.context=dict(self.context,operationId=str(uuid4()),kind="publish");tx,record=self.deletion_fixture()
+                self.assertTrue(callable(getattr(tx,"remove_exact",None)),"exact deletion missing")
+                tx.write_deletion(record);self.server.fault=fault;item=record["artifacts"][0]
+                with self.assertRaises(SmbError):tx.remove_exact(record["jobId"],item)
+                with self.assertRaises(SmbError):tx.checkpoint()
+                self.assertTrue(any(job["operationId"]==record["jobId"] for job in pending_transactions(self.binding,self.app)))
+                tx.abort();self.server.fault=None
+                if fault=="pending":
+                    # The server may complete its own pending disposition later; client never unlinks.
+                    self.assertTrue(self.server.nodes["library/"+item["path"]]["deletePending"])
+                    del self.server.nodes["library/"+item["path"]]
+                recovered=self.transaction()
+                self.assertEqual(recovered.remove_exact(record["jobId"],item),"already-removed")
+
+    def test_failed_permanent_barrier_ack_cannot_authorize_disposition(self):
+        tx,record=self.deletion_fixture()
+        self.server.fault="library/control/deletions/"+record["jobId"]+".json"
+        with self.assertRaises(SmbError):tx.write_deletion(record)
+        with self.assertRaises(SmbError):tx.remove_exact(record["jobId"],record["artifacts"][0])
+        self.assertFalse(any(e[0]=="disposition" for e in self.server.events))
+        tx.write_deletion(record)
+        self.assertEqual(tx.remove_exact(record["jobId"],record["artifacts"][0]),"removed")
+
+    def test_incomplete_target_record_refuses_before_permanent_barrier_publication(self):
+        tx,record=self.deletion_fixture();item=record["artifacts"][0]
+        del self.server.nodes["library/"+item["path"]]
+        with self.assertRaises((SmbError,FileNotFoundError)):tx.write_deletion(record)
+        self.assertNotIn("library/control/deletions/"+record["jobId"]+".json",self.server.nodes)
+        self.assertFalse(any(e[0]=="disposition" for e in self.server.events))
+
+    def test_prepared_zero_effect_original_job_remains_recoverable_after_auth_failure(self):
+        connect=self.server.connect
+        self.server.connect=lambda *args:(_ for _ in ()).throw(SmbError("access-denied"))
+        with self.assertRaises(SmbError):self.transaction()
+        job=pending_transactions(self.binding,self.app)[0]
+        self.assertTrue(job["recoverable"],"original prepared zero-effect authority must be retryable")
+        self.assertTrue(job["releaseOnly"])
+        self.assertEqual(self.server.events,[])
+        self.server.connect=connect
+        recovered=self.transaction();recovered.checkpoint();recovered.close()
+        self.assertEqual(pending_transactions(self.binding,self.app),[])
+
+    def test_prepared_zero_effect_query_never_adopts_copied_or_substituted_authority(self):
+        self.server.enforced=False
+        with self.assertRaises(SmbError):self.transaction()
+        self.server.enforced=True
+        copied=self.app+"-prepared-copy";shutil.copytree(self.app,copied)
+        self.addCleanup(lambda:shutil.rmtree(copied,ignore_errors=True))
+        self.assertFalse(pending_transactions(self.binding,copied)[0]["recoverable"])
+        guard=next(Path(self.app).rglob("*.guard"));guard.unlink();guard.write_bytes(b"");guard.chmod(0o600)
+        self.assertFalse(pending_transactions(self.binding,self.app)[0]["recoverable"])
+
+    def test_prepared_zero_effect_exception_refuses_recorded_intent_or_effect(self):
+        journal=Journal(self.binding,self.context,self.app)
+        original=copy.deepcopy(journal.data)
+        cases=[
+            {"effects":1},
+            {"claim":dict(stage=".heed-stage-"+self.context["operationId"],metadata=None,state="allocating")},
+            {"allocations":{"objects/"+"a"*64:dict(stage=".heed-claim/"+self.context["operationId"],metadata=None,bytes=0,sha256="a"*64,state="planned",directory=False)}},
+            {"confirmed":{"commits/"+DEVICE+"/"+self.context["operationId"]+".json":"a"*64}},
+        ]
+        try:
+            for changes in cases:
+                with self.subTest(changes=changes):
+                    journal.data=copy.deepcopy(original);journal.data.update(changes);journal.save()
+                    self.assertFalse(pending_transactions(self.binding,self.app)[0]["recoverable"])
+        finally:journal.close()
+
+    def test_atomic_job_copy_uses_quota_sibling_name_and_is_never_recovery_authority(self):
+        tx=self.transaction();tx.journal.data["effects"]=1
+        with patch("journal.os.replace",side_effect=OSError("owned synthetic replace fault")):
+            with self.assertRaises(OSError):tx.journal.save()
+        folder=Path(tx.journal.path);copies=list(folder.glob(self.context["operationId"]+".json.*.tmp"))
+        self.assertEqual(len(copies),1)
+        self.assertEqual(json.loads(copies[0].read_text())["effects"],1)
+        tx.abort();recovered=self.transaction()
+        self.assertEqual(recovered.journal.data["effects"],0)
+        self.assertTrue(copies[0].exists())
+
+    def test_exact_deletion_record_rejects_unrelated_revision_before_effects(self):
+        tx,record=self.deletion_fixture()
+        record["revisions"][0]["revisionId"]=str(uuid4())
+        before=list(self.server.events)
+        with self.assertRaises(SmbError):tx.write_deletion(record)
+        self.assertEqual(self.server.events,before)
+
+    def test_guardian_exact_deletion_frames_and_canonical_fence_complete_owned_job(self):
+        from guardian import serve
+        tx,record=self.deletion_fixture();tx.abort()
+        canonical_fence=dict(kind="heed-deleted-revision",version=1,jobId=record["jobId"],destinationId=DEST,revision=record["revisions"][0],artifact=record["artifacts"][-1])
+        requests=[dict(action="write-deletion",value=record)]
+        requests += [dict(action="remove-exact",jobId=record["jobId"],artifact=a) for a in record["artifacts"]]
+        requests += [dict(action="write-fence",value=canonical_fence),dict(action="checkpoint"),dict(action="close")]
+        startup=dict(protocol=1,action="transaction",endpoint=ENDPOINT,credentials=CREDS,binding=self.binding,context=self.context,appDir=self.app)
+        wire=encoded(startup)+b"\n"+b"".join(encoded(dict(id=i+1,nonce=f"{i+1:064x}",**r))+b"\n" for i,r in enumerate(requests))
+        output=io.BytesIO();serve(io.BytesIO(wire),output,backend_factory=lambda:MemorySession(self.server))
+        responses=[json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertTrue(all(r["ok"] for r in responses),responses)
+        self.assertEqual([r["value"] for r in responses[2:5]],["removed"]*3)
+        self.assertEqual(json.loads(self.server.nodes["library/"+MANIFEST]["data"]),canonical_fence)
+        self.assertEqual(pending_transactions(self.binding,self.app),[])
+
+    def test_delete_handle_denies_competing_write_and_delete_without_delete_on_open(self):
+        tx,record=self.deletion_fixture()
+        self.assertTrue(callable(getattr(tx,"remove_exact",None)),"exact deletion missing")
+        tx.write_deletion(record);item=record["artifacts"][0]
+        self.assertFalse(self.server.nodes["library/"+item["path"]]["deletePending"])
+        for access in ("write","delete"):
+            with self.assertRaises(SmbError):self.server.open("library/"+item["path"],access=access)
+        self.assertEqual(tx.remove_exact(record["jobId"],item),"removed")
+
+    def test_observation_digest_changes_for_equal_bytes_replacement_and_stable_scans_match(self):
+        tx,record=self.deletion_fixture()
+        self.assertTrue(callable(getattr(tx,"observation_digest",None)),"observation digest missing")
+        first=tx.observation_digest();self.assertEqual(first,tx.observation_digest())
+        tx.checkpoint();tx.close()
+        item=record["artifacts"][0];p="library/"+item["path"];self.server.add(p,self.server.nodes[p]["data"])
+        self.context["operationId"]=str(uuid4());current=self.transaction();current.inventory()
+        self.assertNotEqual(first,current.observation_digest())
 
     def test_complete_publication_confirm_checkpoint_and_whole_claim_release(self):
         tx = self.transaction()
@@ -519,6 +712,11 @@ class TransactionTests(unittest.TestCase):
                 )
             ],
         )
+        self.server.add("library/meetings",directory=True)
+        self.server.add("library/meetings/"+MEETING,directory=True)
+        self.server.add("library/meetings/"+MEETING+"/revisions",directory=True)
+        self.server.add("library/"+PREFIX,directory=True)
+        self.server.add("library/"+MANIFEST,manifest_data)
         tx.write_deletion(record)
         tx.checkpoint()
         tx.close()
@@ -526,7 +724,7 @@ class TransactionTests(unittest.TestCase):
         publication = self.transaction()
         with self.assertRaises(SmbError):
             self.write(publication, MANIFEST, manifest_data)
-        self.assertNotIn("library/" + MANIFEST, self.server.nodes)
+        self.assertEqual(self.server.nodes["library/"+MANIFEST]["data"],manifest_data)
 
     def test_missing_allocation_receipt_never_adopts_remote_stage(self):
         tx = self.transaction()
@@ -1102,3 +1300,30 @@ class SdkRenameTests(unittest.TestCase):
         self.assertEqual(info["root_directory"].get_value(), 0)
         self.assertEqual(info["file_name"].get_value(), "library\\commits\\final.json")
         self.assertEqual(routing, dict(sid=17, tid=23))
+
+    def test_actual_sdk_disposition_uses_exact_handle_and_open_has_no_delete_on_close(self):
+        try:
+            from smbprotocol.open import Open,SMB2SetInfoRequest,CreateOptions,ShareAccess
+            from smbprotocol.file_info import FileDispositionInformation
+        except ImportError:self.skipTest("pinned SDK unavailable")
+        backend=SmbProtocolBackend();sent=[];received=[]
+        backend.session=SimpleNamespace(session_id=17)
+        backend.tree=SimpleNamespace(tree_connect_id=23,session=SimpleNamespace(connection=SimpleNamespace(dialect=0x311)))
+        backend.connection=SimpleNamespace(send=lambda request,**kw:sent.append((request,kw)),receive=lambda request,**kw:received.append(kw))
+        original=Open.create
+        packets=[]
+        def capture(handle,*args,**kwargs):
+            request,_=original(handle,*args,**kwargs,send=False)
+            packets.append(request)
+        with patch.object(Open,"create",capture):handle=backend.open("library/commits/exact.json",access="delete")
+        create=packets[0]
+        self.assertFalse(create["create_options"].get_value() & CreateOptions.FILE_DELETE_ON_CLOSE)
+        self.assertEqual(create["share_access"].get_value(),ShareAccess.FILE_SHARE_READ)
+        self.assertTrue(create["desired_access"].get_value() & 0x10000)
+        handle.file_id=b"X"*16
+        backend.disposition(handle)
+        request,routing=sent[0];self.assertIsInstance(request,SMB2SetInfoRequest)
+        self.assertEqual(request["file_id"].get_value(),b"X"*16)
+        info=FileDispositionInformation();info.unpack(request["buffer"].get_value())
+        self.assertTrue(info["delete_pending"].get_value())
+        self.assertEqual(routing,dict(sid=17,tid=23));self.assertEqual(received,[dict(resolve_symlinks=False)])
