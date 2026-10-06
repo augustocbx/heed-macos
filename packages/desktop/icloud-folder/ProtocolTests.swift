@@ -1,6 +1,7 @@
 import Foundation
 final class CoordinatedFixtureResult { var data: Data?; let lock = NSLock() }
 func protocolTests() throws {
+    try remoteDeletionTests(); try admissionRecoveryTests()
     func check(_ value: Bool, _ message: String) throws { if !value { throw CloudFailure(message) } }
     func rejects(_ operation: () throws -> Void) throws {
         var rejected = false
@@ -72,4 +73,29 @@ func protocolTests() throws {
     try rejects { _ = try createHeader(headerFiles, id: UUID().uuidString) }
     try check(try header(headerFiles)?["destinationId"] as? String == destination, "Existing destination identity remains immutable")
     try check(try observe(root).state == "unsupported-folder", "Ordinary folders are never iCloud")
+}
+func admissionRecoveryTests() throws {
+    let base=FileManager.default.temporaryDirectory.appendingPathComponent("heed-admission-\(UUID().uuidString)"), root=base.appendingPathComponent("remote"), privateRoot=base.appendingPathComponent("private")
+    try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true);try FileManager.default.createDirectory(at:privateRoot,withIntermediateDirectories:true);defer {try? FileManager.default.removeItem(at:base)}
+    let files=try ScopedFiles(root:root),path="meetings/\(UUID().uuidString)/revisions/\(UUID().uuidString)/manifest.json",data=Data("Synthetic original manifest".utf8)
+    func receipt(_ generation:String="original") throws -> CloudAdmission {try CloudAdmission(privateRoot:privateRoot.path,generation:generation,remoteIdentity:files.identity,path:path,bytes:data.count,hash:digest(data))}
+    func write(_ receipt:CloudAdmission,after:() throws -> Void = {}) throws {var offset=0;try files.write(path,bytes:data.count,digest:digest(data),stagingId:"original",exclusive:true,existingAdmission:receipt.matches,beforePublication:receipt.prepare,afterPublication:after){count in defer {offset+=count};return data.subdata(in:offset..<offset+count)}}
+    var prepared=false
+    let earlyPath="meetings/\(UUID().uuidString)/revisions/\(UUID().uuidString)/manifest.json",earlyReceipt=try CloudAdmission(privateRoot:privateRoot.path,generation:"original",remoteIdentity:files.identity,path:earlyPath,bytes:data.count,hash:digest(data));var earlyOffset=0
+    try files.write(earlyPath,bytes:data.count,digest:digest(data),stagingId:"early",exclusive:true,existingAdmission:earlyReceipt.matches,beforePublication:{fd in try earlyReceipt.prepare(fd);prepared=true}){count in guard prepared else {throw CloudFailure("Receipt must be durable before the first input chunk")};defer {earlyOffset+=count};return data.subdata(in:earlyOffset..<earlyOffset+count)}
+    var refused=false
+    do {var offset=0;let original=try receipt();try files.write(path,bytes:data.count,digest:digest(data),stagingId:"original",exclusive:true,existingAdmission:original.matches,beforePublication:{fd in try original.prepare(fd);throw CloudFailure("Interrupted before canonical rename")}){count in defer {offset+=count};return data.subdata(in:offset..<offset+count)}}catch {refused=true}
+    guard refused,!FileManager.default.fileExists(atPath:root.appendingPathComponent(path).path) else {throw CloudFailure("Pre-rename interruption must preserve only original staging")}
+    try write(receipt())
+    let unknownPath="meetings/\(UUID().uuidString)/revisions/\(UUID().uuidString)/manifest.json";try files.ensureParents(unknownPath)
+    let unknown=root.appendingPathComponent(unknownPath).deletingLastPathComponent().appendingPathComponent(".heed-unknown-\(digest(data)).pending"),unknownBytes=Data("Unproved staging bytes".utf8);try unknownBytes.write(to:unknown)
+    refused=false;do {var offset=0;try files.write(unknownPath,bytes:data.count,digest:digest(data),stagingId:"unknown",exclusive:true){count in defer {offset+=count};return data.subdata(in:offset..<offset+count)}}catch {refused=true}
+    guard refused,try Data(contentsOf:unknown)==unknownBytes else {throw CloudFailure("Unknown staging inode must be preserved before truncation")}
+    refused=false;do {try write(receipt(),after:{throw CloudFailure("Lost acknowledgment")})}catch {refused=true};guard refused else {throw CloudFailure("Interruption must be observed")}
+    try write(receipt());guard try files.read(path,max:1000)==data else {throw CloudFailure("Original admitted inode must recover")}
+    refused=false;do {try write(receipt("changed"))}catch {refused=true};guard refused else {throw CloudFailure("New generation cannot adopt matching bytes")}
+    let copiedRoot=base.appendingPathComponent("copied-private");try FileManager.default.copyItem(at:privateRoot,to:copiedRoot)
+    refused=false;do {let copied=try CloudAdmission(privateRoot:copiedRoot.path,generation:"original",remoteIdentity:files.identity,path:path,bytes:data.count,hash:digest(data));try write(copied)}catch {refused=true};guard refused else {throw CloudFailure("Copied private receipt cannot grant admission authority")}
+    let target=root.appendingPathComponent(path);try FileManager.default.removeItem(at:target);try data.write(to:target)
+    refused=false;do {try write(receipt())}catch {refused=true};guard refused else {throw CloudFailure("Replicated equal bytes with a new inode must not recover")}
 }

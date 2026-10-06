@@ -1,4 +1,5 @@
 import {desktopRequestAllowed} from './desktop-permissions';import {SMB_SETTINGS_RECOVERY_NOTICE,type SmbConnections} from './smb-connections';
+import {SMB_UNSUPPORTED_FILESYSTEM_NOTICE} from './smb-provider';
 const string=(value:unknown,max:number):value is string=>typeof value==='string'&&value.length>0&&value.length<=max;
 const ids=(value:unknown):value is string=>string(value,100);
 export async function smbResponse(request:Request,connections:SmbConnections):Promise<Response>{
@@ -21,6 +22,8 @@ export async function smbResponse(request:Request,connections:SmbConnections):Pr
    case 'desktop-report':if(!ids(body.id)||!(body.folder===null||string(body.folder,4096))||typeof body.failed!=='boolean')throw new Error('Invalid SMB request.');return Response.json(connections.desktopReport(body.id,body.folder,body.failed));
   }
  }catch(error){
+  if((error as Error&{code?:string}).code==='original-operation-recovery-required')return Response.json({error:'Recover the original SMB operation before reconnecting or disconnecting this destination. Its configuration is preserved.',code:'original-operation-recovery-required'},{status:409,headers:{'Cache-Control':'no-store'}});
+  if((error as Error&{code?:string}).code==='unsupported-filesystem')return Response.json({error:SMB_UNSUPPORTED_FILESYSTEM_NOTICE,code:'unsupported-filesystem'},{status:503,headers:{'Cache-Control':'no-store'}});
   const message=error instanceof Error?error.message:'';
   const invalid=/^Invalid|^Enter a credential-free/.test(message);const conflict=/expired|already pending|Confirm creation|Wait for|already running|limit reached|not found|identity changed|destination changed|changed after/.test(message);
   const safe=/^Synchronization settings recovery|^Invalid|^A library operation|^Enter a credential-free|^The access test|^Confirm creation|^Wait for|^Synchronization destination|^Destination identity|^The SMB destination|^The macOS request|^A macOS connection|^SMB destination|^SMB signing|^A read-only|^Unsupported or corrupt/.test(message);

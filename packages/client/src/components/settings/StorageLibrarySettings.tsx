@@ -1,3 +1,5 @@
+import {RemoteRecoverySettings} from './RemoteRecoverySettings';
+import {RemoteDeletionSettings} from './RemoteDeletionSettings';
 import {useEffect,useState} from 'react';import type {LibrarySnapshot} from '@heed/shared';import {libraryApi} from '@/api/library';import {useLocale} from '@/lib/i18n';import styles from './PermissionsPage.module.css';
 export function StorageLibrarySettings(){
  const {tr}=useLocale();const [snapshot,setSnapshot]=useState<(LibrarySnapshot&{providerId?:string})|null>(null),[selected,setSelected]=useState<string[]>([]),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState(''),[localMeeting,setLocalMeeting]=useState('');
@@ -13,10 +15,13 @@ export function StorageLibrarySettings(){
     <label><input type="checkbox" aria-label={item.title} disabled={busy||item.local||item.state==='conflict'} checked={selected.includes(item.revisionId)} onChange={event=>setSelected(ids=>event.target.checked?[...ids,item.revisionId]:ids.filter(id=>id!==item.revisionId))}/>{item.title}</label>
     <p>{tr(item.local?'Available to local AI':'Remote only — excluded from local AI')} · {Math.ceil(item.bytes/1024)} KB</p>
     {item.state==='conflict'?<><p>{tr('Conflicting revisions are preserved. Selecting one creates a merge revision and retains the current local revision.')}</p><button disabled={busy} onClick={()=>void run(async()=>{await libraryApi.resolve(item.revisionId);setSnapshot(await libraryApi.snapshot());})}>{tr('Use this revision')}</button></>:<p>{tr(({'local-saved':'Saved locally',pending:'Pending publication',uploading:'Uploading','provider-confirmed':'Provider confirmed',verified:'Verified',unavailable:'Unavailable',conflict:'Conflict'})[item.state])}</p>}
-    {item.local&&item.state!=='conflict'&&<button disabled={busy||snapshot.readOnly===true||snapshot.capabilities?.write===false||!snapshot.providerId||item.state==='uploading'} onClick={()=>void run(async()=>{setSnapshot(await libraryApi.publish(item.revisionId,snapshot.providerId!));})}>{tr(['pending','unavailable'].includes(item.state)?'Retry publication':'Publish this revision')}</button>}
+    {item.local&&item.remoteDeleted&&<><p>{tr('This remote version was deleted. Publishing again requires a fresh revision.')}</p><button disabled={busy||snapshot.readOnly||!snapshot.providerId} onClick={()=>void run(async()=>{await libraryApi.freshRevision(item.revisionId,snapshot.providerId!);setSnapshot(await libraryApi.snapshot());})}>{tr('Create a fresh revision')}</button></>}
+    {item.local&&!item.remoteDeleted&&item.state!=='conflict'&&<button disabled={busy||snapshot.readOnly===true||snapshot.capabilities?.write===false||!snapshot.providerId||item.state==='uploading'||item.remoteDeleted} onClick={()=>void run(async()=>{setSnapshot(await libraryApi.publish(item.revisionId,snapshot.providerId!));})}>{tr(['pending','unavailable'].includes(item.state)?'Retry publication':'Publish this revision')}</button>}
    </li>)}</ul>
    {snapshot.previews.length>100&&<p>{tr('Showing the first 100 revisions. Select a smaller provider collection for detailed review.')}</p>}
    <button disabled={busy||!selected.length} onClick={()=>void run(async()=>{setSnapshot(await libraryApi.importSelected(selected,snapshot.providerId||''));setSelected([]);})}>{tr('Import selected transcripts')}</button>
+   <RemoteRecoverySettings snapshot={snapshot} busy={busy} onBusyChange={setBusy} onChanged={()=>{void libraryApi.snapshot().then(setSnapshot).catch(()=>setError('Could not load the portable library.'));}}/>
+   <RemoteDeletionSettings snapshot={snapshot} parentBusy={busy} onBusyChange={setBusy} onChanged={()=>{void libraryApi.snapshot().then(setSnapshot).catch(()=>setError('Could not load the portable library.'));}}/>
   </>}
   <button disabled={busy} onClick={()=>void run(async()=>{const result=await libraryApi.migrate();setNotice(result.pending?'Some audio migrations remain pending. Original audio is preserved.':'Managed audio migration completed.');})}>{tr('Migrate legacy audio')}</button>
  </article>;
