@@ -32,7 +32,7 @@ export class ICloudFolderProvider implements LibraryProvider {
  readonly transport='os-managed-folder' as const;
  private observations=new Map<string,CloudObservation>();
  statusFor(revisionId:string){return this.observations.get(revisionId);}
- readonly capabilities={read:true,write:true,remoteDeletion:false,confirmation:'local-only' as const};
+ readonly capabilities={read:true,write:true,remoteDeletion:false,durability:'local-only' as const};
  constructor(readonly id:string,readonly name:string,private binding:CloudBinding,private destinationId:string,private native:CloudNative=new MacCloudNative()){}
  private request(action:CloudRequest['action'],extra:Partial<CloudRequest>={}):CloudRequest{return {action,binding:this.binding,destinationId:this.destinationId,stagingId:this.id,...extra};}
  private async access(signal?:AbortSignal){const probe=await this.native.json(this.request('probe'),signal) as any;if(cloudHeader(probe?.header)?.destinationId!==this.destinationId||probe.remoteChecksumVerified!==false)throw cloudUnavailable();}
