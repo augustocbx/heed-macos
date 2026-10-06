@@ -210,6 +210,14 @@ mkdir -p "$HEED_RECORDINGS"
 printf 'Recordings folder: %s\n' "$HEED_RECORDINGS"
 
 # --- Runtime dependencies --------------------------------------------------------------------
+# The direct SMB environment is separate from transcription Python 3.14.
+# Refuse a missing/incompatible prerequisite before dependency downloads or activation.
+HEED_SMB_PYTHON="${HEED_SMB_PYTHON:-/opt/homebrew/opt/python@3.12/bin/python3.12}"
+[ -x "$HEED_SMB_PYTHON" ] || fail 'Direct SMB requires Python 3.12. Run "brew install python@3.12", then retry; the running installation is preserved.'
+/usr/bin/python3 "$HEED_PAYLOAD/packages/server/native/smb-direct/runtime.py" verify-payload "$HEED_PAYLOAD" \
+    || fail 'The locked direct SMB dependency payload is incomplete or corrupt. Download the release again.'
+/usr/bin/python3 "$HEED_PAYLOAD/packages/server/native/smb-direct/runtime.py" verify-python "$HEED_PAYLOAD" --python "$HEED_SMB_PYTHON" \
+    || fail 'The direct SMB prerequisite must be Python 3.12 on macOS 14 or newer, arm64; the running installation is preserved.'
 step 'Checking runtime dependencies (Homebrew: ffmpeg, python@3.14, ollama, node; Bun)'
 HEED_BREW_PACKAGES=()
 for HEED_PACKAGE in ffmpeg python@3.14 ollama node; do
@@ -237,6 +245,10 @@ cd "$HEED_STAGE"
 "$HEED_STAGE/packages/transcription/native/heed-parakeet/.build/release/heed-syscap" --self-test >/dev/null \
     || fail 'The bundled capture executable failed its self-test.'
 "$HEED_STAGE/packages/desktop/macos/.build/Heed" --self-test >/dev/null || fail 'The bundled menu app failed its self-test.'
+/usr/bin/python3 "$HEED_STAGE/packages/server/native/smb-direct/runtime.py" install "$HEED_STAGE" --python "$HEED_SMB_PYTHON" \
+    || fail 'The offline direct SMB environment could not be prepared; the running installation is preserved.'
+"$HEED_STAGE/runtime/smb/bin/python" -I -B "$HEED_STAGE/packages/server/native/smb-direct/runtime.py" self-test "$HEED_STAGE" \
+    || fail 'The direct SMB runtime failed its detached self-test; the running installation is preserved.'
 "$HEED_PYTHON" -m venv .venv || fail 'Could not create the Python environment.'
 .venv/bin/python3 -m pip install --disable-pip-version-check -r packages/transcription/requirements-core.txt \
     || fail 'Python dependencies could not be installed. Check the network connection and run the installer again.'

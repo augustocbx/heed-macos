@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "python": "3.12",
+  "architecture": "arm64",
+  "minimumMacOS": "14.0",
+  "wheels": [
+    {
+      "name": "cffi",
+      "version": "2.1.1",
+      "filename": "cffi-2.1.1-cp312-cp312-macosx_11_0_arm64.whl",
+      "size": 184719,
+      "sha256": "f81b3b8f3d4e343550fa4baa0e479bba9f2d29ce9c2e9b51d1ce1718d7442fcf",
+      "tags": [
+        "cp312-cp312-macosx_11_0_arm64"
+      ],
+      "source": "https://pypi.org/pypi/cffi/2.1.1/json",
+      "licenses": [
+        "cffi-2.1.1.dist-info/licenses/",
+        "cffi-2.1.1.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "cryptography",
+      "version": "50.0.2",
+      "filename": "cryptography-50.0.2-cp311-abi3-macosx_11_0_arm64.whl",
+      "size": 3914904,
+      "sha256": "fa8f5efb344d6908a1ce62f4a24e2e5780f825d6f53f5f50ec5ffacac72936cb",
+      "tags": [
+        "cp311-abi3-macosx_11_0_arm64"
+      ],
+      "source": "https://pypi.org/pypi/cryptography/50.0.2/json",
+      "licenses": [
+        "cryptography-50.0.2.dist-info/licenses/LICENSE",
+        "cryptography-50.0.2.dist-info/licenses/LICENSE.APACHE",
+        "cryptography-50.0.2.dist-info/licenses/LICENSE.BSD"
+      ]
+    },
+    {
+      "name": "pycparser",
+      "version": "3.0",
+      "filename": "pycparser-3.0-py3-none-any.whl",
+      "size": 48172,
+      "sha256": "b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992",
+      "tags": [
+        "py3-none-any"
+      ],
+      "source": "https://pypi.org/pypi/pycparser/3.0/json",
+      "licenses": [
+        "pycparser-3.0.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "pyspnego",
+      "version": "0.12.4",
+      "filename": "pyspnego-0.12.4-py3-none-any.whl",
+      "size": 131003,
+      "sha256": "a29a34de1abe9e9b30d9aa1d363f8e49fc159eb7355b1f2ee86ccb3a2ce3bba9",
+      "tags": [
+        "py3-none-any"
+      ],
+      "source": "https://pypi.org/pypi/pyspnego/0.12.4/json",
+      "licenses": [
+        "pyspnego-0.12.4.dist-info/licenses/LICENSE"
+      ]
+    },
+    {
+      "name": "smbprotocol",
+      "version": "1.17.0",
+      "filename": "smbprotocol-1.17.0-py3-none-any.whl",
+      "size": 128208,
+      "sha256": "bd1abff5417f5af83ca516a64ab8e5acece3dbdcf58d4e5e23e47f5165a77349",
+      "tags": [
+        "py3-none-any"
+      ],
+      "source": "https://pypi.org/pypi/smbprotocol/1.17.0/json",
+      "licenses": [
+        "smbprotocol-1.17.0.dist-info/licenses/LICENSE"
+      ]
+    }
+  ]
+}

@@ -61,6 +61,18 @@ find scripts -mindepth 1 -maxdepth 1 ! -name init-managed-quota.ts ! -name relea
     ! -name service_config.py ! -name service_runtime.py ! -name service_diagnostics.py -exec rm -rf {} +
 find scripts/release -name '*_test.py' -delete
 
+# Validate the full offline payload using a distinct Python 3.12 environment.
+# No generated virtual environment enters the release archive.
+HEED_SMB_PYTHON="${HEED_SMB_PYTHON:-/opt/homebrew/opt/python@3.12/bin/python3.12}"
+[ -x "$HEED_SMB_PYTHON" ] || { printf 'Direct SMB requires Python 3.12. Install python@3.12 or set HEED_SMB_PYTHON.\n' >&2; exit 1; }
+/usr/bin/python3 packages/server/native/smb-direct/runtime.py verify-payload "$HEED_PAYLOAD"
+HEED_SMB_CHECK="$HEED_WORK/offline-smb-check"
+mkdir -p "$HEED_SMB_CHECK/packages/server/native"
+cp -R packages/server/native/smb-direct "$HEED_SMB_CHECK/packages/server/native/smb-direct"
+/usr/bin/python3 "$HEED_SMB_CHECK/packages/server/native/smb-direct/runtime.py" install "$HEED_SMB_CHECK" --python "$HEED_SMB_PYTHON"
+"$HEED_SMB_CHECK/runtime/smb/bin/python" -I -B "$HEED_SMB_CHECK/packages/server/native/smb-direct/runtime.py" self-test "$HEED_SMB_CHECK"
+rm -rf "$HEED_SMB_CHECK"
+
 printf '> Installing build dependencies\n'
 bun install --frozen-lockfile
 printf '> Building the interface\n'

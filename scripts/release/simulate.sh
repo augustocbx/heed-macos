@@ -153,6 +153,7 @@ PY
         cp "$payload/$script.sh" "$SIM_RELEASES/v$version/$script.sh"
     done
     if [ "${2:-}" = broken-dependencies ]; then printf 'heed-package-that-does-not-exist==0.0.0\n' >> "$payload/packages/transcription/requirements-core.txt"; fi
+    if [ "${2:-}" = broken-smb-wheel ]; then printf 'tampered' >> "$payload/packages/server/native/smb-direct/wheels/smbprotocol-1.17.0-py3-none-any.whl"; fi
     (cd "$work" && COPYFILE_DISABLE=1 tar --no-xattrs -czf "$SIM_RELEASES/v$version/heed-macos-$version-arm64.tar.gz" "heed-macos-$version-arm64")
     (cd "$SIM_RELEASES/v$version" && shasum -a 256 "heed-macos-$version-arm64.tar.gz" install.sh uninstall.sh > SHA256SUMS)
 }
@@ -161,6 +162,8 @@ V2="${V1_CORE%.*}.$(( ${V1_CORE##*.} + 1 ))"
 V3="${V1_CORE%.*}.$(( ${V1_CORE##*.} + 2 ))"
 derive "$V2"
 derive "$V3" broken-dependencies
+V4="${V1_CORE%.*}.$(( ${V1_CORE##*.} + 3 ))"
+derive "$V4" broken-smb-wheel
 check "release $V1 archive matches SHA256SUMS" bash -c "cd '$SIM_RELEASES/v$V1' && shasum -a 256 -c SHA256SUMS >/dev/null"
 check "release payload excludes personal and development files" bash -c \
     "! tar -tzf '$SIM_RELEASES/v$V1/heed-macos-$V1-arm64.tar.gz' | grep -E '(^|/)(recordings/|\\.git/|\\.venv/|node_modules/|eval_diar/|\\.env)'"
@@ -264,6 +267,22 @@ check "previous version is kept for rollback" bash -c "ls '$SIM_HOME/.heed/runti
 check "data preserved across the upgrade" test "$(data_digest)" = "$DATA_BEFORE"
 check "settings preserved across the upgrade" grep -q '"ui_locale":"pt-BR"' "$SIM_HOME/.heed-app/config.json"
 check "upgrade preserves custom quota in config, Storage API and desktop status" verify_custom_quota
+
+step "Direct SMB offline runtime and upgrade preservation"
+SIM_ACTIVE_ROOT="$(cd "$SIM_HOME/.heed/runtime/current" && pwd -P)"
+check "installed direct SMB runtime passes detached pinned-SDK self-test" \
+    "$SIM_ACTIVE_ROOT/runtime/smb/bin/python" -I -B "$SIM_ACTIVE_ROOT/packages/server/native/smb-direct/runtime.py" self-test "$SIM_ACTIVE_ROOT"
+if HEED_SMB_PYTHON="$SIM/missing-python3.12" bash "$SIM_RELEASES/v$V2/install.sh" --skip-model-warmup --no-permission-prompt > "$SIM/missing-smb-python.log" 2>&1; then die "missing SMB prerequisite installed"; fi
+check "missing Python 3.12 gives an explicit prerequisite refusal" grep -q "Direct SMB requires Python 3.12" "$SIM/missing-smb-python.log"
+check "missing SMB prerequisite does not stop active services" test "$(running_version)" = "$V2"
+check "missing SMB prerequisite preserves active release" test "$(cd "$SIM_HOME/.heed/runtime/current" && pwd -P)" = "$SIM_ACTIVE_ROOT"
+check "missing SMB prerequisite preserves private data" test "$(data_digest)" = "$DATA_BEFORE"
+if bash "$SIM_RELEASES/v$V4/install.sh" --skip-model-warmup --no-permission-prompt > "$SIM/corrupt-smb-wheel.log" 2>&1; then die "altered locked wheel installed"; fi
+check "altered SMB wheel is rejected despite a matching archive checksum" grep -q "locked direct SMB dependency payload is incomplete or corrupt" "$SIM/corrupt-smb-wheel.log"
+check "altered SMB wheel preserves active release" test "$(current_version)" = "$V2"
+check "altered SMB wheel preserves running services and private data" test "$(running_version)" = "$V2"
+check "altered SMB wheel preserves private data" test "$(data_digest)" = "$DATA_BEFORE"
+check "altered SMB wheel leaves no partial version" bash -c "! ls '$SIM_HOME/.heed/runtime/versions' | grep -q '^$V4-'"
 
 step "Failure: corrupted download"
 cp -R "$SIM_RELEASES/v$V3" "$SIM/v$V3-good"

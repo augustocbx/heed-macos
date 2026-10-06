@@ -9,11 +9,16 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
       - name: Server tests
+        env:
+          HEED_SMB_PYTHON: ${{ env.pythonLocation }}/bin/python3.12
         run: bun test packages/server/lib
       - name: Validated service configuration and safe process rollback tests
         run: python3 -m unittest discover -s scripts -p 'service_*_test.py'

@@ -1,0 +1,47 @@
+name: Offline direct SMB runtime
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  minimum-macos:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Record and require minimum supported runtime platform
+        run: |
+          git rev-parse HEAD
+          sw_vers
+          uname -m
+          python3.12 -c 'import platform,sys; assert platform.system()=="Darwin" and platform.machine()=="arm64" and platform.mac_ver()[0].split(".")[0]=="14" and sys.version_info[:2]==(3,12); print(sys.version)'
+      - name: Verify public locked payload and detached offline installation
+        env:
+          HEED_SMB_PYTHON: ${{ env.pythonLocation }}/bin/python3.12
+        run: |
+          python3.12 -I -B packages/server/native/smb-direct/runtime.py verify-payload "$GITHUB_WORKSPACE"
+          mkdir -p "$RUNNER_TEMP/heed-smb-detached/packages/server/native"
+          cp -R packages/server/native/smb-direct "$RUNNER_TEMP/heed-smb-detached/packages/server/native/smb-direct"
+          python3.12 -I -B "$RUNNER_TEMP/heed-smb-detached/packages/server/native/smb-direct/runtime.py" install "$RUNNER_TEMP/heed-smb-detached" --python "$HEED_SMB_PYTHON"
+          cd "$RUNNER_TEMP"
+          heed-smb-detached/runtime/smb/bin/python -I -B heed-smb-detached/packages/server/native/smb-direct/runtime.py self-test "$RUNNER_TEMP/heed-smb-detached"
+      - name: Real SDK boundary tests with no skipped cases
+        run: |
+          "$RUNNER_TEMP/heed-smb-detached/runtime/smb/bin/python" -I -B - "$GITHUB_WORKSPACE/packages/server/native/smb-direct" <<'PY'
+          import sys,unittest
+          sys.path.insert(0,sys.argv[1])
+          suite=unittest.defaultTestLoader.discover(sys.argv[1],pattern='test_transport.py')
+          result=unittest.TextTestRunner(verbosity=2).run(suite)
+          assert result.wasSuccessful() and not result.skipped
+          PY
+      - name: Offline runtime refusal and detached integrity tests
+        env:
+          HEED_SMB_PYTHON: ${{ env.pythonLocation }}/bin/python3.12
+        run: python3.12 -B -m unittest discover -s packages/server/native/smb-direct -p test_runtime.py

@@ -1,0 +1,5 @@
+cffi==2.1.1 --hash=sha256:f81b3b8f3d4e343550fa4baa0e479bba9f2d29ce9c2e9b51d1ce1718d7442fcf
+cryptography==50.0.2 --hash=sha256:fa8f5efb344d6908a1ce62f4a24e2e5780f825d6f53f5f50ec5ffacac72936cb
+pycparser==3.0 --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
+pyspnego==0.12.4 --hash=sha256:a29a34de1abe9e9b30d9aa1d363f8e49fc159eb7355b1f2ee86ccb3a2ce3bba9
+smbprotocol==1.17.0 --hash=sha256:bd1abff5417f5af83ca516a64ab8e5acece3dbdcf58d4e5e23e47f5165a77349

@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { createHash, randomBytes } from 'node:crypto';
 import { track, untrack, killTree } from './process';
+import { spawnDirectSmbGuardian } from './smb-direct-runtime';
 import {
 	DIRECT_SMB_CODES,
 	DIRECT_SMB_UUID,
@@ -555,11 +556,7 @@ export class PythonDirectSmbNative implements DirectSmbNative {
 	private runner: DirectSmbRunner;
 	private timeoutMs: number;
 	constructor(options: DirectSmbNativeOptions = {}) {
-		this.runner =
-			options.runner ??
-			(() => {
-				throw directSmbError('runtime-unavailable');
-			});
+		this.runner = options.runner ?? spawnDirectSmbGuardian;
 		this.timeoutMs = options.timeoutMs ?? 120000;
 		if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 1800000)
 			throw directSmbError('invalid-input');
