@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { track, untrack, killTree } from './process';
 import {
 	DIRECT_SMB_CODES,
@@ -64,6 +64,7 @@ function rpcValue(action: string, value: Record<string, unknown>) {
 		Array.isArray(value) ||
 		[
 			'id',
+			'nonce',
 			'action',
 			'credentials',
 			'endpoint',
@@ -176,6 +177,9 @@ class DirectRpcSession implements DirectSmbSession {
 	private reader: ReadableStreamDefaultReader<Uint8Array>;
 	private buffer = Buffer.alloc(0);
 	private sequence = 0;
+	private pendingRead?: ReturnType<ReadableStreamDefaultReader<Uint8Array>['read']>;
+	private idle = false;
+	private protocolFailure?: Error;
 	private closed = false;
 	private busy = false;
 	private checkpointed = false;
@@ -195,8 +199,28 @@ class DirectRpcSession implements DirectSmbSession {
 		};
 		signal?.addEventListener('abort', this.abort, { once: true });
 	}
+	private armIdle() {
+		this.idle = true;
+		const pending = (this.pendingRead ??= this.reader.read());
+		void pending.then(
+			(result) => {
+				if (this.idle && !this.closed && (result.done || result.value.length)) {
+					this.protocolFailure = directSmbError('invalid-protocol');
+					void this.finish().catch(() => {});
+				}
+			},
+			() => {
+				if (!this.closed) {
+					this.protocolFailure = directSmbError('invalid-protocol');
+					void this.finish().catch(() => {});
+				}
+			},
+		);
+	}
 	private async take() {
-		const result = await this.reader.read();
+		const pending = this.pendingRead ?? this.reader.read();
+		const result = await pending;
+		if (this.pendingRead === pending) this.pendingRead = undefined;
 		if (result.done) throw directSmbError('invalid-protocol');
 		if (
 			result.value.length > RESULT + CHUNK ||
@@ -281,6 +305,7 @@ class DirectRpcSession implements DirectSmbSession {
 					throw directSmbError('invalid-protocol');
 				this.checkpointed = response.checkpointed;
 				this.completed = response.completed === true;
+				if (!this.completed) this.armIdle();
 				return undefined;
 			}
 			exactObject(response, ['ok', 'value']);
@@ -302,11 +327,13 @@ class DirectRpcSession implements DirectSmbSession {
 		source?: AsyncIterable<Uint8Array>,
 		signal?: AbortSignal,
 	): AsyncGenerator<Uint8Array, unknown> {
+		if (this.protocolFailure) throw this.protocolFailure;
 		if (this.closed || this.completed) throw directSmbError('transaction-unavailable');
 		if (this.busy) throw directSmbError('destination-busy');
 		signal?.throwIfAborted();
 		rpcValue(action, value);
-		const request = Buffer.from(JSON.stringify({ id: this.sequence + 1, action, ...value }));
+		const nonce = randomBytes(32).toString('hex');
+		const request = Buffer.from(JSON.stringify({ id: this.sequence + 1, nonce, action, ...value }));
 		if (request.length > FRAME) throw directSmbError('bounds-exceeded');
 		this.busy = true;
 		const id = ++this.sequence;
@@ -323,6 +350,13 @@ class DirectRpcSession implements DirectSmbSession {
 		signal?.addEventListener('abort', abort, { once: true });
 		let sending: Promise<void> | undefined;
 		try {
+			// Let an already-settled owned idle read report its violation before
+			// dispatch. A later arrival must still prove the fresh request nonce.
+			await Promise.resolve();
+			if (this.protocolFailure) throw this.protocolFailure;
+			if (this.buffer.length) throw directSmbError('invalid-protocol');
+			if (this.closed) throw directSmbError('transaction-unavailable');
+			this.idle = false;
 			timer = setTimeout(abort, this.timeoutMs);
 			if (
 				[
@@ -366,17 +400,17 @@ class DirectRpcSession implements DirectSmbSession {
 			for (;;) {
 				const r = await Promise.race([this.frame(), stopped]);
 				signal?.throwIfAborted();
-				if (r.id !== id) throw directSmbError('invalid-protocol');
+				if (r.id !== id || r.nonce !== nonce) throw directSmbError('invalid-protocol');
 				if (r.progress === true) {
-					exactObject(r, ['id', 'progress']);
+					exactObject(r, ['id', 'nonce', 'progress']);
 					continue;
 				}
 				if (r.ok === false) {
-					exactObject(r, ['id', 'ok', 'error']);
+					exactObject(r, ['id', 'nonce', 'ok', 'error']);
 					throw responseError(r.error);
 				}
 				if (Object.hasOwn(r, 'bytes')) {
-					exactObject(r, ['id', 'bytes']);
+					exactObject(r, ['id', 'nonce', 'bytes']);
 					if (
 						!source &&
 						action === 'read' &&
@@ -392,9 +426,12 @@ class DirectRpcSession implements DirectSmbSession {
 					}
 					throw directSmbError('invalid-protocol');
 				}
-				exactObject(r, ['id', 'ok', 'value']);
+				exactObject(r, ['id', 'nonce', 'ok', 'value']);
 				if (r.ok !== true) throw directSmbError('invalid-protocol');
+				if (this.buffer.length) throw directSmbError('invalid-protocol');
 				await Promise.race([sending!, stopped]);
+				if (this.buffer.length) throw directSmbError('invalid-protocol');
+				this.armIdle();
 				if (action === 'checkpoint') this.checkpointed = true;
 				return r.value;
 			}

@@ -8,6 +8,7 @@ from protocol import (
     SmbError,
     UUID,
     CHUNK,
+    NONCE,
     exact,
     text,
     validate_endpoint,
@@ -80,6 +81,7 @@ def validate_startup(value):
 def serve(source, sink, backend_factory=None):
     transport = None
     sequence = None
+    nonce = None
     try:
         startup = read_frame(source)
         endpoint, credentials = validate_startup(startup)
@@ -116,14 +118,20 @@ def serve(source, sink, backend_factory=None):
         sequence = 0
         while True:
             sequence += 1
-            request = validate_rpc(read_frame(source), sequence)
+            nonce = None
+            raw = read_frame(source)
+            # Only a syntactically valid parsed request correlation may be echoed.
+            nonce = raw.get("nonce")
+            if not isinstance(nonce, str) or not NONCE.fullmatch(nonce):
+                nonce = None
+            request = validate_rpc(raw, sequence)
             action = request["action"]
             if action == "read":
                 for data in transport.stream(request["path"], request["maxBytes"]):
-                    emit(sink, dict(id=sequence, bytes=len(data)))
+                    emit(sink, dict(id=sequence, nonce=nonce, bytes=len(data)))
                     sink.write(data)
                     sink.flush()
-                emit(sink, dict(id=sequence, ok=True, value=None))
+                emit(sink, dict(id=sequence, nonce=nonce, ok=True, value=None))
             elif action == "list":
                 transport.revalidate()
                 handle = (
@@ -131,13 +139,13 @@ def serve(source, sink, backend_factory=None):
                 )
                 value = transport.listing(handle)
                 transport.revalidate()
-                emit(sink, dict(id=sequence, ok=True, value=value))
+                emit(sink, dict(id=sequence, nonce=nonce, ok=True, value=value))
             elif action == "checkpoint":
-                emit(sink, dict(id=sequence, ok=True, value=None))
+                emit(sink, dict(id=sequence, nonce=nonce, ok=True, value=None))
             elif action == "close":
                 transport.close()
                 transport = None
-                emit(sink, dict(id=sequence, ok=True, value=None))
+                emit(sink, dict(id=sequence, nonce=nonce, ok=True, value=None))
                 return
             else:
                 raise SmbError("unsupported-coordination")
@@ -146,6 +154,7 @@ def serve(source, sink, backend_factory=None):
         value = dict(ok=False, error=code)
         if sequence is not None:
             value["id"] = sequence
+            value["nonce"] = nonce
         emit(sink, value)
     finally:
         if transport:

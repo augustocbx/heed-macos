@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PythonDirectSmbNative } from './smb-direct-native';
 import type { DirectSmbProbe } from './smb-direct-types';
 import {
@@ -212,7 +215,7 @@ describe('bounded protected guardian protocol', () => {
 	});
 	test('checks sequence and chunk bounds before yielding remote bytes', async () => {
 		const h = helper(
-			`let b='';for await(const x of Bun.stdin.stream()){b+=Buffer.from(x).toString();for(;;){const n=b.indexOf('\\n');if(n<0)break;const r=JSON.parse(b.slice(0,n));b=b.slice(n+1);if(!r.id)console.log(JSON.stringify({ok:true,ready:true,checkpointed:false}));else console.log(JSON.stringify({id:r.id+1,bytes:1}));}}`,
+			`let b='';for await(const x of Bun.stdin.stream()){b+=Buffer.from(x).toString();for(;;){const n=b.indexOf('\\n');if(n<0)break;const r=JSON.parse(b.slice(0,n));b=b.slice(n+1);if(!r.id)console.log(JSON.stringify({ok:true,ready:true,checkpointed:false}));else console.log(JSON.stringify({id:r.id+1,nonce:r.nonce,bytes:1}));}}`,
 		);
 		const session = await new PythonDirectSmbNative({ runner: h.runner }).open(
 			binding,
@@ -226,7 +229,7 @@ describe('bounded protected guardian protocol', () => {
 	test('sends bounded binary payload after its validated frame and closes once', async () => {
 		const data = Buffer.from('abc');
 		const h = helper(
-			`let b=Buffer.alloc(0),started=false;for await(const x of Bun.stdin.stream()){b=Buffer.concat([b,Buffer.from(x)]);if(!started){const n=b.indexOf(10);if(n<0)continue;b=b.subarray(n+1);started=true;console.log(JSON.stringify({ok:true,ready:true,checkpointed:false}));}const n=b.indexOf(10);if(n>=0){const r=JSON.parse(b.subarray(0,n).toString());if(r.action==='write'&&b.length>=n+1+r.bytes){if(b.subarray(n+1).toString()!=='abc')process.exit(2);console.log(JSON.stringify({id:r.id,ok:true,value:null}));b=Buffer.alloc(0);}}}`,
+			`let b=Buffer.alloc(0),started=false;for await(const x of Bun.stdin.stream()){b=Buffer.concat([b,Buffer.from(x)]);if(!started){const n=b.indexOf(10);if(n<0)continue;b=b.subarray(n+1);started=true;console.log(JSON.stringify({ok:true,ready:true,checkpointed:false}));}const n=b.indexOf(10);if(n>=0){const r=JSON.parse(b.subarray(0,n).toString());if(r.action==='write'&&b.length>=n+1+r.bytes){if(b.subarray(n+1).toString()!=='abc')process.exit(2);console.log(JSON.stringify({id:r.id,nonce:r.nonce,ok:true,value:null}));b=Buffer.alloc(0);}}}`,
 		);
 		const session = await new PythonDirectSmbNative({ runner: h.runner }).open(
 			binding,
@@ -253,7 +256,7 @@ describe('bounded protected guardian protocol', () => {
 			new PythonDirectSmbNative({ runner: duplicate.runner }).probe(endpoint, credentials),
 		).rejects.toThrow();
 		const h = helper(
-			`let b='';for await(const x of Bun.stdin.stream()){b+=Buffer.from(x).toString();for(;;){const n=b.indexOf('\\n');if(n<0)break;const r=JSON.parse(b.slice(0,n));b=b.slice(n+1);console.log(JSON.stringify(r.id?{id:r.id,bytes:131073}:{ok:true,ready:true,checkpointed:false}));}}`,
+			`let b='';for await(const x of Bun.stdin.stream()){b+=Buffer.from(x).toString();for(;;){const n=b.indexOf('\\n');if(n<0)break;const r=JSON.parse(b.slice(0,n));b=b.slice(n+1);console.log(JSON.stringify(r.id?{id:r.id,nonce:r.nonce,bytes:131073}:{ok:true,ready:true,checkpointed:false}));}}`,
 		);
 		const session = await new PythonDirectSmbNative({ runner: h.runner }).open(
 			binding,
@@ -284,12 +287,15 @@ describe('bounded protected guardian protocol', () => {
 			context,
 		);
 		await expect(session.command('list', { path: 'objects', credentials })).rejects.toThrow();
+		await expect(
+			session.command('list', { path: '', nonce: '0'.repeat(64) }),
+		).rejects.toMatchObject({ code: 'invalid-input' });
 		await session.close();
 		expect(await h.child.exited).not.toBeNull();
 	});
 	test('timeout rejects a stalled source and reaps its helper', async () => {
 		const h = helper(
-			`let b='';for await(const x of Bun.stdin.stream()){b+=Buffer.from(x).toString();for(;;){const n=b.indexOf('\\n');if(n<0)break;const r=JSON.parse(b.slice(0,n));b=b.slice(n+1);console.log(JSON.stringify(r.id?{id:r.id,ok:true,value:null}:{ok:true,ready:true,checkpointed:false}));}}`,
+			`let b='';for await(const x of Bun.stdin.stream()){b+=Buffer.from(x).toString();for(;;){const n=b.indexOf('\\n');if(n<0)break;const r=JSON.parse(b.slice(0,n));b=b.slice(n+1);console.log(JSON.stringify(r.id?{id:r.id,nonce:r.nonce,ok:true,value:null}:{ok:true,ready:true,checkpointed:false}));}}`,
 		);
 		const session = await new PythonDirectSmbNative({ runner: h.runner, timeoutMs: 100 }).open(
 			binding,
@@ -330,6 +336,113 @@ describe('bounded protected guardian protocol', () => {
 			code: 'bounds-exceeded',
 		});
 		await session.close();
+		expect(await h.child.exited).not.toBeNull();
+	});
+	test.each(['terminal', 'chunk'])(
+		'rejects trailing %s frames, reaps, and never dispatches request two',
+		async (extra) => {
+			const directory = mkdtempSync(join(tmpdir(), 'heed-smb-framing-'));
+			const log = join(directory, 'requests');
+			const h = helper(
+				`const {appendFileSync}=require('node:fs');let b='';for await(const x of Bun.stdin.stream()){b+=Buffer.from(x).toString();for(;;){const n=b.indexOf('\\n');if(n<0)break;const r=JSON.parse(b.slice(0,n));b=b.slice(n+1);if(!r.id){console.log(JSON.stringify({ok:true,ready:true,checkpointed:false}));continue;}appendFileSync(${JSON.stringify(log)},r.id+'\\n');const correlation=r.nonce?{nonce:r.nonce}:{};const first={id:r.id,...correlation,ok:true,value:null};const next=${JSON.stringify(extra)}==='chunk'?JSON.stringify({id:r.id+1,...correlation,bytes:3})+'\\nXYZ'+JSON.stringify({id:r.id+1,...correlation,ok:true,value:null})+'\\n':JSON.stringify({id:r.id+1,...correlation,ok:true,value:null})+'\\n';await Bun.write(Bun.stdout,JSON.stringify(first)+'\\n'+next);}}`,
+			);
+			const session = await new PythonDirectSmbNative({ runner: h.runner }).open(
+				binding,
+				credentials,
+				context,
+			);
+			try {
+				await expect(session.command('list', { path: '' })).rejects.toMatchObject({
+					code: 'invalid-protocol',
+				});
+				await expect(session.read('objects/other', 8)).rejects.toThrow();
+				await session.close();
+				expect(await h.child.exited).not.toBeNull();
+				expect(readFileSync(log, 'utf8')).toBe('1\n');
+			} finally {
+				await session.close();
+				rmSync(directory, { recursive: true, force: true });
+			}
+		},
+	);
+	test('idle output is rejected before another request is sent', async () => {
+		const directory = mkdtempSync(join(tmpdir(), 'heed-smb-idle-'));
+		const log = join(directory, 'requests');
+		const h = helper(
+			`const {appendFileSync}=require('node:fs');let b='';for await(const x of Bun.stdin.stream()){b+=Buffer.from(x).toString();for(;;){const n=b.indexOf('\\n');if(n<0)break;const r=JSON.parse(b.slice(0,n));b=b.slice(n+1);if(!r.id){console.log(JSON.stringify({ok:true,ready:true,checkpointed:false}));continue;}appendFileSync(${JSON.stringify(log)},r.id+'\\n');const correlation=r.nonce?{nonce:r.nonce}:{};console.log(JSON.stringify({id:r.id,...correlation,ok:true,value:null}));if(r.id===1)setTimeout(()=>console.log(JSON.stringify({id:2,...correlation,ok:true,value:'unsolicited'})),10);}}`,
+		);
+		const session = await new PythonDirectSmbNative({ runner: h.runner }).open(
+			binding,
+			credentials,
+			context,
+		);
+		try {
+			await session.command('list', { path: '' });
+			await Bun.sleep(60);
+			await expect(session.command('list', { path: '' })).rejects.toThrow();
+			await session.close();
+			expect(await h.child.exited).not.toBeNull();
+			expect(readFileSync(log, 'utf8')).toBe('1\n');
+		} finally {
+			await session.close();
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+	test('each real request has a fresh nonce and all frame types require it', async () => {
+		const h = helper(
+			`let b='',prior;for await(const x of Bun.stdin.stream()){b+=Buffer.from(x).toString();for(;;){const n=b.indexOf('\\n');if(n<0)break;const r=JSON.parse(b.slice(0,n));b=b.slice(n+1);if(!r.id){console.log(JSON.stringify({ok:true,ready:true,checkpointed:false}));continue;}if(!/^[a-f0-9]{64}$/.test(r.nonce)||r.nonce===prior)process.exit(4);prior=r.nonce;console.log(JSON.stringify({id:r.id,nonce:r.nonce,progress:true}));if(r.action==='read'){await Bun.write(Bun.stdout,JSON.stringify({id:r.id,nonce:r.nonce,bytes:3})+'\\nabc');}console.log(JSON.stringify({id:r.id,nonce:r.nonce,ok:true,value:r.id}));}}`,
+		);
+		const session = await new PythonDirectSmbNative({ runner: h.runner }).open(
+			binding,
+			credentials,
+			context,
+		);
+		try {
+			expect(await session.command('list', { path: '' })).toBe(1);
+			expect((await session.read('objects/abc', 3)).toString()).toBe('abc');
+			expect(await session.command('list', { path: '' })).toBe(3);
+		} finally {
+			await session.close();
+		}
+		expect(await h.child.exited).not.toBeNull();
+	});
+	test('unknown or stale nonce cannot acknowledge an active request or yield its bytes', async () => {
+		for (const type of ['progress', 'error', 'terminal', 'chunk']) {
+			const h = helper(
+				`let b='';for await(const x of Bun.stdin.stream()){b+=Buffer.from(x).toString();for(;;){const n=b.indexOf('\\n');if(n<0)break;const r=JSON.parse(b.slice(0,n));b=b.slice(n+1);if(!r.id){console.log(JSON.stringify({ok:true,ready:true,checkpointed:false}));continue;}const value=${JSON.stringify(type)};const correlation={id:r.id,nonce:'0'.repeat(64)};const frame=value==='progress'?{...correlation,progress:true}:value==='error'?{...correlation,ok:false,error:'access-denied'}:value==='chunk'?{...correlation,bytes:3}:{...correlation,ok:true,value:null};await Bun.write(Bun.stdout,JSON.stringify(frame)+'\\n'+(value==='chunk'?'XYZ':''));}}`,
+			);
+			const session = await new PythonDirectSmbNative({ runner: h.runner }).open(
+				binding,
+				credentials,
+				context,
+			);
+			try {
+				await expect(session.read('objects/abc', 3)).rejects.toMatchObject({
+					code: 'invalid-protocol',
+				});
+			} finally {
+				await session.close();
+			}
+			expect(await h.child.exited).not.toBeNull();
+		}
+	});
+	test('a prior nonce cannot acknowledge a later request when arrival races dispatch', async () => {
+		const h = helper(
+			`let b='',prior;for await(const x of Bun.stdin.stream()){b+=Buffer.from(x).toString();for(;;){const n=b.indexOf('\\n');if(n<0)break;const r=JSON.parse(b.slice(0,n));b=b.slice(n+1);if(!r.id){console.log(JSON.stringify({ok:true,ready:true,checkpointed:false}));continue;}if(r.id===1){prior=r.nonce;console.log(JSON.stringify({id:r.id,nonce:r.nonce,ok:true,value:null}));}else await Bun.write(Bun.stdout,JSON.stringify({id:r.id,nonce:prior,bytes:3})+'\\nXYZ'+JSON.stringify({id:r.id,nonce:prior,ok:true,value:null})+'\\n');}}`,
+		);
+		const session = await new PythonDirectSmbNative({ runner: h.runner }).open(
+			binding,
+			credentials,
+			context,
+		);
+		try {
+			await session.command('list', { path: '' });
+			await expect(session.read('objects/other', 3)).rejects.toMatchObject({
+				code: 'invalid-protocol',
+			});
+		} finally {
+			await session.close();
+		}
 		expect(await h.child.exited).not.toBeNull();
 	});
 	test('production refuses an unverified runtime', async () => {

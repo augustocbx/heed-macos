@@ -346,6 +346,92 @@ class TransportTests(unittest.TestCase):
             with self.assertRaises(SmbError):
                 validate_rpc(value, 1)
 
+    def test_rpc_correlation_is_required_and_exact(self):
+        valid = dict(id=1, nonce="a" * 64, action="list", path="")
+        self.assertEqual(validate_rpc(valid, 1), valid)
+        for change in (
+            dict(nonce=None),
+            dict(nonce="a" * 63),
+            dict(nonce="A" * 64),
+            dict(nonce="secret\n"),
+            dict(id=2),
+            dict(extra=True),
+        ):
+            with self.subTest(change=change), self.assertRaises(SmbError):
+                validate_rpc(dict(valid, **change), 1)
+        missing = dict(valid)
+        del missing["nonce"]
+        with self.assertRaises(SmbError):
+            validate_rpc(missing, 1)
+
+    def guardian_read(self, requests):
+        self.server.files["Heed/library/heed-library.json"] = json.dumps(
+            dict(format="heed-portable-library", schemaVersion=3, destinationId=DEST)
+        ).encode()
+        self.server.files["Heed/library/objects/abc"] = b"abc"
+        self.server.entries = ["heed-library.json"]
+        binding = dict(
+            endpoint=ENDPOINT,
+            identity=IDENTITY,
+            destinationId=DEST,
+            destinationVersion=3,
+            readOnly=False,
+            security="signed",
+            id="11111111-1111-4111-8111-111111111111",
+            name="Test",
+            connectionGeneration="33333333-3333-4333-8333-333333333333",
+            credentialRef="44444444-4444-4444-8444-444444444444",
+        )
+        startup = dict(
+            protocol=1,
+            action="transaction",
+            endpoint=ENDPOINT,
+            credentials=CREDS,
+            binding=binding,
+            context=dict(operationId=DEST, deviceId=DEST, kind="read"),
+            appDir="/private/tmp/task1",
+        )
+        data = json.dumps(startup).encode() + b"\n"
+        for request in requests:
+            data += request if isinstance(request, bytes) else json.dumps(request).encode() + b"\n"
+        output = io.BytesIO()
+        serve(io.BytesIO(data), output, backend_factory=lambda: self.server)
+        return io.BytesIO(output.getvalue())
+
+    def test_guardian_echoes_only_current_request_nonce_on_all_frames(self):
+        source = self.guardian_read(
+            [
+                dict(id=1, nonce="a" * 64, action="read", path="objects/abc", maxBytes=3),
+                dict(id=2, nonce="b" * 64, action="list", path=""),
+                dict(id=3, nonce="c" * 64, action="checkpoint"),
+                dict(id=4, nonce="d" * 64, action="close"),
+            ]
+        )
+        self.assertTrue(read_frame(source)["ready"])
+        self.assertEqual(read_frame(source), dict(id=1, nonce="a" * 64, bytes=3))
+        self.assertEqual(source.read(3), b"abc")
+        for sequence, nonce in enumerate("abcd", 1):
+            response = read_frame(source)
+            self.assertEqual((response["id"], response["nonce"]), (sequence, nonce * 64))
+            self.assertTrue(response["ok"])
+        self.assertEqual(source.read(), b"")
+        self.assertEqual(self.server.created, [])
+        source = self.guardian_read([dict(id=1, nonce="e" * 64, action="inventory")])
+        read_frame(source)
+        self.assertEqual(
+            read_frame(source),
+            dict(id=1, nonce="e" * 64, ok=False, error="unsupported-coordination"),
+        )
+
+    def test_malformed_later_request_never_reuses_previous_correlation(self):
+        source = self.guardian_read([dict(id=1, nonce="a" * 64, action="checkpoint"), b"{\n"])
+        read_frame(source)
+        self.assertEqual(read_frame(source)["nonce"], "a" * 64)
+        self.assertEqual(
+            read_frame(source), dict(id=2, nonce=None, ok=False, error="invalid-protocol")
+        )
+        self.assertEqual(self.server.created, [])
+
     def test_guardian_sanitizes_sdk_exception_and_transaction_effects_are_gated(self):
         class Broken(HandleServer):
             def connect(self, *args):
@@ -415,62 +501,268 @@ class SdkBoundaryTests(unittest.TestCase):
         except ImportError:
             self.skipTest("pinned SDK boundary tests require the private development venv")
 
-    def test_unsigned_plaintext_is_rejected_and_handshake_is_allowed(self):
-        from smbprotocol.connection import Connection
-        from smbprotocol.header import SMB2HeaderResponse, Commands
-        from smbprotocol.exceptions import SMBException
-        from uuid import UUID
-
-        Strict = protected_connection_type()
-        c = Strict(UUID(int=1), "nas.local", require_signing=True)
-        h = SMB2HeaderResponse()
-        h["command"] = Commands.SMB2_NEGOTIATE
-        c.verify_signature(h, 0)
-        c.session_table[1] = SimpleNamespace(session_key=b"k", signing_key=b"k", encrypt_data=False)
-        h["command"] = Commands.SMB2_QUERY_INFO
-        with self.assertRaises(SmbError):
-            c.verify_signature(h, 1)
-        h["command"] = Commands.SMB2_SESSION_SETUP
-        c.verify_signature(h, 1)
-
-    def test_encrypted_share_rejects_plaintext_even_with_valid_session_signing(self):
-        from smbprotocol.header import SMB2HeaderResponse, Commands
-        from uuid import UUID
-
-        c = protected_connection_type()(UUID(int=1), "nas.local", require_signing=True)
-        c.session_table[1] = SimpleNamespace(
-            session_key=b"k",
-            signing_key=b"k",
-            encrypt_data=False,
-            tree_connect_table={2: SimpleNamespace(encrypt_data=True)},
-        )
-        h = SMB2HeaderResponse()
-        h["command"] = Commands.SMB2_QUERY_INFO
-        h["tree_id"] = 2
-        with self.assertRaises(SmbError):
-            c.verify_signature(h, 1)
-
-    def test_signed_plaintext_is_verified_and_tampered_data_is_rejected(self):
-        from smbprotocol.header import SMB2HeaderResponse, Commands, Smb2Flags
-        from smbprotocol.exceptions import SMBException
+    def worker_response(
+        self,
+        expected,
+        actual,
+        *,
+        authenticated=True,
+        signed=False,
+        encrypted=False,
+        tamper=False,
+        sid=None,
+        tid=None,
+        encrypt_session=None,
+        encrypt_tree=None,
+        async_response=False,
+    ):
+        """Run the real SDK worker on a single in-memory server packet."""
+        import logging
+        import struct
+        from collections import deque
+        from smbprotocol.connection import Request, SMB2TransformHeader, SMB2NegotiateResponse
+        from smbprotocol.session import SMB2SessionSetupResponse
+        from smbprotocol.tree import SMB2TreeConnectResponse
+        from smbprotocol.open import SMB2QueryInfoRequest, SMB2QueryInfoResponse
+        from smbprotocol.header import SMB2HeaderRequest, SMB2HeaderResponse, Commands, Smb2Flags
         from cryptography.hazmat.primitives.cmac import CMAC
         from cryptography.hazmat.primitives.ciphers import algorithms
+        from cryptography.hazmat.primitives.ciphers.aead import AESCCM
         from uuid import UUID
 
+        key = b"k" * 16
         c = protected_connection_type()(UUID(int=1), "nas.local", require_signing=True)
         c.dialect = 0x300
-        key = b"k" * 16
-        c.session_table[1] = SimpleNamespace(session_key=key, signing_key=key, encrypt_data=False)
-        h = SMB2HeaderResponse()
-        h["command"] = Commands.SMB2_QUERY_INFO
-        h["flags"].set_flag(Smb2Flags.SMB2_FLAGS_SIGNED)
-        signer = CMAC(algorithms.AES(key))
-        signer.update(h.pack())
-        h["signature"] = signer.finalize()
-        c.verify_signature(h, 1)
-        h["data"] = b"tampered"
+        request_header = SMB2HeaderRequest()
+        request_header["command"] = expected
+        request_header["message_id"] = 7
+        request_sid = 1 if authenticated else 0
+        request_tid = 2 if authenticated and expected != Commands.SMB2_TREE_CONNECT else 0
+        request_header["session_id"] = request_sid
+        request_header["tree_id"] = request_tid
+        request = Request(
+            request_header,
+            SMB2QueryInfoRequest,
+            c,
+            session_id=(
+                None if not authenticated and expected == Commands.SMB2_NEGOTIATE else request_sid
+            ),
+        )
+        c.outstanding_requests[7] = request
+        c.preauth_integrity_session_hash_value[7] = []
+        if authenticated:
+            c.session_table[1] = SimpleNamespace(
+                session_id=1,
+                session_key=key,
+                signing_key=key,
+                signing_required=not encrypted,
+                encrypt_data=encrypted if encrypt_session is None else encrypt_session,
+                encryption_key=key,
+                decryption_key=key,
+                tree_connect_table={
+                    2: SimpleNamespace(
+                        encrypt_data=encrypted if encrypt_tree is None else encrypt_tree
+                    )
+                },
+            )
+        header = SMB2HeaderResponse()
+        header["command"] = actual
+        header["message_id"] = 7
+        header["session_id"] = (
+            sid
+            if sid is not None
+            else (1 if authenticated or expected == Commands.SMB2_SESSION_SETUP else 0)
+        )
+        header["tree_id"] = tid if tid is not None else request_tid
+        header["flags"].set_flag(Smb2Flags.SMB2_FLAGS_SERVER_TO_REDIR)
+        if async_response:
+            header["flags"].set_flag(Smb2Flags.SMB2_FLAGS_ASYNC_COMMAND)
+            header["reserved"] = 7
+            header["tree_id"] = 0
+        if expected == Commands.SMB2_NEGOTIATE:
+            payload = SMB2NegotiateResponse()
+        elif expected == Commands.SMB2_SESSION_SETUP:
+            payload = SMB2SessionSetupResponse()
+        elif expected == Commands.SMB2_TREE_CONNECT:
+            payload = SMB2TreeConnectResponse()
+        else:
+            payload = SMB2QueryInfoResponse()
+            payload["buffer"] = struct.pack("<Q", 12345)
+        header["data"] = payload.pack()
+        if signed:
+            header["flags"].set_flag(Smb2Flags.SMB2_FLAGS_SIGNED)
+            signer = CMAC(algorithms.AES(key))
+            signer.update(header.pack())
+            header["signature"] = signer.finalize()
+        packet = header.pack()
+        if encrypted:
+            transform = SMB2TransformHeader()
+            transform["original_message_size"] = len(packet)
+            transform["session_id"] = 1
+            nonce = b"n" * 11
+            transform["nonce"] = nonce + b"\x00" * 5
+            sealed = AESCCM(key).encrypt(nonce, packet, transform.pack()[20:52])
+            transform["signature"] = sealed[-16:]
+            transform["data"] = sealed[:-16]
+            packet = transform.pack()
+        if tamper:
+            packet = packet[:-1] + bytes([packet[-1] ^ 1])
+
+        class MemoryTransport:
+            connected = True
+
+            def __init__(self):
+                self.packets = deque([packet, b""])
+
+            def recv(self, timeout):
+                return self.packets.popleft()
+
+            def close(self):
+                self.connected = False
+
+        c.transport = MemoryTransport()
+        prior = logging.root.manager.disable
+        logging.disable(logging.CRITICAL)
+        try:
+            c._process_message_thread()
+        finally:
+            logging.disable(prior)
+        return c, request, c.receive(request)
+
+    def test_async_encrypted_association_without_public_request_proof_is_refused(self):
+        from smbprotocol.header import Commands
+
+        with self.assertRaises(SmbError):
+            self.worker_response(
+                Commands.SMB2_QUERY_INFO,
+                Commands.SMB2_QUERY_INFO,
+                encrypted=True,
+                async_response=True,
+            )
+
+    def test_tree_connect_may_assign_a_tree_only_to_its_actual_request(self):
+        from smbprotocol.header import Commands
+
+        for protection in (dict(signed=True), dict(encrypted=True)):
+            c, request, response = self.worker_response(
+                Commands.SMB2_TREE_CONNECT, Commands.SMB2_TREE_CONNECT, tid=2, **protection
+            )
+            self.assertEqual(response["tree_id"].get_value(), 2)
+
+    def test_worker_rejects_handshake_relabeling_of_authenticated_query(self):
+        from smbprotocol.header import Commands
+
+        for command in (Commands.SMB2_SESSION_SETUP, Commands.SMB2_NEGOTIATE):
+            with self.subTest(command=command), self.assertRaises(SmbError):
+                self.worker_response(Commands.SMB2_QUERY_INFO, command)
+
+    def test_worker_accepts_actual_preauth_handshakes_and_signed_query(self):
+        from smbprotocol.header import Commands
+        from smbprotocol.open import SMB2QueryInfoResponse
+        import struct
+
+        for command in (Commands.SMB2_SESSION_SETUP, Commands.SMB2_NEGOTIATE):
+            c, request, response = self.worker_response(command, command, authenticated=False)
+            self.assertEqual(response["command"].get_value(), command)
+        c, request, response = self.worker_response(
+            Commands.SMB2_QUERY_INFO, Commands.SMB2_QUERY_INFO, signed=True
+        )
+        value = SMB2QueryInfoResponse()
+        value.unpack(response["data"].get_value())
+        self.assertEqual(struct.unpack("<Q", value["buffer"].get_value())[0], 12345)
+
+    def test_worker_rejects_signed_wrong_command_session_and_tree(self):
+        from smbprotocol.header import Commands
+
+        for fields in (
+            dict(actual=Commands.SMB2_SESSION_SETUP),
+            dict(actual=Commands.SMB2_NEGOTIATE),
+            dict(actual=Commands.SMB2_QUERY_INFO, sid=2),
+            dict(actual=Commands.SMB2_QUERY_INFO, tid=3),
+        ):
+            with self.subTest(fields=fields), self.assertRaises(SmbError):
+                self.worker_response(Commands.SMB2_QUERY_INFO, signed=True, **fields)
+
+    def test_worker_accepts_authenticated_encryption_and_rejects_tampering(self):
+        from smbprotocol.header import Commands
+        from smbprotocol.open import SMB2QueryInfoResponse
+        from cryptography.exceptions import InvalidTag
+        import struct
+
+        c, request, response = self.worker_response(
+            Commands.SMB2_QUERY_INFO, Commands.SMB2_QUERY_INFO, encrypted=True
+        )
+        value = SMB2QueryInfoResponse()
+        value.unpack(response["data"].get_value())
+        self.assertEqual(struct.unpack("<Q", value["buffer"].get_value())[0], 12345)
+        with self.assertRaises(InvalidTag):
+            self.worker_response(
+                Commands.SMB2_QUERY_INFO, Commands.SMB2_QUERY_INFO, encrypted=True, tamper=True
+            )
+
+    def test_worker_rejects_wrong_encrypted_command_session_and_tree(self):
+        from smbprotocol.header import Commands
+
+        for fields in (
+            dict(actual=Commands.SMB2_SESSION_SETUP),
+            dict(actual=Commands.SMB2_NEGOTIATE),
+            dict(actual=Commands.SMB2_QUERY_INFO, sid=2),
+            dict(actual=Commands.SMB2_QUERY_INFO, tid=3),
+        ):
+            with self.subTest(fields=fields), self.assertRaises(SmbError):
+                self.worker_response(Commands.SMB2_QUERY_INFO, encrypted=True, **fields)
+
+    def test_unsigned_authenticated_query_is_rejected(self):
+        from smbprotocol.header import Commands
+
+        with self.assertRaises(SmbError):
+            self.worker_response(Commands.SMB2_QUERY_INFO, Commands.SMB2_QUERY_INFO)
+        with self.assertRaises(SmbError):
+            self.worker_response(Commands.SMB2_SESSION_SETUP, Commands.SMB2_SESSION_SETUP)
+
+    def test_encrypted_share_rejects_plaintext_even_with_valid_session_signing(self):
+        from smbprotocol.header import Commands
+
+        with self.assertRaises(SmbError):
+            self.worker_response(
+                Commands.SMB2_QUERY_INFO,
+                Commands.SMB2_QUERY_INFO,
+                signed=True,
+                encrypt_session=False,
+                encrypt_tree=True,
+            )
+        self.worker_response(
+            Commands.SMB2_QUERY_INFO,
+            Commands.SMB2_QUERY_INFO,
+            encrypted=True,
+            encrypt_session=False,
+            encrypt_tree=True,
+        )
+
+    def test_signed_plaintext_is_verified_and_tampered_data_is_rejected(self):
+        from smbprotocol.header import Commands
+        from smbprotocol.exceptions import SMBException
+
         with self.assertRaises(SMBException):
-            c.verify_signature(h, 1)
+            self.worker_response(
+                Commands.SMB2_QUERY_INFO, Commands.SMB2_QUERY_INFO, signed=True, tamper=True
+            )
+
+    def test_final_setup_forced_verification_requires_the_exact_received_handshake(self):
+        from smbprotocol.header import Commands
+
+        c, request, response = self.worker_response(
+            Commands.SMB2_SESSION_SETUP,
+            Commands.SMB2_SESSION_SETUP,
+            authenticated=False,
+            signed=True,
+        )
+        c.session_table[1] = SimpleNamespace(
+            session_key=b"k" * 16, signing_key=b"k" * 16, encrypt_data=True
+        )
+        c.verify_signature(response, 1, force=True)
+        with self.assertRaises(SmbError):
+            c.verify_signature(response, 1, force=True)
 
     def test_root_write_access_comes_from_the_actual_access_query(self):
         from smbprotocol.file_info import FileAccessInformation
@@ -527,11 +819,17 @@ class SdkBoundaryTests(unittest.TestCase):
     def test_public_receive_disables_symlink_resolution(self):
         from unittest.mock import patch
         from smbprotocol.connection import Connection
-        from smbprotocol.header import SMB2HeaderResponse, Commands
+        from smbprotocol.header import SMB2HeaderRequest, SMB2HeaderResponse, Commands, Smb2Flags
+        from smbprotocol.connection import Request
+        from smbprotocol.open import SMB2QueryInfoRequest
         from uuid import UUID
 
         h = SMB2HeaderResponse()
-        h["command"] = Commands.SMB2_QUERY_INFO
+        h["command"] = Commands.SMB2_NEGOTIATE
+        h["flags"].set_flag(Smb2Flags.SMB2_FLAGS_SERVER_TO_REDIR)
+        expected = SMB2HeaderRequest()
+        expected["command"] = Commands.SMB2_NEGOTIATE
+        request = Request(expected, SMB2QueryInfoRequest, None, session_id=0)
         observed = []
 
         def received(connection, request, **kwargs):
@@ -540,7 +838,7 @@ class SdkBoundaryTests(unittest.TestCase):
 
         with patch.object(Connection, "receive", received):
             protected_connection_type()(UUID(int=1), "nas.local").receive(
-                None, resolve_symlinks=True
+                request, resolve_symlinks=True
             )
         self.assertFalse(observed[0]["resolve_symlinks"])
         self.assertEqual(observed[0]["timeout"], 30)

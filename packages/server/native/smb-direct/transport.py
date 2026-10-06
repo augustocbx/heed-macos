@@ -31,16 +31,75 @@ def protected_connection_type():
         tree_flags = 0
         tree_access = 0
 
-        def verify_signature(self, header, session_id, force=False):
-            command = header["command"].get_value()
-            session = self.session_table.get(session_id)
+        def _bind_response(self, header, request, authenticated_setup=False):
+            # Expected metadata comes from our request, never an incoming command.
+            expected = request.message
+            command = expected["command"].get_value()
+            sid = request.session_id or 0
+            tid = expected["tree_id"].get_value()
             if (
-                session
-                and session.session_key
-                and command not in (Commands.SMB2_NEGOTIATE, Commands.SMB2_SESSION_SETUP)
+                header["message_id"].get_value() != expected["message_id"].get_value()
+                or header["command"].get_value() != command
+                or not header["flags"].has_flag(Smb2Flags.SMB2_FLAGS_SERVER_TO_REDIR)
             ):
-                tree = getattr(session, "tree_connect_table", {}).get(header["tree_id"].get_value())
-                if session.encrypt_data is True or tree and tree.encrypt_data is True:
+                raise SmbError("unsupported-security")
+            session = self.session_table.get(sid)
+            authenticated = session is not None and bool(session.session_key)
+            if command in (Commands.SMB2_NEGOTIATE, Commands.SMB2_SESSION_SETUP):
+                if authenticated and not authenticated_setup:
+                    raise SmbError("unsupported-security")
+                if (
+                    any(s.session_key for s in self.session_table.values())
+                    and not authenticated_setup
+                ):
+                    raise SmbError("unsupported-security")
+                if (
+                    tid
+                    or header["tree_id"].get_value()
+                    or header["flags"].has_flag(Smb2Flags.SMB2_FLAGS_ASYNC_COMMAND)
+                ):
+                    raise SmbError("unsupported-security")
+                if command == Commands.SMB2_NEGOTIATE:
+                    if sid or header["session_id"].get_value():
+                        raise SmbError("unsupported-security")
+                elif sid and header["session_id"].get_value() != sid:
+                    raise SmbError("unsupported-security")
+            elif not authenticated or header["session_id"].get_value() != sid:
+                raise SmbError("unsupported-security")
+            elif header["flags"].has_flag(Smb2Flags.SMB2_FLAGS_ASYNC_COMMAND):
+                # The SDK mutates Request.async_id before receive, and encrypted
+                # packets bypass verify_signature. Public hooks cannot establish
+                # the prior AsyncId association, so refuse this unsupported case.
+                raise SmbError("unsupported-security")
+            elif command != Commands.SMB2_TREE_CONNECT and header["tree_id"].get_value() != tid:
+                raise SmbError("unsupported-security")
+            elif command == Commands.SMB2_TREE_CONNECT and tid:
+                raise SmbError("unsupported-security")
+            return session, tid
+
+        def verify_signature(self, header, session_id, force=False):
+            request = self.outstanding_requests.get(header["message_id"].get_value())
+            final_setup = getattr(self, "_final_setup", None)
+            cached_setup = bool(force and final_setup and final_setup[0] is header)
+            if request is None and cached_setup:
+                request = final_setup[1]
+            if request is None:
+                raise SmbError("unsupported-security")
+            session, tid = self._bind_response(header, request, cached_setup)
+            expected_sid = request.session_id or 0
+            if request.message["command"].get_value() == Commands.SMB2_SESSION_SETUP:
+                expected_sid = header["session_id"].get_value()
+            if cached_setup:
+                expected_sid = header["session_id"].get_value()
+                session = self.session_table.get(expected_sid)
+                self._final_setup = None
+            if (session_id or 0) != expected_sid:
+                raise SmbError("unsupported-security")
+            if session and session.session_key:
+                tree = getattr(session, "tree_connect_table", {}).get(tid)
+                if not cached_setup and (
+                    session.encrypt_data is True or tree and tree.encrypt_data is True
+                ):
                     raise SmbError("unsupported-security")
                 if (
                     not header["flags"].has_flag(Smb2Flags.SMB2_FLAGS_SIGNED)
@@ -48,7 +107,7 @@ def protected_connection_type():
                 ):
                     raise SmbError("unsupported-security")
                 force = True
-            return super().verify_signature(header, session_id, force=force)
+            return super().verify_signature(header, expected_sid, force=force)
 
         def receive(self, request, wait=True, timeout=None, resolve_symlinks=False):
             response = super().receive(
@@ -57,6 +116,13 @@ def protected_connection_type():
                 timeout=30 if timeout is None else min(timeout, 30),
                 resolve_symlinks=False,
             )
+            # The upstream worker skips its signature hook after authenticated
+            # decryption, so validate the decrypted association before any parser.
+            self._bind_response(response, request)
+            if request.message["command"].get_value() == Commands.SMB2_SESSION_SETUP:
+                # Session.connect verifies its final setup after receive removes
+                # the request and installs keys. Only this exact receipt may do so.
+                self._final_setup = (response, request)
             if response["command"].get_value() == Commands.SMB2_TREE_CONNECT:
                 tree = SMB2TreeConnectResponse()
                 tree.unpack(response["data"].get_value())

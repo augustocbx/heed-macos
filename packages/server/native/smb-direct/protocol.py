@@ -10,6 +10,7 @@ MAX_RESULT = 2000000
 CHUNK = 131072
 MAX_BYTES = 8000000000000
 MAX_ENTRIES = 10000
+NONCE = re.compile(r"^[a-f0-9]{64}$")
 UUID = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$")
 CODES = frozenset(
     (
@@ -185,6 +186,8 @@ def validate_rpc(value, sequence):
         not isinstance(value, dict)
         or type(value.get("id")) is not int
         or value["id"] != sequence
+        or not isinstance(value.get("nonce"), str)
+        or not NONCE.fullmatch(value["nonce"])
         or not isinstance(value.get("action"), str)
     ):
         raise SmbError("invalid-protocol")
@@ -199,7 +202,7 @@ def validate_rpc(value, sequence):
     }
     if action not in fields:
         raise SmbError("unsupported-coordination")
-    exact(value, ("id", "action", *fields[action]))
+    exact(value, ("id", "nonce", "action", *fields[action]))
     if "path" in value:
         validate_path(value["path"], action == "list")
     for k in ("bytes", "maxBytes"):
