@@ -102,3 +102,12 @@ test('whole provider leases prevent competing ticks or manual mutations from swi
 });
 test('a validated duplicate on a healthy destination remains importable after first destination goes offline',async()=>{const a=new Provider(),f=fixture(a),bundle=makeBundle(randomUUID(),randomUUID(),portableMeeting(meeting(),randomUUID()),[]);a.id='destination-a';a.add(bundle);await f.library.discover();const b=new Provider();b.id='destination-b';b.add(bundle);f.library.selectProvider(b);await f.library.discover();const imported=await f.library.importSelected();expect(imported.imported).toBe(1);expect(f.sessions.snapshot().sessions[0]?.title).toBe('Planning');});
 test('provider-scoped snapshots exclude unavailable remote-only leftovers while preserving local meetings',async()=>{const a=new Provider(),f=fixture(a);a.id='a';a.add(makeBundle(randomUUID(),randomUUID(),portableMeeting(meeting('Only A'),randomUUID()),[]));await f.library.discover();const b=new Provider();b.id='b';b.add(makeBundle(randomUUID(),randomUUID(),portableMeeting(meeting('Only B'),randomUUID()),[]));const scoped=await f.library.withProvider(b,async library=>library.discover());expect(scoped.previews.map(p=>p.title)).toEqual(['Only B']);expect(f.library.snapshot().previews.map(p=>p.title)).toEqual(['Only A']);});
+
+test('local source eligibility remains independent of the selected destination after deletion',async()=>{
+ const f=fixture();f.sessions.create(meeting());const queued=await f.library.queueLocal('session-1');await f.library.publish(queued.revisionId);
+ const markerPath=f.provider.writes.find(p=>p.startsWith('commits/'))!;f.provider.commits.push(JSON.parse(Buffer.from(f.provider.objects.get(markerPath)!).toString()));await f.library.discover();
+ const alternate=new Provider();alternate.id='second-destination';f.library.selectProvider(alternate);
+ expect(f.library.hasLocalRevision(queued.revisionId)).toBe(true);rmSync(join(f.options.sessionsDir,'session-1.json'));
+ expect(f.library.snapshot().previews.some(p=>p.revisionId===queued.revisionId)).toBe(false);
+ expect(f.library.hasLocalRevision(queued.revisionId)).toBe(false);expect(f.library.hasLocalRevision(randomUUID())).toBe(false);
+});

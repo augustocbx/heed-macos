@@ -4,6 +4,7 @@ import {OneDriveAuth} from './lib/connectors/onedrive-auth';
 import {OneDriveConnections} from './lib/connectors/onedrive-connections';
 import {oneDriveResponse} from './lib/connectors/onedrive-http';
 import {createKeychainVault} from './lib/connectors/keychain-vault';
+import {ICloudConnections,icloudResponse} from './lib/connectors/icloud-connections.ts';
 import {SmbConnections} from './lib/smb-connections.ts';
 import {smbResponse} from './lib/smb-http.ts';
 import {ProviderRegistry} from './lib/provider-registry.ts';
@@ -46,6 +47,12 @@ import { type CaptureMode, nativeCaptureCommand, nativeRecordingCommand, verifyN
 const desktopPermissions = new DesktopPermissions();
 const retainedProcessing = new Map<string, number>();
 let captureLimitBytes=0;
+let recorderProc: ReturnType<typeof Bun.spawn> | null = null;
+let recorderPath: string | null = null;
+let recorderStarting = false;
+let recorderStartedAt = 0;
+let recorderStopping = false;
+let recordingLanguage: "pt" | "en" | null = null;
 let recordingWorkDirectory:string|null=null;
 let quotaReachedAt = 0;
 let quotaStopResult: any = null;
@@ -59,7 +66,7 @@ function audioWorkBusy() {
 }
 async function preemptNotes() {
  manualNotesController?.abort();
- await Promise.all([notesService.preempt(), tasksService.preempt(), chatService.preempt(), libraryChatService.preempt(), googleDrive?.preempt(), oneDriveConnections?.preempt(), manualNotesDone]);
+ await Promise.all([portableRuntime?.preempt(), notesService.preempt(), tasksService.preempt(), chatService.preempt(), libraryChatService.preempt(), googleDrive?.preempt(), oneDriveConnections?.preempt(), manualNotesDone]);
 }
 function cleanupCaptureWork(id:string){if(!/^[a-zA-Z0-9_-]{1,180}$/.test(id))return;const directory=join(APP_DIR,'library','staging',`capture-${id}`);rmSync(directory,{recursive:true,force:true});if(recordingWorkDirectory===directory)recordingWorkDirectory=null;}
 function protectAudio(path: string) { retainedProcessing.set(path, Date.now() + 120_000); }
@@ -95,8 +102,9 @@ let googleDrive:GoogleDriveController|undefined;
 let googleDriveUnavailable=false;
 let googleDriveInitializing=false;
 const googleProtectedPaths=()=>{if(googleDriveUnavailable||googleDriveInitializing)return [UPLOAD_DIR,join(LIBRARY_DIR,'media')];try{return googleDrive?.protectedPaths()||[];}catch{googleDriveUnavailable=true;return [UPLOAD_DIR,join(LIBRARY_DIR,'media')];}};
+let icloudConnections:ICloudConnections|undefined;
 let synchronizationUnavailable=false;
-const synchronizationProtectedPaths=()=>{if(synchronizationUnavailable)return [UPLOAD_DIR,join(LIBRARY_DIR,'media')];try{return [...googleProtectedPaths(),...(smbConnections?.protectedLocalPaths()||[]),...(oneDriveConnections?.protectedLocalPaths()||[]),...(portableRuntime?.protectedPaths([...(smbConnections?.protectedRevisionIds()||[]),...(oneDriveConnections?.protectedRevisionIds()||[])])||[])];}catch{synchronizationUnavailable=true;return [UPLOAD_DIR,join(LIBRARY_DIR,'media')];}};
+const synchronizationProtectedPaths=()=>{if(synchronizationUnavailable)return [UPLOAD_DIR,join(LIBRARY_DIR,'media')];try{return [...googleProtectedPaths(),...(icloudConnections?.protectedLocalPaths()||[]),...(smbConnections?.protectedLocalPaths()||[]),...(oneDriveConnections?.protectedLocalPaths()||[]),...(portableRuntime?.protectedPaths([...(icloudConnections?.protectedRevisionIds()||[]),...(smbConnections?.protectedRevisionIds()||[]),...(oneDriveConnections?.protectedRevisionIds()||[])])||[])];}catch{synchronizationUnavailable=true;return [UPLOAD_DIR,join(LIBRARY_DIR,'media')];}};
 const captureProtectedPaths=()=>[...retainedProcessing.keys(),...((recorderPath && (recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning))?[recorderPath]:[])];
 const managedQuota=createAppQuota({
  recordingsDir:UPLOAD_DIR,
@@ -116,19 +124,19 @@ export function getPortableLibrary(){return portableRuntime!.get();}
 export const providerRegistry=new ProviderRegistry({path:join(APP_DIR,'provider-preference.json'),getLibrary:getPortableLibrary});
 synchronizationUnavailable=providerRegistry.unavailable();
 try{smbConnections=new SmbConnections({path:join(LIBRARY_DIR,'catalog','smb-connections.json'),catalogPath:join(LIBRARY_DIR,'catalog','state.json'),sessions:()=>sessionTags.snapshot().sessions,registry:providerRegistry,get library(){return getPortableLibrary();},busy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
- if(!synchronizationUnavailable)smbConnections.start();
-}catch{synchronizationUnavailable=true;console.error('Synchronization unavailable. Preserve device preferences and connection configuration for recovery.');}
+}catch{synchronizationUnavailable=true;console.error('SMB configuration unavailable. Preserve synchronization configuration for recovery.');}
+try{icloudConnections=new ICloudConnections({configPath:join(APP_DIR,'icloud-folder.json'),jobsPath:join(LIBRARY_DIR,'catalog','icloud-jobs.json'),library:getPortableLibrary,sessions:()=>sessionTags.snapshot().sessions,providers:providerRegistry,busy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
+}catch{synchronizationUnavailable=true;console.error('iCloud configuration unavailable. Preserve synchronization configuration for recovery.');}
 try{googleDriveInitializing=true;googleDrive=createGoogleDriveController({appDir:APP_DIR,libraryDir:LIBRARY_DIR,registry:providerRegistry,listSessions:()=>sessionTags.snapshot().sessions,audioBusy:()=>audioWorkBusy()||!!manualNotesController||notesService.busy||tasksService.busy||chatService.busy||libraryChatService.busy});}catch{googleDriveUnavailable=true;console.error('Google Drive unavailable. Preserve its connection configuration for recovery.');}finally{googleDriveInitializing=false;}
 
 try{const vault=createKeychainVault(),auth=new OneDriveAuth({path:join(APP_DIR,'onedrive-account.json'),vault,openBrowser:async url=>{if(process.platform!=='darwin')throw new Error('Microsoft authorization requires macOS');const browser=track(Bun.spawn(['/usr/bin/open',url],{stdin:'ignore',stdout:'ignore',stderr:'ignore'}));if(await browser.exited!==0)throw new Error('Could not open Microsoft authorization');}});
  oneDriveConnections=new OneDriveConnections({path:join(LIBRARY_DIR,'catalog','onedrive','connections.json'),catalogPath:join(LIBRARY_DIR,'catalog','state.json'),sessions:()=>sessionTags.snapshot().sessions,auth,vault,library:getPortableLibrary,registry:providerRegistry,busy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
- if(!synchronizationUnavailable)oneDriveConnections.startBackground();
 }catch{synchronizationUnavailable=true;console.error('OneDrive synchronization unavailable. Preserve connection configuration for recovery.');}
-try{if(!synchronizationUnavailable&&providerRegistry.preferredId())providerRegistry.restore();}catch{synchronizationUnavailable=true;console.error('Synchronization destination is unavailable. Preserve device preferences for recovery.');}
+if(!synchronizationUnavailable)try{providerRegistry.restore();smbConnections?.start();oneDriveConnections?.startBackground();}catch{synchronizationUnavailable=true;console.error('Synchronization preference could not be restored. Check destination access and storage.');}
 
 async function handleLibrary(req:Request):Promise<Response>{
  if(!permissionRequestAllowed(req,PORT))return new Response(null,{status:403});
- if(synchronizationUnavailable)return Response.json({error:'Synchronization unavailable. Preserve its configuration for recovery.',code:'unavailable'},{status:503});
+ if(synchronizationUnavailable||icloudConnections?.unavailable())return Response.json({error:'Synchronization unavailable. Preserve its configuration for recovery.',code:'unavailable'},{status:503});
  try{return await libraryResponse(req,getPortableLibrary(),()=>portableRuntime!.migrate(req.signal),audioWorkBusy);}catch(error){const message=(error as Error).message;return Response.json({error:message,code:/quota|reservation/i.test(message)?'quota-blocked':'unavailable'},{status:/quota|reservation/i.test(message)?409:503});}
 }
 
@@ -1174,12 +1182,6 @@ async function handleSummaryLine(req: Request): Promise<Response> {
 
 // --- Audio recording via ffmpeg + PipeWire/PulseAudio ---
 // Uses ffmpeg -f pulse which works reliably with PipeWire's PulseAudio layer
-let recorderProc: ReturnType<typeof Bun.spawn> | null = null;
-let recorderPath: string | null = null;
-let recorderStarting = false;
-let recorderStartedAt = 0;
-let recorderStopping = false;
-let recordingLanguage: "pt" | "en" | null = null;
 // ScreenCaptureKit system-audio helper (mac). When present + permission granted, it
 // replaces BlackHole as the system source — no driver, no output re-routing.
 let syscapProc: ReturnType<typeof Bun.spawn> | null = null;
@@ -2515,6 +2517,7 @@ const server = Bun.serve({
 		if(url.pathname==='/api/google-drive'){httpServer.timeout(req,0);if(!permissionRequestAllowed(req,PORT))return new Response(null,{status:403});return synchronizationUnavailable||googleDriveUnavailable||!googleDrive?Response.json({error:'Google Drive unavailable. Preserve its configuration for recovery.',code:'unavailable'},{status:503,headers:{'Cache-Control':'no-store'}}):googleDriveResponse(req,googleDrive,PORT);}
 		if(url.pathname==='/api/connectors/onedrive'){httpServer.timeout(req,0);if(!desktopRequestAllowed(req))return new Response(null,{status:403});return synchronizationUnavailable||!oneDriveConnections||oneDriveConnections.unavailable()?Response.json({error:'OneDrive synchronization unavailable. Preserve its configuration for recovery.'},{status:503}):oneDriveResponse(req,oneDriveConnections);}
 		if(url.pathname==='/api/smb'){httpServer.timeout(req,0);if(!desktopRequestAllowed(req))return new Response(null,{status:403});return synchronizationUnavailable||!smbConnections?Response.json({error:'Synchronization unavailable. Preserve its configuration for recovery.'},{status:503}):smbResponse(req,smbConnections);}
+		if(url.pathname==='/api/icloud'){httpServer.timeout(req,0);if(!desktopRequestAllowed(req))return new Response(null,{status:403});return synchronizationUnavailable||!icloudConnections?Response.json({error:'iCloud synchronization unavailable. Preserve private configuration and pending jobs for recovery.'},{status:503}):icloudResponse(req,icloudConnections);}
 		if (url.pathname==='/api/library'){httpServer.timeout(req,0);return handleLibrary(req);}
 		if (url.pathname==='/api/storage' || url.pathname.startsWith('/api/storage/')) return handleStorage(req);
 		if (method === "POST" && url.pathname === "/api/desktop/float") return handleDesktopFloat();
@@ -2535,7 +2538,7 @@ const server = Bun.serve({
 // Never leave an orphaned ffmpeg/syscap holding the mic: on SIGINT/SIGTERM/exit, gracefully reap
 // every tracked child (the recorder, the system-audio capture, the level meter). Previously there
 // was NO signal handler — a server crash/exit left ffmpeg running and the mic "stuck busy".
-installShutdownHooks(async () => { oneDriveConnections?.close();smbConnections?.close();await googleDrive?.preempt();clearInterval(notesTimer); clearInterval(tasksTimer); manualNotesController?.abort(); void notesService.preempt(); void tasksService.preempt(); void chatService.preempt(); void libraryChatService.preempt(); stopLiveTranscribe(); });
+installShutdownHooks(async () => { icloudConnections?.close();oneDriveConnections?.close();smbConnections?.close();await googleDrive?.preempt();clearInterval(notesTimer); clearInterval(tasksTimer); manualNotesController?.abort(); void notesService.preempt(); void tasksService.preempt(); void chatService.preempt(); void libraryChatService.preempt(); stopLiveTranscribe(); });
 
 console.log(`
   ┌──────────────────────────────────┐
