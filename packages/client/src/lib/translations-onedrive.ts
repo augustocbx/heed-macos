@@ -173,5 +173,45 @@ export const ONEDRIVE_TRANSLATIONS: Record<string,Record<string,string>> = {
     "pt-BR": "Desconectar OneDrive",
     "fr": "Déconnecter OneDrive",
     "de": "OneDrive trennen"
+  },
+  "OneDrive remote storage is full. Local transcripts and pending copies are preserved.": {
+    "pt-BR": "O armazenamento remoto do OneDrive está cheio. Transcrições locais e cópias pendentes são preservadas.",
+    "fr": "Le stockage distant OneDrive est plein. Les transcriptions locales et les copies en attente sont conservées.",
+    "de": "Der OneDrive-Remote-Speicher ist voll. Lokale Transkripte und ausstehende Kopien bleiben erhalten."
+  },
+  "This account does not support the required app-folder operations. No broader permission was requested.": {
+    "pt-BR": "Esta conta não oferece suporte às operações necessárias na pasta do aplicativo. Nenhuma permissão mais ampla foi solicitada.",
+    "fr": "Ce compte ne prend pas en charge les opérations nécessaires dans le dossier de l’application. Aucune permission élargie n’a été demandée.",
+    "de": "Dieses Konto unterstützt die erforderlichen Vorgänge im App-Ordner nicht. Es wurde keine erweiterte Berechtigung angefordert."
+  },
+  "Authorize the Microsoft account again before synchronization.": {
+    "pt-BR": "Autorize novamente a conta Microsoft antes de sincronizar.",
+    "fr": "Autorisez à nouveau le compte Microsoft avant la synchronisation.",
+    "de": "Autorisieren Sie das Microsoft-Konto vor der Synchronisierung erneut."
+  },
+  "Microsoft limited requests. Synchronization will retry after the requested delay.": {
+    "pt-BR": "A Microsoft limitou as solicitações. A sincronização tentará novamente após o prazo solicitado.",
+    "fr": "Microsoft a limité les requêtes. La synchronisation reprendra après le délai demandé.",
+    "de": "Microsoft hat Anfragen begrenzt. Die Synchronisierung wird nach der angegebenen Wartezeit erneut versucht."
+  },
+  "OneDrive settings changed. Refresh before continuing.": {
+    "pt-BR": "As configurações do OneDrive mudaram. Atualize antes de continuar.",
+    "fr": "Les paramètres OneDrive ont changé. Actualisez avant de continuer.",
+    "de": "Die OneDrive-Einstellungen wurden geändert. Aktualisieren Sie sie, bevor Sie fortfahren."
+  },
+  "Wait for the current recording or library operation.": {
+    "pt-BR": "Aguarde a gravação ou operação atual da biblioteca.",
+    "fr": "Attendez la fin de l’enregistrement ou de l’opération de bibliothèque en cours.",
+    "de": "Warten Sie auf den Abschluss der aktuellen Aufnahme oder des Bibliotheksvorgangs."
+  },
+  "Local storage is full. Pending work and retained transcripts are preserved.": {
+    "pt-BR": "O armazenamento local está cheio. Trabalhos pendentes e transcrições retidas são preservados.",
+    "fr": "Le stockage local est plein. Les travaux en attente et les transcriptions conservées sont préservés.",
+    "de": "Der lokale Speicher ist voll. Ausstehende Arbeiten und aufbewahrte Transkripte bleiben erhalten."
+  },
+  "Microsoft controls the storage region. Heed does not change account residency.": {
+    "pt-BR": "A Microsoft controla a região de armazenamento. O Heed não altera a localização dos dados da conta.",
+    "fr": "Microsoft contrôle la région de stockage. Heed ne modifie pas la localisation des données du compte.",
+    "de": "Microsoft bestimmt die Speicherregion. Heed ändert den Speicherort der Kontodaten nicht."
   }
 };

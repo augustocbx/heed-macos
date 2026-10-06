@@ -6,7 +6,7 @@ export function oneDrivePath(path:string):string{providerPath(path);const parts=
 export function microsoftTransferUrl(value:unknown,upload=false):string{if(typeof value!=='string'||value.length>16384)throw new Error('Invalid Microsoft transfer destination');const url=new URL(value),host=url.hostname.toLowerCase();const allowed=upload?(host.endsWith('.up.1drv.com')||host.endsWith('.sharepoint.com')):(host.endsWith('.files.1drv.com')||host.endsWith('.sharepoint.com')||host.endsWith('.storage.live.com'));if(url.protocol!=='https:'||url.port||url.username||url.password||url.hash||!allowed)throw new Error('Invalid Microsoft transfer destination');return url.toString();}
 /** Graph completion and streamed SHA-256 verification are distinct durable publication states. */
 export class OneDriveProvider implements LibraryProvider {
- readonly id:string;readonly name:string;readonly transport='authenticated-network' as const;private failure?:OneDriveError;lastFailure(){return this.failure;}private discovery?:{id:string;commits:PortableCommit[];complete:boolean};
+ readonly id:string;readonly name:string;readonly transport='authenticated-network' as const;readonly capabilities={read:true,write:true,transportSecurity:'encrypted' as const,remoteDeletion:false,durability:'provider-receipt' as const};private failure?:OneDriveError;lastFailure(){return this.failure;}private discovery?:{id:string;commits:PortableCommit[];complete:boolean};
  constructor(private options:OneDriveProviderOptions){const binding=options.store.binding();this.id=`onedrive-${binding.connectionId}`;this.name=binding.name;}
  private binding(){return this.options.store.binding();}
  private endpoint(path:string){return `${GRAPH}/drives/${this.binding().driveId}/${path}`;}

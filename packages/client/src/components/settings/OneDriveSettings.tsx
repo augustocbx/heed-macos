@@ -1,4 +1,4 @@
-import {useEffect,useState} from 'react';
+import {useEffect,useState,useRef} from 'react';
 import type {OneDriveConnectionSnapshot,OneDriveLibraryChoice} from '@heed/shared';
 import {oneDriveApi,oneDriveExpectation} from '@/api/onedrive';
 import {useLocale} from '@/lib/i18n';
@@ -6,19 +6,21 @@ import styles from './PermissionsPage.module.css';
 export function OneDriveSettings(){
  const {tr}=useLocale();
  const [snapshot,setSnapshot]=useState<OneDriveConnectionSnapshot|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[choices,setChoices]=useState<OneDriveLibraryChoice[]>([]),[folder,setFolder]=useState(''),[name,setName]=useState(''),[upload,setUpload]=useState(false),[clientId,setClientId]=useState(''),[tenant,setTenant]=useState('common');
- const apply=(value:OneDriveConnectionSnapshot)=>{setSnapshot(previous=>{if(!previous||previous.folderGeneration!==value.folderGeneration||previous.authGeneration!==value.authGeneration){setChoices([]);setFolder('');setUpload(value.uploadLocal);}return value;});};
+ const generation=useRef<string|undefined>(undefined);
+ const apply=(value:OneDriveConnectionSnapshot)=>{const next=`${value.folderGeneration}/${value.authGeneration}`;if(generation.current!==next){generation.current=next;setChoices([]);setFolder('');setUpload(value.uploadLocal);}setSnapshot(value);};
  useEffect(()=>{let mounted=true;const load=()=>oneDriveApi.snapshot().then(value=>{if(mounted)apply(value);}).catch(()=>{if(mounted)setError('Could not load OneDrive settings.');});void load();const timer=setInterval(()=>void load(),3000);return()=>{mounted=false;clearInterval(timer);};},[]);
- const run=async(operation:()=>Promise<unknown>)=>{setBusy(true);setError('');try{await operation();apply(await oneDriveApi.snapshot());}catch{setError('OneDrive operation failed. Refresh the settings and check account support and permissions.');try{apply(await oneDriveApi.snapshot());}catch{/* The last visible destination remains available for review. */}}finally{setBusy(false);}};
+ const run=async(operation:()=>Promise<unknown>)=>{setBusy(true);setError('');try{await operation();apply(await oneDriveApi.snapshot());}catch(failure){const message=failure instanceof Error?failure.message:'';setError(['OneDrive remote storage is full. Local transcripts and pending copies are preserved.','This account does not support the required app-folder operations. No broader permission was requested.','Authorize the Microsoft account again before synchronization.','Microsoft limited requests. Synchronization will retry after the requested delay.','OneDrive settings changed. Refresh before continuing.','Wait for the current recording or library operation.','Local storage is full. Pending work and retained transcripts are preserved.'].includes(message)?message:'OneDrive operation failed. Refresh the settings and check account support and permissions.');try{apply(await oneDriveApi.snapshot());}catch{/* The last visible destination remains available for review. */}}finally{setBusy(false);}};
  const proof=()=>oneDriveExpectation(snapshot!);
  const blocked=busy||snapshot?.busy||snapshot?.authorizing;
  const choice=choices.find(value=>value.id===folder);
  return <article className={styles.card} aria-labelledby="onedrive-title"><h2 id="onedrive-title">Microsoft OneDrive</h2>
   <p>{tr('Choose a library inside the Heed app folder. Account support is checked before synchronization; broader permissions are never requested automatically.')}</p>
+  <p>{tr('Microsoft controls the storage region. Heed does not change account residency.')}</p>
   <p>{tr('Remote audio downloads only when requested. Imported transcripts are available to local AI.')}</p>
   {error&&<p role="alert">{tr(error)}</p>}
   {!snapshot?<p>{tr('Loading OneDrive settings…')}</p>:<>
    <p role="status">{tr(snapshot.authorizing?'Waiting for Microsoft authorization…':snapshot.connected?'Microsoft account authorized.':'Microsoft authorization is required.')}</p>
-   {snapshot.error&&<p role="status">{tr('Synchronization needs attention. Check account permissions, storage, and pending work.')}</p>}
+   {snapshot.error&&<p role="status">{tr(({ 'quota-blocked':'Local storage is full. Pending work and retained transcripts are preserved.', 'remote-quota':'OneDrive remote storage is full. Local transcripts and pending copies are preserved.', 'auth-required':'Authorize the Microsoft account again before synchronization.', 'rate-limited':'Microsoft limited requests. Synchronization will retry after the requested delay.', 'unsupported-account':'This account does not support the required app-folder operations. No broader permission was requested.'} as Record<string,string>)[snapshot.error]||'Synchronization needs attention. Check account permissions, storage, and pending work.')}</p>}
    {!snapshot.connected&&!snapshot.authorizing&&<><label htmlFor="onedrive-client">{tr('Microsoft application client ID')}</label><input id="onedrive-client" value={clientId} disabled={blocked} onChange={event=>setClientId(event.target.value)} autoComplete="off"/><label htmlFor="onedrive-tenant">{tr('Microsoft account audience')}</label><select id="onedrive-tenant" value={tenant} disabled={blocked} onChange={event=>setTenant(event.target.value)}><option value="common">{tr('Personal or work account')}</option><option value="consumers">{tr('Personal account')}</option><option value="organizations">{tr('Work or school account')}</option></select><p>{tr('Register a public desktop application with http://localhost/oauth/callback. No client secret is needed.')}</p><button disabled={blocked||!clientId.trim()} onClick={()=>void run(()=>oneDriveApi.command('connect',proof(),{clientId:clientId.trim(),tenant}))}>{tr('Authorize Microsoft account')}</button></>}
    {snapshot.authorizing&&<button disabled={busy} onClick={()=>void run(()=>oneDriveApi.command('cancel',proof()))}>{tr('Cancel Microsoft authorization')}</button>}
    {snapshot.connected&&<>
