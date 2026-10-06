@@ -12,6 +12,7 @@ import os
 import signal
 from unittest.mock import patch
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
+from service_config import service_port
 SPEC=importlib.util.spec_from_file_location('service_runtime',pathlib.Path(__file__).with_name('service_runtime.py'))
 module=importlib.util.module_from_spec(SPEC);SPEC.loader.exec_module(module)
 class Handler(BaseHTTPRequestHandler):
@@ -169,30 +170,56 @@ class RuntimeTests(unittest.TestCase):
    self.assertEqual(calls,[('http://[::1]:48102',None)])
  def test_failed_startup_reaps_already_exited_wrapper_listening_grandchild(self):
   self.assert_startup_tree_rollback(wrapper_exit=True)
- def assert_startup_tree_rollback(self,wrapper_exit):
+ def test_rollback_listener_does_not_depend_on_hostname_resolution(self):
+  self.assert_startup_tree_rollback(wrapper_exit=False,fail_hostname=True,ready_timeout=2)
+ def assert_startup_tree_rollback(self,wrapper_exit,fail_hostname=False,ready_timeout=15):
   sockets=[];ports={}
   for name in ['api','ui','transcription']:
-   sock=socket.socket();sock.bind(('127.0.0.1',0));ports[name]=sock.getsockname()[1];sockets.append(sock)
+   for _ in range(32):
+    sock=socket.socket();sock.bind(('127.0.0.1',0))
+    try:port=service_port(sock.getsockname()[1],'Synthetic rollback fixture port')
+    except ValueError:sock.close();continue
+    ports[name]=port;sockets.append(sock);break
+   else:
+    for held in sockets:held.close()
+    self.fail('No allowed disposable fixture port was available')
   for sock in sockets:sock.close()
   with tempfile.TemporaryDirectory(prefix='heed-start-tree-') as directory:
    marker=pathlib.Path(directory)/'grandchild.pid'
-   grandchild=f"from http.server import HTTPServer,BaseHTTPRequestHandler;HTTPServer(('127.0.0.1',{ports['api']}),BaseHTTPRequestHandler).serve_forever()"
+   ready=pathlib.Path(directory)/'grandchild.ready.json'
+   diagnostics=pathlib.Path(directory)/'fixture.log'
+   # This fixture needs TCP ownership, not HTTPServer's pre-listen reverse DNS.
+   # The grandchild's receipt proves bind/listen finished before injecting rollback.
+   grandchild=(f"import socket,pathlib,json,os\ns=socket.socket();s.bind(('127.0.0.1',{ports['api']}));s.listen(8)\n"
+               f"receipt=pathlib.Path({str(ready)!r});temporary=receipt.with_suffix('.tmp')\n"
+               "temporary.write_text(json.dumps({'pid':os.getpid(),'port':s.getsockname()[1]}));os.replace(temporary,receipt)\n"
+               "while True:\n c,_=s.accept();c.close()\n")
+   if fail_hostname:
+    grandchild="import socket;socket.getfqdn=lambda *_:(_ for _ in ()).throw(RuntimeError('synthetic hostname resolver unavailable'));"+grandchild
    wrapper=f"import subprocess,sys,time,pathlib\np=subprocess.Popen([sys.executable,'-c',{grandchild!r}])\npathlib.Path({str(marker)!r}).write_text(str(p.pid))\n"+ ("sys.exit(0)" if wrapper_exit else "time.sleep(60)")
    original=subprocess.Popen;children=[]
    def launch(*args,**kwargs):
     if args and args[0][0]=='ps':return original(*args,**kwargs)
     if children:
-     deadline=time.monotonic()+15
-     while time.monotonic()<deadline and not module.occupied(ports['api']):time.sleep(.02)
-     self.assertTrue(marker.exists(),'fixture wrapper never spawned its child')
-     self.assertTrue(module.occupied(ports['api']),'fixture grandchild must listen before rollback is triggered')
+     deadline=time.monotonic()+ready_timeout
+     while time.monotonic()<deadline and not ready.exists():time.sleep(.02)
+     detail=diagnostics.read_text() if diagnostics.exists() else 'No fixture diagnostics'
+     self.assertTrue(marker.exists(),'fixture wrapper never spawned its child: '+detail)
+     self.assertTrue(ready.exists(),'fixture grandchild never acknowledged bind/listen: '+detail)
+     receipt=json.loads(ready.read_text())
+     self.assertEqual(receipt,{'pid':int(marker.read_text()),'port':ports['api']})
+     self.assertTrue(module.occupied(ports['api']),'fixture grandchild must listen before rollback is triggered: '+detail)
      raise OSError('injected second-service spawn failure')
-    child=original([sys.executable,'-c',wrapper],cwd=directory,start_new_session=True)
+    with diagnostics.open('ab') as output:
+     child=original([sys.executable,'-c',wrapper],cwd=directory,start_new_session=True,stdout=output,stderr=output)
     children.append(child);return child
    try:
     with patch.object(module,'process_records',return_value=[]),patch.object(module.subprocess,'Popen',side_effect=launch):
      with self.assertRaisesRegex(OSError,'second-service'):module.start(directory,ports,pathlib.Path(directory)/'logs')
     self.assertFalse(module.occupied(ports['api']),'startup rollback left a checkout-owned grandchild listener')
+    for child in children:
+     self.assertIsNotNone(child.poll(),'Startup rollback must reap its owned wrapper')
+     self.assertEqual(module.owned_group_members(child.pid),[],'Startup rollback must stop every live owned descendant')
     checkpoint_path=pathlib.Path(self.app.name)/'service-startup.json'
     self.assertTrue(checkpoint_path.exists(),'Startup failures need a bounded private diagnostic checkpoint')
     checkpoint=json.loads(checkpoint_path.read_text())
@@ -200,9 +227,10 @@ class RuntimeTests(unittest.TestCase):
     self.assertEqual(checkpoint['ports'],ports)
    finally:
     for child in children:
-     try:os.killpg(child.pid,signal.SIGKILL)
-     except (ProcessLookupError,PermissionError):pass
-     child.wait()
+     # Successful rollback has already reaped the leader; do not signal its stale
+     # bare PID. On test failure, inspect the remaining owned session first.
+     module.signal_owned_group(child.pid,signal.SIGKILL)
+     child.wait(timeout=3)
  def test_legacy_owned_idle_processes_migrate_without_foreign_sidecar(self):
   records={5001:[{'pid':20,'cwd':'/qa','command':'bun run packages/server/server.ts'}],5170:[{'pid':21,'cwd':'/qa/packages/client','command':'node node_modules/vite/bin/vite.js'}],5002:[{'pid':99,'cwd':'/other','command':'ruby other.rb'}]}
   self.assertEqual(set(module.restart_plan('/qa',{'api':48100,'ui':48101,'transcription':48102},records,lambda port:{'recording':False,'processing':False,'pending':False,'starting':False})),{20,21})
