@@ -20,6 +20,12 @@ Discovery paginates bounded metadata and stages incremental checkpoints. A check
 
 Provider capacity is separate from Heed's managed local quota and from Google Drive for desktop's unmanaged cache. Imported complete English and Portuguese transcripts, speakers and labels remain available to local notes and label-scoped chat while offline.
 
+## Interrupted settings and recovery
+
+Connect, folder selection/creation, enable and disconnect first save a bounded device-private settings intent. It records the prior folder/generation, opaque active credential identity, source-protection checkpoint and provider preference. A failed change restores the prior folder, provider and protection only when every restoration succeeds and the active credential identity is unchanged. It does not restore token payloads, retired credentials or an authorization-invalidated grant. A complete rollback to a read-only library restores ordinary local-media eviction eligibility; a previously writable library retains its pending source protection.
+
+If restoration or the final intent commit is uncertain, the connector becomes unavailable. Every finalized local WAV remains protected, cached providers reject remote access, and shared Library operations are blocked after restart. Local transcripts, recording status and other local meeting features remain available. Settings displays the recovery state and disables connection mutations. Preserve `google-drive.json`, `provider-preference.json` and `library/catalog/google-drive/` before diagnosing a storage/permission fault. Do not delete the intent or replace credential references to bypass the guard: recovery must establish one coherent folder/generation, provider selection and protection checkpoint without authorizing a retired credential. Automatic replay and a user-facing repair workflow are not implemented in this release. An incomplete remote creation may remain on Drive; recovery does not delete remote files.
+
 ## Validation limits
 
 Automated checks use disposable local HTTP providers, synthetic transcripts and a fake credential vault. They cover OAuth state/PKCE/cancellation, refresh/revocation, scope enforcement, immutable publication, interrupted and expired transfers, pagination/checkpoint recovery, integrity, hostile origins, changed library identity and stale-tab commands. The native helper compiles for macOS 14+ and its self-test does not access Keychain.

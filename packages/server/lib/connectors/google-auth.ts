@@ -13,6 +13,11 @@ export const GOOGLE_SCOPES={
 import type {GoogleAccessMode,GoogleFolder,GoogleConnectionSnapshot} from '@heed/shared';
 export type {GoogleAccessMode,GoogleFolder,GoogleConnectionSnapshot} from '@heed/shared';
 interface State {version:1;generation:number;connectionId?:string;clientId?:string;accessMode?:GoogleAccessMode;credentialRef?:string;pendingRemovalRefs?:string[];requiresAuthorization?:boolean;folder?:GoogleFolder}
+export interface GoogleSelectionCheckpoint {generation:number;connectionId?:string;credentialRef?:string;folder?:GoogleFolder}
+export function validGoogleSelectionCheckpoint(value:unknown):value is GoogleSelectionCheckpoint {
+ const v=value as GoogleSelectionCheckpoint;const uuid=(id:unknown)=>typeof id==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(id);const folder=v?.folder;
+ return !!v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).every(key=>['generation','connectionId','credentialRef','folder'].includes(key))&&Number.isSafeInteger(v.generation)&&v.generation>=0&&(v.connectionId===undefined||uuid(v.connectionId))&&(v.credentialRef===undefined||uuid(v.credentialRef))&&(folder===undefined||(!!folder&&typeof folder.id==='string'&&/^[-A-Za-z0-9_]{1,256}$/.test(folder.id)&&typeof folder.name==='string'&&folder.name.length<=512&&uuid(folder.destinationId)&&typeof folder.canUpload==='boolean'&&(folder.driveId===undefined||typeof folder.driveId==='string'&&/^[-A-Za-z0-9_]{1,256}$/.test(folder.driveId))&&Object.keys(folder).every(key=>['id','name','destinationId','canUpload','driveId'].includes(key))));
+}
 interface Tokens {accessToken:string;refreshToken:string;expiresAt:number;scopes:string[]}
 interface Options {path:string;vault:SecretVault;openBrowser:(url:string)=>Promise<void>;oauth?:typeof beginDesktopOAuth;fetch?:(input:string|URL,init?:RequestInit)=>Promise<Response>;now?:()=>number;write?:typeof atomicWriteJson}
 export class GoogleConnectionError extends Error {
@@ -106,6 +111,12 @@ export class GoogleAuth {
    if(this.state.generation!==generation){await response.body?.cancel();throw new GoogleConnectionError('connection-changed','Google connection changed');}
    if(response.status!==401||attempt===1)return response;await response.body?.cancel();
   }throw new GoogleConnectionError('auth-required','Authorization is required');
+ }
+ selectionCheckpoint():GoogleSelectionCheckpoint{return structuredClone({generation:this.state.generation,connectionId:this.state.connectionId,credentialRef:this.state.credentialRef,folder:this.state.folder});}
+ restoreSelection(previous:GoogleSelectionCheckpoint):void{
+  if(!validGoogleSelectionCheckpoint(previous)||this.active||this.state.credentialRef!==previous.credentialRef||this.state.connectionId!==previous.connectionId)throw new GoogleConnectionError('recovery-required','Google settings recovery cannot restore a changed credential');
+  // Restore only selection metadata; auth-required flags and retired credential references stay current.
+  this.persist({...this.state,generation:previous.generation,folder:previous.folder?structuredClone(previous.folder):undefined});
  }
  selectFolder(folder:GoogleFolder):void{
   if(!this.snapshot().connected||this.active)throw new GoogleConnectionError('auth-required','Authorization is required');
