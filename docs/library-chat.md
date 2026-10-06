@@ -11,3 +11,9 @@ The existing installed local model transport rejects cloud models and remote end
 Evidence scanning is limited to 80 chunks sampled across the eligible corpus, with reviewed/total counts and an explicit partial warning. Answers are capped at 40 supported statements. A large corpus may contain unreviewed meetings or topics. Citation IDs prove exact provenance; real-model entailment, completeness, bilingual accuracy and contradiction handling still require semantic review. No external knowledge or tool calls are supplied.
 
 All automated fixtures use synthetic sources, secret exclusion markers, fake loopback Ollama and isolated app/recording directories. Physical playback, local model quality and end-to-end behavior on the MacBook Air M1 and MacBook Pro M4 Pro remain manual acceptance. macOS 14-targeted compilation does not demonstrate every supported OS release.
+
+## Local AI queue
+
+Accepted questions for saved final transcripts take the next available local AI slot ahead of newly starting automatic notes or task suggestions. Already-running generation may finish; pending chat does not interrupt it. Meeting chat is checked before label-scoped chat when both are waiting. Recording and final transcription retain priority and their existing cancellation/retry behavior.
+
+Waiting status identifies recording, transcription, notes generation, task suggestions, another chat answer, or a queued request. This status reflects current resource ownership and does not change the saved source or conversation revision. A finalized transcript does not need to be retranscribed merely because chat is queued.

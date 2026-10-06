@@ -50,3 +50,20 @@ test('clearing history discards a failed send receipt before sending the same qu
  fireEvent.click(screen.getByRole('button',{name:'Clear chat history'}));fireEvent.click(screen.getByRole('button',{name:'Clear history'}));await waitFor(()=>expect(screen.queryByRole('dialog')).not.toBeInTheDocument());fireEvent.click(screen.getByRole('button',{name:'Send question'}));await waitFor(()=>expect(libraryChatApi.command).toHaveBeenCalledTimes(3));
  const first=vi.mocked(libraryChatApi.command).mock.calls[0]![1];const last=vi.mocked(libraryChatApi.command).mock.calls[2]![1];expect(last).toMatchObject({expectedThreadRevision:'after-clear'});expect((last as {requestId:string}).requestId).not.toBe((first as {requestId:string}).requestId);
 });
+
+
+test('waiting answers identify changing blockers while preserving evidence and scope',async()=>{
+ localStorage.setItem('heed-library-chat-scope',JSON.stringify({mode:'all',labels:[],match:'any'}));
+ const result=context({mode:'all',labels:[],match:'any'});
+ const waiting={...result.thread.turns[0]!,id:'waiting-turn',question:'New question',status:'waiting' as const,answer:undefined,waitingReason:'notes' as const};
+ vi.mocked(libraryChatApi.context).mockResolvedValue({...result,thread:{...result.thread,turns:[...result.thread.turns,waiting]}});
+ render(<LibraryChat/>);
+ expect(await screen.findByText('Waiting for notes generation to finish.')).toBeInTheDocument();
+ vi.mocked(libraryChatApi.context).mockResolvedValue({...result,thread:{...result.thread,turns:[...result.thread.turns,{...waiting,waitingReason:'chat' as const}]}});
+ fireEvent.click(screen.getByRole('button',{name:'Refresh chat'}));
+ expect(await screen.findByText('Waiting for another chat answer to finish.')).toBeInTheDocument();
+ expect(screen.queryByText('Waiting for notes generation to finish.')).not.toBeInTheDocument();
+ expect(screen.getByText('BROAD_SECRET_ANSWER')).toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'Cancel answer'}));
+ await waitFor(()=>expect(libraryChatApi.command).toHaveBeenCalledWith(result.thread.scope,{action:'cancel',turnId:'waiting-turn'}));
+});

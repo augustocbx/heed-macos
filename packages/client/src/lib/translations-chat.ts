@@ -1,5 +1,12 @@
 /** Local chat interface copy; meeting evidence is never translated by the interface. */
 export const CHAT_TRANSLATIONS: Record<string, {"pt-BR":string;fr:string;de:string}> = Object.fromEntries([
+ ['Waiting for recording to finish.', 'Aguardando a conclusão da gravação.', 'En attente de la fin de l’enregistrement.', 'Wartet auf den Abschluss der Aufnahme.'],
+ ['Waiting for transcription to finish.', 'Aguardando a conclusão da transcrição.', 'En attente de la fin de la transcription.', 'Wartet auf den Abschluss der Transkription.'],
+ ['Waiting for notes generation to finish.', 'Aguardando a conclusão da geração de notas.', 'En attente de la fin de la génération des notes.', 'Wartet auf den Abschluss der Notizenerstellung.'],
+ ['Waiting for task suggestions to finish.', 'Aguardando a conclusão das sugestões de tarefas.', 'En attente de la fin des suggestions de tâches.', 'Wartet auf den Abschluss der Aufgabenvorschläge.'],
+ ['Waiting for another chat answer to finish.', 'Aguardando a conclusão de outra resposta da conversa.', 'En attente de la fin d’une autre réponse de discussion.', 'Wartet auf den Abschluss einer anderen Chatantwort.'],
+ ['Waiting for local AI resources.', 'Aguardando recursos da IA local.', 'En attente des ressources de l’IA locale.', 'Wartet auf lokale KI-Ressourcen.'],
+
  ["The model context limit was reached. Ask a shorter or narrower question.","O limite de contexto do modelo foi atingido. Faça uma pergunta mais curta ou específica.","La limite de contexte du modèle a été atteinte. Posez une question plus courte ou précise.","Die Kontextgrenze des Modells wurde erreicht. Stellen Sie eine kürzere oder genauere Frage."],
  ["Chat","Conversa","Discussion","Unterhaltung"],
  ["Meeting chat","Conversa sobre a reunião","Discussion sur la réunion","Besprechungschat"],
