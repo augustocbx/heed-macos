@@ -255,6 +255,20 @@ class TransactionTests(unittest.TestCase):
         self.assertIn('symbolic links',state['cleanupWarning'])
         self.assertEqual((outside/'important').read_text(),'Keep this')
 
+    def test_status_discards_interrupted_downloads_only_when_replacement_never_started(self):
+        for recovery,phase in [('notReplaced','verifying'),('recoveryRequired','installing')]:
+            with self.subTest(recovery=recovery):
+                state=self.run_fixture();folder=self.home/'updates'/state['transactionId']
+                archive=folder/self.manifest['assets']['payload']['name'];archive.write_bytes(b'fixture')
+                updater.save(self.context,{**state,'phase':phase,'recovery':recovery})
+                with patch('sys.stdout',new=io.StringIO()):
+                    code=updater.main(['status','--root',str(self.context.root),'--home',str(self.home),
+                                       '--version','1.0.0','--macos','14.0'])
+                self.assertEqual(code,0)
+                self.assertEqual(updater.current_state(self.context)['phase'],'failed')
+                self.assertEqual(archive.exists(),recovery=='recoveryRequired')
+                updater.save(self.context,{'state':'available','release':self.release})
+
     def test_completed_update_removes_payloads_but_keeps_diagnostics_and_helpers(self):
         retained=[]
         def installed(ctx,script,payload,lock,transaction,owner):

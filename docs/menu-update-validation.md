@@ -20,7 +20,7 @@ and synthetic data; no release was published for QA.
 | Public stable-to-stable upgrade | Pending: local fixture versions do not prove upgrading between two published stable releases. |
 
 Automated checks after review fixes: 610 server tests, 307 interface tests after main integration, interface production build, native menu
-self-tests, 84 Python release/helper/transaction tests, 29 service configuration/runtime tests and shell syntax checks. The CLI dispatch test
+self-tests, 85 Python release/helper/transaction tests, 29 service configuration/runtime tests and shell syntax checks. The CLI dispatch test
 also verifies trusted helper copying, detached-worker arguments and inherited lock ownership; a
 physical menu-to-worker run remains pending. Exact-head CI status is recorded in the pull request.
 CI is separate from physical QA.
@@ -33,7 +33,7 @@ PR #80's seven confirmed findings were addressed with behavioral regressions:
 - Disconnecting a streamed operation keeps processing admission until the producer actually finishes. Both stream-unit tests and a real isolated model-pull HTTP fixture reject maintenance during the disconnected job.
 - Failed maintenance acquisition queries the actual lease. Confirmed busy processing without a lease permits explicit retry; a lost acknowledgement releases only the matching transaction. Unknown ownership or failed release preserves recovery material.
 - Native requests capture the current endpoints and installed build when admitted. Corrected configuration reaches later calls, while in-flight installation keeps its original configuration.
-- Safe terminal and busy transactions discard the installer, archive and extracted payload. Diagnostics, coordinator helpers and uncertain recovery material remain. Cleanup refuses symlinks and records a warning without changing verified installation success.
+- Safe terminal, busy and interrupted pre-install transactions discard the installer, archive and extracted payload. Diagnostics, coordinator helpers and uncertain recovery material remain. Cleanup refuses symlinks and records a warning without changing verified installation success.
 - Native status polling uses a 60-second idle interval and a 2-second active interval. Manual actions queue behind a status read, and forced service retries are coalesced without being lost.
 - The outer installation-lock wrapper owns temporary download cleanup; the locked child owns outcome reporting. Child exit codes, including permission-related exit 3, pass through unchanged.
 

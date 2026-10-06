@@ -323,7 +323,7 @@ def reconcile_transaction(context,dependencies=None):
     with InstallationLock(context.home):
         state=current_state(context)
         if not state.get('transactionId'): return state
-        if state.get('phase') in ['completed','waitingForIdle'] or state.get('recovery')=='notReplaced': return state
+        if state.get('phase') in ['completed','waitingForIdle'] or state.get('recovery')=='notReplaced': return discard_payloads(context,state)
         result=update_state.read(context.home,state['transactionId'],'installer-result.json')
         try: return finish_verification(context,state,deps,result['exitCode'] if result else 1)
         except (OSError,ValueError,KeyError):
@@ -360,7 +360,7 @@ def main(argv=None):
                     with InstallationLock(context.home):
                         state=current_state(context)
                         if state.get('phase') in ACTIVE:
-                            state=save(context,{**state,'phase':'failed','errorCode':'interrupted','recovery':state.get('recovery','recoveryRequired')})
+                            state=discard_payloads(context,save(context,{**state,'phase':'failed','errorCode':'interrupted','recovery':state.get('recovery','recoveryRequired')}))
                 except ValueError: pass
         elif args.command=='check':
             with InstallationLock(context.home):
