@@ -11,6 +11,7 @@ import { AutomaticNotesSettings } from '@/components/ai-notes/AutomaticNotesSett
 import {StorageSettings} from './StorageSettings';
 import {GoogleDriveSettings} from './GoogleDriveSettings';
 import { SmbSettings } from './SmbSettings';
+import { DirectSmbSettings } from './DirectSmbSettings';
 
 import { MeetingDetectionSettings } from "./MeetingDetectionSettings";
 
@@ -72,6 +73,7 @@ export function PermissionsPage() {
   </article>
   <AutomaticNotesSettings />
   <SmbSettings onProviderChanged={()=>setLibrarySelection(value=>value+1)}/>
+  <DirectSmbSettings onProviderChanged={()=>setLibrarySelection(value=>value+1)}/>
   <GoogleDriveSettings onProviderChanged={()=>setLibrarySelection(value=>value+1)}/>
   <MeetingDetectionSettings />
   <StorageSettings />

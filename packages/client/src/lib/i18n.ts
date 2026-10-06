@@ -14,6 +14,7 @@ import { TASKS_TRANSLATIONS } from "./translations-tasks.ts";
 import { NOTES_TRANSLATIONS } from "./translations-notes.ts";
 import { CONTENT_TRANSLATIONS } from "./translations-content.ts";
 import { DETECTION_TRANSLATIONS } from "./translations-detection";
+import { DIRECT_SMB_TRANSLATIONS } from "./translations-smb-direct";
 import { SMB_TRANSLATIONS } from "./translations-smb";
 export type { Locale } from "./locale.ts";
 export function detectLocale(): Locale {return storedLocale();}
@@ -23,7 +24,7 @@ export function useLocale() {
  return {locale,tr:(text:string,vars?:Record<string,string|number>)=>tr(text,locale,vars)};
 }
 import {STORAGE_TRANSLATIONS} from "./translations-storage";
-const TRANSLATIONS={...SERVICE_TRANSLATIONS,...DELETION_TRANSLATIONS,...SHELL_TRANSLATIONS,...CONTENT_TRANSLATIONS,...NOTES_TRANSLATIONS,...TASKS_TRANSLATIONS,...CHAT_TRANSLATIONS,...DETECTION_TRANSLATIONS,...LIBRARY_CHAT_TRANSLATIONS,...STORAGE_TRANSLATIONS,...LIBRARY_TRANSLATIONS,...SMB_TRANSLATIONS,...GOOGLE_DRIVE_TRANSLATIONS,...ONEDRIVE_TRANSLATIONS,...ICLOUD_TRANSLATIONS};
+const TRANSLATIONS={...SERVICE_TRANSLATIONS,...DELETION_TRANSLATIONS,...SHELL_TRANSLATIONS,...CONTENT_TRANSLATIONS,...NOTES_TRANSLATIONS,...TASKS_TRANSLATIONS,...CHAT_TRANSLATIONS,...DETECTION_TRANSLATIONS,...LIBRARY_CHAT_TRANSLATIONS,...STORAGE_TRANSLATIONS,...LIBRARY_TRANSLATIONS,...SMB_TRANSLATIONS,...DIRECT_SMB_TRANSLATIONS,...GOOGLE_DRIVE_TRANSLATIONS,...ONEDRIVE_TRANSLATIONS,...ICLOUD_TRANSLATIONS};
 export function tr(text:string,locale:Locale=useLocaleStore.getState().locale,vars?:Record<string,string|number>):string {
  const chosen=normalizeLocale(locale);
  const key=text.trim();
