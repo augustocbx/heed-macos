@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';import {existsSync,lstatSync,mkdirSync,readFileSync} from 'node:fs';import {dirname} from 'node:path';import {atomicWriteJson} from '../atomic-json';import {providerPath} from '../portable-provider';import {UUID} from '../portable-schema';
 export const GRAPH='https://graph.microsoft.com/v1.0';export const GRAPH_ID=/^[A-Za-z0-9!_-]{1,256}$/;
-export interface OneDriveBinding {connectionId:string;driveId:string;appRootId:string;rootId:string;destinationId:string;name:string;accountType:'personal'|'business'|'documentLibrary'|'unknown'}
+import type {OneDriveBinding} from '@heed/shared';export type {OneDriveBinding} from '@heed/shared';
 export interface OneDriveItem {id:string;name:string;parentId?:string;driveId:string;size:number;etag?:string;folder:boolean;deleted:boolean}
 export interface OneDriveUpload {bytes:number;hash:string;offset:number;secretRef?:string;expiresAt?:number;parentId:string;name:string;state:'uploading'|'provider-confirmed'|'verified';itemId?:string}
 interface Candidate {id:string;items:Record<string,OneDriveItem>;next?:string;delta?:string}
@@ -24,7 +24,7 @@ export class OneDriveStore {
  acknowledge(id:string):void{if(this.state.candidate?.id!==id||!this.state.candidate.delta||this.state.candidate.next)throw new Error('OneDrive discovery is incomplete');this.edit(next=>{next.items=next.candidate!.items;next.checkpoint=next.candidate!.delta;delete next.candidate;});}
  record(item:OneDriveItem):void{this.edit(next=>{next.items[item.id]=item;if(next.candidate)next.candidate.items[item.id]=item;});}
  uploadJob(path:string):OneDriveUpload|undefined{const job=this.state.uploads[providerPath(path)];return job?structuredClone(job):undefined;}
- upload(path:string,job:OneDriveUpload):void{providerPath(path);const old=this.state.uploads[path];if(old&&(old.hash!==job.hash||old.bytes!==job.bytes||old.parentId!==job.parentId||old.name!==job.name))throw new Error('Immutable OneDrive upload identity changed');this.edit(next=>{next.uploads[path]=job;});}
+ upload(path:string,job:OneDriveUpload):void{providerPath(path);const old=this.state.uploads[path];if(old&&(old.hash!==job.hash||old.bytes!==job.bytes||old.parentId!==job.parentId||old.name!==job.name))throw new Error('Immutable OneDrive upload identity changed');this.edit(next=>{next.uploads[path]=job;const completed=Object.keys(next.uploads).filter(key=>key!==path&&next.uploads[key]!.state==='verified'&&!next.uploads[key]!.secretRef);while(Object.keys(next.uploads).length>512&&completed.length)delete next.uploads[completed.shift()!];});}
  removeUpload(path:string):void{this.edit(next=>{delete next.uploads[providerPath(path)];});}
  uploadRefs():string[]{return Object.values(this.state.uploads).flatMap(job=>job.secretRef?[job.secretRef]:[]);}
 }

@@ -7,7 +7,7 @@ export interface OneDriveAuthSnapshot {connected:boolean;authorizing:boolean;gen
 interface State {version:1;generation:number;clientId?:string;tenant?:string;credentialRef?:string;requiresAuthorization?:boolean;pendingRemovalRefs?:string[]}
 interface Tokens {accessToken:string;refreshToken:string;expiresAt:number;scopes:string[]}
 export interface OneDriveAuthOptions {path:string;vault:SecretVault;openBrowser:(url:string)=>Promise<void>;oauth?:typeof beginDesktopOAuth;fetch?:(input:string|URL,init?:RequestInit)=>Promise<Response>;now?:()=>number;write?:typeof atomicWriteJson}
-export class OneDriveError extends Error {constructor(readonly code:string,message:string){super(message);}}
+export class OneDriveError extends Error {retryAfterMs?:number;constructor(readonly code:string,message:string){super(message);}}
 /** All externally supplied provider responses are bounded; errors never include OAuth payloads. */
 export async function readMicrosoftJson(response:Response,maxBytes=131072):Promise<Record<string,any>> {
  if(!response.body)throw new OneDriveError('provider-response','Invalid Microsoft response');const reader=response.body.getReader();let bytes=0;const chunks:Uint8Array[]=[];
