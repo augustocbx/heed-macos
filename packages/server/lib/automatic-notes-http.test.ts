@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { Session, NotesJob } from "../../shared/types";
+import type { Session, NotesJob, TranscribeResult } from "../../shared/types";
 
 let directory: string;
 let app: ReturnType<typeof Bun.spawn>;
@@ -32,8 +32,20 @@ const list = async ():Promise<Session[]> => (await fetch(`${base}/api/sessions`)
 const currentJob = (session:Session):NotesJob|undefined => Object.values(session.notesJobs || {}).find(job => job.sourceRevision === session.transcriptRevision);
 const get = async (id:string) => (await list()).find(session => session.id === id)!;
 
+async function startApp() {
+ app = Bun.spawn([process.execPath,resolve(import.meta.dir,"../server.ts")],{cwd:resolve(import.meta.dir,"../../.."),env:{...process.env,PORT:base.split(":").at(-1)!,HEED_APP_DIR:directory,OLLAMA_HOST:`http://127.0.0.1:${transport.port}`,HEED_TRANSCRIPTION_URL:`http://127.0.0.1:${transport.port}`},stdout:"ignore",stderr:"pipe"});
+ await until(async () => { try {return (await fetch(`${base}/api/notes/settings`)).status;} catch {return 0;} },status=>status===200);
+}
+
+async function restartApp() {
+ app.kill();
+ await app.exited;
+ await startApp();
+}
+
 beforeAll(async () => {
  directory = mkdtempSync(join(tmpdir(),"heed-auto-http-"));
+ // Only the external ASR and LLM transports are synthetic; server routes and storage are real.
  transport = Bun.serve({hostname:"127.0.0.1",port:0,async fetch(request) {
   const path = new URL(request.url).pathname;
   if (path === "/api/tags") return available ? Response.json({models:[{name:"fixture:1b"},{name:"remote:cloud"}]}) : new Response(null,{status:503});
@@ -54,8 +66,7 @@ beforeAll(async () => {
  const reservation = Bun.serve({hostname:"127.0.0.1",port:0,fetch:()=>new Response()});
  base = `http://127.0.0.1:${reservation.port}`;
  reservation.stop(true);
- app = Bun.spawn([process.execPath,resolve(import.meta.dir,"../server.ts")],{cwd:resolve(import.meta.dir,"../../.."),env:{...process.env,PORT:base.split(":").at(-1)!,HEED_APP_DIR:directory,OLLAMA_HOST:`http://127.0.0.1:${transport.port}`,HEED_TRANSCRIPTION_URL:`http://127.0.0.1:${transport.port}`},stdout:"ignore",stderr:"pipe"});
- await until(async () => { try {return (await fetch(`${base}/api/notes/settings`)).status;} catch {return 0;} },status=>status===200);
+ await startApp();
 },10000);
 afterAll(async () => {
  finishTranscription?.();
@@ -159,3 +170,77 @@ test("HTTP session reads and writes fail closed when tag recovery cannot proceed
  } finally { rmSync(journal, { recursive: true }); }
  expect((await get("tags-http")).title).not.toBe("Lost edit");
 });
+
+test("multiple tag assignments survive process restarts, retranscription, speaker edits, and automatic notes", async () => {
+ available = true;
+ paused = true;
+ finishTranscription = undefined;
+ try {
+  expect((await jsonRequest("/api/notes/settings", { enabled: true, model: "fixture:1b", templateId: "general", language: "meeting" }, "PATCH")).status).toBe(200);
+  const recording = join(directory, "tagged-retranscription.wav");
+  const created = await jsonRequest("/api/sessions", {
+   id: "tagged-retranscription", transcript: "Old synthetic transcript", transcriptFinalized: false,
+   files: { wav: recording }, speakers: ["Speaker 1"], tags: ["Planning", "Release"],
+   segments: [{ speaker: "Speaker 1", channel: "sys", text: "Old synthetic transcript", start: 0, end: 2 }],
+  });
+  expect(created.status).toBe(200);
+  const other = await jsonRequest("/api/sessions", { id: "tagged-companion", transcript: "Companion synthetic transcript", tags: ["Release", "Follow-up"] });
+  expect(other.status).toBe(200);
+
+  await restartApp();
+  expect(await get("tagged-retranscription")).toMatchObject({ tags: ["Planning", "Release"], tagsRevision: created.body.tagsRevision, transcript: "Old synthetic transcript" });
+  expect(await get("tagged-companion")).toMatchObject({ tags: ["Release", "Follow-up"], tagsRevision: other.body.tagsRevision });
+
+  const processing = fetch(`${base}/api/transcribe`, {
+   method: "POST", headers: { "Content-Type": "application/json" },
+   body: JSON.stringify({ url: recording, recording_finalize: true, final_model: "small", language: "pt", diarize: true }),
+  });
+  await until(async () => !!finishTranscription, Boolean);
+  finishTranscription!();
+  const response = await processing;
+  expect(response.status).toBe(200);
+  const events = (await response.text()).split("\n\n");
+  const results = events.filter(event => event.startsWith("event: result\n"));
+  expect(results).toHaveLength(1);
+  expect(events.some(event => event.startsWith("event: error\n"))).toBe(false);
+  const result = JSON.parse(results[0]!.split("\ndata: ")[1]!) as TranscribeResult;
+  expect(result).toMatchObject({ success: true, finalized: true, text: "Bom dia", speakers: ["Ana"], metadata: { language: "pt", model: "small" } });
+  const saved = await jsonRequest("/api/sessions?id=tagged-retranscription", {
+   transcript: result.text, transcriptFinalized: true, language: result.metadata.language,
+   transcriptionModel: result.metadata.model, speakers: result.speakers, segments: result.segments, embeddings: result.embeddings,
+  }, "PATCH");
+  expect(saved.status).toBe(200);
+  expect(saved.body).toMatchObject({ transcript: "Bom dia", tags: ["Planning", "Release"], tagsRevision: created.body.tagsRevision, files: { wav: recording } });
+  expect(saved.body.transcriptRevision).not.toBe(created.body.transcriptRevision);
+  await until(() => get("tagged-retranscription"), session => currentJob(session)?.status === "running" && currentJob(session)!.generatedCharacters > 0);
+
+  const renamed = await jsonRequest("/api/sessions?id=tagged-retranscription", {
+   speakers: ["Ana Silva"], segments: [{ ...result.segments[0], speaker: "Ana Silva", auto: false }], embeddings: { "Ana Silva": [1, 2] },
+  }, "PATCH");
+  expect(renamed.status).toBe(200);
+  expect(renamed.body).toMatchObject({ tags: ["Planning", "Release"], tagsRevision: created.body.tagsRevision, transcript: "Bom dia", speakers: ["Ana Silva"] });
+  expect(renamed.body.transcriptRevision).not.toBe(saved.body.transcriptRevision);
+  paused = false;
+  const complete = await until(() => get("tagged-retranscription"), session => currentJob(session)?.status === "completed");
+  expect(complete).toMatchObject({ tags: ["Planning", "Release"], tagsRevision: created.body.tagsRevision, aiNotes: "Grounded meeting notes" });
+  expect(complete.notesMetadata).toMatchObject({ origin: "automatic", sourceRevision: renamed.body.transcriptRevision, language: "pt", stale: false });
+  expect(lastPrompt).toContain("[Ana Silva] Bom dia");
+
+  await restartApp();
+  const persisted = await get("tagged-retranscription");
+  expect(persisted).toMatchObject({
+   tags: ["Planning", "Release"], tagsRevision: created.body.tagsRevision, transcript: "Bom dia", transcriptFinalized: true,
+   transcriptionModel: "small", speakers: ["Ana Silva"], embeddings: { "Ana Silva": [1, 2] },
+   aiNotes: "Grounded meeting notes", files: { wav: recording },
+  });
+  expect(persisted.segments).toEqual([{ id: 0, speaker: "Ana Silva", channel: "sys", text: "Bom dia", start: 0, end: 2, auto: false }]);
+  expect(currentJob(persisted)?.status).toBe("completed");
+  expect(persisted.notesMetadata).toEqual(complete.notesMetadata);
+  expect(await get("tagged-companion")).toMatchObject({ tags: ["Release", "Follow-up"], tagsRevision: other.body.tagsRevision, transcript: "Companion synthetic transcript" });
+  const snapshot = await jsonRequest("/api/tags", undefined, "GET");
+  expect(snapshot.body.tags).toEqual(expect.arrayContaining([{ name: "Planning", meetingCount: 1 }, { name: "Release", meetingCount: 2 }, { name: "Follow-up", meetingCount: 1 }]));
+ } finally {
+  paused = false;
+  finishTranscription?.();
+ }
+}, 20000);

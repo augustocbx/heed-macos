@@ -17,7 +17,7 @@ export function tr(text:string,locale:Locale=useLocaleStore.getState().locale,va
  const key=text.trim();
  const translated=chosen === "en" ? undefined : TRANSLATIONS[key]?.[chosen];
  let result=translated ? text.slice(0,text.indexOf(key))+translated+text.slice(text.indexOf(key)+key.length) : text;
- if(vars) for(const [key,value] of Object.entries(vars)) result=result.replaceAll(`{${key}}`,String(value));
+ if(vars) result=result.replace(/\{([^{}]+)\}/g,(placeholder,key:string)=>Object.hasOwn(vars,key) ? String(vars[key]) : placeholder);
  return result;
 }
 

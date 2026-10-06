@@ -124,3 +124,30 @@ test.each([ ["en", "Add tag"], ["pt-BR", "Adicionar tag"], ["fr", "Ajouter une �
   expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
   expect(screen.getByText("#Planning")).toBeInTheDocument();
 });
+test.each([
+ ["en", "Add tag", "Failed to save tags"],
+ ["pt-BR", "Adicionar tag", "Falha ao salvar tags"],
+ ["fr", "Ajouter une étiquette", "Impossible d’enregistrer les étiquettes"],
+ ["de", "Tag hinzufügen", "Tags konnten nicht gespeichert werden"],
+] as const)("%s localizes a failed network save and retains the unsaved tag", async (locale, label, message) => {
+ useLocaleStore.setState({ locale });
+ vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("Failed to fetch"); }));
+ const user = userEvent.setup(); render(<Host />);
+ await user.click(screen.getByRole("button", { name: label }));
+ fireEvent.change(screen.getByRole("combobox"), { target: { value: "Reunião {count} $&" } });
+ await user.keyboard("{Enter}");
+ expect(await screen.findByRole("alert")).toHaveTextContent(message);
+ expect(screen.getByRole("combobox")).toHaveValue("Reunião {count} $&");
+ expect(meetings[0].tags).toEqual(["Planning"]);
+ expect(useSessionsStore.getState().tagsBusy).toBe(false);
+});
+test.each(['$&', '$$', 'Planning {count}'])("confirms the exact tag name %s before global deletion", async tag => {
+ meetings.forEach(meeting => { meeting.tags = [tag]; });
+ useSessionsStore.setState({ sessions: meetings, tagCatalog: snapshot().tags });
+ const user = userEvent.setup(); render(<Host />);
+ await user.click(screen.getByRole("button", { name: `Tag actions for ${tag}` }));
+ await user.click(screen.getByRole("button", { name: "Delete tag everywhere" }));
+ expect(screen.getByText(`Delete "${tag}" from 2 meetings? Meeting content will be kept.`)).toBeInTheDocument();
+ await user.click(screen.getByRole("button", { name: "Cancel" }));
+ expect(meetings.map(meeting => meeting.tags)).toEqual([[tag], [tag]]);
+});
