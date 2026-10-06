@@ -1,3 +1,4 @@
+import {track} from './process';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import type {LibraryProvider} from './portable-provider';
@@ -37,7 +38,7 @@ export class MacSmbNative implements SmbNative {
  private helper=fileURLToPath(new URL('../native/smb-filesystem.py',import.meta.url));
  private spawn(request:SmbRequest,signal?:AbortSignal){
   signal?.throwIfAborted();
-  const process=Bun.spawn(['/usr/bin/python3',this.helper],{stdin:'pipe',stdout:'pipe',stderr:'ignore'});
+  const process=track(Bun.spawn(['/usr/bin/python3',this.helper],{stdin:'pipe',stdout:'pipe',stderr:'ignore'}));
   process.stdin.write(encode(request));process.stdin.write('\n');
   const abort=()=>process.kill('SIGTERM');signal?.addEventListener('abort',abort,{once:true});
   const timeout=setTimeout(abort,120_000);

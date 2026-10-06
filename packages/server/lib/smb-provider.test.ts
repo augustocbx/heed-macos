@@ -1,4 +1,5 @@
-import {describe,expect,test} from 'bun:test';
+import {describe,expect,test,spyOn} from 'bun:test';
+import {reapAll} from './process';
 import {createHash,randomUUID} from 'node:crypto';
 import {SmbProvider, MacSmbNative, type SmbNative, type SmbIdentity, type SmbRequest} from './smb-provider';
 import {mkdtempSync,rmSync,readdirSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
@@ -15,6 +16,7 @@ class Fixture implements SmbNative {
 }
 describe('SMB immutable provider',()=>{
  test('actual native subprocess rejects local fixture without writes or raw diagnostics',async()=>{const root=mkdtempSync(join(tmpdir(),'heed-smb-native-'));try{const native=new MacSmbNative();await expect(native.json({action:'probe',root})).rejects.toThrow('SMB operation unavailable');expect(readdirSync(root)).toEqual([]);}finally{rmSync(root,{recursive:true,force:true});}});
+ test('server supervisor reaps an in-flight native SMB helper',async()=>{const original=Bun.spawn.bind(Bun);let child:ReturnType<typeof Bun.spawn>|undefined;const spy=spyOn(Bun,'spawn').mockImplementation((...args:any[])=>{child=original(['/usr/bin/python3','-c','import time; time.sleep(120)'],args[1]);return child as any;});const pending=new MacSmbNative().json({action:'probe',root:'/synthetic/share'});const settled=pending.catch(()=>{});try{await Bun.sleep(20);spy.mockRestore();await reapAll(100);expect(child?.killed).toBe(true);await expect(pending).rejects.toThrow('SMB operation unavailable');}finally{spy.mockRestore();child?.kill();await child?.exited;await settled;}});
  test('readonly, insecure or replaced mount never uploads',async()=>{const fixture=new Fixture(),p=fixture.provider(true);await expect(p.writeImmutable('objects/a',Buffer.from('a'))).rejects.toThrow();expect(fixture.writes).toEqual([]);fixture.security='unknown';await expect(fixture.provider().read('objects/a',4)).rejects.toThrow();fixture.security='signed';const old=fixture.provider();fixture.identity.fsid='new';await expect(old.writeImmutable('objects/a',Buffer.from('a'))).rejects.toThrow();});
  test('destination replacement fails even with same mount',async()=>{const f=new Fixture(),p=f.provider();f.destinationId=randomUUID();await expect(p.writeImmutable('objects/a',Buffer.from('a'))).rejects.toThrow();expect(f.writes).toEqual([]);});
  test('immutable objects verify exact source length and hash',async()=>{const f=new Fixture(),p=f.provider();const content=Buffer.from('audio');await p.writeObjectImmutable('objects/'+hash(content),content.length,hash(content),(async function*(){yield content;})());await expect(p.writeObjectImmutable('objects/'+hash(content),3,hash(content),(async function*(){yield content;})())).rejects.toThrow();await expect(p.writeImmutable('../outside',content)).rejects.toThrow();});

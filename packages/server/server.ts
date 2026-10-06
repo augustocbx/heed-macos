@@ -84,10 +84,12 @@ const FALLBACK_MODEL = process.env.HEED_MODEL || null;
 ensureAppDirs([UPLOAD_DIR]);
 let portableRuntime:PortableLibraryRuntime|undefined;
 let smbConnections:SmbConnections|undefined;
+let synchronizationUnavailable=false;
+const synchronizationProtectedPaths=()=>{if(synchronizationUnavailable)return [UPLOAD_DIR,join(LIBRARY_DIR,'media')];try{return [...(smbConnections?.protectedLocalPaths()||[]),...(portableRuntime?.protectedPaths(smbConnections?.protectedRevisionIds())||[])];}catch{synchronizationUnavailable=true;return [UPLOAD_DIR,join(LIBRARY_DIR,'media')];}};
 const captureProtectedPaths=()=>[...retainedProcessing.keys(),...((recorderPath && (recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning))?[recorderPath]:[])];
 const managedQuota=createAppQuota({
  recordingsDir:UPLOAD_DIR,
- protectedPaths:()=>[...captureProtectedPaths(),...(smbConnections?.protectedLocalPaths()||[]),...(portableRuntime?.protectedPaths(smbConnections?.protectedRevisionIds())||[])],
+ protectedPaths:()=>[...captureProtectedPaths(),...synchronizationProtectedPaths()],
  onEvicted:paths=>{
   sessionTags.recover();
   for(const session of sessionTags.snapshot().sessions)if(session.files?.wav && paths.includes(session.files.wav)){
@@ -101,12 +103,15 @@ portableRuntime=new PortableLibraryRuntime({root:LIBRARY_DIR,sessions:sessionTag
 export function getPortableLibrary(){return portableRuntime!.get();}
 /** Device preference lives outside the portable schema and managed-meeting quota. */
 export const providerRegistry=new ProviderRegistry({path:join(APP_DIR,'provider-preference.json'),getLibrary:getPortableLibrary});
-smbConnections=new SmbConnections({path:join(LIBRARY_DIR,'catalog','smb-connections.json'),catalogPath:join(LIBRARY_DIR,'catalog','state.json'),sessions:()=>sessionTags.snapshot().sessions,registry:providerRegistry,get library(){return getPortableLibrary();},busy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
-// Restore only the selected registered connector. Other connector startup registrations share this registry.
-if(providerRegistry.preferredId())try{providerRegistry.restore();}catch{console.error('Synchronization preference could not be restored. Check storage and destination access.');}
-smbConnections.start();
+synchronizationUnavailable=providerRegistry.unavailable();
+try{smbConnections=new SmbConnections({path:join(LIBRARY_DIR,'catalog','smb-connections.json'),catalogPath:join(LIBRARY_DIR,'catalog','state.json'),sessions:()=>sessionTags.snapshot().sessions,registry:providerRegistry,get library(){return getPortableLibrary();},busy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
+ if(providerRegistry.preferredId())providerRegistry.restore();
+ if(!synchronizationUnavailable)smbConnections.start();
+}catch{synchronizationUnavailable=true;console.error('Synchronization unavailable. Preserve device preferences and connection configuration for recovery.');}
+
 async function handleLibrary(req:Request):Promise<Response>{
- if(req.method==='POST'&&!permissionRequestAllowed(req,PORT))return new Response(null,{status:403});
+ if(!permissionRequestAllowed(req,PORT))return new Response(null,{status:403});
+ if(synchronizationUnavailable)return Response.json({error:'Synchronization unavailable. Preserve its configuration for recovery.',code:'unavailable'},{status:503});
  try{return await libraryResponse(req,getPortableLibrary(),()=>portableRuntime!.migrate(req.signal),audioWorkBusy);}catch(error){const message=(error as Error).message;return Response.json({error:message,code:/quota|reservation/i.test(message)?'quota-blocked':'unavailable'},{status:/quota|reservation/i.test(message)?409:503});}
 }
 
@@ -2490,7 +2495,7 @@ const server = Bun.serve({
 		if (url.pathname.startsWith("/api/recording/")) { httpServer.timeout(req,0); return handleRecordingControl(req,url.pathname); }
 		if (url.pathname.startsWith("/api/meeting-detection/")) return meetingDetectionRoute(req,meetingDetection,PORT);
 		if (url.pathname.startsWith("/api/desktop/control/")) { httpServer.timeout(req,0); return handleDesktopControl(req, url.pathname); }
-		if(url.pathname==='/api/smb'){httpServer.timeout(req,0);return smbResponse(req,smbConnections!);}
+		if(url.pathname==='/api/smb'){httpServer.timeout(req,0);if(!desktopRequestAllowed(req))return new Response(null,{status:403});return synchronizationUnavailable||!smbConnections?Response.json({error:'Synchronization unavailable. Preserve its configuration for recovery.'},{status:503}):smbResponse(req,smbConnections);}
 		if (url.pathname==='/api/library'){httpServer.timeout(req,0);return handleLibrary(req);}
 		if (url.pathname==='/api/storage' || url.pathname.startsWith('/api/storage/')) return handleStorage(req);
 		if (method === "POST" && url.pathname === "/api/desktop/float") return handleDesktopFloat();

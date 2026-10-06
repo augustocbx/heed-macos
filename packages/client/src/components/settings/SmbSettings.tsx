@@ -35,7 +35,7 @@ export function SmbSettings(){
    <button disabled={busy||!(edits[c.id]??c.name).trim()} onClick={()=>void run(()=>smbApi.rename(c.id,edits[c.id]??c.name))}>{tr('Save name')}</button>
    <button disabled={busy} onClick={()=>void run(()=>smbApi.enable(c.id,!c.enabled))}>{tr(c.enabled?'Disable':'Enable')}</button>
    <button disabled={busy||snapshot.syncing} onClick={()=>{const parent=c.root.replace(/\/Heed Library$/,'');setName(c.name);setFolder(parent);void check(parent,c.id);}}>{tr('Test connection')}</button>
-   <button disabled={busy||!c.enabled||snapshot.syncing} onClick={()=>void run(()=>smbApi.sync())}>{tr('Synchronize now')}</button>
+   <button disabled={busy||!c.enabled||snapshot.syncing} onClick={()=>void run(()=>smbApi.sync(c.id))}>{tr('Synchronize now')}</button>
    <button disabled={busy} onClick={()=>void run(()=>smbApi.disconnect(c.id))}>{tr('Disconnect destination')}</button>
   </section>)}
  </article>;

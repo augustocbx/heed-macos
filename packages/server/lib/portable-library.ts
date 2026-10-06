@@ -13,7 +13,7 @@ const entryKey=(m:PortableManifest|PortableCommit)=>`${m.libraryId}/${m.meetingI
 const meetingKey=(m:PortableManifest|PortableCommit)=>`${m.libraryId}/${m.meetingId}`;
 /** A complete SessionTags write is the only AI visibility boundary; remote previews never enter it. */
 export class PortableLibrary {
- private state:Catalog;private statePath:string;private active=false;private lease?:symbol;private leaseContext=new AsyncLocalStorage<symbol>();
+ private state:Catalog;private statePath:string;private active=false;private lease?:symbol;private mutationLease?:symbol;private leaseContext=new AsyncLocalStorage<symbol>();
  constructor(private options:PortableLibraryOptions){
   for(const category of ['catalog','media','indexes','staging'])mkdirSync(join(options.root,category),{recursive:true,mode:0o700});
   this.statePath=join(options.root,'catalog','state.json');
@@ -48,9 +48,12 @@ export class PortableLibrary {
  }
  private async operation<T>(run:()=>Promise<T>,signal?:AbortSignal):Promise<T>{signal?.throwIfAborted();if(this.active||(this.lease&&this.leaseContext.getStore()!==this.lease))throw new Error('A library operation is already running');this.active=true;try{return await run();}finally{this.active=false;}}
  isBusy():boolean{return this.active||!!this.lease;}
+ isMutationOwner():boolean{return !this.active&&!!this.mutationLease&&this.lease===this.mutationLease&&this.leaseContext.getStore()===this.mutationLease;}
+ async withMutation<T>(run:(library:PortableLibrary)=>Promise<T>,signal?:AbortSignal):Promise<T>{signal?.throwIfAborted();if(this.active||this.lease)throw new Error('A library operation is already running');const lease=Symbol('mutation');this.lease=this.mutationLease=lease;try{return await this.leaseContext.run(lease,()=>run(this));}finally{this.mutationLease=undefined;this.lease=undefined;}}
+
  async withProvider<T>(provider:LibraryProvider,run:(library:PortableLibrary)=>Promise<T>,signal?:AbortSignal):Promise<T>{signal?.throwIfAborted();if(this.active||this.lease)throw new Error('A library operation is already running');const lease=Symbol('provider'),previous=this.options.provider;this.lease=lease;this.options.provider=provider;try{return await this.leaseContext.run(lease,()=>run(this));}finally{this.options.provider=previous;this.lease=undefined;}}
  runMaintenance<T>(run:()=>Promise<T>,signal?:AbortSignal):Promise<T>{return this.operation(run,signal);}
- selectProvider(provider?:LibraryProvider):void{if(this.active||this.lease)throw new Error('A library operation is already running');this.options.provider=provider;}
+ selectProvider(provider?:LibraryProvider):void{if(this.active||this.lease&&!this.isMutationOwner())throw new Error('A library operation is already running');this.options.provider=provider;}
  markDeleted(sessionId:string):void {const keys=Object.keys(this.state.aliases).filter(key=>this.state.aliases[key]===sessionId);if(keys.length)this.edit(next=>{next.tombstones||={};for(const key of keys)next.tombstones[key]=true;});}
  private requireLocal(entry:Entry):void {if(!entry.sessionId||!this.options.sessions.read(entry.sessionId)||this.state.tombstones?.[meetingKey(entry.manifest)]){if(entry.sessionId)this.markDeleted(entry.sessionId);throw new Error('Local meeting was deleted; restore it explicitly before publication');}}
  private provider():LibraryProvider {if(!this.options.provider)throw new Error('No remote library provider is configured');return this.options.provider;}
