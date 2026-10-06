@@ -100,6 +100,8 @@ The original WAV preserves two separate channels at 16 kHz: **left = microphone;
 
 Names entered manually during recording survive live transcript updates and are saved with the meeting. Renaming after recording or in **Meetings** also updates the segments and participant list in the local file. When final diarization reorganizes speakers, names are transferred using source channels and overlapping segments; ambiguous matches are not forced by a “Speaker” number.
 
+Heed uses the default microphone selected in **macOS System Settings → Sound → Input**. Bluetooth profile changes during startup are allowed to settle before recording begins.
+
 If microphone quality drops with Bluetooth headphones, select the **Mac's built-in microphone as input** while keeping the headphones as output. Apple explains the Bluetooth mode change in [If sound quality is reduced when using Bluetooth headphones with your Mac](https://support.apple.com/en-ie/102217).
 
 ## Automatic meeting notes
