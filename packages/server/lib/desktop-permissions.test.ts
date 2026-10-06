@@ -3,14 +3,33 @@ import { DesktopPermissions, desktopRequestAllowed, permissionAction, permission
 import { DesktopControl } from './desktop-control';
 const snapshot = { microphone:'authorized' as const, screenCapture:true, slackLogs:false, slackAutoRecord:true };
 
+test('fresh permission status identifies the reporting menu build and expires it together', () => {
+ const bridge = new DesktopPermissions();
+ const build = {version:'1.2.0',commit:'a'.repeat(40),instanceId:'replacement-menu'};
+ const report = permissionReport({permissions:snapshot,build});
+ expect(report).not.toBeNull();
+ bridge.report(report!,1000);
+ expect((bridge.status(1001) as any).build).toEqual(build);
+ expect((bridge.status(13000) as any).build).toBeNull();
+ bridge.report({permissions:snapshot},13001);
+ expect((bridge.status(13002) as any).build).toBeNull();
+});
+test('permission build metadata rejects malformed reports without dropping ordinary compatibility', () => {
+ const build = {version:'1.2.0',commit:'a'.repeat(40),instanceId:'replacement-menu'};
+ for (const invalid of [null,{}, {...build,version:2}, {...build,commit:'invalid'}, {...build,instanceId:''}]) {
+  expect(permissionReport({permissions:snapshot,build:invalid})).toBeNull();
+ }
+ expect(permissionReport({permissions:snapshot,build:{...build,commit:null}})).not.toBeNull();
+});
+
 test('does not invent permissions or connectivity without a native report', () => {
- expect(new DesktopPermissions().status(1000)).toEqual({controllerConnected:false,updatedAt:null,permissions:null,error:null,pending:false});
+ expect(new DesktopPermissions().status(1000)).toEqual({controllerConnected:false,updatedAt:null,build:null,permissions:null,error:null,pending:false});
 });
 test('recent report expires after twelve seconds and keeps its actual timestamp', () => {
  const bridge = new DesktopPermissions();
  bridge.report({permissions:snapshot},1000);
  expect(bridge.status(12999).permissions).toEqual(snapshot);
- expect(bridge.status(13000)).toEqual({controllerConnected:false,updatedAt:1000,permissions:null,error:null,pending:false});
+ expect(bridge.status(13000)).toEqual({controllerConnected:false,updatedAt:1000,build:null,permissions:null,error:null,pending:false});
 });
 test('request keeps the same ID until a matching acknowledgement', () => {
  const bridge = new DesktopPermissions();
