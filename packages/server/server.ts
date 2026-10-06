@@ -24,13 +24,15 @@ const sessionTags = new SessionTags(SESSIONS_DIR);
 import { RecordingCoordinator } from "./lib/recording-coordinator.ts";
 import type { FinalCapture, RecordingSnapshot } from "../shared/types/recording-coordinator.ts";
 import { DesktopPermissions, desktopRequestAllowed as permissionRequestAllowed, permissionAction, permissionReport } from "./lib/desktop-permissions.ts";
-import { AUDIO_LIMIT_BYTES, enforceAudioRetention, removeChannelCopies } from "./lib/audio-retention.ts";
+import { removeChannelCopies } from "./lib/audio-retention.ts";
 import {validManagedLimit} from './lib/managed-quota.ts';
 import {createAppQuota} from './lib/app-storage.ts';
+import {reserveCapture,reserveFinalization,releaseCapture} from './lib/capture-quota.ts';
 import { type CaptureMode, nativeCaptureCommand, nativeRecordingCommand, verifyNativeHandshake, isNativeProtocolLine } from "./lib/native-capture.ts";
 const desktopPermissions = new DesktopPermissions();
 const retainedProcessing = new Map<string, number>();
-const CAPTURE_LIMIT_BYTES = Math.floor(AUDIO_LIMIT_BYTES / 2) - 10_000_000;
+let captureLimitBytes=0;
+let recordingWorkDirectory:string|null=null;
 let quotaReachedAt = 0;
 let quotaStopResult: any = null;
 let recordingFinalizationRunning = false;
@@ -46,12 +48,14 @@ async function preemptNotes() {
  await Promise.all([notesService.preempt(), tasksService.preempt(), chatService.preempt(), libraryChatService.preempt(), manualNotesDone]);
 }
 function protectAudio(path: string) { retainedProcessing.set(path, Date.now() + 120_000); }
-function pruneAudio(limit = AUDIO_LIMIT_BYTES) {
+function pruneAudio() {
  sessionTags.recover();
  for (const [path, until] of retainedProcessing) if (until < Date.now()) retainedProcessing.delete(path);
- const protectedPaths = [...retainedProcessing.keys()];
- if (recorderPath) protectedPaths.push(recorderPath);
- return enforceAudioRetention(UPLOAD_DIR, SESSIONS_DIR, limit, protectedPaths);
+ const usage=managedQuota.snapshot();
+ if(usage.usedBytes+usage.reservedBytes>usage.limitBytes){
+  try{const preview=managedQuota.preview(usage.limitBytes);if(preview.removals.length)managedQuota.apply(usage.limitBytes,preview.token);}catch(error){console.error('Managed storage cleanup paused:',(error as Error).message);}
+ }
+ const current=managedQuota.snapshot();return {...current,bytes:current.usedBytes,removed:[],overLimit:current.usedBytes+current.reservedBytes>current.limitBytes};
 }
 
 const PORT = Number(process.env.PORT) || 5001;
@@ -71,7 +75,7 @@ const FALLBACK_MODEL = process.env.HEED_MODEL || null;
 ensureAppDirs([UPLOAD_DIR]);
 const managedQuota=createAppQuota({
  recordingsDir:UPLOAD_DIR,
- protectedPaths:()=>[...retainedProcessing.keys(),...(recorderPath?[recorderPath]:[])],
+ protectedPaths:()=>[...retainedProcessing.keys(),...((recorderPath && (recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning))?[recorderPath]:[])],
  onEvicted:paths=>{
   sessionTags.recover();
   for(const session of sessionTags.snapshot().sessions)if(session.files?.wav && paths.includes(session.files.wav)){
@@ -397,7 +401,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 				send("step", { message: "Processing audio..." });
 
     retainedProcessing.set(wavPath, Infinity);
-    if(existsSync(wavPath))pruneAudio(Math.max(0,AUDIO_LIMIT_BYTES-statSync(wavPath).size-10_000_000));
+    pruneAudio();
 				// Detect dual-channel captures (L=mic, R=system)
 				const isDualChannel = /(?:^|\/)dual-capture-/.test(wavPath);
 
@@ -1249,6 +1253,8 @@ async function handleSysRecordStart(req: Request): Promise<Response> {
  } catch (error) { return recordingControlError(error); }
 }
 
+function captureMetadataPaths(id:string){return [join(SESSIONS_DIR,`${id}.json`),join(APP_DIR,'recording-manifest.json'),join(APP_DIR,'recording-recovery',`${id}.json`)];}
+
 async function beginSysRecording(mode: CaptureMode, attachPath: (path: string) => void): Promise<Response> {
  recordingLanguage = "en";
 
@@ -1271,6 +1277,9 @@ async function beginSysRecording(mode: CaptureMode, attachPath: (path: string) =
 
  const proposedDual = mode === "both" && (IS_MAC || !!getMonitorSource());
  recorderPath = join(UPLOAD_DIR, `${proposedDual ? "dual-capture" : "capture"}-${ts}.wav`);
+ recordingWorkDirectory=join(APP_DIR,'library','staging',`capture-${recordingCoordinator.snapshot().meetingId!}`);
+ mkdirSync(recordingWorkDirectory,{recursive:true,mode:0o700});
+ captureLimitBytes=reserveCapture(managedQuota,recordingCoordinator.snapshot().meetingId!,recorderPath,recordingWorkDirectory,captureMetadataPaths(recordingCoordinator.snapshot().meetingId!)).maxCaptureBytes;
  attachPath(recorderPath);
  retainedProcessing.set(recorderPath, Infinity);
 
@@ -1315,7 +1324,7 @@ async function beginSysRecording(mode: CaptureMode, attachPath: (path: string) =
 	// stays 0 bytes then jumps; the live loop derives "new audio" from the file SIZE, so a
 	// non-growing file means it never feeds the streaming model → live never appears until stop.
 	// Physical output limit; the margin covers the header and the final FFmpeg packet.
- args.splice(args.length - 1, 0, "-flush_packets", "1", "-fs", String(CAPTURE_LIMIT_BYTES));
+ args.splice(args.length - 1, 0, "-flush_packets", "1", "-fs", String(captureLimitBytes));
 
 	recorderStartedAt = Date.now();
 	recorderProc = track(Bun.spawn(args, stdinStream ? { stdin: stdinStream, stdout: "pipe", stderr: "pipe" } : { stdout: "pipe", stderr: "pipe" }));
@@ -1335,7 +1344,7 @@ async function beginSysRecording(mode: CaptureMode, attachPath: (path: string) =
  void new Response(writer.stderr).text().then(text => { if (text) console.log(`[heed-capture] ${text.slice(-4096)}`); });
  void writer.exited.then(() => {
   if (recorderProc !== writer || recorderStopping || quotaReachedAt) return;
-  if (recorderPath && existsSync(recorderPath) && statSync(recorderPath).size >= CAPTURE_LIMIT_BYTES - 1_000_000) {
+  if (recorderPath && existsSync(recorderPath) && statSync(recorderPath).size >= captureLimitBytes - Math.min(1_000_000,Math.floor(captureLimitBytes/20))) {
    quotaReachedAt = Date.now();
    const state = recordingCoordinator.snapshot();
    if (state.meetingId) void recordingCoordinator.stop(`quota-${state.meetingId}`,state.meetingId)
@@ -1543,7 +1552,7 @@ async function processFullLive(
 	if (isDual) channels.push({ ch: "sys", filter: "pan=mono|c0=c1,", speaker: "???", label: "sys" });
 
 	for (const c of channels) {
-		const outPath = join(UPLOAD_DIR, `live-full-${c.label}-${Date.now()}.wav`);
+		const outPath = join(recordingWorkDirectory || UPLOAD_DIR, `live-full-${c.label}-${Date.now()}.wav`);
 		Bun.spawnSync([
 			"ffmpeg", "-y", "-loglevel", "error", "-i", wavPath,
 			"-af", `${c.filter}dynaudnorm=p=0.9:m=10`,
@@ -1577,7 +1586,7 @@ async function processFullLive(
 
 // Extract a contiguous channel segment [start, start+dur] to a small WAV. channel 0=mic, 1=sys.
 function extractChannelSeg(wavPath: string, channelIdx: number, start: number, dur: number): string | null {
-	const segPath = join(UPLOAD_DIR, `live-seg-${channelIdx}-${Date.now()}.wav`);
+	const segPath = join(recordingWorkDirectory || UPLOAD_DIR, `live-seg-${channelIdx}-${Date.now()}.wav`);
 	const filter = channelIdx === 1 ? ["-af", "pan=mono|c0=c1"] : channelIdx === 0 && wavPath.includes("dual-capture-") ? ["-af", "pan=mono|c0=c0"] : [];
 	Bun.spawnSync([
 		"ffmpeg", "-y", "-loglevel", "error", "-i", wavPath, ...filter,
@@ -1808,7 +1817,7 @@ function startLiveTranscribe() {
 				const chunkDur = LIVE_CHUNK;
 				// Advance offset NOW so the next tick doesn't re-process the same chunk
 				liveTranscribeOffset = startTime + chunkDur;
-				const chunkPath = join(UPLOAD_DIR, `live-chunk-${Date.now()}.wav`);
+				const chunkPath = join(recordingWorkDirectory || UPLOAD_DIR, `live-chunk-${Date.now()}.wav`);
 
 				try {
 					// Extract chunk with volume normalization.
@@ -1877,7 +1886,7 @@ function startLiveTranscribe() {
 					// System channel live transcription (speakers labeled "???" until pyannote
 					// runs after recording stops and reveals real names)
 					if (isDual) {
-						const sysChunkPath = join(UPLOAD_DIR, `live-chunk-sys-${Date.now()}.wav`);
+						const sysChunkPath = join(recordingWorkDirectory || UPLOAD_DIR, `live-chunk-sys-${Date.now()}.wav`);
 						Bun.spawnSync([
 							"ffmpeg", "-y", "-loglevel", "error",
 							"-i", wavPath,
@@ -2015,7 +2024,7 @@ async function stopCapture(onCaptureStopped: () => void): Promise<FinalCapture> 
 }
 async function finalizeCapture(path: string): Promise<FinalCapture> {
  if (!existsSync(path)) throw new Error("Recording file not created");
- const fin = await postJSON("/finalize",{wav_path:path,language:"auto",allowed_languages:["en","pt"],dual:path.includes("dual-capture-"),mic_name:micLabel()});
+ const fin = await postJSON("/finalize",{wav_path:path,work_directory:recordingWorkDirectory,language:"auto",allowed_languages:["en","pt"],dual:path.includes("dual-capture-"),mic_name:micLabel()});
  const result = finalRecordingResult(fin,path);
  // Final ASR must return the actual WAV duration instead of wall-clock capture time.
  if (result.duration === undefined) {
@@ -2177,7 +2186,7 @@ function desktopRecordingStatus() {
  return {...state, snapshot:state, seconds:Math.floor(state.seconds), recording:!!recorderProc && recorderProc.exitCode === null,
   processing:["stopping","finalizing"].includes(state.state) || recordingFinalizationRunning,
   starting:state.state === "starting", pending:false, clientConnected:true, ready:!state.maintenance,
-  meetingDetection:meetingDetection.status(),language:recordingLanguage,uiLocale:configuredUiLocale(loadConfig()),storage:{limitBytes:AUDIO_LIMIT_BYTES,bytes:pruneAudio().bytes},quotaStopped:!!quotaStopResult};
+  meetingDetection:meetingDetection.status(),language:recordingLanguage,uiLocale:configuredUiLocale(loadConfig()),storage:{...managedQuota.snapshot(),bytes:managedQuota.snapshot().usedBytes},quotaStopped:!!quotaStopResult};
 }
 async function handleRecordingControl(req: Request, pathname: string): Promise<Response> {
  if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
@@ -2190,6 +2199,7 @@ async function handleRecordingControl(req: Request, pathname: string): Promise<R
   if (pathname === "/api/recording/abandon") {
    const previous=recordingCoordinator.snapshot();
    const state=await recordingCoordinator.abandon(controlRequestId(body),body.meetingId);
+   releaseCapture(managedQuota,body.meetingId);
    if (previous.path && state.state === "idle") {
     retainedProcessing.delete(previous.path);
     if (!recorderProc && recorderPath === previous.path) recorderPath=null;
@@ -2263,10 +2273,10 @@ let retentionBusy=false;
 setInterval(async () => {
  if(retentionBusy)return;retentionBusy=true;
  try {
-  pruneAudio(recorderProc ? AUDIO_LIMIT_BYTES - 2_000_000 : AUDIO_LIMIT_BYTES);
+  pruneAudio();
   if(recorderProc && recorderPath && !recorderStopping) {
    const size=existsSync(recorderPath)?statSync(recorderPath).size:0;
-   if(size >= CAPTURE_LIMIT_BYTES - 1_000_000) {
+   if(size >= captureLimitBytes - Math.min(1_000_000,Math.floor(captureLimitBytes/20))) {
     if(!quotaReachedAt) {
      quotaReachedAt=Date.now();
      // Stop writing only; keep the path for normal finalization.
@@ -2337,14 +2347,22 @@ const recordingCoordinator = new RecordingCoordinator({
     if (syscapProc) { try { syscapProc.kill(); } catch {} syscapProc = null; }
     if (recorderProc) { await gracefulStop(recorderProc,1500,"SIGINT"); recorderProc = null; }
     stopLiveTranscribe(); stopLevelMeter();
+    if(!recorderPath || !existsSync(recorderPath))releaseCapture(managedQuota,_meetingId);
     throw error;
    } finally { recorderStarting = false; }
   },
   stop:stopCapture,
-  async finalize(path) { await preemptNotes(); return finalizeCapture(path); },
+  async finalize(path) {
+   await preemptNotes();
+   recordingWorkDirectory=join(APP_DIR,'library','staging',`capture-${recordingCoordinator.snapshot().meetingId!}`);
+   mkdirSync(recordingWorkDirectory,{recursive:true,mode:0o700});
+   const id=recordingCoordinator.snapshot().meetingId!;
+   reserveFinalization(managedQuota,id,path,recordingWorkDirectory,captureMetadataPaths(id));
+   return finalizeCapture(path);
+  },
   save(session) {
    const saved = notesService.create(session);
-   if (saved.files?.wav) { retainedProcessing.delete(saved.files.wav); removeChannelCopies(saved.files.wav); }
+   if (saved.files?.wav) { retainedProcessing.delete(saved.files.wav); removeChannelCopies(saved.files.wav); releaseCapture(managedQuota,saved.id); }
    return saved;
   },
  },

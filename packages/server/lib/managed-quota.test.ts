@@ -69,3 +69,16 @@ test('restart cleans only recorded interrupted atomic-write copies and releases 
  writeFileSync(s.options.ledgerPath,JSON.stringify({version:1,reservations:{'write-interrupted':{bytes:200,paths:[path,temporary]},'provider-pending':{bytes:100,paths:[s.staging]}}}));
  const recovered=new ManagedQuota(s.options);expect(existsSync(temporary)).toBe(false);expect(require('node:fs').readFileSync(path,'utf8')).toBe('committed');expect(recovered.snapshot().reservedBytes).toBe(100);
 });
+test('managed singleton metadata roots account for their atomic sibling copies',()=>{
+ const s=setup(1000);const path=join(s.root,'recording-manifest.json'),temporary=`${path}.00000000-0000-4000-8000-000000000000.tmp`;
+ const quota=new ManagedQuota({...s.options,roots:{...s.options.roots,text:[s.text,path]}});
+ setAtomicWriteBudget((file,bytes,tmp)=>quota.atomicWriteBudget(file,bytes,tmp));atomicWriteJson(path,{state:'recording'});
+ writeFileSync(temporary,'working');expect(quota.snapshot().categories.text).toBe(require('node:fs').statSync(path).size+7);
+});
+test('allocated metadata counts atomic siblings once and cleans interrupted writes without dropping provider claims',()=>{
+ const s=setup(1000);const path=join(s.text,'meeting.json'),temporary=`${path}.00000000-0000-4000-8000-000000000000.tmp`;
+ s.quota.reserve('provider',200,[path]);writeFileSync(path,'committed');writeFileSync(temporary,'partial');
+ expect(s.quota.snapshot().usedBytes+s.quota.snapshot().reservedBytes).toBe(200);
+ writeFileSync(s.options.ledgerPath,JSON.stringify({version:1,reservations:{provider:{bytes:200,paths:[path]}},atomicWrites:{interrupted:{path,temporary,allocationId:'provider'}}}));
+ const resumed=new ManagedQuota(s.options);expect(existsSync(temporary)).toBe(false);expect(resumed.allocation('provider')?.bytes).toBe(200);
+});

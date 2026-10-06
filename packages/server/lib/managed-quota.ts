@@ -1,5 +1,5 @@
 import {existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync} from 'node:fs';
-import {dirname, join, relative, resolve, sep} from 'node:path';
+import {basename,dirname, join, relative, resolve, sep} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {atomicWriteJson} from './atomic-json';
 
@@ -13,6 +13,8 @@ export function configuredManagedLimit(value:unknown):number {return validManage
 export type ManagedCategory='text'|'media'|'indexes'|'staging';
 interface Reservation {bytes:number;paths:string[]}
 const containsPath=(parent:string,path:string)=>path===parent || path.startsWith(`${parent}${sep}`);
+const atomicSibling=(primary:string,path:string)=>path.startsWith(`${primary}.`) && /^\.[0-9a-f-]{36}\.tmp$/.test(path.slice(primary.length));
+const ownsPath=(parent:string,path:string)=>containsPath(parent,path)||atomicSibling(parent,path);
 interface ManagedFile {path:string;bytes:number;modified:number;category:ManagedCategory;identity:string}
 export interface QuotaSnapshot {
  limitBytes:number;usedBytes:number;reservedBytes:number;protectedBytes:number;reclaimableBytes:number;availableBytes:number;
@@ -27,6 +29,7 @@ interface Options {
 /** One server owns synchronous claims; durable remaining allocations survive restarts. */
 export class ManagedQuota {
  private reservations:Record<string,Reservation>={};
+ private atomicWrites:Record<string,{path:string;temporary:string;allocationId:string}>={};
  constructor(private options:Options){
   mkdirSync(dirname(options.ledgerPath),{recursive:true,mode:0o700});
   if(existsSync(options.ledgerPath)){
@@ -37,6 +40,12 @@ export class ManagedQuota {
     if(!Number.isSafeInteger(item.bytes) || item.bytes<0 || !Array.isArray(item.paths) || item.paths.some(path=>typeof path!=='string' || !this.managedPath(path)))throw new Error('Invalid quota reservation ledger');
     this.reservations[id]=item;
    }
+   if(ledger.atomicWrites){
+    if(typeof ledger.atomicWrites!=='object' || Array.isArray(ledger.atomicWrites))throw new Error('Invalid quota atomic-write journal');
+    for(const item of Object.values(ledger.atomicWrites) as Array<{path:string;temporary:string;allocationId:string}>){
+     if(!item || typeof item.path!=='string' || typeof item.temporary!=='string' || !atomicSibling(item.path,item.temporary) || !this.managedPath(item.temporary) || typeof item.allocationId!=='string' || !this.reservations[item.allocationId])throw new Error('Invalid quota atomic-write journal');
+    }
+   }
    // Atomic writers cannot still be running in this newly started authoritative server.
    let recovered=false;
    for(const [id,item] of Object.entries(this.reservations))if(id.startsWith('write-')){
@@ -44,14 +53,19 @@ export class ManagedQuota {
     for(const path of item.paths.slice(1))if(path.startsWith(`${primary}.`) && /^\.[0-9a-f-]{36}\.tmp$/.test(path.slice(primary.length)) && existsSync(path) && lstatSync(path).isFile())unlinkSync(path);
     delete this.reservations[id];recovered=true;
    }
+   for(const item of Object.values(ledger.atomicWrites || {}) as Array<{temporary:string}>){if(existsSync(item.temporary) && lstatSync(item.temporary).isFile())unlinkSync(item.temporary);recovered=true;}
    if(recovered)this.persist();
   }
  }
- private persist(){atomicWriteJson(this.options.ledgerPath,{version:1,reservations:this.reservations});}
+ private persist(){atomicWriteJson(this.options.ledgerPath,{version:1,reservations:this.reservations,atomicWrites:this.atomicWrites});}
  private managedPath(path:string):boolean{
   const target=resolve(path);
   return Object.values(this.options.roots).flat().some(root=>{
    const base=resolve(root);const rel=relative(base,target);
+   if(base.endsWith('.json') && (!existsSync(base) || lstatSync(base).isFile())){
+    if(target!==base && !atomicSibling(base,target))return false;
+    return !existsSync(target) || !lstatSync(target).isSymbolicLink();
+   }
    if(rel==='..' || rel.startsWith(`..${sep}`) || rel.startsWith(sep))return false;
    if(existsSync(base) && lstatSync(base).isSymbolicLink())return false;
    // Existing ancestors cannot redirect a future allocation outside the managed root.
@@ -70,28 +84,36 @@ export class ManagedQuota {
    const identity=`${stat.dev}:${stat.ino}`;if(seen.has(identity))return;seen.add(identity);
    files.push({path:resolve(path),bytes:stat.size,modified:stat.mtimeMs,category,identity});
   };
-  for(const [category,roots] of Object.entries(this.options.roots))for(const root of roots)visit(root,category as ManagedCategory);
+  for(const [category,roots] of Object.entries(this.options.roots))for(const root of roots){
+   visit(root,category as ManagedCategory);
+   if(root.endsWith('.json') && existsSync(dirname(root)))for(const name of readdirSync(dirname(root)))if(name.startsWith(`${basename(root)}.`) && atomicSibling(resolve(root),resolve(dirname(root),name)))visit(join(dirname(root),name),category as ManagedCategory);
+  }
   return files;
  }
  private inspect(){
   const files=this.files();const protectedPaths=new Set([...this.options.protectedPaths(),...Object.values(this.reservations).flatMap(item=>item.paths)].map(path=>resolve(path)));
-  const reclaimable=files.filter(file=>file.category==='media' && ![...protectedPaths].some(path=>containsPath(path,file.path))).sort((a,b)=>a.modified-b.modified || a.path.localeCompare(b.path));
+  const reclaimable=files.filter(file=>file.category==='media' && ![...protectedPaths].some(path=>ownsPath(path,file.path))).sort((a,b)=>a.modified-b.modified || a.path.localeCompare(b.path));
   const categories={text:0,media:0,indexes:0,staging:0};for(const file of files)categories[file.category]+=file.bytes;
   const usedBytes=files.reduce((sum,file)=>sum+file.bytes,0);
-  const reservedBytes=Object.values(this.reservations).reduce((sum,item)=>sum+Math.max(0,item.bytes-files.filter(file=>item.paths.some(path=>containsPath(path,file.path))).reduce((n,file)=>n+file.bytes,0)),0);
+  const reservedBytes=Object.values(this.reservations).reduce((sum,item)=>sum+Math.max(0,item.bytes-files.filter(file=>item.paths.some(path=>ownsPath(path,file.path))).reduce((n,file)=>n+file.bytes,0)),0);
   const reclaimableBytes=reclaimable.reduce((sum,file)=>sum+file.bytes,0);const limitBytes=this.options.getLimit();
   const snapshot:QuotaSnapshot={limitBytes,usedBytes,reservedBytes,reclaimableBytes,protectedBytes:usedBytes-reclaimableBytes+reservedBytes,availableBytes:Math.max(0,limitBytes-usedBytes-reservedBytes),categories};
   return {files,reclaimable,snapshot};
  }
  snapshot():QuotaSnapshot{return this.inspect().snapshot;}
+ allocation(id:string):{bytes:number;paths:string[]}|null{return this.reservations[id]?structuredClone(this.reservations[id]):null;}
  atomicWriteBudget(path:string,bytes:number,temporary?:string):()=>void{
   if(resolve(path)===resolve(this.options.ledgerPath) || !this.managedPath(path))return ()=>{};
   const current=existsSync(path)?lstatSync(path).size:0;
-  const allocation=Object.values(this.reservations).find(item=>item.paths.some(root=>containsPath(root,resolve(path))));
+  const allocationEntry=Object.entries(this.reservations).find(([,item])=>item.paths.some(root=>ownsPath(root,resolve(path))));
+  const allocation=allocationEntry?.[1];
   if(allocation){
-   const used=this.files().filter(file=>allocation.paths.some(root=>containsPath(root,file.path))).reduce((sum,file)=>sum+file.bytes,0);
+   const used=this.files().filter(file=>allocation.paths.some(root=>ownsPath(root,file.path))).reduce((sum,file)=>sum+file.bytes,0);
    if(used+bytes>allocation.bytes)throw new Error('Managed meeting quota reservation cannot fit the atomic replacement copy');
-   return ()=>{};
+   if(!temporary)return ()=>{};
+   const id=randomUUID();this.atomicWrites[id]={path:resolve(path),temporary:resolve(temporary),allocationId:allocationEntry![0]};
+   try{this.persist();}catch(error){delete this.atomicWrites[id];throw error;}
+   return ()=>{delete this.atomicWrites[id];this.persist();};
   }
   const id=`write-${randomUUID()}`;
   this.reserve(id,current+bytes,[path,...(temporary?[temporary]:[])]);return ()=>this.release(id);
