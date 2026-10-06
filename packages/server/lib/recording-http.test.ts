@@ -119,6 +119,17 @@ test('an admitted asynchronous mutation prevents installation before its JSON bo
  expect((await request('/api/recording/maintenance',{acquire:false,owner:'pending-json'})).status).toBe(200);
 });
 
+test('the installer guard can adopt the existing durable update transaction', async () => {
+ const transactionId='22222222-2222-4222-8222-222222222222';
+ expect((await request('/api/recording/maintenance',{acquire:true,owner:'installer-adoption',transactionId})).status).toBe(200);
+ try {
+  const guard=Bun.spawn(['python3',resolve(import.meta.dir,'../../desktop/guard-lifecycle.py'),'acquire','--base-url',base,
+   '--owner','installer-adoption','--transaction-id',transactionId],{stdout:'pipe',stderr:'pipe'});
+  expect(await guard.exited).toBe(0);
+  expect((await request('/api/desktop/control/status')).body.updateTransactionId).toBe(transactionId);
+ } finally {await request('/api/recording/maintenance',{acquire:false,owner:'installer-adoption'});}
+});
+
 
 test("restart recovery finalizes and saves once without any browser, preserving speaker names", async () => {
  await app.kill(); await app.exited;

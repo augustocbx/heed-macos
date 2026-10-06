@@ -104,7 +104,7 @@ class ServiceIntegrationTest(unittest.TestCase):
         result = subprocess.run(['bash', '-eu', '-c', fragment + '\nprintf "%s" "$HEED_GUARD_SCRIPT"'],
                                 env=environment, capture_output=True, text=True)
         self.assertEqual(result.stdout, str(previous / 'packages/desktop/guard-lifecycle.py'))
-        rollback = script.split('rollback() {', 1)[1].split("\nstep 'Stopping the running Heed services'", 1)[0]
+        rollback = script.split('rollback() {', 1)[1].split("\nphase restarting", 1)[0]
         result = subprocess.run(['bash', '-eu', '-c', 'rollback() {' + rollback + '\nrollback'],
                                 env=environment, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -161,7 +161,7 @@ class ServiceIntegrationTest(unittest.TestCase):
         preferences.write_text(json.dumps({'version': 1, 'api': 48310, 'ui': 48311, 'transcription': 48312}))
         backup = self.directory / 'backup'
         backup.mkdir()
-        rollback = script.split('rollback() {', 1)[1].split("\nstep 'Stopping the running Heed services'", 1)[0]
+        rollback = script.split('rollback() {', 1)[1].split("\nphase restarting", 1)[0]
         environment = {**self.env, 'HEED_STAGE': str(stage), 'HEED_HELPER': str(helper),
                        'HEED_PREVIOUS_PORTS': '48210 48211 48212', 'HEED_PREVIOUS_DIR': str(self.directory / 'old'),
                        'HEED_BACKUP': str(backup), 'HEED_APP': str(self.directory / 'app-bundle'),

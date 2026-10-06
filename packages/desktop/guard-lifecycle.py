@@ -12,7 +12,7 @@ from service_config import service_config,saved_service_ports,local_service_url,
 from service_runtime import process_records,owned_process,read_identity,control_targets,LEGACY,status,occupied
 
 
-def guard(action, base_url, owner, legacy_owned=False):
+def guard(action, base_url, owner, legacy_owned=False, transaction_id=None):
     if not owner or not owner.strip() or len(owner) > 128:
         raise ValueError("A maintenance owner token is required.")
     if not legacy_owned:
@@ -29,7 +29,7 @@ def guard(action, base_url, owner, legacy_owned=False):
 
     request = urllib.request.Request(
         base_url + "/api/recording/maintenance",
-        data=json.dumps({"acquire": action == "acquire", "owner": owner}).encode(),
+        data=json.dumps({"acquire": action == "acquire", "owner": owner, **({"transactionId": transaction_id} if transaction_id else {})}).encode(),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -38,9 +38,13 @@ def guard(action, base_url, owner, legacy_owned=False):
             state = json.load(response)
         if state.get("maintenance") is not (action == "acquire"):
             raise ValueError("The backend did not acknowledge the maintenance guard.")
+        if transaction_id and (state.get('maintenanceProtocol') != 2 or state.get('updateTransactionId') != (transaction_id if action == 'acquire' else None)):
+            raise ValueError('The backend did not acknowledge durable update maintenance. Migrate the installation and retry.')
     except urllib.error.HTTPError as error:
         if error.code != 404:
             raise ValueError("An active meeting or another maintenance owner prevents installing or updating Heed.") from error
+        if transaction_id:
+            raise ValueError('This backend does not support durable update maintenance.') from error
         # Older releases have no atomic guard. Preserve their existing busy-state check.
         with urllib.request.urlopen(base_url + "/api/desktop/control/status", timeout=5) as response:
             state = json.load(response)
@@ -59,18 +63,19 @@ if __name__ == "__main__":
     parser.add_argument("action", choices=["acquire", "release"])
     parser.add_argument("--base-url")
     parser.add_argument("--owner", default=os.environ.get("HEED_LIFECYCLE_GUARD_TOKEN"))
+    parser.add_argument('--transaction-id', default=os.environ.get('HEED_UPDATE_TRANSACTION_ID'))
     arguments = parser.parse_args()
     try:
         if arguments.base_url is not None:
             # An explicit destination is independently identity-checked by guard().
             # Unrelated configured/legacy listeners must not influence this request.
-            guard(arguments.action,arguments.base_url.rstrip('/'),arguments.owner)
+            guard(arguments.action,arguments.base_url.rstrip('/'),arguments.owner,transaction_id=arguments.transaction_id)
         else:
             ports=service_config()
             previous=saved_service_ports()
             targets=control_targets(str(ROOT),ports,{port:process_records(port) for port in set([ports['api'],LEGACY['api'],*([] if previous is None else [previous['api']])])},previous)
             for port in targets:
-                guard(arguments.action,f'http://127.0.0.1:{port}',arguments.owner,legacy_owned=port==LEGACY['api'])
+                guard(arguments.action,f'http://127.0.0.1:{port}',arguments.owner,legacy_owned=port==LEGACY['api'],transaction_id=arguments.transaction_id)
             if not targets and occupied(ports['api']):raise ValueError('The configured API listener is not checkout-owned Heed. No services were changed.')
     except (ValueError, RuntimeError, OSError, json.JSONDecodeError, urllib.error.URLError) as error:
         sys.exit(str(error))

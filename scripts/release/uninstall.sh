@@ -75,6 +75,23 @@ HEED_SERVICE_CONFIG_ROOT="$(helper config-root "${HEED_CONFIG_CANDIDATES[@]}")" 
     exit 1
 }
 export HEED_SERVICE_CONFIG_ROOT
+HEED_LOCK_HELPER="$HEED_SERVICE_CONFIG_ROOT/scripts/release/installation_lock.py"
+[ -f "$HEED_LOCK_HELPER" ] || { printf 'The installed runtime does not support safe installation locking. Nothing was removed.\n' >&2; exit 1; }
+export HEED_HOME
+if [ -z "${HEED_INSTALL_LOCK_FD:-}" ]; then
+    HEED_UNINSTALL_SOURCE="${BASH_SOURCE[0]:-}"
+    [ -f "$HEED_UNINSTALL_SOURCE" ] || HEED_UNINSTALL_SOURCE="$HEED_HOME/bin/uninstall.sh"
+    [ -f "$HEED_UNINSTALL_SOURCE" ] || HEED_UNINSTALL_SOURCE="$HEED_SERVICE_CONFIG_ROOT/uninstall.sh"
+    cp "$HEED_UNINSTALL_SOURCE" "$HEED_TEMP/uninstall.sh"
+    HEED_LOCK_ARGS=()
+    [ "$HEED_KEEP_DATA" != 1 ] || HEED_LOCK_ARGS+=(--keep-data)
+    [ "$HEED_ASSUME_YES" != 1 ] || HEED_LOCK_ARGS+=(--yes)
+    HEED_LOCK_STATUS=0
+    /usr/bin/python3 "$HEED_LOCK_HELPER" run --home "$HEED_HOME" -- /bin/bash "$HEED_TEMP/uninstall.sh" ${HEED_LOCK_ARGS[@]+"${HEED_LOCK_ARGS[@]}"} || HEED_LOCK_STATUS=$?
+    exit "$HEED_LOCK_STATUS"
+fi
+/usr/bin/python3 "$HEED_LOCK_HELPER" verify --home "$HEED_HOME" --fd "$HEED_INSTALL_LOCK_FD" || exit 1
+
 HEED_VALIDATED_PORTS="$(helper ports)" || { printf 'Invalid Heed service ports. Nothing was removed.\n' >&2; exit 1; }
 HEED_PREVIOUS_PORTS="$(helper ports --saved)" || { printf 'Invalid saved Heed service ports. Nothing was removed.\n' >&2; exit 1; }
 HEED_PREVIOUS_PORT_ARGS=()
