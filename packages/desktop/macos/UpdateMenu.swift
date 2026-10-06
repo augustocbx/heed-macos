@@ -74,7 +74,7 @@ final class UpdateMenu: NSObject {
         row(text(snapshot.phase == "waitingForIdle" || snapshot.phase == "failed" ? "Retry update" : "Update…"), #selector(installAction), enabled: snapshot.canInstall)
         if snapshot.recovery == "recoveryRequired" {row(text("Retry recovery"), #selector(retryAction), enabled: !snapshot.isInstalling)}
         if validLog != nil {row(text("View update log…"), #selector(logAction))}
-        if snapshot.phase == "completed" {
+        if snapshot.phase == "completed" || snapshot.permissionVersion != nil && snapshot.permissionVersion == build?.version {
             menu.addItem(.separator()); row(text(UpdatePresentation.permission(snapshot)))
             for permission in snapshot.missingPermissions ?? [] {
                 row(text(permission == "microphone" ? "Microphone permission needed" : "Screen & System Audio Recording permission needed"), permission == "microphone" ? #selector(microphoneSettings) : #selector(screenSettings))

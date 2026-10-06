@@ -13,6 +13,7 @@ struct UpdateSnapshot: Decodable {
     var recovery: String? = nil
     var logPath: String? = nil
     var permissionState: String? = nil
+    var permissionVersion: String? = nil
     var missingPermissions: [String]? = nil
     var optionalAccess: [String]? = nil
     var progress: UpdateProgress? = nil
@@ -20,7 +21,7 @@ struct UpdateSnapshot: Decodable {
     var isInstalling: Bool { ["downloading","verifying","installing","restarting","checkingServices","checkingPermissions"].contains(phase ?? "") }
     var canInstall: Bool { state == "available" && release != nil && !isInstalling && recovery != "recoveryRequired" && phase != "completed" }
     // Defaults are also needed when an older status document lacks optional fields.
-    enum CodingKeys: String, CodingKey {case schema,state,phase,targetVersion,release,errorCode,recovery,logPath,permissionState,missingPermissions,optionalAccess,progress,lastAutomaticAttempt}
+    enum CodingKeys: String, CodingKey {case schema,state,phase,targetVersion,release,errorCode,recovery,logPath,permissionState,permissionVersion,missingPermissions,optionalAccess,progress,lastAutomaticAttempt}
     init() {}
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -33,6 +34,7 @@ struct UpdateSnapshot: Decodable {
         errorCode = try c.decodeIfPresent(String.self, forKey: .errorCode)
         recovery = try c.decodeIfPresent(String.self, forKey: .recovery)
         logPath = try c.decodeIfPresent(String.self, forKey: .logPath)
+        permissionVersion = try c.decodeIfPresent(String.self, forKey: .permissionVersion)
         permissionState = try c.decodeIfPresent(String.self, forKey: .permissionState)
         missingPermissions = try c.decodeIfPresent([String].self, forKey: .missingPermissions)
         optionalAccess = try c.decodeIfPresent([String].self, forKey: .optionalAccess)
@@ -65,6 +67,8 @@ final class ReleaseUpdateClient {
     private let endpoints: ServiceEndpoints?
     let build: InstalledMenuBuild?
     private let home: String
+    private let qaRoot = updateQARoot()
+    private let instanceID = UUID().uuidString
     init(endpoints: ServiceEndpoints?) {
         self.endpoints = endpoints
         self.build = InstalledMenuBuild.load(root: endpoints?.checkoutRoot)
@@ -80,18 +84,18 @@ final class ReleaseUpdateClient {
     func install() { guard snapshot.canInstall else {return}; run("install") }
     func retry() { snapshot.recovery == "recoveryRequired" ? run("recover") : install() }
     func refreshStatus() {run("status")}
-    func checkPermissions() {guard snapshot.phase == "completed" else {return}; run("permissions")}
+    func checkPermissions() {guard !snapshot.isInstalling, snapshot.permissionVersion == build?.version else {return}; run("permissions")}
     private func run(_ command: String, automatic: Bool = false) {
         guard !inFlight else {return}
         inFlight = true
         if command == "check" {snapshot.state = "checking"; onChange?(snapshot)}
-        let endpoints = endpoints, build = build, home = home
+        let endpoints = endpoints, build = build, home = home, qaRoot = qaRoot, instanceID = instanceID
         queue.async { [weak self] in
             var result = UpdateSnapshot()
             do {
                 guard let endpoints = endpoints, let build = build else {throw ServiceEndpointError.invalidConfiguration}
                 let resource = Bundle.main.resourceURL?.appendingPathComponent("update-helper/scripts/release/update_transaction.py")
-                let helper = resource.flatMap {FileManager.default.fileExists(atPath: $0.path) ? $0 : nil}
+                let helper = qaRoot?.appendingPathComponent("helpers/scripts/release/menu_update_qa.py") ?? resource.flatMap {FileManager.default.fileExists(atPath: $0.path) ? $0 : nil}
                     ?? URL(fileURLWithPath: endpoints.checkoutRoot).appendingPathComponent("scripts/release/update_transaction.py")
                 guard FileManager.default.fileExists(atPath: helper.path) else {throw ServiceEndpointError.invalidConfiguration}
                 let os = ProcessInfo.processInfo.operatingSystemVersion
@@ -104,6 +108,7 @@ final class ReleaseUpdateClient {
                 } else if let appDirectory = ProcessInfo.processInfo.environment["HEED_APP_DIR"] {process.arguments! += ["--app-dir",appDirectory]}
                 if let commit = build.commit {process.arguments! += ["--commit",commit]}
                 if automatic {process.arguments!.append("--automatic")}
+                if let qaRoot = qaRoot {process.arguments! += ["--fixture",qaRoot.path,"--instance-id",instanceID,"--menu-pid",String(getpid())]}
                 process.environment = endpoints.launchEnvironment(base: ProcessInfo.processInfo.environment)
                 process.standardOutput = pipe; process.standardError = FileHandle.nullDevice
                 try process.run()

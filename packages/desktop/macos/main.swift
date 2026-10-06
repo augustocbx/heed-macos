@@ -139,8 +139,10 @@ final class MenuController: NSObject, NSApplicationDelegate {
         localizedItems.append((accessibilityMenu, "Authorize Accessibility"))
         for (app, entry) in detectionMenus { localizedItems.append((entry, app == "zoom" ? "Automatically record Zoom meetings" : app == "teams" ? "Automatically record Teams meetings" : "Automatically record Google Meet meetings")) }
         item.menu = menu
-        if let folder = slackLogAccess.restore() { slackDetector.setAuthorizedLogRoot(folder) }
-        smbFolderAccess.restore()
+        if updateQARoot() == nil {
+            if let folder = slackLogAccess.restore() { slackDetector.setAuthorizedLogRoot(folder) }
+            smbFolderAccess.restore()
+        }
         updatesMenu.check = { [weak self] in self?.releaseUpdates.check(manual: true) }
         updatesMenu.install = { [weak self] in self?.confirmUpdate() }
         updatesMenu.retry = { [weak self] in self?.releaseUpdates.retry() }
@@ -159,6 +161,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.poll() }
     }
     private func bootServices() {
+        if updateQARoot() != nil {return}
         guard !booting,let endpoints = endpoints, let script = Bundle.main.path(forResource: "start-services", ofType: "sh") else { return }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
@@ -241,6 +244,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         item.button?.image = recordingStatusImage(recording, locale: locale)
         item.button?.contentTintColor = recording ? .systemRed : nil
         item.button?.toolTip = "Heed — \(statusMenu.title)"
+        if updateQARoot() != nil {statusMenu.title = "Heed Update QA — simulated services"; item.button?.toolTip = "Heed Update QA"}
     }
     private var slackAutoEnabled: Bool {
         if !UserDefaults.standard.bool(forKey: "HeedDetectionSettingsMigrated"), UserDefaults.standard.object(forKey: "HeedSlackAutoRecord") != nil { return UserDefaults.standard.bool(forKey: "HeedSlackAutoRecord") }
@@ -264,7 +268,9 @@ final class MenuController: NSObject, NSApplicationDelegate {
         let observation = !slackAutoEnabled ? "disabled" : !slackRunning ? "closed" : slackSignal == nil ? "unavailable" : slackSignal == true ? "meeting detected" : "waiting for the next meeting"
         slackStateMenu.title = "Slack: \(text(observation))"
         if lastSlackObservation != observation { logSlack(observation); lastSlackObservation = observation }
-        if slackAutoEnabled && slackRunning && !slackDetector.canReadLogs && !promptedForSlackAccess { authorizeSlackLogs() }
+        if slackAutoEnabled && slackRunning && !slackDetector.canReadLogs && !promptedForSlackAccess
+            && !releaseUpdates.snapshot.isInstalling && state?.maintenance != true
+            && releaseUpdates.snapshot.permissionVersion != releaseUpdates.build?.version { authorizeSlackLogs() }
         for (app, detector) in [("zoom", zoomDetector), ("teams", teamsDetector)] {
             let enabled = detection.enabled[app] == true
             let result = enabled ? detector.poll() : (nil, "degraded")
@@ -523,7 +529,7 @@ if CommandLine.arguments.contains("--self-test") {
     try smbFolderAccessSelfTests()
     print("Heed menubar self-tests passed")
 } else {
-    let lockURL = FileManager.default.homeDirectoryForCurrentUser
+    let lockURL = (updateQARoot()?.appendingPathComponent("home") ?? FileManager.default.homeDirectoryForCurrentUser)
         .appendingPathComponent("Library/Application Support/Heed/menubar.lock")
     guard let instanceLock = MenuInstanceLock(url: lockURL) else { exit(0) }
     // During an upgrade an older app may not yet hold this lock. Retain the

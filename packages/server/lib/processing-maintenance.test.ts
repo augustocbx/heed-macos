@@ -51,6 +51,15 @@ test('failed lease persistence does not leave an acquired in-memory owner', () =
  expect(() => gate.acquire('updater', transaction)).toThrow('storage unavailable');
  expect(gate.blocked()).toBe(false);
 });
+test('a lease written before a durability error keeps admission blocked', () => {
+ const {path} = create();
+ const gate = new module!.ProcessingMaintenance({path,active:() => [],write:(target,value) => {
+  writeFileSync(target,JSON.stringify(value)); throw Error('directory sync failed');
+ }});
+ expect(() => gate.acquire('updater',transaction)).toThrow('directory sync failed');
+ expect(gate.blocked()).toBe(true);
+ expect(gate.transactionId()).toBe(transaction);
+});
 test('malformed and symlinked lease records fail closed and preserve their contents', () => {
  const {path} = create(); writeFileSync(path, 'not JSON');
  let gate = new module!.ProcessingMaintenance({path, active:() => []});

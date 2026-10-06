@@ -27,7 +27,7 @@ SIM="$(cd "$SIM" && pwd -P)"
 SIM_HOME="$SIM/home"
 SIM_SHIMS="$SIM/shims"
 SIM_RELEASES="$SIM/releases"
-SIM_REPOSITORY="example/heed-macos"
+SIM_REPOSITORY="augustocbx/heed-macos"
 mkdir -p "$SIM_HOME" "$SIM_SHIMS" "$SIM_RELEASES"
 PASS=0
 step() { printf '\n\033[1m### %s\033[0m\n' "$*"; }
@@ -45,6 +45,9 @@ export HEED_APP_DIR="$SIM_HOME/.heed-app" HEED_HOME="$SIM_HOME/.heed"
 unset HEED_SERVICE_CONFIG_ROOT HEED_TRANSCRIPTION_URL HEED_RECORDINGS_DIR VITE_API_BASE HEED_LIFECYCLE_GUARD_HELD HEED_LIFECYCLE_GUARD_TOKEN
 
 cleanup() {
+    if [ -n "${SIM_COORDINATOR_PID:-}" ] && ps -p "$SIM_COORDINATOR_PID" -o command= 2>/dev/null | grep -F "$SIM/coordinator-integration.py" >/dev/null; then
+        kill -TERM "$SIM_COORDINATOR_PID" 2>/dev/null || true
+    fi
     "$SIM_SHIMS/launchctl" bootout "gui/$(id -u)/local.heed.menubar" >/dev/null 2>&1 || true
     if [ -f "$SIM/services.pid" ]; then while read -r SIM_PID; do kill -TERM -- "-$SIM_PID" 2>/dev/null || true; done < "$SIM/services.pid"; fi
     pkill -f "$SIM_HOME/" 2>/dev/null || true
@@ -56,6 +59,14 @@ trap cleanup EXIT
 # --- Shims ------------------------------------------------------------------------------------
 cat > "$SIM_SHIMS/launchctl" <<'SHIM'
 #!/bin/bash
+# Real launchd does not inherit installer descriptors; neither may these stand-ins.
+if [ -n "${HEED_INSTALL_LOCK_FD:-}" ]; then
+    exec /usr/bin/python3 - "$0" "$@" <<'PYCLOSE'
+import os, sys
+os.close(int(os.environ.pop('HEED_INSTALL_LOCK_FD')))
+os.execv(sys.argv[1], sys.argv[1:])
+PYCLOSE
+fi
 # Records launchd calls; "bootstrap" starts the installed services the way the menu app would.
 printf 'launchctl %s\n' "$*" >> "$SIM/calls.log"
 case "$1" in
@@ -73,7 +84,14 @@ case "$1" in
         echo $! >> "$SIM/services.pid"; touch "$SIM/loaded"
         # Stand-in for the menu app's periodic permission report.
         (while true; do
-            /usr/bin/curl -s -m 2 -X POST -H 'Content-Type: application/json' --data @"$SIM/permissions.json" \
+            /usr/bin/python3 - "$SIM/permissions.json" "$ROOT/release.json" "$SIM/report.json" "simulated-menu-$$" <<'PYREPORT'
+import json, sys
+permissions, release, output, instance = sys.argv[1:]
+data = json.load(open(permissions)); build = json.load(open(release))
+data['build'] = {'version':build['version'], 'commit':build['commit'], 'instanceId':instance}
+json.dump(data, open(output, 'w'))
+PYREPORT
+            /usr/bin/curl -s -m 2 -X POST -H 'Content-Type: application/json' --data @"$SIM/report.json" \
                 "http://127.0.0.1:$HEED_API_PORT/api/desktop/permissions/report" >/dev/null 2>&1 || true
             sleep 2
         done) >/dev/null 2>&1 < /dev/null & echo $! > "$SIM/reporter.pid"
@@ -118,6 +136,10 @@ exit 0
 SHIM
 done
 chmod 755 "$SIM_SHIMS"/*
+# Release installers prepend this directory before Homebrew. Keep every side effect shim first.
+mkdir -p "$SIM_HOME/.bun/bin"
+cp "$SIM_SHIMS"/* "$SIM_HOME/.bun/bin/"
+ln -s "$REAL_BUN" "$SIM_HOME/.bun/bin/bun"
 export SIM SIM_SHIMS SIM_RELEASES SIM_REPOSITORY
 export HOME="$SIM_HOME" HEED_REPOSITORY="$SIM_REPOSITORY" HEED_READY_TIMEOUT=420
 export PATH="$SIM_SHIMS:$(dirname "$REAL_BUN"):/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -172,6 +194,14 @@ step "Existing checkout installation with recordings, transcripts, speaker names
 LEGACY="$SIM_HOME/heed-checkout"
 mkdir -p "$LEGACY/recordings" "$SIM_HOME/.heed-app/sessions" "$SIM_HOME/Applications/Heed.app/Contents/Resources"
 printf '{"name":"heed","private":true}\n' > "$LEGACY/package.json"
+# Model a checkout migrated to the current ownership/configuration contract.
+for SIM_HELPER in scripts/service_config.py scripts/service_runtime.py config/service-ports.json packages/desktop/guard-lifecycle.py; do
+    mkdir -p "$LEGACY/$(dirname "$SIM_HELPER")"
+    tar -xOf "$SIM_RELEASES/v$V1/heed-macos-$V1-arm64.tar.gz" "heed-macos-$V1-arm64/$SIM_HELPER" > "$LEGACY/$SIM_HELPER"
+done
+# Save the migrated checkout ports; never probe a live installation on the defaults.
+/usr/bin/python3 "$LEGACY/scripts/service_config.py" api --save > /dev/null
+
 head -c 48000 /dev/urandom > "$LEGACY/recordings/dual-capture-1.wav"
 printf '{"id":"session-1","title":"Planning","transcript":"Hello","speakers":["Ana"],"files":{"wav":"%s"}}\n' "$LEGACY/recordings/dual-capture-1.wav" \
     > "$SIM_HOME/.heed-app/sessions/session-1.json"
@@ -206,11 +236,73 @@ check "recordings, transcripts and speaker names are unchanged" test "$(data_dig
 check "the checkout itself was not modified" test -f "$LEGACY/package.json"
 check "API lists the existing meeting" bash -c "/usr/bin/curl -s 'http://127.0.0.1:$HEED_API_PORT/api/sessions' | grep -q session-1"
 
-step "Upgrade $V1 -> $V2 with the standalone install.sh (download + checksum)"
+step "Coordinator interruption during the real installer: $V1 -> $V2"
 permissions authorized true
-bash "$SIM_RELEASES/v$V2/install.sh" --skip-model-warmup --no-permission-prompt --require-permissions > "$SIM/install-2.log" 2>&1 \
-    || { tail -60 "$SIM/install-2.log"; die "upgrade to $V2"; }
-check "downloaded archive checksum verified" grep -q "Checksum verified: heed-macos-$V2-arm64.tar.gz" "$SIM/install-2.log"
+cat > "$SIM/coordinator-integration.py" <<'PYCOORD'
+import hashlib, io, json, os, pathlib, sys, tarfile
+sys.path.insert(0, sys.argv[1] + '/scripts/release')
+from update_transaction import UpdateContext, TransactionDependencies, run_update
+class Response(io.BytesIO):
+    status = 200
+    headers = {}
+home = pathlib.Path(os.environ['HEED_HOME'])
+root = (home / 'runtime/current').resolve()
+installed = json.loads((root / 'release.json').read_text())
+version = sys.argv[2]
+assets = pathlib.Path(os.environ['SIM_RELEASES']) / ('v' + version)
+archive = assets / ('heed-macos-' + version + '-arm64.tar.gz')
+with tarfile.open(archive, 'r:gz') as payload:
+    manifest = json.load(payload.extractfile('heed-macos-' + version + '-arm64/release.json'))
+manifest.update(schema=1, assets={})
+for kind, name in [('installer', 'install.sh'), ('payload', archive.name)]:
+    value = (assets / name).read_bytes()
+    manifest['assets'][kind] = {'name':name, 'size':len(value), 'sha256':hashlib.sha256(value).hexdigest(),
+        'url':'https://github.com/augustocbx/heed-macos/releases/download/v' + version + '/' + name}
+context = UpdateContext(root, home, pathlib.Path(os.environ['HEED_APP_DIR']), installed['version'], installed['commit'], 'arm64', '14.0')
+# Only GitHub transport is a local fixture. Installer, maintenance, services and permission bridge are real.
+dependencies = TransactionDependencies(transport=lambda url, timeout: Response((assets / url.rsplit('/', 1)[1]).read_bytes()))
+result = run_update(context, {'manifest':manifest, 'notesURL':'https://github.com/augustocbx/heed-macos/releases/tag/v' + version}, dependencies)
+print(json.dumps(result)); assert result['phase'] == 'completed', result
+PYCOORD
+/usr/bin/python3 "$SIM/coordinator-integration.py" "$HEED_REPO_ROOT" "$V2" > "$SIM/coordinator.log" 2>&1 &
+SIM_COORDINATOR_PID=$!
+SIM_PHASE=""
+for SIM_ATTEMPT in $(seq 1 300); do
+    SIM_PHASE="$(find "$HEED_HOME/updates" -name installer-phase.json -print 2>/dev/null | head -1 || true)"
+    [ -z "$SIM_PHASE" ] || break
+    kill -0 "$SIM_COORDINATOR_PID" 2>/dev/null || { cat "$SIM/coordinator.log"; die 'coordinator exited before installer handoff'; }
+    sleep 1
+done
+[ -n "$SIM_PHASE" ] || die 'installer phase did not appear'
+kill -KILL "$SIM_COORDINATOR_PID"
+wait "$SIM_COORDINATOR_PID" 2>/dev/null || true
+if /usr/bin/python3 "$HEED_REPO_ROOT/scripts/release/installation_lock.py" run --home "$HEED_HOME" -- /usr/bin/true > "$SIM/lock.log" 2>&1; then
+    die 'the surviving installer lost its lock after coordinator death'
+fi
+check 'a surviving real installer blocks retry after coordinator death' grep -q 'another installation' "$SIM/lock.log"
+SIM_RESULT="$(dirname "$SIM_PHASE")/installer-result.json"
+for SIM_ATTEMPT in $(seq 1 1800); do
+    [ ! -f "$SIM_RESULT" ] || break
+    sleep 1
+done
+[ -f "$SIM_RESULT" ] || die 'surviving installer did not record its outcome'
+# Result is written inside EXIT cleanup; wait until the installer also closes its lock.
+SIM_UNLOCKED=0
+for SIM_ATTEMPT in $(seq 1 60); do
+    if /usr/bin/python3 "$HEED_REPO_ROOT/scripts/release/installation_lock.py" run --home "$HEED_HOME" -- /usr/bin/true > "$SIM/lock.log" 2>&1; then
+        SIM_UNLOCKED=1; break
+    fi
+    sleep 1
+done
+[ "$SIM_UNLOCKED" = 1 ] || die 'installer outcome exists but its lock is still held'
+# The old coordinator was killed; reconcile the exact retained build and matching lease.
+/usr/bin/python3 "$HEED_REPO_ROOT/scripts/release/update_transaction.py" recover --root "$(cd "$HEED_HOME/runtime/current" && pwd -P)" \
+    --home "$HEED_HOME" --app-dir "$HEED_APP_DIR" --version "$V2" --commit "$(/usr/bin/python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["commit"])' "$HEED_HOME/runtime/current/release.json")" --macos 14.0 \
+    > "$SIM/recovery.json" || { cat "$SIM/recovery.json"; die 'reconcile surviving installer'; }
+check 'recovery verifies completed installation and fresh matching permissions' /usr/bin/python3 -c \
+    'import json,sys; s=json.load(open(sys.argv[1])); assert s["phase"]=="completed" and s["permissionState"]=="authorized"' "$SIM/recovery.json"
+check 'verified recovery releases durable maintenance' test ! -e "$HEED_APP_DIR/update-maintenance.json"
+cp "$(dirname "$SIM_PHASE")/update.log" "$SIM/install-2.log"
 check "permission test passes when everything is allowed" grep -q '\[OK\] Screen & System Audio Recording: allowed' "$SIM/install-2.log"
 check "Heed $V2 is running" test "$(running_version)" = "$V2"
 check "current link points to $V2" test "$(current_version)" = "$V2"

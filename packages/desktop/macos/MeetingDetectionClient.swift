@@ -87,7 +87,8 @@ private func meetingDetectionForeignServiceSelfTest() throws {
     defer { session.invalidateAndCancel() }
     let suite = "heed-foreign-detection-\(UUID().uuidString)", defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
-    let client = MeetingDetectionClient(session: session, defaults: defaults)
+    let client = MeetingDetectionClient(session: session, defaults: defaults,
+        endpoints: ServiceEndpoints(apiPort: 48100, uiPort: 48101, transcriptionPort: 48102, checkoutRoot: "/synthetic/heed"))
     var accepted: Bool?
     client.configure(app: "zoom", enabled: true) { accepted = $0 }
     let deadline = Date().addingTimeInterval(3)

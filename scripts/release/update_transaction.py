@@ -42,6 +42,8 @@ def private_home(context):
     info = home.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise ValueError('The update directory must be private and owned by this user.')
+    for container in [home/'runtime',home/'runtime/versions']:
+        if container.is_symlink():raise ValueError('Installed runtime containers cannot be symbolic links.')
     return home
 
 
@@ -60,6 +62,9 @@ def current_state(context):
             raise ValueError('Invalid update status schema.')
         if data.get('transactionId') and str(uuid.UUID(data['transactionId'])) != data['transactionId']:
             raise ValueError('Invalid update transaction.')
+        if data.get('logPath') is not None:
+            expected= context.home/'updates'/str(data.get('transactionId'))/'update.log'
+            if data['logPath']!=str(expected):raise ValueError('Invalid update log path.')
         return data
     finally: os.close(fd)
 
@@ -84,15 +89,20 @@ def save(context, state):
 
 
 def configuration(context):
-    os.environ['HEED_SERVICE_CONFIG_ROOT'] = str(context.root)
-    os.environ['HEED_APP_DIR'] = str(context.app_dir)
-    return heed_release.service_configuration()[0]()
+    sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+    from service_config import service_config
+    return service_config({**os.environ,'HEED_APP_DIR':str(context.app_dir)})
 
 
 def base(context): return 'http://127.0.0.1:%d' % configuration(context)['api']
 
 
 def activity(context):
+    ports=configuration(context)
+    from service_config import transcription_url
+    from service_runtime import separately_managed_transcription
+    if separately_managed_transcription(transcription_url({**os.environ,'HEED_APP_DIR':str(context.app_dir)}),ports['transcription']):
+        raise UpdateError('unsupported-maintenance','Menu updates require their own versioned transcription service. Preserve the separate service and use the checkout workflow.')
     origin=base(context)
     if heed_release.service_identity(origin,'heed-api',context.root) is None:
         raise UpdateError('unverified-service','The expected Heed API must be running before updating.')
@@ -108,7 +118,7 @@ def maintenance(context,owner,transaction,acquire):
     origin=base(context)
     if heed_release.service_identity(origin,'heed-api',context.root) is None:
         raise UpdateError('unverified-service','The maintenance endpoint does not belong to this Heed build.')
-    status,data,_=heed_release.fetch_json(origin+'/api/desktop/control/maintenance', method='POST',
+    status,data,_=heed_release.fetch_json(origin+'/api/recording/maintenance', method='POST',
                                          body={'owner':owner,'transactionId':transaction,'acquire':acquire})
     if status != 200 or not isinstance(data,dict) or data.get('maintenanceProtocol') != 2 or data.get('maintenance') is not acquire or data.get('updateTransactionId') != (transaction if acquire else None):
         raise UpdateError('maintenance-failed','Could not acknowledge the matching update maintenance lease.')
@@ -182,6 +192,9 @@ class TransactionDependencies:
 
 def verified_context(context,state):
     root=(context.home/'runtime/current').resolve()
+    versions=(context.home/'runtime/versions').resolve()
+    if (context.home/'runtime/current').exists() and versions not in root.parents:
+        raise UpdateError('recovery-required','The current runtime is outside the owned versions directory.')
     # A retained or restored runtime must match a build recorded before replacement.
     allowed=[(state['targetVersion'],state['targetCommit']), (state['installedVersion'],state.get('installedCommit'))]
     candidates=[root,Path(state['installedRoot'])]
@@ -213,7 +226,7 @@ def finish_verification(context,state,deps,exit_code):
         time.sleep(1)
     state=save(context,{**state,**outcome,'phase':'checkingPermissions',
                         'errorCode':None if exit_code==0 and target else 'installation-failed',
-                        'recovery':'retainedTarget' if target else 'restored','verifiedVersion':version,'verifiedCommit':commit})
+                        'recovery':'retainedTarget' if target else 'restored','verifiedVersion':version,'verifiedCommit':commit,'permissionVersion':version})
     if deps.activity is activity:
         lease=deps.activity(retained)
         if lease.get('maintenance') and lease.get('updateTransactionId')!=state['transactionId']:
@@ -259,8 +272,9 @@ def run_update(context,release,dependencies=None,transaction=None,inherited_fd=N
             archive=folder/manifest['assets']['payload']['name']
             name=validate_archive(archive,manifest); payload=extract_payload(archive,folder,name)
             if not idle(): return save(context,{**state,'phase':'waitingForIdle','errorCode':'busy'})
-            deps.maintenance(context,owner,transaction,True); held=True
             state.update(phase='installing',recovery='recoveryRequired'); save(context,state)
+            held=True
+            deps.maintenance(context,owner,transaction,True)
             invoked=True
             code=deps.installer(context,folder/manifest['assets']['installer']['name'],payload,lock,transaction,owner)
             state.update(phase='checkingServices',recovery='recoveryRequired'); save(context,state)
@@ -313,7 +327,9 @@ def main(argv=None):
             if state.get('phase') in ACTIVE:
                 try:
                     with InstallationLock(context.home):
-                        state=save(context,{**state,'phase':'failed','errorCode':'interrupted','recovery':state.get('recovery','recoveryRequired')})
+                        state=current_state(context)
+                        if state.get('phase') in ACTIVE:
+                            state=save(context,{**state,'phase':'failed','errorCode':'interrupted','recovery':state.get('recovery','recoveryRequired')})
                 except ValueError: pass
         elif args.command=='check':
             with InstallationLock(context.home):
@@ -348,10 +364,10 @@ def main(argv=None):
         else:
             with InstallationLock(context.home):
                 state=current_state(context)
-                if state.get('phase')!='completed': raise UpdateError('recovery-required','Verify the installation before checking permissions.')
+                if state.get('permissionVersion')!=context.installed_version or state.get('phase') in ACTIVE: raise UpdateError('recovery-required','Verify the installation before checking permissions.')
                 retained=verified_context(context,state)
-                if not services(retained,state['targetVersion'],state['targetCommit']): raise UpdateError('unverified-service','Verify the installed services first.')
-                state=save(context,{**state,**permission_outcome(permissions(retained),state['targetVersion'],state['targetCommit'])})
+                if not services(retained,state['verifiedVersion'],state['verifiedCommit']): raise UpdateError('unverified-service','Verify the installed services first.')
+                state=save(context,{**state,**permission_outcome(permissions(retained),state['verifiedVersion'],state['verifiedCommit'])})
         print(json.dumps(state)); return 0
     except (OSError,ValueError,KeyError) as error:
         print(json.dumps({'schema':1,'state':'checkFailed','phase':'failed','errorCode':error.code if isinstance(error,UpdateError) else 'update-failed',

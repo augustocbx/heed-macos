@@ -1,4 +1,4 @@
-import {closeSync, constants, fstatSync, openSync, readFileSync, unlinkSync} from 'node:fs';
+import {closeSync, constants, fstatSync, fsyncSync, openSync, readFileSync, unlinkSync} from 'node:fs';
 import {atomicWriteJson} from './atomic-json';
 
 export type ProcessingKind = 'mediaImport' | 'migration' | 'synchronization';
@@ -51,7 +51,12 @@ export class ProcessingMaintenance {
    if (lease && !this.lease) (this.options.write ?? atomicWriteJson)(this.options.path, lease);
    this.lease = lease; this.currentOwner = owner;
   } catch (error) {
-   if (!alreadyHeld) this.options.setRecording?.(false, owner);
+   // Atomic replacement may succeed before its directory fsync fails.
+   try {
+    const actual = this.readLease();
+    if (actual) {this.lease = actual; this.currentOwner = actual.owner;}
+    else if (!alreadyHeld) this.options.setRecording?.(false, owner);
+   } catch {this.recoveryRequired = true;}
    throw error;
   }
  }
@@ -63,6 +68,10 @@ export class ProcessingMaintenance {
    if (!actual || actual.owner !== owner || actual.transactionId !== this.lease.transactionId) throw Error('The update lease changed; recovery is required');
    // Keep admission blocked until both recording and the durable lease are released.
    unlinkSync(this.options.path);
+   const parent = openSync(this.options.path.substring(0, this.options.path.lastIndexOf('/')), constants.O_RDONLY);
+   try {fsyncSync(parent);} catch (error) {
+    (this.options.write ?? atomicWriteJson)(this.options.path, this.lease); throw error;
+   } finally {closeSync(parent);}
   }
   try {this.options.setRecording?.(false, owner);}
   catch (error) {

@@ -54,6 +54,49 @@ class TransactionTests(unittest.TestCase):
         self.assertFalse(self.calls[-1][1])
         self.assertEqual(updater.current_state(self.context)['transactionId'],state['transactionId'])
 
+    def test_production_configuration_returns_validated_ports_without_mutating_environment(self):
+        with patch.dict(os.environ, {}, clear=True):
+            before=dict(os.environ)
+            ports=updater.configuration(self.context)
+            self.assertEqual(ports,{'api':48100,'ui':48101,'transcription':48102})
+            self.assertEqual(dict(os.environ),before)
+
+    def test_production_maintenance_posts_to_the_implemented_recording_endpoint(self):
+        import http.server
+        import threading
+        transaction='22222222-2222-4222-8222-222222222222';owner='test-owner'
+        paths=[]
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(handler):
+                identity={'service':'heed-api','protocolVersion':1,'checkoutRoot':str(self.context.root),'pid':os.getpid()}
+                raw=json.dumps(identity).encode();handler.send_response(200);handler.end_headers();handler.wfile.write(raw)
+            def do_POST(handler):
+                paths.append(handler.path)
+                body=json.loads(handler.rfile.read(int(handler.headers['Content-Length'])))
+                self.assertEqual(body['transactionId'],transaction)
+                valid=handler.path=='/api/recording/maintenance'
+                raw=json.dumps({'maintenance':body['acquire'],'maintenanceProtocol':2,
+                                'updateTransactionId':transaction if body['acquire'] else None}).encode()
+                handler.send_response(200 if valid else 404);handler.end_headers();handler.wfile.write(raw)
+            def log_message(handler,*args):pass
+        for port in range(49152,65536):
+            try:server=http.server.ThreadingHTTPServer(('127.0.0.1',port),Handler);break
+            except OSError:pass
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        try:
+            with patch.object(updater,'configuration',return_value={'api':port,'ui':port+1,'transcription':port+2}):
+                updater.maintenance(self.context,owner,transaction,True)
+                updater.maintenance(self.context,owner,transaction,False)
+        finally:server.shutdown();server.server_close();thread.join()
+        self.assertEqual(paths,['/api/recording/maintenance']*2)
+
+    def test_separately_managed_transcription_is_refused_before_any_service_request(self):
+        with patch.dict(os.environ,{'HEED_TRANSCRIPTION_URL':'http://127.0.0.1:49000'},clear=True), \
+             patch.object(updater.heed_release,'service_identity') as probe:
+            with self.assertRaisesRegex(UpdateError,'versioned transcription'):
+                updater.activity(self.context)
+        probe.assert_not_called()
+
     def test_busy_requires_explicit_retry_and_never_invokes_installer(self):
         self.dependencies.activity=lambda ctx:{'maintenanceProtocol':2,'processingKinds':['notes']}
         state=self.run_fixture(); self.assertEqual(state['phase'],'waitingForIdle'); self.assertEqual(self.calls,[])
@@ -63,6 +106,25 @@ class TransactionTests(unittest.TestCase):
     def test_unsupported_activity_prevents_download_or_control(self):
         self.dependencies.activity=lambda ctx:{'processingKinds':[]}
         self.assertEqual(self.run_fixture()['errorCode'],'unsupported-maintenance'); self.assertEqual(self.calls,[])
+
+    def test_durable_recovery_intent_precedes_the_maintenance_request(self):
+        def acquire(ctx,owner,transaction,held):
+            if held:
+                state=updater.current_state(ctx)
+                self.assertEqual(state['recovery'],'recoveryRequired')
+                self.assertEqual(state['owner'],owner)
+                self.assertEqual(state['transactionId'],transaction)
+        self.dependencies.maintenance=acquire
+        self.assertEqual(self.run_fixture()['phase'],'completed')
+
+    def test_status_does_not_overwrite_completion_observed_after_taking_the_lock(self):
+        initial={'schema':1,'state':'available','phase':'installing','recovery':'recoveryRequired'}
+        completed={'schema':1,'state':'available','phase':'completed','permissionState':'attention','recovery':'retainedTarget'}
+        command=['status','--root',str(self.context.root),'--home',str(self.home),'--version','1.0.0','--macos','14.0']
+        with patch.object(updater,'current_state',side_effect=[initial,completed]),patch.object(updater,'save') as write, \
+             patch('sys.stdout',new=io.StringIO()):
+            self.assertEqual(updater.main(command),0)
+        write.assert_not_called()
 
     def test_failed_download_preserves_old_version_without_acquiring_maintenance(self):
         with patch('update_transaction.download_verified',side_effect=UpdateError('integrity-failed','bad digest')):
@@ -93,6 +155,30 @@ class TransactionTests(unittest.TestCase):
             with self.assertRaises(ValueError): updater.reconcile_transaction(self.context,self.dependencies)
         self.assertEqual(self.calls,[])
 
+    def test_cli_dispatch_copies_trusted_helpers_and_hands_a_locked_descriptor_to_detached_worker(self):
+        updater.save(self.context,{'state':'available','phase':None,'release':self.release})
+        observed=[]; inherited=[]
+        def launch(command,**options):
+            observed.append((command,options))
+            self.assertTrue(options['start_new_session'])
+            descriptor=options['pass_fds'][0]
+            self.assertEqual(options['env']['HEED_INSTALL_LOCK_FD'],str(descriptor))
+            inherited.append(os.dup(descriptor))
+            self.assertEqual(command[2],'worker')
+            script=Path(command[1]);self.assertTrue(script.is_file())
+            self.assertTrue(script.with_name('installation_lock.py').is_file())
+            self.assertTrue((script.parents[2]/'config/service-ports.json').is_file())
+            self.assertTrue(str(script).startswith(str(self.home/'updates')+'/'))
+        try:
+            with patch.object(updater.subprocess,'Popen',side_effect=launch),patch('sys.stdout',new=io.StringIO()):
+                code=updater.main(['install','--root',str(self.context.root),'--home',str(self.home),
+                                   '--app-dir',str(self.context.app_dir),'--version','1.0.0','--commit','a'*40,'--macos','14.0'])
+            self.assertEqual(code,0);self.assertEqual(len(observed),1)
+            with self.assertRaises(ValueError):
+                with InstallationLock(self.home):pass
+        finally:
+            for descriptor in inherited:os.close(descriptor)
+
     def test_pinned_manifest_and_notes_revalidated_before_control(self):
         self.manifest['assets']['installer']['url']='https://untrusted.example/install.sh'
         self.assertEqual(self.run_fixture()['phase'],'failed'); self.assertEqual(self.calls,[])
@@ -102,6 +188,17 @@ class TransactionTests(unittest.TestCase):
         (self.home/'update.json').symlink_to(outside)
         with self.assertRaises(ValueError): updater.current_state(self.context)
         self.assertEqual(outside.read_text(),'preserve')
+
+    def test_tampered_log_path_and_external_current_runtime_are_refused(self):
+        state=self.run_fixture()
+        state['logPath']=str(Path(self.temp.name)/'private.log')
+        path=self.home/'update.json';path.write_text(json.dumps(state));path.chmod(0o600)
+        with self.assertRaises(ValueError):updater.current_state(self.context)
+        runtime=self.home/'runtime';runtime.mkdir()
+        outside=Path(self.temp.name)/'other-installation';outside.mkdir()
+        (outside/'release.json').write_text(json.dumps({'app':'heed','version':'1.2.0','commit':'b'*40}))
+        (runtime/'current').symlink_to(outside)
+        with self.assertRaises(ValueError):updater.verified_context(self.context,state)
 
 
 if __name__ == '__main__': unittest.main()

@@ -2302,7 +2302,10 @@ async function handleRecordingControl(req: Request, pathname: string): Promise<R
    if (typeof body.acquire !== "boolean" || typeof body.owner !== "string" || !body.owner.trim() || body.owner.length > 128) return Response.json({error:"Choose a valid maintenance owner"},{status:400});
    if (body.transactionId !== undefined && typeof body.transactionId !== 'string') return Response.json({error:'Choose a valid update transaction'},{status:400});
    if (body.acquire) processingMaintenance.acquire(body.owner,body.transactionId);
-   else processingMaintenance.release(body.owner);
+   else {
+    if (body.transactionId !== undefined && processingMaintenance.transactionId() !== body.transactionId) throw Error('Another update transaction owns maintenance');
+    processingMaintenance.release(body.owner);
+   }
    return Response.json({...hydratedRecordingSnapshot(),maintenanceProtocol:2,updateTransactionId:processingMaintenance.transactionId()});
   }
   return Response.json({error:"Unknown recording control endpoint"},{status:404});
