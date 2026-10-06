@@ -53,6 +53,9 @@ export class ManagedQuota {
     for(const path of item.paths.slice(1))if(path.startsWith(`${primary}.`) && /^\.[0-9a-f-]{36}\.tmp$/.test(path.slice(primary.length)) && existsSync(path) && lstatSync(path).isFile())unlinkSync(path);
     delete this.reservations[id];recovered=true;
    }
+   // Inspectors belonged to the previous server; release only their claims,
+   // retaining the original audio and any durable pending catalog references.
+   for(const id of Object.keys(this.reservations))if(/^library-inspect-[0-9a-f-]{36}$/i.test(id)){delete this.reservations[id];recovered=true;}
    for(const [id,item] of Object.entries(this.reservations))if(/^media-[0-9a-f-]{36}$/i.test(id)){
     for(const path of item.paths)if(basename(path)===id && (this.options.roots.staging || []).some(root=>containsPath(resolve(root),resolve(path))) && existsSync(path) && lstatSync(path).isDirectory())rmSync(path,{recursive:true});
     delete this.reservations[id];recovered=true;

@@ -6,6 +6,10 @@ struct MenuLocalization {
     private static let translations: [String: [String: String]] = [
         "pt-BR": [
             "Local meeting storage": "Armazenamento local de reuniões",
+            "Select mounted SMB share": "Selecionar compartilhamento SMB montado",
+            "Select a folder on the mounted share. Heed uses a dedicated Heed Library subfolder.": "Selecione uma pasta no compartilhamento montado. O Heed usa uma subpasta dedicada Heed Library.",
+            "Select share folder": "Selecionar pasta compartilhada",
+
             "Meeting detection could not save its state. Automation is disabled; stop the recording manually and reconfigure detection after fixing storage.": "Não foi possível salvar o estado da detecção. A automação está desativada; pare a gravação manualmente e reconfigure a detecção após corrigir o armazenamento.",
             "Meeting detection settings could not be read. Reconfigure detection before using it.": "Não foi possível ler as configurações da detecção. Reconfigure a detecção antes de usá-la.",
             "Waiting for reconnect — %@s": "Aguardando reconexão — %@s",
@@ -63,6 +67,10 @@ struct MenuLocalization {
         ],
         "fr": [
             "Local meeting storage": "Stockage local des réunions",
+            "Select mounted SMB share": "Sélectionner le partage SMB monté",
+            "Select a folder on the mounted share. Heed uses a dedicated Heed Library subfolder.": "Sélectionnez un dossier sur le partage monté. Heed utilise un sous-dossier dédié Heed Library.",
+            "Select share folder": "Sélectionner le dossier partagé",
+
             "Meeting detection could not save its state. Automation is disabled; stop the recording manually and reconfigure detection after fixing storage.": "Impossible d’enregistrer l’état de détection. L’automatisation est désactivée ; arrêtez manuellement l’enregistrement et reconfigurez la détection après avoir corrigé le stockage.",
             "Meeting detection settings could not be read. Reconfigure detection before using it.": "Impossible de lire les paramètres de détection. Reconfigurez la détection avant de l’utiliser.",
             "Waiting for reconnect — %@s": "En attente de reconnexion — %@s",
@@ -120,6 +128,10 @@ struct MenuLocalization {
         ],
         "de": [
             "Local meeting storage": "Lokaler Besprechungsspeicher",
+            "Select mounted SMB share": "Eingebundene SMB-Freigabe auswählen",
+            "Select a folder on the mounted share. Heed uses a dedicated Heed Library subfolder.": "Wählen Sie einen Ordner auf der eingebundenen Freigabe aus. Heed verwendet einen eigenen Unterordner Heed Library.",
+            "Select share folder": "Freigabeordner auswählen",
+
             "Meeting detection could not save its state. Automation is disabled; stop the recording manually and reconfigure detection after fixing storage.": "Der Erkennungsstatus konnte nicht gespeichert werden. Die Automatisierung ist deaktiviert; beenden Sie die Aufnahme manuell und konfigurieren Sie die Erkennung nach Beheben des Speicherproblems erneut.",
             "Meeting detection settings could not be read. Reconfigure detection before using it.": "Die Erkennungseinstellungen konnten nicht gelesen werden. Konfigurieren Sie die Erkennung vor der Nutzung erneut.",
             "Waiting for reconnect — %@s": "Warten auf Wiederverbindung — %@s",

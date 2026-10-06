@@ -18,6 +18,7 @@ struct ControlStatus: Decodable {
     var storage: MeetingStorageStatus? = nil
     var uiLocale: String? = nil
     var permissionRequest: PermissionRequest? = nil
+    var smbCommand: SmbDesktopCommand? = nil
     var meetingDetection: MeetingDetectionState? = nil
     var meetingId: String? = nil
     var state: String? = nil
@@ -69,6 +70,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private let slackStateMenu = NSMenuItem(title: "Slack: waiting for the next meeting", action: nil, keyEquivalent: "")
     private var lastSlackObservation: String?
     private let slackLogAccess = SlackLogAccess()
+    private let smbFolderAccess = SmbFolderAccess()
     private var requestingSlackAccess = false
     private var promptedForSlackAccess = false
     private var permissionCommandID: String?
@@ -123,6 +125,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         for (app, entry) in detectionMenus { localizedItems.append((entry, app == "zoom" ? "Automatically record Zoom meetings" : app == "teams" ? "Automatically record Teams meetings" : "Automatically record Google Meet meetings")) }
         item.menu = menu
         if let folder = slackLogAccess.restore() { slackDetector.setAuthorizedLogRoot(folder) }
+        smbFolderAccess.restore()
         updateMenu(); bootServices(); poll()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.poll() }
     }
@@ -152,6 +155,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
                 }
                 self.updateMenu()
                 if let request = self.state?.permissionRequest { self.executePermissionRequest(request) }
+                if let command = self.state?.smbCommand { self.smbFolderAccess.execute(command, locale: self.locale) }
                 self.checkMeetings()
                 self.reportPermissions()
             }
@@ -409,6 +413,7 @@ if CommandLine.arguments.contains("--self-test") {
     try slackLogAccessSelfTests()
     try accessibleMeetingDetectorSelfTests()
     try meetingDetectionClientSelfTests()
+    try smbFolderAccessSelfTests()
     print("Heed menubar self-tests passed")
 } else {
     let lockURL = FileManager.default.homeDirectoryForCurrentUser

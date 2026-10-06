@@ -1,7 +1,7 @@
-import type {PortableCommit} from '@heed/shared';
+import type {PortableCommit,ProviderCapabilities} from '@heed/shared';
 /** Adapters own authentication locally; this contract never accepts or exports credentials. */
 export interface LibraryProvider {
- id:string;name:string;
+ id:string;name:string;readOnly?:boolean;capabilities?:ProviderCapabilities;
  transport:'authenticated-network'|'os-managed-folder';
  list(cursor:string|null,limit:number,signal?:AbortSignal):Promise<{commits:PortableCommit[];next:string|null;complete:boolean}>;
  /** Advance a staged provider checkpoint only after complete validated catalog persistence. */

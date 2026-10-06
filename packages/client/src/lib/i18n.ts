@@ -9,6 +9,7 @@ import { TASKS_TRANSLATIONS } from "./translations-tasks.ts";
 import { NOTES_TRANSLATIONS } from "./translations-notes.ts";
 import { CONTENT_TRANSLATIONS } from "./translations-content.ts";
 import { DETECTION_TRANSLATIONS } from "./translations-detection";
+import { SMB_TRANSLATIONS } from "./translations-smb";
 export type { Locale } from "./locale.ts";
 export function detectLocale(): Locale {return storedLocale();}
 export function setLocale(locale: Locale): void {useLocaleStore.getState().sync(locale);}
@@ -17,7 +18,7 @@ export function useLocale() {
  return {locale,tr:(text:string,vars?:Record<string,string|number>)=>tr(text,locale,vars)};
 }
 import {STORAGE_TRANSLATIONS} from "./translations-storage";
-const TRANSLATIONS={...SHELL_TRANSLATIONS,...CONTENT_TRANSLATIONS,...NOTES_TRANSLATIONS,...TASKS_TRANSLATIONS,...CHAT_TRANSLATIONS,...DETECTION_TRANSLATIONS,...LIBRARY_CHAT_TRANSLATIONS,...STORAGE_TRANSLATIONS,...LIBRARY_TRANSLATIONS};
+const TRANSLATIONS={...SHELL_TRANSLATIONS,...CONTENT_TRANSLATIONS,...NOTES_TRANSLATIONS,...TASKS_TRANSLATIONS,...CHAT_TRANSLATIONS,...DETECTION_TRANSLATIONS,...LIBRARY_CHAT_TRANSLATIONS,...STORAGE_TRANSLATIONS,...LIBRARY_TRANSLATIONS,...SMB_TRANSLATIONS};
 export function tr(text:string,locale:Locale=useLocaleStore.getState().locale,vars?:Record<string,string|number>):string {
  const chosen=normalizeLocale(locale);
  const key=text.trim();

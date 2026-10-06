@@ -34,3 +34,5 @@ vi.mock('@/api/templates', () => ({ templatesApi: { list: vi.fn(async () => [{ i
 vi.mock("./MeetingDetectionSettings", () => ({ MeetingDetectionSettings: () => null }));
 vi.mock("@/api/storage",()=>({storageApi:{status:vi.fn(async()=>({limitBytes:2_000_000_000,usedBytes:0,reservedBytes:0,protectedBytes:0,reclaimableBytes:0,availableBytes:2_000_000_000,categories:{text:0,media:0,indexes:0,staging:0}}))}}));
 vi.mock('./StorageLibrarySettings',()=>({StorageLibrarySettings:()=>null}));
+
+vi.mock("./SmbSettings", () => ({ SmbSettings: () => null }));

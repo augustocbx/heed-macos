@@ -7,6 +7,7 @@ import styles from './PermissionsPage.module.css';
 import {StorageLibrarySettings} from "./StorageLibrarySettings";
 import { AutomaticNotesSettings } from '@/components/ai-notes/AutomaticNotesSettings';
 import {StorageSettings} from './StorageSettings';
+import { SmbSettings } from './SmbSettings';
 
 import { MeetingDetectionSettings } from "./MeetingDetectionSettings";
 
@@ -66,6 +67,7 @@ export function PermissionsPage() {
    {localeError && <p role="alert">{tr("Could not save interface language. Check that Heed is running and try again.")}</p>}
   </article>
   <AutomaticNotesSettings />
+  <SmbSettings />
   <MeetingDetectionSettings />
   <StorageSettings />
   <StorageLibrarySettings />
