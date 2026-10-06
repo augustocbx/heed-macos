@@ -21,6 +21,7 @@ export const TEMPLATES_DIR = join(APP_DIR, "templates");
  * unknown keys on write so the old CLI tool keeps working.
  */
 export interface TrxConfig {
+	storage_limit_bytes?: number;
 	ui_locale?: "en" | "pt-BR" | "fr" | "de";
 	ollama_model?: string;
 	ollama_num_gpu?: number; // 0 = CPU-only, undefined = let Ollama decide, 999 = all layers on GPU

@@ -25,6 +25,8 @@ import { RecordingCoordinator } from "./lib/recording-coordinator.ts";
 import type { FinalCapture, RecordingSnapshot } from "../shared/types/recording-coordinator.ts";
 import { DesktopPermissions, desktopRequestAllowed as permissionRequestAllowed, permissionAction, permissionReport } from "./lib/desktop-permissions.ts";
 import { AUDIO_LIMIT_BYTES, enforceAudioRetention, removeChannelCopies } from "./lib/audio-retention.ts";
+import {validManagedLimit} from './lib/managed-quota.ts';
+import {createAppQuota} from './lib/app-storage.ts';
 import { type CaptureMode, nativeCaptureCommand, nativeRecordingCommand, verifyNativeHandshake, isNativeProtocolLine } from "./lib/native-capture.ts";
 const desktopPermissions = new DesktopPermissions();
 const retainedProcessing = new Map<string, number>();
@@ -67,6 +69,32 @@ const FALLBACK_MODEL = process.env.HEED_MODEL || null;
 // App paths + persistent config (loadConfig/saveConfig/micLabel/TrxConfig) now live in
 // ./lib/app-config.ts — single source of truth (the stale lib/config.ts duplicate was deleted).
 ensureAppDirs([UPLOAD_DIR]);
+const managedQuota=createAppQuota({
+ recordingsDir:UPLOAD_DIR,
+ protectedPaths:()=>[...retainedProcessing.keys(),...(recorderPath?[recorderPath]:[])],
+ onEvicted:paths=>{
+  sessionTags.recover();
+  for(const session of sessionTags.snapshot().sessions)if(session.files?.wav && paths.includes(session.files.wav)){
+   session.files.wav='';(session as any).audioExpired=true;(session as any).audioRemovedAt=new Date().toISOString();sessionTags.save(session);
+  }
+ },
+});
+
+async function handleStorage(req:Request):Promise<Response>{
+ if(!permissionRequestAllowed(req,PORT))return new Response(null,{status:403});
+ const path=new URL(req.url).pathname;
+ try{
+  if(req.method==='GET' && path==='/api/storage')return Response.json(managedQuota.snapshot());
+  if(req.method!=='POST')return new Response(null,{status:405});
+  const body=await req.json();if(!validManagedLimit(body.limitBytes))return Response.json({error:'Choose a storage limit between 0.001048576 and 8000 GB using whole bytes.'},{status:400});
+  if(path==='/api/storage/preview')return Response.json(managedQuota.preview(body.limitBytes));
+  if(path==='/api/storage/settings'){
+   if(body.limitBytes<managedQuota.snapshot().limitBytes && audioWorkBusy())return Response.json({error:'Wait for active recording and finalization before lowering the storage limit.'},{status:409});
+   return Response.json(managedQuota.apply(body.limitBytes,body.token));
+  }
+  return new Response(null,{status:404});
+ }catch(error){return Response.json({error:(error as Error).message},{status:409});}
+}
 
 function getCurrentModel(): string | null {
 	// The model the USER explicitly selected, or null if none chosen yet. We deliberately
@@ -2409,6 +2437,7 @@ const server = Bun.serve({
 		if (url.pathname.startsWith("/api/recording/")) { httpServer.timeout(req,0); return handleRecordingControl(req,url.pathname); }
 		if (url.pathname.startsWith("/api/meeting-detection/")) return meetingDetectionRoute(req,meetingDetection,PORT);
 		if (url.pathname.startsWith("/api/desktop/control/")) { httpServer.timeout(req,0); return handleDesktopControl(req, url.pathname); }
+		if (url.pathname==='/api/storage' || url.pathname.startsWith('/api/storage/')) return handleStorage(req);
 		if (method === "POST" && url.pathname === "/api/desktop/float") return handleDesktopFloat();
 		if (method === "GET" && url.pathname === "/api/meeting-detector") return handleDetectorStream(req);
 		// /api/download and /api/recording removed — unused legacy endpoints

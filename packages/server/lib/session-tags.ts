@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import {reserveAtomicWrite} from './atomic-json';
 import { normalizeTag, tagKey, uniqueTags, type Session, type SessionPatch, type TagMutation, type TagSnapshot } from "@heed/shared";
 
 export class TagError extends Error {
@@ -9,6 +10,7 @@ export class TagError extends Error {
 
 export function atomicWrite(path: string, data: string): void {
   const temporary = `${path}.${randomUUID()}.tmp`;
+  const release=reserveAtomicWrite(path,Buffer.byteLength(data,'utf8'),temporary);
   try {
     const fd = openSync(temporary, "wx", 0o600);
     try { writeFileSync(fd, data); fsyncSync(fd); } finally { closeSync(fd); }
@@ -16,7 +18,7 @@ export function atomicWrite(path: string, data: string): void {
     const directory = openSync(dirname(path), "r");
     try { fsyncSync(directory); } finally { closeSync(directory); }
   } finally {
-    if (existsSync(temporary)) unlinkSync(temporary);
+    try {if (existsSync(temporary)) unlinkSync(temporary);}finally{release();}
   }
 }
 

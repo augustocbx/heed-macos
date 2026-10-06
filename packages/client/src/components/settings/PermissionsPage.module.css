@@ -23,3 +23,9 @@
 .card label { display: block; font-weight: 600; margin-bottom: 12px; }
 .card select { max-width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--white); color: var(--text); font: inherit; }
 .card select:focus-visible { outline: 3px solid var(--blue-light); outline-offset: 3px; }
+.card input { max-width:100%; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--white); color:var(--text); font:inherit; }
+.card input:focus-visible {outline:3px solid var(--blue-light);outline-offset:3px;}
+.card dl {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 20px;margin:20px 0;}
+.card dl div {display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px;font-size:13px;}
+.card dd {margin:0;font-variant-numeric:tabular-nums;color:var(--text-2);}
+@media(max-width:640px){.card dl {grid-template-columns:1fr;}}
