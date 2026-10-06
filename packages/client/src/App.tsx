@@ -1,3 +1,4 @@
+import { TasksPanel } from "@/components/tasks/TasksPanel";
 import { useLocaleStore } from "@/stores/locale.ts";
 import { useEffect } from "react";
 import { useAutomaticNotesPolling } from "@/hooks/useAutomaticNotesPolling";
@@ -40,6 +41,7 @@ export function App() {
 				<div hidden={currentPage !== "record"}><RecordPage /></div>
 				{currentPage === "sessions" && <SessionsPage />}
 				{currentPage === "settings" && <PermissionsPage />}
+    {currentPage === "tasks" && <TasksPanel />}
 			</main>
 			<Footer />
 			<Toast />

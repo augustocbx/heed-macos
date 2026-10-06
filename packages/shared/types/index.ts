@@ -9,3 +9,4 @@ export * from "./events.ts";
 export * from "./recording-state.ts";
 export * from "./recording-coordinator.ts";
 export * from "../lib/tags.ts";
+export * from "./tasks.ts";

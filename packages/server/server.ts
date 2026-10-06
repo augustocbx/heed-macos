@@ -1,3 +1,6 @@
+import { MeetingTasksService } from "./lib/meeting-tasks.ts";
+import { tasksResponse } from "./lib/tasks-http.ts";
+import { generateTaskSuggestions } from "./lib/task-generation.ts";
 import { AutomaticNotesService, notesHash, renderNotesTranscript } from "./lib/automatic-notes.ts";
 import { automaticNotesSettings, validateNotesSettings } from "./lib/notes-settings.ts";
 import { generateLocalNotes, listLocalNotesModels } from "./lib/ollama-notes.ts";
@@ -34,7 +37,7 @@ function audioWorkBusy() {
 }
 async function preemptNotes() {
  manualNotesController?.abort();
- await Promise.all([notesService.preempt(), manualNotesDone]);
+ await Promise.all([notesService.preempt(), tasksService.preempt(), manualNotesDone]);
 }
 function protectAudio(path: string) { retainedProcessing.set(path, Date.now() + 120_000); }
 function pruneAudio(limit = AUDIO_LIMIT_BYTES) {
@@ -551,7 +554,7 @@ async function handleSummarize(req: Request): Promise<Response> {
   async start(controller) {
    const send = (data: unknown) => { if (!closed) controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`)); };
    try {
-    await notesService.preempt();
+    await Promise.all([notesService.preempt(),tasksService.preempt()]);
     await generateLocalNotes({baseUrl:OLLAMA_HOST,model,templatePrompt:template.prompt,transcript,
      language:language || "en",signal:abort.signal,numGpu:force_cpu ? 0 : getCurrentNumGpu(),
      numThread:Math.max(2,Math.floor(cpus().length / 2)),onToken:token => send({token})});
@@ -1069,7 +1072,7 @@ async function handleSummaryLine(req: Request): Promise<Response> {
  let finish!: () => void;
  manualNotesDone = new Promise<void>(resolve => { finish = resolve; });
  try {
-  await notesService.preempt();
+  await Promise.all([notesService.preempt(),tasksService.preempt()]);
   const text = await generateLocalNotes({baseUrl:OLLAMA_HOST,model,transcript:transcript.slice(0,1500),language:"meeting",signal:abort.signal,
    templatePrompt:"Write one sentence of at most 12 words describing the main meeting topic. Output only the sentence in the same language as the transcript.",numGpu:0,numThread:Math.max(2,Math.floor(cpus().length / 2))});
   return Response.json({summary:text.trim().split("\n")[0]});
@@ -2347,11 +2350,20 @@ const notesService = new AutomaticNotesService({
  sessionStore:sessionTags,
  getSettings:() => automaticNotesSettings(loadConfig()),
  loadTemplate:id => loadTemplate(id) || undefined,
- isBusy:() => audioWorkBusy() || !!manualNotesController,
+ isBusy:() => audioWorkBusy() || !!manualNotesController || tasksService.busy,
  generate:({session,job,signal,onProgress}) => generateLocalNotes({baseUrl:OLLAMA_HOST,model:job.model,templatePrompt:job.templatePrompt,
   transcript:renderNotesTranscript(session),language:job.language,signal,onProgress,numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))}),
 });
+const tasksService = new MeetingTasksService({
+ path:join(APP_DIR,"tasks.json"),
+ listSessions:() => notesService.list(),
+ getSession:id => notesService.get(id),
+ isBusy:() => audioWorkBusy() || !!manualNotesController || notesService.list().some(session => Object.values(session.notesJobs || {}).some(job => job.status === "running")),
+ generate:(session,signal) => generateTaskSuggestions(session,signal,{baseUrl:OLLAMA_HOST,model:getCurrentModel() || "",numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))}),
+});
 notesService.recover();
+const tasksTimer = setInterval(() => { void tasksService.tick().catch(error => console.error("Task suggestion queue failed:", error)); },1000);
+tasksTimer.unref();
 const notesTimer = setInterval(() => { void notesService.tick().catch(error => console.error("Automatic notes queue failed:", error)); },1000);
 notesTimer.unref();
 
@@ -2394,6 +2406,7 @@ const server = Bun.serve({
 		const url = new URL(req.url);
 		const method = req.method;
 
+  if (url.pathname === "/api/tasks") return tasksResponse(req,tasksService,PORT);
   if (url.pathname === "/api/notes/settings") return handleNotesSettings(req);
   if (method === "GET" && url.pathname === "/api/notes/models") return handleNotesModels(req);
   if (method === "POST" && url.pathname === "/api/notes/jobs") return handleNotesJob(req);
@@ -2456,7 +2469,7 @@ const server = Bun.serve({
 // Never leave an orphaned ffmpeg/syscap holding the mic: on SIGINT/SIGTERM/exit, gracefully reap
 // every tracked child (the recorder, the system-audio capture, the level meter). Previously there
 // was NO signal handler — a server crash/exit left ffmpeg running and the mic "stuck busy".
-installShutdownHooks(() => { clearInterval(notesTimer); manualNotesController?.abort(); void notesService.preempt(); stopLiveTranscribe(); });
+installShutdownHooks(() => { clearInterval(notesTimer); clearInterval(tasksTimer); manualNotesController?.abort(); void notesService.preempt(); void tasksService.preempt(); stopLiveTranscribe(); });
 
 console.log(`
   ┌──────────────────────────────────┐

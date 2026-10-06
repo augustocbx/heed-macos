@@ -1,0 +1,18 @@
+.panel { display: grid; gap: 16px; padding-block: 12px; }
+.panel h2 { font-size: 22px; }
+.panel h3 { font-size: 16px; }
+.card { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 16px; background: var(--white); display: grid; gap: 12px; margin-block: 12px; }
+.row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.fields { display: grid; gap: 12px; }
+.fields label, .panel label:has(select) { display: grid; gap: 6px; font-size: 13px; }
+.fields input, .fields textarea, .panel select { border: 1px solid var(--border); padding: 8px 10px; border-radius: var(--radius-sm); background: var(--white); color: var(--text); max-width: 100%; }
+.fields textarea { min-height: 60px; resize: vertical; }
+.panel button { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 7px 12px; background: var(--bg); color: var(--text); cursor: pointer; }
+.panel button:hover { background: var(--bg-alt); }
+.panel button:disabled { opacity: .5; cursor: default; }
+.meta, .sources cite, .fields small { color: var(--text-2); font-size: 12px; }
+.sources { display: grid; gap: 8px; }
+.sources blockquote { border-left: 3px solid var(--border); padding-left: 12px; display: grid; gap: 5px; font-size: 13px; overflow-wrap: anywhere; }
+.sources button { justify-self: start; }
+.error { padding: 12px; border: 1px solid var(--red); border-radius: var(--radius-sm); }
+@media (max-width: 540px) { .fields .row { align-items: stretch; } .fields .row label { flex: 1 1 150px; } }

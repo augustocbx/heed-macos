@@ -30,14 +30,14 @@
 	display: flex;
 	justify-content: flex-start;
 	min-width: 0;
-	padding-left: clamp(6px, 1.2vw, 16px);
+	padding-left: 0;
 }
 
 .rightBlock {
 	min-width: 0;
 	display: flex;
 	justify-content: flex-end;
-	padding-left: clamp(22px, 3vw, 56px);
+	padding-left: 12px;
 }
 
 .brand {
@@ -51,13 +51,17 @@
 .tabs {
 	display: flex;
 	gap: var(--space-1);
+ min-width: 0;
+ max-width: 100%;
+ overflow-x: auto;
 }
 
 .tab {
 	font-family: var(--mono);
 	font-size: 12px;
 	color: var(--text-3);
-	padding: 6px 14px;
+	padding: 6px 9px;
+ flex-shrink: 0;
 	border-radius: var(--radius-sm);
 	cursor: pointer;
 	transition: all 150ms;

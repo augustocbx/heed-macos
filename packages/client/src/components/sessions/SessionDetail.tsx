@@ -1,3 +1,4 @@
+import { TasksPanel } from "@/components/tasks/TasksPanel";
 import { tr, useLocale } from "@/lib/i18n.ts";
 import { useState, useEffect, useRef } from "react";
 import type { Session } from "@heed/shared";
@@ -28,7 +29,7 @@ interface Props {
   onTagClick?: (tag: string) => void;
 }
 
-type TabId = "speakers" | "notes";
+type TabId = "speakers" | "notes" | "tasks";
 
 export function SessionDetail({ session, onBack, onTagClick }: Props) {
  const notesBusy = automaticNotesBusy(session);
@@ -79,6 +80,7 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 	const tabs = [
 		{ id: "speakers", label: tr("Speakers") },
 		{ id: "notes", label: tr("AI Notes") },
+  { id:"tasks",label:tr("Tasks") },
 	];
 
 
@@ -173,14 +175,19 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 			{showTranscribe && <RetranscribeDialog session={session} onClose={()=>setShowTranscribe(false)} onBusy={setTranscribing}/>}
    <div className={styles.meta}>{meta}</div>
    <SessionAudioPlayer sessionId={session.id} available={!!session.files?.wav}
-    audioRef={audioRef} onTime={setPlaybackTime} onDuration={setAudioDuration}/>
+    audioRef={audioRef} onTime={setPlaybackTime} onDuration={duration=>{
+     setAudioDuration(duration);
+     const source=useUIStore.getState().taskSourceSeek;
+     if(source?.sessionId===session.id){useUIStore.setState({taskSourceSeek:null});seekAudio(source.seconds);}
+    }}/>
 
       <TagEditor session={session} onTagClick={onTagClick} />
 
 			<NotesJobStatus session={session} />
    <Tabs tabs={tabs} active={activeTab} onChange={(id) => setActiveTab(id as TabId)} />
 
-			{activeTab === "speakers" && (
+			{activeTab === "tasks" && <TasksPanel session={session} onSeek={session.files?.wav?seekAudio:undefined} onShowTranscript={()=>setActiveTab("speakers")}/>}
+   {activeTab === "speakers" && (
 				<SpeakerView
 					segments={session.segments || []}
 					speakers={session.speakers || []}
@@ -216,8 +223,8 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 			)}
 
 			<div className={styles.actionsRow} style={{ marginTop: "12px" }}>
-				<button className={styles.btn} onClick={handleCopy}>{tr("Copy")}</button>
-				{activeTab === "speakers" && (
+				<button hidden={activeTab === "tasks"} className={styles.btn} onClick={handleCopy}>{tr("Copy")}</button>
+    {activeTab === "speakers" && (
 					<button className={styles.btn} onClick={handleCopyPlain}>{tr("Copy plain text")}</button>
 				)}
 				{activeTab === "notes" && (

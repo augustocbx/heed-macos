@@ -1,11 +1,12 @@
 import { tr } from "@/lib/i18n.ts";
 import { create } from "zustand";
 
-export type Page = "record" | "sessions" | "settings";
+export type Page = "record" | "sessions" | "settings" | "tasks";
 
 interface UIState {
 	currentPage: Page;
 	toast: string | null;
+ taskSourceSeek: {sessionId:string;seconds:number}|null;
 	setPage: (page: Page) => void;
 	showToast: (message: string) => void;
 }
@@ -13,6 +14,7 @@ interface UIState {
 export const useUIStore = create<UIState>((set) => ({
 	currentPage: typeof window !== "undefined" && window.location.hash === "#settings" ? "settings" : "record",
 	toast: null,
+ taskSourceSeek:null,
 	setPage: (page) => set({ currentPage: page }),
 	showToast: (message) => {
 		set({ toast: tr(message) });
