@@ -585,7 +585,13 @@ export class PythonDirectSmbNative implements DirectSmbNative {
 		try {
 			child = track(await this.runner(this.helper));
 		} catch (error) {
-			throw stoppedFailure(error);
+			// A runner can own preflight helpers; rejection alone proves no stop.
+			const witness =
+				error instanceof Error &&
+				Object.getOwnPropertyDescriptor(error, 'guardianStopped');
+			if (witness && witness.value === true && witness.enumerable === false)
+				throw stoppedFailure(error, signal?.aborted && error === signal.reason);
+			throw responseError((error as { code?: unknown })?.code);
 		}
 		const session = new DirectRpcSession(child, this.timeoutMs, signal);
 		try {

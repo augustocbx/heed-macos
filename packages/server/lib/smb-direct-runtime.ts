@@ -12,10 +12,27 @@ function regular(path: string, maximum = 16000000): Buffer {
 }
 function hash(data: Buffer): string { return createHash('sha256').update(data).digest('hex'); }
 
+/** Private witness: only a prelaunch refusal or fulfilled owned exit proves stop. */
+function runtimeFailure(stopped: boolean) {
+    const failure = directSmbError('runtime-unavailable');
+    if (stopped) {
+        Object.defineProperty(failure, 'guardianStopped', { value: true, enumerable: false });
+    }
+    return failure;
+}
+
 /** Verify local release bytes before any credential-bearing helper is launched. */
 export async function verifyDirectSmbRuntime(helper: string): Promise<string> {
     let child: ReturnType<typeof Bun.spawn> | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    let cleanupTimeout: ReturnType<typeof setTimeout> | undefined;
+    let launchAttempted = false;
+    let exitProven = false;
+    let owned: {
+        pid?: number;
+        kill: (signal?: number | NodeJS.Signals) => void;
+        exited: Promise<number>;
+    } | undefined;
     try {
         helper = resolve(helper);
         const folder = dirname(helper), root = resolve(folder, '../../../..');
@@ -53,22 +70,38 @@ export async function verifyDirectSmbRuntime(helper: string): Promise<string> {
         // This protected preflight receives no provider credential or RPC input.
         // Python checks installed bytes against each pinned public wheel, rejects
         // extra modules/startup hooks and verifies this release's receipt.
-        child = track(Bun.spawn([executable, '-I', '-S', '-B', join(folder, 'runtime.py'), 'verify', root],
-            { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore', detached: true }));
-        const exited = await Promise.race([child.exited, new Promise<never>((_, reject) => {
-            timeout = setTimeout(() => { killTree(child!, 'SIGKILL'); reject(directSmbError('runtime-unavailable')); }, 30000);
+        launchAttempted = true;
+        child = Bun.spawn([executable, '-I', '-S', '-B', join(folder, 'runtime.py'), 'verify', root],
+            { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore', detached: true });
+        // Track fulfilled exit evidence, not a rejected exit promise. Unknown lifetime
+        // stays supervised; only eventual verified exit may retire this owner.
+        const exit = child.exited.then(
+            code => { exitProven = true; return code; },
+            () => new Promise<number>(() => {}),
+        );
+        owned = track({
+            pid: child.pid,
+            kill: signal => child!.kill(signal as number),
+            exited: exit,
+        });
+        const exited = await Promise.race([exit, new Promise<never>((_, reject) => {
+            timeout = setTimeout(() => { killTree(owned!, 'SIGKILL'); reject(directSmbError('runtime-unavailable')); }, 30000);
         })]);
         if (exited !== 0) throw directSmbError('runtime-unavailable');
-        untrack(child);
+        untrack(owned);
         return executable;
     } catch {
-        throw directSmbError('runtime-unavailable');
+        clearTimeout(timeout);
+        if (owned && !exitProven) {
+            killTree(owned, 'SIGKILL');
+            await Promise.race([owned.exited, new Promise<void>(resolve => {
+                cleanupTimeout = setTimeout(resolve, 1500);
+            })]);
+        }
+        throw runtimeFailure(!launchAttempted || exitProven);
     } finally {
         clearTimeout(timeout);
-        if (child && child.exitCode === null) {
-            killTree(child, 'SIGKILL');
-            await Promise.race([child.exited.then(() => untrack(child!)), new Promise<void>(resolve => setTimeout(resolve, 1500))]);
-        }
+        clearTimeout(cleanupTimeout);
     }
 }
 

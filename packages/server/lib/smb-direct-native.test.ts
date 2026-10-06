@@ -488,7 +488,7 @@ test('I4 oneshot post-start receipt rejection proves child reaping before privat
   expect(failure.guardianStopped).toBe(true);
   expect(Object.keys(failure)).not.toContain('guardianStopped');
 });
-test('I4 no-helper runner refusal carries stopped evidence without raw diagnostics', async () => {
+test('N1 arbitrary runner rejection carries no invented stop evidence or raw diagnostics', async () => {
   let error: any;
   try {
     await new PythonDirectSmbNative({
@@ -502,7 +502,7 @@ test('I4 no-helper runner refusal carries stopped evidence without raw diagnosti
     error = e;
   }
   expect(error.code).toBe('runtime-unavailable');
-  expect(error.guardianStopped).toBe(true);
+  expect(error.guardianStopped).toBeUndefined();
   expect(error.message).not.toContain('secret-never-log');
 });
 
