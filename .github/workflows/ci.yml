@@ -52,4 +52,6 @@ jobs:
           HEED_ICLOUD_OUTPUT="$RUNNER_TEMP/heed-icloud-check" bash packages/desktop/icloud-folder/build.sh
           "$RUNNER_TEMP/heed-icloud-check" --self-test
       - name: Build menu app
-        run: bash packages/desktop/install-menubar.sh --build-only
+        run: |
+          bash packages/desktop/install-menubar.sh --build-only
+          (cd "$RUNNER_TEMP" && "${TMPDIR:-/tmp}/heed-menubar-build/Heed" --self-test)
