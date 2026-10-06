@@ -1,4 +1,7 @@
 export const SHELL_TRANSLATIONS: Record<string, {"pt-BR":string;fr:string;de:string}> = Object.fromEntries([
+ ["Installed version: {version}", "Versão instalada: {version}", "Version installée : {version}", "Installierte Version: {version}"],
+ ["Development build", "Versão de desenvolvimento", "Version de développement", "Entwicklungsversion"],
+ ["Version unavailable", "Versão indisponível", "Version indisponible", "Version nicht verfügbar"],
  ["Main navigation", "Navegação principal", "Navigation principale", "Hauptnavigation"],
  ["Pages", "Páginas", "Pages", "Seiten"],
  ["System", "Sistema", "Système", "System"],

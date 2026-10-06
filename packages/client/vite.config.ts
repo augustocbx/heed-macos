@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 import { fileURLToPath, URL } from "node:url";
 
 import {localServiceUrl} from "../shared/lib/service-config";
-import {realpathSync} from "node:fs";
+import {readFileSync, realpathSync} from "node:fs";
 import {configuredServicePorts} from "../server/lib/service-ports";
 import {ServiceDiagnostics} from '../server/lib/service-diagnostics';
 const ports=configuredServicePorts();
@@ -13,6 +13,9 @@ const proxyOrigin=new globalThis.URL(SERVER_URL);
 const diagnostics=new ServiceDiagnostics({root:identity.checkoutRoot,ports:{...ports,api:Number(proxyOrigin.port||(proxyOrigin.protocol==='https:'?443:80))},apiOrigin:SERVER_URL,env:process.env});
 
 export default defineConfig({
+	define: {
+		"import.meta.env.VITE_HEED_VERSION": JSON.stringify(readFileSync(new URL("../../VERSION", import.meta.url), "utf8").trim()),
+	},
 	plugins: [react(),{name:"heed-readiness",configureServer(server){server.httpServer?.once('close',()=>diagnostics.dispose());server.middlewares.use(async(req,res,next)=>{
   const url=new globalThis.URL(req.url||'/',`http://127.0.0.1:${ports.ui}`);
   if(url.pathname==='/.well-known/heed-services'){

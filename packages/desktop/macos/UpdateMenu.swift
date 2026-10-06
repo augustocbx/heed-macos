@@ -45,10 +45,11 @@ enum UpdatePresentation {
     }
 }
 
-/// A focused submenu shares the current snapshot when the interface language changes.
+/// The main-menu build header and Updates submenu share the installed identity and locale.
 final class UpdateMenu: NSObject {
     let item = NSMenuItem(title: "Updates", action: nil, keyEquivalent: "")
     private let menu = NSMenu()
+    private let installedVersionItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     var check: (() -> Void)?; var install: (() -> Void)?; var retry: (() -> Void)?
     var permissions: (() -> Void)?; var settings: (() -> Void)?; var guidance: (() -> Void)?
     private var snapshot = UpdateSnapshot()
@@ -63,7 +64,13 @@ final class UpdateMenu: NSObject {
             entry.target = self; entry.isEnabled = selector != nil && enabled; menu.addItem(entry)
         }
         item.title = text("Updates")
-        row(String(format: text("Installed version: %@"), build?.version ?? text("Unknown")) + (build?.development == true ? " (" + text("development") + ")" : ""))
+        let installedVersion = String(format: text("Installed version: %@"), build?.version ?? text("Unknown")) + (build?.development == true ? " (" + text("development") + ")" : "")
+        installedVersionItem.title = installedVersion
+        installedVersionItem.isEnabled = false
+        if let mainMenu = item.menu, installedVersionItem.menu !== mainMenu {
+            mainMenu.insertItem(installedVersionItem, at: 0)
+        }
+        row(installedVersion)
         row(text(UpdatePresentation.status(snapshot)))
         if let p = snapshot.progress, snapshot.phase == "downloading", p.total > 0 {
             row("\(min(100, max(0, Int(Double(p.completed) / Double(p.total) * 100))))%")

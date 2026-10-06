@@ -7,6 +7,7 @@ declare module "*.module.css" {
 
 interface ImportMetaEnv {
 	readonly VITE_API_BASE?: string;
+	readonly VITE_HEED_VERSION?: string;
 }
 
 interface ImportMeta {
