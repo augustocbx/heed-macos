@@ -127,8 +127,11 @@ mkdir -p "$HOME/Library/LaunchAgents"
 HEED_APP_EXEC="$HEED_APP/Contents/MacOS/Heed" /usr/bin/python3 - "$HEED_AGENT" <<'PY'
 import os, plistlib, sys
 with open(sys.argv[1], 'wb') as file:
-    ports = {key: os.environ[key] for key in ['HEED_API_PORT', 'HEED_UI_PORT', 'HEED_TRANSCRIPTION_PORT']}
-    plistlib.dump({'Label': 'local.heed.menubar', 'ProgramArguments': [os.environ['HEED_APP_EXEC']], 'RunAtLoad': True, 'EnvironmentVariables': ports}, file)
+    environment = {key: os.environ[key] for key in ['HEED_API_PORT', 'HEED_UI_PORT', 'HEED_TRANSCRIPTION_PORT']}
+    for key in ['HEED_APP_DIR', 'HEED_RECORDINGS_DIR', 'HEED_TRANSCRIPTION_URL']:
+        if key in os.environ:
+            environment[key] = os.environ[key]
+    plistlib.dump({'Label': 'local.heed.menubar', 'ProgramArguments': [os.environ['HEED_APP_EXEC']], 'RunAtLoad': True, 'EnvironmentVariables': environment}, file)
 PY
 /usr/bin/python3 "$HEED_PROJECT_ROOT/scripts/service_config.py" api --save > /dev/null
 launchctl bootstrap "gui/$(id -u)" "$HEED_AGENT"

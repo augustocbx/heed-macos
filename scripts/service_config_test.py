@@ -4,10 +4,25 @@ import unittest
 import tempfile
 import json
 import os
+import plistlib
+import re
+import subprocess
+import sys
 SPEC=importlib.util.spec_from_file_location('service_config',pathlib.Path(__file__).with_name('service_config.py'))
 module=importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
 class ServiceConfigTests(unittest.TestCase):
+ def test_menu_launch_agent_retains_selected_runtime_configuration_only(self):
+  installer=pathlib.Path(__file__).parents[1]/'packages/desktop/install-menubar.sh'
+  source=re.search(r'HEED_APP_EXEC=.*?<<\x27PY\x27\n(.*?)\nPY',installer.read_text(),re.S).group(1)
+  with tempfile.TemporaryDirectory(prefix='heed-menu-config-') as directory:
+   target=pathlib.Path(directory)/'agent.plist'
+   selected={'HEED_API_PORT':'48110','HEED_UI_PORT':'48111','HEED_TRANSCRIPTION_PORT':'48112','HEED_APP_DIR':directory+'/state','HEED_RECORDINGS_DIR':directory+'/recordings','HEED_TRANSCRIPTION_URL':'http://127.0.0.1:48122'}
+   env={**os.environ,**selected,'HEED_APP_EXEC':'/synthetic/Heed','HEED_TEST_PRIVATE_TOKEN':'must-not-be-persisted'}
+   subprocess.run([sys.executable,'-c',source,str(target)],env=env,check=True)
+   with target.open('rb') as file:agent=plistlib.load(file)
+   self.assertEqual(agent['EnvironmentVariables'],selected)
+   self.assertEqual(agent['ProgramArguments'],['/synthetic/Heed'])
  def test_defaults_and_consistent_overrides(self):
   self.assertEqual(module.service_config({}),{'api':48100,'ui':48101,'transcription':48102})
   self.assertEqual(module.service_config({'HEED_API_PORT':'48110','HEED_UI_PORT':'48111','HEED_TRANSCRIPTION_PORT':'48112'}),{'api':48110,'ui':48111,'transcription':48112})
