@@ -192,6 +192,8 @@ printf '{"id":"session-1","title":"Planning","transcript":"Hello","speakers":["A
     > "$SIM_HOME/.heed-app/sessions/session-1.json"
 printf '{"Ana":[0.1,0.2]}\n' > "$SIM_HOME/.heed-app/voices.json"
 printf '{"ui_locale":"pt-BR","storage_limit_bytes":3000000000}\n' > "$SIM_HOME/.heed-app/config.json"
+# A migrated checkout persists its selected ports before a release takes over.
+/usr/bin/python3 "$LEGACY/scripts/service_config.py" api --save >/dev/null
 printf '%s\n' "$LEGACY" > "$SIM_HOME/Applications/Heed.app/Contents/Resources/heed-root.txt"
 SIM_HOST="$SIM_HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/local.heed.meet.json"
 mkdir -p "$(dirname "$SIM_HOST")"
