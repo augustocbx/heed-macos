@@ -23,7 +23,10 @@ export function Tabs({ tabs, active, onChange }: Props) {
 				if (t.id === active) cls.push(styles.tabActive);
 				if (t.disabled) cls.push(styles.tabDisabled);
 				return (
-					<div
+					<button
+                        type="button"
+                        disabled={t.disabled}
+                        aria-pressed={t.id === active}
 						key={t.id}
 						className={cls.join(" ")}
 						title={t.disabled && t.disabledReason ? tr(t.disabledReason) : undefined}
@@ -31,7 +34,7 @@ export function Tabs({ tabs, active, onChange }: Props) {
 						data-tour={t.id === "speakers" ? "speakers-tab" : undefined}
 					>
 						{tr(t.label)}
-					</div>
+					</button>
 				);
 			})}
 		</div>

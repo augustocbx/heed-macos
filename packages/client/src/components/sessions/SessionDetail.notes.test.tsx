@@ -22,3 +22,8 @@ test('manual detail notes honor CPU selection and save revision-guarded speaker 
  await waitFor(() => expect(useSessionsStore.getState().viewing?.aiNotes).toBe('Neue Notizen'));
  expect(fetchMock).toHaveBeenCalledWith('/api/summarize', expect.objectContaining({ body: JSON.stringify({ transcript: 'Anna: Hallo', language: 'de', templateId: 'general', force_cpu: true }) }));
 });
+test('meeting tasks tab renders exactly one task panel and suggestion selection',async()=>{
+ vi.stubGlobal('fetch',vi.fn(async()=>Response.json({tasks:[],review:{sessionId:'s',sourceRevision:'r',status:'ready',suggestions:[{id:'suggestion',title:'Follow up',description:'',kind:'explicit',assignee:null,dueDate:null,dateReview:null,state:'suggested',evidence:[]}]}})));
+ render(<SessionDetail session={{...session,transcriptFinalized:true}} onBack={vi.fn()}/>);fireEvent.click(screen.getByText('Tasks'));
+ await waitFor(()=>expect(screen.getAllByRole('heading',{name:'Tasks'})).toHaveLength(1));expect(screen.getAllByRole('checkbox',{name:'Select suggestion Follow up'})).toHaveLength(1);
+});
