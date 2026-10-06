@@ -44,6 +44,16 @@ export function verifyOfflineCitations(answer:ChatAnswer,sessions:Session[]):str
  return [...differences].sort();
 }
 
+/** Closed fixture assertions deliberately send unrecognized paraphrases to review. */
+export function verifyPublicBudgetCorrection(answer:ChatAnswer,locale:'en'|'pt'):string[]{
+ const correction=publicSynchronizationFixture(locale).payload.segments[2]!.text;
+ const normalize=(value:string)=>value.normalize('NFC').replace(/\s+/g,' ').trim().replace(/\.$/,'').toLocaleLowerCase(locale);
+ const withoutPrefix=correction.replace(/^(Correction|Correção):\s*/,''),clause=withoutPrefix.split(',')[0]!;
+ const assertions=new Set([correction,withoutPrefix,clause,locale==='en'?'The final approved budget is 43 credits.':'O orçamento final aprovado é de 43 créditos.'].map(normalize));
+ if(!answer.claims.length||answer.claims.some(claim=>!assertions.has(normalize(claim.text))||!claim.citations.some(citation=>citation.quote===correction)))return ['answer.correction-needs-review'];
+ return [];
+}
+
 export async function createOfflineSynchronizationFixture(location:string,generate:ChatGenerator){
  const root=resolve(location);
  if(realpathSync(dirname(root))!==dirname(root))throw Error('Offline fixture parent must be physical');

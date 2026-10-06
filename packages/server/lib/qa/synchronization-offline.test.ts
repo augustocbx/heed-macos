@@ -2,7 +2,9 @@ import {afterEach,expect,test} from 'bun:test';
 import {mkdtempSync,realpathSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createOfflineSynchronizationFixture,verifyOfflineCitations} from './synchronization-offline';
+import {createOfflineSynchronizationFixture,verifyOfflineCitations,verifyPublicBudgetCorrection} from './synchronization-offline';
+import {publicSynchronizationFixture} from './synchronization-integrity';
+import {transcriptEvidence} from '../meeting-chat';
 
 const roots:string[]=[];
 afterEach(()=>{for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
@@ -33,4 +35,13 @@ test('citation verifier rejects replaced quotes, wrong revisions and excluded se
  answer.claims[0]!.citations[0]!.sourceRevision='0'.repeat(64);
  expect(verifyOfflineCitations(answer,[session])).toContain('citation.revision');
  expect(verifyOfflineCitations(turn.answer!,[fixture.meeting('pt')])).toContain('citation.excluded');
+});
+
+test.each(['en','pt'] as const)('corrected %s fact requires an affirmative supported result rather than the token 43',locale=>{
+ const fixture=publicSynchronizationFixture(locale),citation=transcriptEvidence(fixture.session).find(item=>item.quote.includes('43'))!;
+ const answer=(text:string)=>({claims:[{text,citations:[citation]}],coverage:{complete:true,reviewedChunks:1,totalChunks:1,answerLimited:false}});
+ const wrong=locale==='en'?['The final approved budget is 42 credits; the 43 credits proposal was rejected.','The approved budget is not 43 credits.','The final approved budget is 42 credits.']:['O orçamento final aprovado é de 42 créditos; a proposta de 43 créditos foi rejeitada.','O orçamento aprovado não é de 43 créditos.','O orçamento final aprovado é de 42 créditos.'];
+ for(const text of wrong){expect(verifyOfflineCitations(answer(text),[fixture.session])).toEqual([]);expect(verifyPublicBudgetCorrection(answer(text),locale)).toContain('answer.correction-needs-review');}
+ expect(verifyPublicBudgetCorrection(answer(citation.quote),locale)).toEqual([]);
+ expect(verifyPublicBudgetCorrection(answer(locale==='en'?'The approved budget is 43 credits.':'O orçamento aprovado é de 43 créditos.'),locale)).toEqual([]);
 });

@@ -4,7 +4,7 @@ import {dirname,resolve} from 'node:path';
 import {existsSync,readFileSync,realpathSync,writeFileSync} from 'node:fs';
 import {CHAT_SYSTEM,chatResponseSchema,type ChatGenerationRequest} from '../packages/server/lib/meeting-chat';
 import {generateLocalStructured,listLocalChatModels} from '../packages/server/lib/ollama-notes';
-import {createOfflineSynchronizationFixture,verifyOfflineCitations} from '../packages/server/lib/qa/synchronization-offline';
+import {createOfflineSynchronizationFixture,verifyOfflineCitations,verifyPublicBudgetCorrection} from '../packages/server/lib/qa/synchronization-offline';
 import {removeOwnedQuotaFixture} from '../packages/server/lib/qa/capture-quota-fixture';
 import {sha256} from '../packages/server/lib/portable-schema';
 
@@ -46,6 +46,7 @@ try{
     const text=turn.answer.claims.map(claim=>claim.text).join(' ');
     if(text.includes('DISTRACTOR_QA_9999'))failures.push('scope.excluded-fact');
     if(scenario.kind==='label-missing'&&turn.answer.claims.length)failures.push('missing.unsupported-claims');
+    if(scenario.kind==='label-correction')failures.push(...verifyPublicBudgetCorrection(turn.answer,locale));
     if(scenario.required.some(pattern=>!pattern.test(text)))failures.push('answer.required-fact');
     if(!turn.answer.coverage.complete)failures.push('coverage.incomplete');
    }
