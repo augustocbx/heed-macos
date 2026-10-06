@@ -24,6 +24,7 @@ HEADER = "heed-library.json"
 def protected_connection_type():
     """Use public SDK hooks to reject unsigned plaintext and implicit redirects."""
     from smbprotocol.connection import Connection
+    from smbprotocol.exceptions import SMBResponseException
     from smbprotocol.header import Commands, Smb2Flags
     from smbprotocol.tree import SMB2TreeConnectResponse
 
@@ -110,12 +111,18 @@ def protected_connection_type():
             return super().verify_signature(header, expected_sid, force=force)
 
         def receive(self, request, wait=True, timeout=None, resolve_symlinks=False):
-            response = super().receive(
-                request,
-                wait=wait,
-                timeout=30 if timeout is None else min(timeout, 30),
-                resolve_symlinks=False,
-            )
+            try:
+                response = super().receive(
+                    request,
+                    wait=wait,
+                    timeout=30 if timeout is None else min(timeout, 30),
+                    resolve_symlinks=False,
+                )
+            except SMBResponseException as error:
+                # Encrypted errors skip the signature hook and are raised before
+                # receive returns. They need the same request proof as success.
+                self._bind_response(error.header, request)
+                raise
             # The upstream worker skips its signature hook after authenticated
             # decryption, so validate the decrypted association before any parser.
             self._bind_response(response, request)

@@ -515,6 +515,7 @@ class SdkBoundaryTests(unittest.TestCase):
         encrypt_session=None,
         encrypt_tree=None,
         async_response=False,
+        status=0,
     ):
         """Run the real SDK worker on a single in-memory server packet."""
         import logging
@@ -522,6 +523,7 @@ class SdkBoundaryTests(unittest.TestCase):
         from collections import deque
         from smbprotocol.connection import Request, SMB2TransformHeader, SMB2NegotiateResponse
         from smbprotocol.session import SMB2SessionSetupResponse
+        from smbprotocol.exceptions import SMB2ErrorResponse
         from smbprotocol.tree import SMB2TreeConnectResponse
         from smbprotocol.open import SMB2QueryInfoRequest, SMB2QueryInfoResponse
         from smbprotocol.header import SMB2HeaderRequest, SMB2HeaderResponse, Commands, Smb2Flags
@@ -567,6 +569,7 @@ class SdkBoundaryTests(unittest.TestCase):
             )
         header = SMB2HeaderResponse()
         header["command"] = actual
+        header["status"] = status
         header["message_id"] = 7
         header["session_id"] = (
             sid
@@ -579,10 +582,14 @@ class SdkBoundaryTests(unittest.TestCase):
             header["flags"].set_flag(Smb2Flags.SMB2_FLAGS_ASYNC_COMMAND)
             header["reserved"] = 7
             header["tree_id"] = 0
-        if expected == Commands.SMB2_NEGOTIATE:
+        if status and status != 0xC0000016:
+            payload = SMB2ErrorResponse()
+        elif expected == Commands.SMB2_NEGOTIATE:
             payload = SMB2NegotiateResponse()
         elif expected == Commands.SMB2_SESSION_SETUP:
             payload = SMB2SessionSetupResponse()
+            if status == 0xC0000016:
+                payload["buffer"] = b"challenge"
         elif expected == Commands.SMB2_TREE_CONNECT:
             payload = SMB2TreeConnectResponse()
         else:
@@ -711,6 +718,80 @@ class SdkBoundaryTests(unittest.TestCase):
         ):
             with self.subTest(fields=fields), self.assertRaises(SmbError):
                 self.worker_response(Commands.SMB2_QUERY_INFO, encrypted=True, **fields)
+
+    def test_encrypted_error_wrong_command_session_and_tree_are_security_refusals(self):
+        from smbprotocol.header import Commands
+
+        for fields in (
+            dict(actual=Commands.SMB2_SESSION_SETUP),
+            dict(actual=Commands.SMB2_CREATE, sid=2),
+            dict(actual=Commands.SMB2_CREATE, tid=3),
+        ):
+            with self.subTest(fields=fields):
+                with self.assertRaises(SmbError) as caught:
+                    self.worker_response(
+                        Commands.SMB2_CREATE, encrypted=True, status=0xC0000043, **fields
+                    )
+                self.assertEqual(caught.exception.code, "unsupported-security")
+
+    def test_associated_encrypted_sharing_violation_remains_a_real_sdk_exception(self):
+        from smbprotocol.header import Commands
+        from smbprotocol.exceptions import SharingViolation
+
+        with self.assertRaises(SharingViolation) as caught:
+            self.worker_response(
+                Commands.SMB2_CREATE, Commands.SMB2_CREATE, encrypted=True, status=0xC0000043
+            )
+        self.assertEqual(caught.exception.header["command"].get_value(), Commands.SMB2_CREATE)
+        self.assertEqual(caught.exception.header["session_id"].get_value(), 1)
+        self.assertEqual(caught.exception.header["tree_id"].get_value(), 2)
+        self.assertEqual(caught.exception.error_details, [])
+
+    def test_namespace_proof_accepts_only_associated_encrypted_sharing_violations(self):
+        from unittest.mock import patch
+        from smbprotocol.header import Commands
+        from smbprotocol.open import Open
+
+        backend = SmbProtocolBackend()
+        backend.tree = SimpleNamespace(session=SimpleNamespace(connection=None))
+        backend.metadata = lambda handle: dict(directory=True)
+        handle = SimpleNamespace(file_name="Heed/library")
+        attempts = []
+
+        def denied(competitor, impersonation, access, *args):
+            attempts.append(access)
+            self.worker_response(
+                Commands.SMB2_CREATE, Commands.SMB2_CREATE, encrypted=True, status=0xC0000043
+            )
+
+        with patch.object(Open, "create", denied):
+            self.assertTrue(backend.enforce_sharing(handle))
+        self.assertEqual(attempts, [0x82, 0x10080])
+
+        def wrong(competitor, *args):
+            self.worker_response(
+                Commands.SMB2_CREATE, Commands.SMB2_CREATE, encrypted=True, status=0xC0000043, tid=3
+            )
+
+        with patch.object(Open, "create", wrong), self.assertRaises(SmbError):
+            backend.enforce_sharing(handle)
+
+    def test_legitimate_authentication_continuation_keeps_its_sdk_header_and_token(self):
+        from smbprotocol.header import Commands
+        from smbprotocol.exceptions import MoreProcessingRequired
+        from smbprotocol.session import SMB2SessionSetupResponse
+
+        with self.assertRaises(MoreProcessingRequired) as caught:
+            self.worker_response(
+                Commands.SMB2_SESSION_SETUP,
+                Commands.SMB2_SESSION_SETUP,
+                authenticated=False,
+                status=0xC0000016,
+            )
+        response = SMB2SessionSetupResponse()
+        response.unpack(caught.exception.header["data"].get_value())
+        self.assertEqual(caught.exception.header["session_id"].get_value(), 1)
+        self.assertEqual(response["buffer"].get_value(), b"challenge")
 
     def test_unsigned_authenticated_query_is_rejected(self):
         from smbprotocol.header import Commands
