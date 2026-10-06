@@ -1,0 +1,623 @@
+import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { track, untrack, killTree } from './process';
+import {
+	DIRECT_SMB_CODES,
+	DIRECT_SMB_UUID,
+	directSmbError,
+	exactObject,
+	sameDirectIdentity,
+	validateDirectBinding,
+	validateDirectContext,
+	validateDirectCredentials,
+	validateDirectEndpoint,
+	validateDirectIdentity,
+	validateDirectPath,
+	validateDirectProbe,
+} from './smb-direct-types';
+import type {
+	DirectSmbBinding,
+	DirectSmbCredentials,
+	DirectSmbEndpoint,
+	DirectSmbIdentity,
+	DirectSmbNative,
+	DirectSmbProbe,
+	DirectSmbSession,
+	DirectSmbTransactionContext,
+} from './smb-direct-types';
+export type {
+	DirectSmbBinding,
+	DirectSmbCredentials,
+	DirectSmbEndpoint,
+	DirectSmbIdentity,
+	DirectSmbNative,
+	DirectSmbProbe,
+	DirectSmbSession,
+	DirectSmbTransactionContext,
+} from './smb-direct-types';
+
+const FRAME = 65536,
+	RESULT = 2000000,
+	CHUNK = 131072,
+	MAX_BYTES = 8000000000000;
+type Child = ReturnType<typeof Bun.spawn>;
+export type DirectSmbRunner = (helper: string) => Child | Promise<Child>;
+export interface DirectSmbNativeOptions {
+	runner?: DirectSmbRunner;
+	timeoutMs?: number;
+}
+function count(value: unknown): number {
+	if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > MAX_BYTES)
+		throw directSmbError('invalid-input');
+	return value;
+}
+function responseError(value: unknown) {
+	const code =
+		typeof value === 'string' && DIRECT_SMB_CODES.has(value) ? value : 'transport-unavailable';
+	return directSmbError(code);
+}
+function rpcValue(action: string, value: Record<string, unknown>) {
+	if (
+		!/^[a-z][a-z-]{0,31}$/.test(action) ||
+		!value ||
+		typeof value !== 'object' ||
+		Array.isArray(value) ||
+		[
+			'id',
+			'action',
+			'credentials',
+			'endpoint',
+			'binding',
+			'context',
+			'appDir',
+			'identity',
+			'password',
+			'username',
+			'domain',
+			'credentialRef',
+		].some((k) => Object.hasOwn(value, k))
+	)
+		throw directSmbError('invalid-input');
+	if (Object.hasOwn(value, 'path')) validateDirectPath(value.path, action === 'list');
+	for (const k of ['bytes', 'maxBytes']) if (Object.hasOwn(value, k)) count(value[k]);
+	if (
+		Object.hasOwn(value, 'sha256') &&
+		(typeof value.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.sha256))
+	)
+		throw directSmbError('invalid-input');
+	return value;
+}
+/** Validate duplicate keys as well as JSON syntax before interpreting a helper frame. */
+function decodeFrame(data: Uint8Array): Record<string, unknown> {
+	try {
+		const raw = new TextDecoder('utf-8', { fatal: true }).decode(data);
+		if (raw.includes('\r')) throw directSmbError('invalid-protocol');
+		let position = 0;
+		function space() {
+			while (/\s/.test(raw[position] ?? '') && position < raw.length) position++;
+		}
+		function string() {
+			const start = position++;
+			while (position < raw.length) {
+				const c = raw[position++];
+				if (c === '\\') {
+					position++;
+					continue;
+				}
+				if (c === '"') return JSON.parse(raw.slice(start, position)) as string;
+			}
+			throw directSmbError('invalid-protocol');
+		}
+		function value(depth = 0): void {
+			if (depth > 64) throw directSmbError('invalid-protocol');
+			space();
+			if (raw[position] === '"') {
+				string();
+				return;
+			}
+			if (raw[position] === '{') {
+				position++;
+				space();
+				const keys = new Set<string>();
+				if (raw[position] === '}') {
+					position++;
+					return;
+				}
+				for (;;) {
+					space();
+					if (raw[position] !== '"') throw directSmbError('invalid-protocol');
+					const k = string();
+					if (keys.has(k)) throw directSmbError('invalid-protocol');
+					keys.add(k);
+					space();
+					if (raw[position++] !== ':') throw directSmbError('invalid-protocol');
+					value(depth + 1);
+					space();
+					const c = raw[position++];
+					if (c === '}') return;
+					if (c !== ',') throw directSmbError('invalid-protocol');
+				}
+			}
+			if (raw[position] === '[') {
+				position++;
+				space();
+				if (raw[position] === ']') {
+					position++;
+					return;
+				}
+				for (;;) {
+					value(depth + 1);
+					space();
+					const c = raw[position++];
+					if (c === ']') return;
+					if (c !== ',') throw directSmbError('invalid-protocol');
+				}
+			}
+			const match = /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(
+				raw.slice(position),
+			);
+			if (!match) throw directSmbError('invalid-protocol');
+			position += match[0].length;
+		}
+		value();
+		space();
+		if (position !== raw.length) throw directSmbError('invalid-protocol');
+		const parsed = JSON.parse(raw);
+		if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+			throw directSmbError('invalid-protocol');
+		return parsed;
+	} catch {
+		throw directSmbError('invalid-protocol');
+	}
+}
+
+/** A single owned helper; startup credentials are never arguments or environment. */
+class DirectRpcSession implements DirectSmbSession {
+	private reader: ReadableStreamDefaultReader<Uint8Array>;
+	private buffer = Buffer.alloc(0);
+	private sequence = 0;
+	private closed = false;
+	private busy = false;
+	private checkpointed = false;
+	private completed = false;
+	private finishing?: Promise<void>;
+	private abort?: () => void;
+	private startupSignal?: AbortSignal;
+	constructor(
+		private child: Child,
+		private timeoutMs: number,
+		signal?: AbortSignal,
+	) {
+		this.reader = (child.stdout as ReadableStream<Uint8Array>).getReader();
+		this.startupSignal = signal;
+		this.abort = () => {
+			void this.finish();
+		};
+		signal?.addEventListener('abort', this.abort, { once: true });
+	}
+	private async take() {
+		const result = await this.reader.read();
+		if (result.done) throw directSmbError('invalid-protocol');
+		if (
+			result.value.length > RESULT + CHUNK ||
+			this.buffer.length + result.value.length > RESULT + CHUNK
+		)
+			throw directSmbError('bounds-exceeded');
+		this.buffer = Buffer.concat([this.buffer, result.value]);
+	}
+	private async frame(max = RESULT) {
+		for (;;) {
+			const n = this.buffer.indexOf(10);
+			if (n >= 0) {
+				if (n > max) throw directSmbError('bounds-exceeded');
+				const line = this.buffer.subarray(0, n);
+				this.buffer = this.buffer.subarray(n + 1);
+				return decodeFrame(line);
+			}
+			if (this.buffer.length > max) throw directSmbError('bounds-exceeded');
+			await this.take();
+		}
+	}
+	private async bytes(length: number) {
+		while (this.buffer.length < length) await this.take();
+		const data = this.buffer.subarray(0, length);
+		this.buffer = this.buffer.subarray(length);
+		return data;
+	}
+	private async bounded<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+		signal?.throwIfAborted();
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		let onAbort: (() => void) | undefined;
+		const stopped = new Promise<never>((_, reject) => {
+			timeout = setTimeout(() => {
+				void this.finish();
+				reject(directSmbError('transport-unavailable'));
+			}, this.timeoutMs);
+			onAbort = () => {
+				void this.finish();
+				reject(directSmbError('transaction-unavailable'));
+			};
+			signal?.addEventListener('abort', onAbort, { once: true });
+		});
+		try {
+			return await Promise.race([run(), stopped]);
+		} catch (error) {
+			await this.finish();
+			signal?.throwIfAborted();
+			throw responseError((error as { code?: unknown })?.code);
+		} finally {
+			clearTimeout(timeout);
+			if (onAbort) signal?.removeEventListener('abort', onAbort);
+		}
+	}
+	async startup(request: Record<string, unknown>, transaction: boolean, signal?: AbortSignal) {
+		return this.bounded(async () => {
+			const data = Buffer.from(JSON.stringify(request));
+			if (data.length > FRAME) throw directSmbError('bounds-exceeded');
+			const sink = this.child.stdin as Bun.FileSink;
+			await sink.write(data);
+			await sink.write('\n');
+			await sink.flush();
+			if (!transaction) sink.end();
+			const response = await this.frame(FRAME);
+			if (response.ok === false) {
+				exactObject(response, ['ok', 'error']);
+				throw responseError(response.error);
+			}
+			if (transaction) {
+				exactObject(
+					response,
+					response.completed === undefined
+						? ['ok', 'ready', 'checkpointed']
+						: ['ok', 'ready', 'checkpointed', 'completed'],
+				);
+				if (
+					response.ok !== true ||
+					response.ready !== true ||
+					typeof response.checkpointed !== 'boolean' ||
+					(response.completed !== undefined && response.completed !== true) ||
+					this.buffer.length
+				)
+					throw directSmbError('invalid-protocol');
+				this.checkpointed = response.checkpointed;
+				this.completed = response.completed === true;
+				return undefined;
+			}
+			exactObject(response, ['ok', 'value']);
+			if (response.ok !== true) throw directSmbError('invalid-protocol');
+			const result = validateDirectProbe(response.value);
+			while (true) {
+				const next = await this.reader.read();
+				if (next.done) break;
+				if (next.value.length) throw directSmbError('invalid-protocol');
+			}
+			if (this.buffer.length || (await this.child.exited) !== 0)
+				throw directSmbError('invalid-protocol');
+			return result;
+		}, signal);
+	}
+	private async *rpc(
+		action: string,
+		value: Record<string, unknown> = {},
+		source?: AsyncIterable<Uint8Array>,
+		signal?: AbortSignal,
+	): AsyncGenerator<Uint8Array, unknown> {
+		if (this.closed || this.completed) throw directSmbError('transaction-unavailable');
+		if (this.busy) throw directSmbError('destination-busy');
+		signal?.throwIfAborted();
+		rpcValue(action, value);
+		const request = Buffer.from(JSON.stringify({ id: this.sequence + 1, action, ...value }));
+		if (request.length > FRAME) throw directSmbError('bounds-exceeded');
+		this.busy = true;
+		const id = ++this.sequence;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let stop!: (error: Error) => void;
+		const stopped = new Promise<never>((_, reject) => {
+			stop = reject;
+		});
+		stopped.catch(() => {});
+		const abort = () => {
+			void this.finish();
+			stop(directSmbError('transaction-unavailable'));
+		};
+		signal?.addEventListener('abort', abort, { once: true });
+		let sending: Promise<void> | undefined;
+		try {
+			timer = setTimeout(abort, this.timeoutMs);
+			if (
+				[
+					'write',
+					'write-deletion',
+					'write-fence',
+					'write-pending',
+					'retire-pending',
+					'remove-exact',
+				].includes(action)
+			)
+				this.checkpointed = false;
+			const sink = this.child.stdin as Bun.FileSink;
+			await sink.write(request);
+			await sink.write('\n');
+			await sink.flush();
+			sending = (async () => {
+				if (!source) return;
+				const hash = createHash('sha256');
+				let size = 0;
+				for await (const chunk of source) {
+					signal?.throwIfAborted();
+					if (this.closed || !(chunk instanceof Uint8Array))
+						throw directSmbError('transaction-unavailable');
+					size += chunk.length;
+					if (size > Number(value.bytes)) throw directSmbError('bounds-exceeded');
+					hash.update(chunk);
+					for (let offset = 0; offset < chunk.length; offset += CHUNK) {
+						await sink.write(chunk.subarray(offset, offset + CHUNK));
+						await sink.flush();
+					}
+				}
+				if (size !== value.bytes || hash.digest('hex') !== value.sha256)
+					throw directSmbError('invalid-input');
+			})().catch((error) => {
+				void this.finish();
+				throw error;
+			});
+			sending.catch(() => {});
+			let received = 0;
+			for (;;) {
+				const r = await Promise.race([this.frame(), stopped]);
+				signal?.throwIfAborted();
+				if (r.id !== id) throw directSmbError('invalid-protocol');
+				if (r.progress === true) {
+					exactObject(r, ['id', 'progress']);
+					continue;
+				}
+				if (r.ok === false) {
+					exactObject(r, ['id', 'ok', 'error']);
+					throw responseError(r.error);
+				}
+				if (Object.hasOwn(r, 'bytes')) {
+					exactObject(r, ['id', 'bytes']);
+					if (
+						!source &&
+						action === 'read' &&
+						typeof r.bytes === 'number' &&
+						Number.isSafeInteger(r.bytes) &&
+						r.bytes > 0 &&
+						r.bytes <= CHUNK
+					) {
+						received += r.bytes;
+						if (received > Number(value.maxBytes)) throw directSmbError('bounds-exceeded');
+						yield await Promise.race([this.bytes(r.bytes), stopped]);
+						continue;
+					}
+					throw directSmbError('invalid-protocol');
+				}
+				exactObject(r, ['id', 'ok', 'value']);
+				if (r.ok !== true) throw directSmbError('invalid-protocol');
+				await Promise.race([sending!, stopped]);
+				if (action === 'checkpoint') this.checkpointed = true;
+				return r.value;
+			}
+		} catch (error) {
+			await this.finish();
+			signal?.throwIfAborted();
+			throw responseError((error as { code?: unknown })?.code);
+		} finally {
+			clearTimeout(timer);
+			signal?.removeEventListener('abort', abort);
+			this.busy = false;
+		}
+	}
+	async command(action: string, value: Record<string, unknown> = {}, signal?: AbortSignal) {
+		if (this.completed && ['close', 'checkpoint'].includes(action)) return;
+		const iterator = this.rpc(action, value, undefined, signal);
+		for (;;) {
+			const next = await iterator.next();
+			if (next.done) return next.value;
+			throw directSmbError('invalid-protocol');
+		}
+	}
+	async *stream(path: string, maxBytes: number, signal?: AbortSignal) {
+		validateDirectPath(path);
+		count(maxBytes);
+		const iterator = this.rpc('read', { path, maxBytes }, undefined, signal);
+		let completed = false;
+		try {
+			for (;;) {
+				const next = await iterator.next();
+				if (next.done) {
+					completed = true;
+					return;
+				}
+				yield next.value;
+			}
+		} finally {
+			if (!completed) await this.finish();
+			await iterator.return(undefined);
+		}
+	}
+	async read(path: string, maxBytes: number, signal?: AbortSignal) {
+		if (count(maxBytes) > 16 * 1024 * 1024) throw directSmbError('bounds-exceeded');
+		const chunks = [];
+		for await (const data of this.stream(path, maxBytes, signal)) chunks.push(data);
+		return Buffer.concat(chunks);
+	}
+	async write(
+		path: string,
+		bytes: number,
+		sha256: string,
+		source: AsyncIterable<Uint8Array>,
+		signal?: AbortSignal,
+	) {
+		validateDirectPath(path);
+		count(bytes);
+		if (!/^[a-f0-9]{64}$/.test(sha256)) throw directSmbError('invalid-input');
+		for await (const _ of this.rpc('write', { path, bytes, sha256 }, source, signal))
+			throw directSmbError('invalid-protocol');
+	}
+	private finish() {
+		return (this.finishing ??= this.finishOnce());
+	}
+	private async finishOnce() {
+		let reaped = false;
+		this.closed = true;
+		try {
+			(this.child.stdin as Bun.FileSink).end();
+		} catch {}
+		killTree(this.child);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await Promise.race([
+				this.child.exited,
+				new Promise<void>((resolve) => {
+					timer = setTimeout(() => {
+						killTree(this.child, 'SIGKILL');
+						resolve();
+					}, 1500);
+				}),
+			]);
+			clearTimeout(timer);
+			let hardTimer: ReturnType<typeof setTimeout> | undefined;
+			try {
+				await Promise.race([
+					this.child.exited,
+					new Promise<never>((_, reject) => {
+						hardTimer = setTimeout(() => reject(directSmbError('transaction-unavailable')), 1500);
+					}),
+				]);
+				reaped = true;
+			} finally {
+				clearTimeout(hardTimer);
+			}
+		} finally {
+			clearTimeout(timer);
+			if (this.abort) this.startupSignal?.removeEventListener('abort', this.abort);
+			if (reaped) untrack(this.child);
+			try {
+				await this.reader.cancel();
+			} catch {}
+			try {
+				this.reader.releaseLock();
+			} catch {}
+		}
+	}
+	async close() {
+		if (this.closed) return this.finish();
+		if (this.checkpointed && !this.busy && !this.completed) {
+			try {
+				await this.command('close');
+			} finally {
+				await this.finish();
+			}
+		} else await this.finish();
+	}
+}
+
+export class PythonDirectSmbNative implements DirectSmbNative {
+	private helper = fileURLToPath(new URL('../native/smb-direct/guardian.py', import.meta.url));
+	private runner: DirectSmbRunner;
+	private timeoutMs: number;
+	constructor(options: DirectSmbNativeOptions = {}) {
+		this.runner =
+			options.runner ??
+			(() => {
+				throw directSmbError('runtime-unavailable');
+			});
+		this.timeoutMs = options.timeoutMs ?? 120000;
+		if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 1800000)
+			throw directSmbError('invalid-input');
+	}
+	private async start(
+		request: Record<string, unknown>,
+		transaction: boolean,
+		signal?: AbortSignal,
+	) {
+		signal?.throwIfAborted();
+		let child: Child;
+		try {
+			child = track(await this.runner(this.helper));
+		} catch (error) {
+			throw responseError((error as { code?: unknown })?.code);
+		}
+		const session = new DirectRpcSession(child, this.timeoutMs, signal);
+		try {
+			const probe = await session.startup({ protocol: 1, ...request }, transaction, signal);
+			return { session, probe };
+		} catch (error) {
+			await session.close();
+			throw error;
+		}
+	}
+	async probe(
+		endpoint: DirectSmbEndpoint,
+		credentials: DirectSmbCredentials,
+		signal?: AbortSignal,
+	): Promise<DirectSmbProbe> {
+		const e = validateDirectEndpoint(endpoint);
+		const c = validateDirectCredentials(credentials);
+		const { session, probe } = await this.start(
+			{ action: 'probe', endpoint: e, credentials: c },
+			false,
+			signal,
+		);
+		try {
+			if (e.requireEncryption && !probe!.encrypted) throw directSmbError('unsupported-security');
+			return probe!;
+		} finally {
+			await session.close();
+		}
+	}
+	async initialize(
+		endpoint: DirectSmbEndpoint,
+		credentials: DirectSmbCredentials,
+		expectedIdentity: DirectSmbIdentity,
+		destinationId: string,
+		signal?: AbortSignal,
+	): Promise<DirectSmbProbe> {
+		const e = validateDirectEndpoint(endpoint);
+		const c = validateDirectCredentials(credentials);
+		const identity = validateDirectIdentity(expectedIdentity);
+		if (!DIRECT_SMB_UUID.test(destinationId)) throw directSmbError('invalid-input');
+		const { session, probe } = await this.start(
+			{ action: 'initialize', endpoint: e, credentials: c, identity, destinationId },
+			false,
+			signal,
+		);
+		try {
+			if (
+				!sameDirectIdentity(identity, probe!.identity) ||
+				probe!.destinationId !== destinationId ||
+				probe!.destinationVersion !== 3 ||
+				probe!.empty ||
+				(e.requireEncryption && !probe!.encrypted)
+			)
+				throw directSmbError('identity-changed');
+			return probe!;
+		} finally {
+			await session.close();
+		}
+	}
+	async open(
+		binding: DirectSmbBinding,
+		credentials: DirectSmbCredentials,
+		context: DirectSmbTransactionContext,
+		signal?: AbortSignal,
+	): Promise<DirectSmbSession> {
+		const b = validateDirectBinding(binding);
+		const c = validateDirectCredentials(credentials);
+		const { appDir, ...operation } = validateDirectContext(context);
+		const { session } = await this.start(
+			{
+				action: 'transaction',
+				endpoint: b.endpoint,
+				credentials: c,
+				binding: b,
+				context: operation,
+				appDir,
+			},
+			true,
+			signal,
+		);
+		return session;
+	}
+}

@@ -1,0 +1,625 @@
+"""Safety boundary tests use handle-oriented server doubles; no SMB network effects."""
+
+import copy
+import io
+import json
+import unittest
+from types import SimpleNamespace
+
+try:
+    from transport import DirectTransport, SmbProtocolBackend, protected_connection_type
+    from protocol import SmbError, read_frame, validate_endpoint, validate_credentials, validate_rpc
+    from identity import validate_identity
+    from guardian import serve
+except ModuleNotFoundError:
+    DirectTransport = None
+
+ENDPOINT = dict(
+    server="nas.local", port=445, share="meetings", folder="Heed/library", requireEncryption=False
+)
+CREDS = dict(username="reviewer", password="secret-never-log", domain="")
+IDENTITY = dict(
+    serverGuid="0123456789abcdef0123456789abcdef",
+    volumeSerial="00000001",
+    volumeCreated="01db000000000001",
+    rootId="0000000000000010",
+    rootCreated="01db000000000002",
+)
+DEST = "22222222-2222-4222-8222-222222222222"
+
+
+class HandleServer:
+    def __init__(self):
+        self.security = dict(dialect="3.1.1", authenticated=True, signed=True, encrypted=False)
+        self.server_guid = IDENTITY["serverGuid"]
+        self.share_safe = True
+        self.read_only = False
+        self.enforces_sharing = True
+        self.entries = []
+        self.files = {}
+        self.opened = []
+        self.closed = []
+        self.created = []
+        self.changed = None
+        self.unsafe = None
+
+    def connect(self, endpoint, credentials):
+        return self.security
+
+    def root_access(self, path):
+        return dict(
+            readOnly=self.read_only,
+            metadata=self.metadata(SimpleNamespace(path=path, directory=True)),
+        )
+
+    def open(self, path, directory=False, access="read", exclusive=False):
+        if path == self.unsafe:
+            raise SmbError("access-denied")
+        h = SimpleNamespace(path=path, directory=directory, access=access, closed=False)
+        self.opened.append(h)
+        return h
+
+    def metadata(self, handle):
+        value = dict(
+            objectId={
+                "": "0000000000000001",
+                "Heed": "0000000000000002",
+                "Heed/library": "0000000000000010",
+                "Heed/library/objects": "0000000000000003",
+                "Heed/library/heed-library.json": "0000000000000020",
+                "Heed/library/objects/abc": "0000000000000021",
+            }.get(handle.path, "0000000000000030"),
+            created=IDENTITY["rootCreated"],
+            volumeSerial=IDENTITY["volumeSerial"],
+            volumeCreated=IDENTITY["volumeCreated"],
+            directory=handle.directory,
+            reparse=False,
+            deletePending=False,
+            links=1,
+            bytes=len(self.files.get(handle.path, b"")),
+        )
+        if self.changed and handle.path == ENDPOINT["folder"]:
+            value.update(self.changed)
+        return value
+
+    def enforce_sharing(self, handle):
+        return self.enforces_sharing
+
+    def list(self, handle, limit):
+        return iter(self.entries)
+
+    def read(self, handle, offset, size):
+        return self.files[handle.path][offset : offset + size]
+
+    def exclusive_create(self, path, data):
+        if path in self.files:
+            raise SmbError("destination-exists")
+        self.created.append(path)
+        self.files[path] = data
+        self.entries.append(path.rsplit("/", 1)[-1])
+        return self.open(path)
+
+    def flush(self, handle):
+        return None
+
+    def close_handle(self, handle):
+        handle.closed = True
+        self.closed.append(handle.path)
+
+    def close(self):
+        for h in self.opened:
+            if not h.closed:
+                self.close_handle(h)
+
+
+class TransportTests(unittest.TestCase):
+    def setUp(self):
+        self.assertIsNotNone(DirectTransport, "direct authenticated transport is not implemented")
+        self.server = HandleServer()
+
+    def transport(self):
+        return DirectTransport(ENDPOINT, CREDS, backend=self.server)
+
+    def test_endpoint_aliases_are_canonical_and_paths_are_unambiguous(self):
+        self.assertEqual(
+            validate_endpoint(dict(ENDPOINT, server="NAS.Local."))["server"], "nas.local"
+        )
+        self.assertEqual(
+            validate_endpoint(dict(ENDPOINT, server="bücher.example"))["server"],
+            "xn--bcher-kva.example",
+        )
+        for field, values in [
+            (
+                "server",
+                [
+                    "smb://u:p@nas/share",
+                    "nas:445",
+                    "nas\n.local",
+                    "127.00.0.1",
+                    "0x7f000001",
+                    "127.1",
+                    "0177.0.0.1",
+                ],
+            ),
+            ("folder", ["../x", "x/../y", "x//y", "x%2fy", "x\\y", "x.", "CON"]),
+        ]:
+            for value in values:
+                with self.subTest(value=value), self.assertRaises(SmbError):
+                    validate_endpoint(dict(ENDPOINT, **{field: value}))
+        for port in (139, 5001, 48445):
+            with self.assertRaises(SmbError):
+                validate_endpoint(dict(ENDPOINT, port=port))
+        self.assertEqual(
+            validate_endpoint(dict(ENDPOINT, server="localhost", port=48445))["port"], 48445
+        )
+        with self.assertRaises(SmbError):
+            validate_credentials(dict(CREDS, password="secret\0"))
+        with self.assertRaises(SmbError):
+            validate_credentials(dict(CREDS, password="bad\ud800"))
+
+    def test_authenticated_signed_and_encrypted_sessions_are_accepted(self):
+        self.assertEqual(self.transport().probe()["identity"], IDENTITY)
+        self.server.security.update(signed=False, encrypted=True)
+        self.assertEqual(self.transport().probe()["security"], "encrypted")
+
+    def test_guest_null_smb2_and_unknown_security_are_rejected_before_handles(self):
+        for change in [
+            dict(authenticated=False),
+            dict(dialect="2.1"),
+            dict(signed=False, encrypted=False),
+        ]:
+            self.server = HandleServer()
+            self.server.security.update(change)
+            with self.subTest(change=change), self.assertRaises(SmbError):
+                self.transport().probe()
+            self.assertEqual(self.server.opened, [])
+
+    def test_root_access_observation_is_tied_to_pinned_identity(self):
+        original = self.server.root_access
+
+        def replaced(path):
+            value = original(path)
+            self.server.changed = dict(created="01db000000000003")
+            return value
+
+        self.server.root_access = replaced
+        with self.assertRaises(SmbError):
+            self.transport().probe()
+        self.assertEqual(self.server.created, [])
+
+    def test_read_only_access_is_reported_and_refuses_initialization(self):
+        self.server.read_only = True
+        t = self.transport()
+        self.assertTrue(t.probe()["readOnly"])
+        with self.assertRaises(SmbError):
+            t.initialize(IDENTITY, DEST)
+        self.assertEqual(self.server.created, [])
+
+    def test_complete_identity_mismatch_preserves_folder(self):
+        for field in IDENTITY:
+            wrong = dict(IDENTITY)
+            wrong[field] = "00000002" if field == "volumeSerial" else ("1" * len(wrong[field]))
+            with self.subTest(field=field), self.assertRaises(SmbError):
+                self.transport().probe(wrong)
+            self.assertEqual(self.server.created, [])
+
+    def test_dfs_reparse_multilink_and_unenforced_namespace_are_rejected(self):
+        for change in [
+            dict(reparse=True),
+            dict(deletePending=True),
+            dict(links=2),
+            dict(objectId="0000000000000000"),
+            dict(created="ffffffffffffffff"),
+            dict(created="fffffffffffffffe"),
+        ]:
+            self.server = HandleServer()
+            self.server.changed = change
+            with self.subTest(change=change), self.assertRaises(SmbError):
+                self.transport().probe()
+        for field in ["share_safe", "enforces_sharing"]:
+            self.server = HandleServer()
+            setattr(self.server, field, False)
+            with self.assertRaises(SmbError):
+                self.transport().probe()
+
+    def test_repeated_object_identity_for_different_paths_is_refused(self):
+        original = self.server.metadata
+
+        def alias(handle):
+            value = original(handle)
+            if handle.path == "Heed":
+                value["objectId"] = "0000000000000010"
+            return value
+
+        self.server.metadata = alias
+        with self.assertRaises(SmbError) as caught:
+            self.transport().probe()
+        self.assertEqual(caught.exception.code, "unsupported-identity")
+        self.assertEqual(self.server.created, [])
+
+    def test_every_ancestor_is_pinned_and_denied_ancestor_refuses_reads(self):
+        t = self.transport()
+        t.probe()
+        self.assertEqual([h.path for h in self.server.opened], ["", "Heed", "Heed/library"])
+        self.server.unsafe = "Heed"
+        with self.assertRaises(SmbError):
+            self.transport().probe()
+        t.close()
+        self.assertTrue(all(h.closed for h in self.server.opened))
+
+    def test_bounded_listing_and_denied_reads_refuse_initialization(self):
+        self.server.entries = [f"entry{i}" for i in range(10001)]
+        with self.assertRaises(SmbError):
+            self.transport().probe()
+        self.server.entries = ["heed-library.json"]
+        self.server.unsafe = "Heed/library/heed-library.json"
+        with self.assertRaises(SmbError):
+            self.transport().probe()
+        self.assertEqual(self.server.created, [])
+
+    def test_initialize_is_exclusive_and_does_not_replace_existing_headers(self):
+        t = self.transport()
+        p = t.initialize(IDENTITY, DEST)
+        self.assertEqual(p["destinationVersion"], 3)
+        self.assertEqual(
+            json.loads(self.server.files["Heed/library/heed-library.json"]),
+            dict(format="heed-portable-library", schemaVersion=3, destinationId=DEST),
+        )
+        before = copy.deepcopy(self.server.files)
+        with self.assertRaises(SmbError):
+            t.initialize(IDENTITY, DEST)
+        self.assertEqual(self.server.files, before)
+
+    def test_initialize_revalidates_birth_before_exclusive_create(self):
+        t = self.transport()
+        t.probe()
+        self.server.changed = dict(created="01db000000000003")
+        with self.assertRaises(SmbError):
+            t.initialize(IDENTITY, DEST)
+        self.assertEqual(self.server.created, [])
+
+    def test_initialize_revalidates_after_empty_listing_before_create(self):
+        server = self.server
+        calls = 0
+
+        def listing(handle, limit):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                server.changed = dict(created="01db000000000003")
+            return iter([])
+
+        server.list = listing
+        with self.assertRaises(SmbError):
+            self.transport().initialize(IDENTITY, DEST)
+        self.assertEqual(server.created, [])
+
+    def test_extra_startup_data_has_no_remote_effects(self):
+        output = io.BytesIO()
+        startup = dict(
+            protocol=1,
+            action="initialize",
+            endpoint=ENDPOINT,
+            credentials=CREDS,
+            identity=IDENTITY,
+            destinationId=DEST,
+        )
+        serve(
+            io.BytesIO((json.dumps(startup) + "\n{}\n").encode()),
+            output,
+            backend_factory=lambda: self.server,
+        )
+        self.assertEqual(json.loads(output.getvalue()), dict(ok=False, error="invalid-protocol"))
+        self.assertEqual(self.server.created, [])
+
+    def test_unknown_headers_and_legacy_versions_are_preserved(self):
+        for version in [1, 2, 4]:
+            self.server = HandleServer()
+            self.server.entries = ["heed-library.json"]
+            self.server.files["Heed/library/heed-library.json"] = json.dumps(
+                dict(format="heed-portable-library", schemaVersion=version, destinationId=DEST)
+            ).encode()
+            with self.assertRaises(SmbError):
+                self.transport().probe()
+            self.assertEqual(self.server.created, [])
+
+    def test_read_pins_parents_and_bounds_bytes(self):
+        t = self.transport()
+        t.probe()
+        self.server.files["Heed/library/objects/abc"] = b"abc"
+        self.assertEqual(b"".join(t.stream("objects/abc", 3)), b"abc")
+        with self.assertRaises(SmbError):
+            b"".join(t.stream("objects/abc", 2))
+        self.assertIn("Heed/library/objects", [h.path for h in self.server.opened])
+
+    def test_malformed_extra_and_oversized_frames_refuse_effects(self):
+        for data in [b'{"a":1,"a":2}\n', b"x" * 65537 + b"\n", b"{}", b"{}\r\n"]:
+            with self.subTest(data=data[:32]), self.assertRaises(SmbError):
+                read_frame(io.BytesIO(data))
+        for value in [
+            dict(id=1, action="read", path="../x", maxBytes=1),
+            dict(
+                id=1, action="write", path="objects/a", bytes=3, sha256="0" * 64, credentials=CREDS
+            ),
+            dict(id=1, action="read", path="objects/a", maxBytes=1, extra=True),
+        ]:
+            with self.assertRaises(SmbError):
+                validate_rpc(value, 1)
+
+    def test_guardian_sanitizes_sdk_exception_and_transaction_effects_are_gated(self):
+        class Broken(HandleServer):
+            def connect(self, *args):
+                raise RuntimeError("password secret-never-log server private-path")
+
+        output = io.BytesIO()
+        serve(
+            io.BytesIO(
+                (
+                    json.dumps(
+                        dict(protocol=1, action="probe", endpoint=ENDPOINT, credentials=CREDS)
+                    )
+                    + "\n"
+                ).encode()
+            ),
+            output,
+            backend_factory=lambda: Broken(),
+        )
+        self.assertEqual(
+            json.loads(output.getvalue()), dict(ok=False, error="transport-unavailable")
+        )
+        output = io.BytesIO()
+        binding = dict(
+            endpoint=ENDPOINT,
+            identity=IDENTITY,
+            destinationId=DEST,
+            destinationVersion=3,
+            readOnly=False,
+            security="signed",
+            id="11111111-1111-4111-8111-111111111111",
+            name="Test",
+            connectionGeneration="33333333-3333-4333-8333-333333333333",
+            credentialRef="44444444-4444-4444-8444-444444444444",
+        )
+        startup = dict(
+            protocol=1,
+            action="transaction",
+            endpoint=ENDPOINT,
+            credentials=CREDS,
+            binding=binding,
+            context=dict(operationId=DEST, deviceId=DEST, kind="publish"),
+            appDir="/private/tmp/task1",
+        )
+        serve(
+            io.BytesIO(
+                (
+                    json.dumps(startup)
+                    + "\n"
+                    + json.dumps(
+                        dict(id=1, action="write", path="objects/abc", bytes=0, sha256="0" * 64)
+                    )
+                    + "\n"
+                ).encode()
+            ),
+            output,
+            backend_factory=lambda: self.server,
+        )
+        self.assertIn(b"unsupported-coordination", output.getvalue())
+        self.assertEqual(self.server.created, [])
+
+
+class SdkBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        self.assertIsNotNone(DirectTransport, "direct transport is not implemented")
+        try:
+            import smbprotocol
+        except ImportError:
+            self.skipTest("pinned SDK boundary tests require the private development venv")
+
+    def test_unsigned_plaintext_is_rejected_and_handshake_is_allowed(self):
+        from smbprotocol.connection import Connection
+        from smbprotocol.header import SMB2HeaderResponse, Commands
+        from smbprotocol.exceptions import SMBException
+        from uuid import UUID
+
+        Strict = protected_connection_type()
+        c = Strict(UUID(int=1), "nas.local", require_signing=True)
+        h = SMB2HeaderResponse()
+        h["command"] = Commands.SMB2_NEGOTIATE
+        c.verify_signature(h, 0)
+        c.session_table[1] = SimpleNamespace(session_key=b"k", signing_key=b"k", encrypt_data=False)
+        h["command"] = Commands.SMB2_QUERY_INFO
+        with self.assertRaises(SmbError):
+            c.verify_signature(h, 1)
+        h["command"] = Commands.SMB2_SESSION_SETUP
+        c.verify_signature(h, 1)
+
+    def test_encrypted_share_rejects_plaintext_even_with_valid_session_signing(self):
+        from smbprotocol.header import SMB2HeaderResponse, Commands
+        from uuid import UUID
+
+        c = protected_connection_type()(UUID(int=1), "nas.local", require_signing=True)
+        c.session_table[1] = SimpleNamespace(
+            session_key=b"k",
+            signing_key=b"k",
+            encrypt_data=False,
+            tree_connect_table={2: SimpleNamespace(encrypt_data=True)},
+        )
+        h = SMB2HeaderResponse()
+        h["command"] = Commands.SMB2_QUERY_INFO
+        h["tree_id"] = 2
+        with self.assertRaises(SmbError):
+            c.verify_signature(h, 1)
+
+    def test_signed_plaintext_is_verified_and_tampered_data_is_rejected(self):
+        from smbprotocol.header import SMB2HeaderResponse, Commands, Smb2Flags
+        from smbprotocol.exceptions import SMBException
+        from cryptography.hazmat.primitives.cmac import CMAC
+        from cryptography.hazmat.primitives.ciphers import algorithms
+        from uuid import UUID
+
+        c = protected_connection_type()(UUID(int=1), "nas.local", require_signing=True)
+        c.dialect = 0x300
+        key = b"k" * 16
+        c.session_table[1] = SimpleNamespace(session_key=key, signing_key=key, encrypt_data=False)
+        h = SMB2HeaderResponse()
+        h["command"] = Commands.SMB2_QUERY_INFO
+        h["flags"].set_flag(Smb2Flags.SMB2_FLAGS_SIGNED)
+        signer = CMAC(algorithms.AES(key))
+        signer.update(h.pack())
+        h["signature"] = signer.finalize()
+        c.verify_signature(h, 1)
+        h["data"] = b"tampered"
+        with self.assertRaises(SMBException):
+            c.verify_signature(h, 1)
+
+    def test_root_write_access_comes_from_the_actual_access_query(self):
+        from smbprotocol.file_info import FileAccessInformation
+
+        backend = SmbProtocolBackend()
+        handle = SimpleNamespace()
+        observed = []
+
+        def opened(path, **kwargs):
+            observed.append(kwargs)
+            return handle
+
+        backend.open = opened
+        backend.close_handle = lambda h: observed.append("closed")
+        backend.metadata = lambda h: dict(
+            objectId="0000000000000010",
+            created="01db000000000002",
+            volumeSerial="00000001",
+            volumeCreated="01db000000000001",
+            directory=True,
+            reparse=False,
+            deletePending=False,
+            links=1,
+            bytes=0,
+        )
+        backend.query = lambda h, kind: (
+            dict(access_flags=0x1) if kind is FileAccessInformation else None
+        )
+        self.assertTrue(backend.root_access("Heed/library")["readOnly"])
+        self.assertEqual(observed[0]["access"], "maximum")
+        self.assertEqual(observed[-1], "closed")
+        backend.query = lambda h, kind: dict(access_flags=0x7)
+        self.assertFalse(backend.root_access("Heed/library")["readOnly"])
+
+    def test_unsupported_identity_query_is_a_typed_refusal(self):
+        from smbprotocol.open import SMB2QueryInfoResponse
+        from smbprotocol.exceptions import InvalidInfoClass
+        from smbprotocol.header import SMB2HeaderResponse
+        from smbprotocol.file_info import FileInternalInformation
+
+        backend = SmbProtocolBackend()
+        h = SMB2HeaderResponse()
+        h["status"] = 0xC0000003
+        backend.connection = SimpleNamespace(
+            send=lambda *a, **k: None,
+            receive=lambda *a, **k: (_ for _ in ()).throw(InvalidInfoClass(h)),
+        )
+        backend.session = SimpleNamespace(session_id=1)
+        backend.tree = SimpleNamespace(tree_connect_id=2)
+        with self.assertRaises(SmbError) as caught:
+            backend.query(SimpleNamespace(file_id=b"x" * 16), FileInternalInformation)
+        self.assertEqual(caught.exception.code, "unsupported-identity")
+
+    def test_public_receive_disables_symlink_resolution(self):
+        from unittest.mock import patch
+        from smbprotocol.connection import Connection
+        from smbprotocol.header import SMB2HeaderResponse, Commands
+        from uuid import UUID
+
+        h = SMB2HeaderResponse()
+        h["command"] = Commands.SMB2_QUERY_INFO
+        observed = []
+
+        def received(connection, request, **kwargs):
+            observed.append(kwargs)
+            return h
+
+        with patch.object(Connection, "receive", received):
+            protected_connection_type()(UUID(int=1), "nas.local").receive(
+                None, resolve_symlinks=True
+            )
+        self.assertFalse(observed[0]["resolve_symlinks"])
+        self.assertEqual(observed[0]["timeout"], 30)
+
+    def test_identity_queries_use_real_sdk_wire_structures_and_exact_filetime(self):
+        import struct
+        from smbprotocol.open import SMB2QueryInfoResponse
+        from smbprotocol.header import SMB2HeaderResponse, Commands
+
+        backend = SmbProtocolBackend()
+        sent = []
+        payloads = {
+            (1, 6): struct.pack("<Q", 16),
+            (1, 4): struct.pack("<QQQQII", 0x01DB000000000002, 0, 0, 0, 16, 0),
+            (1, 5): struct.pack("<qqI??H", 0, 0, 1, False, True, 0),
+            (2, 1): struct.pack("<QIIBB", 0x01DB000000000001, 1, 0, 0, 0),
+        }
+
+        def send(message, **kwargs):
+            sent.append((message, kwargs))
+            return message
+
+        def receive(message, **kwargs):
+            result = SMB2QueryInfoResponse()
+            result["buffer"] = payloads[
+                (message["info_type"].get_value(), message["file_info_class"].get_value())
+            ]
+            header = SMB2HeaderResponse()
+            header["command"] = Commands.SMB2_QUERY_INFO
+            header["data"] = result.pack()
+            return header
+
+        backend.connection = SimpleNamespace(send=send, receive=receive)
+        backend.session = SimpleNamespace(session_id=1)
+        backend.tree = SimpleNamespace(tree_connect_id=2)
+        value = backend.metadata(SimpleNamespace(file_id=b"x" * 16))
+        self.assertEqual(value["objectId"], "0000000000000010")
+        self.assertEqual(value["created"], "01db000000000002")
+        self.assertEqual(value["volumeCreated"], "01db000000000001")
+        self.assertFalse(value["deletePending"])
+        self.assertTrue(
+            all(message["file_id"].get_value() == b"x" * 16 for message, kwargs in sent)
+        )
+        self.assertEqual([kwargs for message, kwargs in sent], [dict(sid=1, tid=2)] * 4)
+
+    def test_query_identity_uses_supported_file_and_volume_info_not_open_id(self):
+        from smbprotocol.file_info import (
+            FileBasicInformation,
+            FileInternalInformation,
+            FileStandardInformation,
+            FileFsVolumeInformation,
+        )
+
+        backend = SmbProtocolBackend()
+        queries = []
+
+        def query(handle, kind):
+            queries.append(kind)
+            if kind is FileInternalInformation:
+                return {"index_number": 16}
+            if kind is FileBasicInformation:
+                return {"creation_time": 0x01DB000000000002, "file_attributes": 16}
+            if kind is FileStandardInformation:
+                return {
+                    "number_of_links": 1,
+                    "directory": True,
+                    "end_of_file": 0,
+                    "delete_pending": False,
+                }
+            if kind is FileFsVolumeInformation:
+                return {"volume_creation_time": 0x01DB000000000001, "volume_serial_number": 1}
+            raise AssertionError("unexpected identity query")
+
+        backend.query = query
+        receipt = backend.metadata(SimpleNamespace(file_id=b"\xff" * 16))
+        self.assertEqual(receipt["objectId"], "0000000000000010")
+        self.assertEqual(receipt["volumeCreated"], "01db000000000001")
+        self.assertEqual(len(queries), 4)
+
+
+if __name__ == "__main__":
+    unittest.main()
