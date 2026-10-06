@@ -47,6 +47,7 @@ export class PortableLibrary {
   for await(const chunk of createReadStream(source)){signal?.throwIfAborted();bytes+=chunk.length;if(bytes>stat.size)throw new Error('Audio changed during integrity verification');hash.update(chunk);}const after=lstatSync(source);if(bytes!==stat.size||after.size!==stat.size||after.mtimeMs!==stat.mtimeMs||after.ino!==stat.ino)throw new Error('Audio changed during integrity verification');return {bytes,hash:hash.digest('hex')};
  }
  private async operation<T>(run:()=>Promise<T>,signal?:AbortSignal):Promise<T>{signal?.throwIfAborted();if(this.active||(this.lease&&this.leaseContext.getStore()!==this.lease))throw new Error('A library operation is already running');this.active=true;try{return await run();}finally{this.active=false;}}
+ isBusy():boolean{return this.active||!!this.lease;}
  async withProvider<T>(provider:LibraryProvider,run:(library:PortableLibrary)=>Promise<T>,signal?:AbortSignal):Promise<T>{signal?.throwIfAborted();if(this.active||this.lease)throw new Error('A library operation is already running');const lease=Symbol('provider'),previous=this.options.provider;this.lease=lease;this.options.provider=provider;try{return await this.leaseContext.run(lease,()=>run(this));}finally{this.options.provider=previous;this.lease=undefined;}}
  runMaintenance<T>(run:()=>Promise<T>,signal?:AbortSignal):Promise<T>{return this.operation(run,signal);}
  selectProvider(provider?:LibraryProvider):void{if(this.active||this.lease)throw new Error('A library operation is already running');this.options.provider=provider;}
