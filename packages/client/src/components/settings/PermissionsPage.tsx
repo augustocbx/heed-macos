@@ -6,6 +6,8 @@ import { permissionsApi, type PermissionAction, type PermissionSnapshot } from '
 import styles from './PermissionsPage.module.css';
 import { AutomaticNotesSettings } from '@/components/ai-notes/AutomaticNotesSettings';
 
+import { MeetingDetectionSettings } from "./MeetingDetectionSettings";
+
 export function PermissionsPage() {
  const {locale,tr}=useLocale();
  const selectLocale=useLocaleStore(s=>s.select);
@@ -62,6 +64,7 @@ export function PermissionsPage() {
    {localeError && <p role="alert">{tr("Could not save interface language. Check that Heed is running and try again.")}</p>}
   </article>
   <AutomaticNotesSettings />
+  <MeetingDetectionSettings />
   <div className={`${styles.summary} ${ready ? styles.ready : styles.attention}`} role="status"><strong>{tr(title)}</strong><p>{tr(!connected ? 'Open the Heed app from the menu bar icon to check and authorize access.' : ready ? 'The required permissions are authorized.' : 'Complete the authorizations below before starting a meeting.')}</p><button onClick={() => void refresh()}>{tr('Check again')}</button></div>
   {(actionError || snapshot?.error) && <p className={styles.error} role="alert">{tr(actionError || snapshot?.error || "")}</p>}
   {notice && <p className={styles.notice} role="status">{tr(notice)}</p>}

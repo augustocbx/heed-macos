@@ -72,3 +72,5 @@ vi.mock('@/api/automaticNotes', () => ({ automaticNotesApi: {
  models: vi.fn(async () => ({ models: [] })),
 } }));
 vi.mock('@/api/templates', () => ({ templatesApi: { list: vi.fn(async () => [{ id: 'general', name: 'General', prompt: '' }]) } }));
+
+vi.mock("./MeetingDetectionSettings", () => ({ MeetingDetectionSettings: () => null }));

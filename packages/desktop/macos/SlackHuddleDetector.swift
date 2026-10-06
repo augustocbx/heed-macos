@@ -14,6 +14,7 @@ final class SlackHuddleDetector {
     private var cursors: [String: Cursor] = [:]
     private var states: [String: Bool] = [:]
     private(set) var available = false
+    var hasObservedState: Bool { !states.isEmpty }
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
         defaultRoots = [
@@ -140,6 +141,7 @@ func slackHuddleDetectorSelfTests() throws {
     let detector = SlackHuddleDetector(home: home)
     try check(detector.canReadLogs, "Settings must check actual readability")
     try check(detector.poll(slackRunning: true) == false, "History must start at EOF")
+    try check(!detector.hasObservedState, "EOF without a new event is unknown, not proof a running call ended")
     func append(_ text: String) throws {
         let handle = try FileHandle(forWritingTo: file)
         defer { try? handle.close() }
@@ -150,6 +152,7 @@ func slackHuddleDetectorSelfTests() throws {
     try check(detector.poll(slackRunning: true) == false, "A partial line must wait for a newline")
     try append("\n")
     try check(detector.poll(slackRunning: true) == true, "A new STARTED must start")
+    try check(detector.hasObservedState, "A supported transition establishes readable call state")
     try append(stop)
     try check(detector.poll(slackRunning: true) == false, "A new NOT_STARTED must end")
     try Data(start.utf8).write(to: file, options: .atomic)

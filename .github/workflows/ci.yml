@@ -15,6 +15,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Server tests
         run: bun test packages/server/lib
+      - name: Scoped Meet bridge tests
+        run: bun test packages/desktop/browser-meet
       - name: Interface tests
         run: NODE_OPTIONS=--no-experimental-webstorage bun run --cwd packages/client test --run
       - name: Speaker identity preservation tests
@@ -24,7 +26,7 @@ jobs:
       - name: Manual transcription selection tests
         run: python3 -m unittest discover -s packages/transcription -p manual_transcription_test.py
       - name: Check Python syntax
-        run: python3 -m py_compile packages/transcription/transcription_server.py packages/transcription/voice_identity.py packages/transcription/meeting_language.py packages/transcription/manual_transcription.py
+        run: python3 -m py_compile packages/transcription/transcription_server.py packages/transcription/voice_identity.py packages/transcription/meeting_language.py packages/transcription/manual_transcription.py packages/desktop/browser-meet/native-host.py packages/desktop/browser-meet/register-host.py
       - name: Build interface
         run: bun run build
       - name: Check installers

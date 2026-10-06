@@ -1,0 +1,11 @@
+{
+  "extensionName": {
+    "message": "Heed Meet detection"
+  },
+  "extensionDescription": {
+    "message": "Detect explicit Google Meet call controls and report call state to the local Heed service."
+  },
+  "actionTitle": {
+    "message": "Heed Meet detection: open Heed Settings for status"
+  }
+}
