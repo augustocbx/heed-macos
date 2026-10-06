@@ -54,7 +54,14 @@ export class MacCloudNative implements CloudNative {
  async json(request:CloudRequest,signal?:AbortSignal){const chunks:Uint8Array[]=[];for await(const chunk of this.read(request,['list','inventory'].includes(request.action)?2_000_000:150000,signal,true))chunks.push(chunk);try{return JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{throw cloudUnavailable();}}
  async write(request:CloudRequest,source:AsyncIterable<Uint8Array>,signal?:AbortSignal){
   const {process,diagnostic,abort,clean}=await this.spawn(request,signal);const response=boundedOutput(process.stdout,4096).catch(()=>null);let size=0;
-  try{for await(const chunk of source){signal?.throwIfAborted();size+=chunk.length;if(size>(request.bytes??0))throw cloudUnavailable();await process.stdin.write(chunk);await process.stdin.flush();}
+  try{for await(const chunk of source){signal?.throwIfAborted();size+=chunk.length;if(size>(request.bytes??0))throw cloudUnavailable();
+    // Only transport failures may use the helper diagnostic; source errors retain their identity.
+    try{await process.stdin.write(chunk);await process.stdin.flush();}catch(error){
+     if((error as NodeJS.ErrnoException)?.code!=='EPIPE')throw error;
+     try{process.stdin.end();}catch{}const grace=setTimeout(abort,1000);
+     try{const exit=await process.exited,data=await diagnostic;signal?.throwIfAborted();throw exit!==0?nativeFailure(data):cloudUnavailable();}finally{clearTimeout(grace);}
+    }
+   }
    if(size!==request.bytes)throw cloudUnavailable();process.stdin.end();const exit=await process.exited;signal?.throwIfAborted();if(exit!==0)throw nativeFailure(await diagnostic);if(await response===null)throw cloudUnavailable();
   }finally{try{process.stdin.end();}catch{}abort();await process.exited;await Promise.all([response,diagnostic]);clean();}
  }
