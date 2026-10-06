@@ -1,3 +1,4 @@
+import {chatErrorMessages} from "./chat-errors";
 import { useEffect, useRef, useState } from "react";
 import type { ChatCommand, ChatThread, Session, TranscriptEvidence } from "@heed/shared";
 import { ApiError } from "@/api/client";
@@ -7,26 +8,7 @@ import { fmtDuration } from "@/lib/format";
 import styles from "./MeetingChat.module.css";
 
 const errorReason=(value:unknown)=>value instanceof Error ? value.message : String(value);
-const messages:Record<string,string>={
- "cancelled":"Answer cancelled.",
- "context-limit":"The model context limit was reached. Ask a shorter or narrower question.",
- "source-changed":"The transcript changed. Refresh before asking or retrying.",
- "history-changed":"Chat history changed. Refresh and retry.",
- "model-missing":"The selected local model is not installed. Choose another model.",
- "model-incompatible":"This model cannot answer questions. Choose an installed chat model.",
- "ollama-unavailable":"Local chat unavailable. Start Ollama and retry.",
- "local-only":"Chat requires an installed local model.",
- "invalid-evidence":"The model returned unsupported citations. Retry or choose another model.",
- "invalid-answer":"The model returned an invalid answer. Retry or choose another model.",
- "incomplete-output":"The answer was interrupted. Retry when ready.",
- "generation-failed":"Could not generate an answer. Retry or choose another model.",
- "interrupted":"The answer was interrupted. Retry when ready.",
- "resources-busy":"Answer stopped to prioritize recording or transcription.",
- "chat-storage-failed":"Could not save chat history. Refresh and retry.",
- "transcript-empty":"This meeting has no transcript evidence.",
- "transcript-not-final":"Chat becomes available after the final transcript is saved.",
- "history-full":"Chat history is full. Clear it before asking another question.",
-};
+
 interface Props {session:Session;onCitation:(citation:TranscriptEvidence)=>void;}
 export function MeetingChat({session,onCitation}:Props) {
  const {tr}=useLocale();
@@ -36,7 +18,7 @@ export function MeetingChat({session,onCitation}:Props) {
  const [clearing,setClearing]=useState(false);
  const mounted=useRef(false);const version=useRef(0);const sequence=useRef(0);
  const pending=useRef<Extract<ChatCommand,{action:"send"}>|null>(null);
- const errorText=(value:unknown)=>tr(messages[value instanceof Error ? value.message : String(value)]||"Could not load or update chat. Refresh and retry.");
+ const errorText=(value:unknown)=>tr(chatErrorMessages[value instanceof Error ? value.message : String(value)]||"Could not load or update chat. Refresh and retry.");
  useEffect(()=>{
   mounted.current=true;setThread(null);setError("");setQuestion("");pending.current=null;setModel("");setModels([]);
   const id=session.id;let disposed=false;const generation=++version.current;

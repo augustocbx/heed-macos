@@ -1,3 +1,4 @@
+import {LibraryChat} from "@/components/chat/LibraryChat";
 import { TasksPanel } from "@/components/tasks/TasksPanel";
 import { useLocaleStore } from "@/stores/locale.ts";
 import { useEffect } from "react";
@@ -42,6 +43,7 @@ export function App() {
 				{currentPage === "sessions" && <SessionsPage />}
 				{currentPage === "settings" && <PermissionsPage />}
     {currentPage === "tasks" && <TasksPanel />}
+    {currentPage === "chat" && <LibraryChat/>}
 			</main>
 			<Footer />
 			<Toast />

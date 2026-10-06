@@ -1,7 +1,8 @@
+import { LibraryChatService, libraryChatResponse } from "./lib/library-chat.ts";
 import { MeetingTasksService } from "./lib/meeting-tasks.ts";
 import { tasksResponse } from "./lib/tasks-http.ts";
 import { generateTaskSuggestions } from "./lib/task-generation.ts";
-import { MeetingChatService, CHAT_SYSTEM, chatApiResponse } from "./lib/meeting-chat.ts";
+import { MeetingChatService, CHAT_SYSTEM, chatApiResponse, type ChatGenerationRequest } from "./lib/meeting-chat.ts";
 import { MeetingDetectionController } from "./lib/meeting-detection.ts";
 import { meetingDetectionRoute } from "./lib/meeting-detection-http.ts";
 import { AutomaticNotesService, notesHash, renderNotesTranscript } from "./lib/automatic-notes.ts";
@@ -40,7 +41,7 @@ function audioWorkBusy() {
 }
 async function preemptNotes() {
  manualNotesController?.abort();
- await Promise.all([notesService.preempt(), tasksService.preempt(), chatService.preempt(), manualNotesDone]);
+ await Promise.all([notesService.preempt(), tasksService.preempt(), chatService.preempt(), libraryChatService.preempt(), manualNotesDone]);
 }
 function protectAudio(path: string) { retainedProcessing.set(path, Date.now() + 120_000); }
 function pruneAudio(limit = AUDIO_LIMIT_BYTES) {
@@ -543,7 +544,7 @@ async function handleSummarize(req: Request): Promise<Response> {
  if (!model) return Response.json({error:"Choose a notes model before generating notes",needsModelSelection:true},{status:409});
  const template = loadTemplate(templateId || "general");
  if (!template?.prompt) return Response.json({error:"The selected notes template is unavailable."},{status:400});
- if (audioWorkBusy() || manualNotesController || chatService.busy) return Response.json({error:"Wait for the current recording or transcription to finish."},{status:409});
+ if (audioWorkBusy() || manualNotesController || chatService.busy || libraryChatService.busy) return Response.json({error:"Wait for the current recording or transcription to finish."},{status:409});
  const abort = new AbortController();
  manualNotesController = abort;
  let finish!: () => void;
@@ -1070,7 +1071,7 @@ async function handleNotesJob(req: Request): Promise<Response> {
 async function handleSummaryLine(req: Request): Promise<Response> {
  const {transcript} = await req.json();
  const model = getCurrentModel();
- if (typeof transcript !== "string" || transcript.length < 30 || !model || audioWorkBusy() || manualNotesController || chatService.busy) return Response.json({summary:""});
+ if (typeof transcript !== "string" || transcript.length < 30 || !model || audioWorkBusy() || manualNotesController || chatService.busy || libraryChatService.busy) return Response.json({summary:""});
  const abort = new AbortController();
  manualNotesController = abort;
  let finish!: () => void;
@@ -2260,7 +2261,7 @@ const notesService: AutomaticNotesService = new AutomaticNotesService({
  sessionStore:sessionTags,
  getSettings:() => automaticNotesSettings(loadConfig()),
  loadTemplate:id => loadTemplate(id) || undefined,
- isBusy:() => audioWorkBusy() || !!manualNotesController || tasksService.busy || chatService.busy,
+ isBusy:() => audioWorkBusy() || !!manualNotesController || tasksService.busy || chatService.busy || libraryChatService.busy,
  generate:({session,job,signal,onProgress}) => generateLocalNotes({baseUrl:OLLAMA_HOST,model:job.model,templatePrompt:job.templatePrompt,
   transcript:renderNotesTranscript(session),language:job.language,signal,onProgress,numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))}),
 });
@@ -2268,20 +2269,28 @@ const tasksService: MeetingTasksService = new MeetingTasksService({
  path:join(APP_DIR,"tasks.json"),
  listSessions:() => notesService.list(),
  getSession:id => notesService.get(id),
- isBusy:() => audioWorkBusy() || !!manualNotesController || notesService.busy || chatService.busy,
+ isBusy:() => audioWorkBusy() || !!manualNotesController || notesService.busy || chatService.busy || libraryChatService.busy,
  generate:(session,signal) => generateTaskSuggestions(session,signal,{baseUrl:OLLAMA_HOST,model:getCurrentModel() || "",numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))}),
 });
 notesService.recover();
 const chatService: MeetingChatService = new MeetingChatService({
  directory:join(APP_DIR,"chat"), getSession:id=>notesService.get(id),
- isBusy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy,
- generate:input=>generateLocalStructured({baseUrl:OLLAMA_HOST,model:input.model,system:CHAT_SYSTEM,requireCompletion:true,contextTokens:8192,maxInputBytes:5500,
+ isBusy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || libraryChatService.busy,
+ generate:generateChatEvidence,
+});
+function generateChatEvidence(input:ChatGenerationRequest) {
+ return generateLocalStructured({baseUrl:OLLAMA_HOST,model:input.model,system:CHAT_SYSTEM,requireCompletion:true,contextTokens:8192,maxInputBytes:5500,
   data:{question:input.question,history:input.history.slice(-2).map(turn=>({question:turn.question.slice(0,100),answer:turn.answer?.claims.slice(0,2).map(claim=>claim.text).join("\n").slice(0,200)})),evidence:input.evidence},signal:input.signal,
-  numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))}),
+  numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))});
+}
+const libraryChatService: LibraryChatService = new LibraryChatService({
+ directory:join(APP_DIR,"library-chat"),listSessions:()=>notesService.list(),
+ isBusy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy,
+ generate:generateChatEvidence,
 });
 const tasksTimer = setInterval(() => { void tasksService.tick().catch(error => console.error("Task suggestion queue failed:", error)); },1000);
 tasksTimer.unref();
-const notesTimer = setInterval(() => { void (async()=>{await notesService.tick();await chatService.tick();})().catch(()=>console.error("Local AI queue failed")); },1000);
+const notesTimer = setInterval(() => { void (async()=>{await notesService.tick();await chatService.tick();await libraryChatService.tick();})().catch(()=>console.error("Local AI queue failed")); },1000);
 notesTimer.unref();
 
 const recordingCoordinator = new RecordingCoordinator({
@@ -2351,6 +2360,8 @@ const server = Bun.serve({
 		const method = req.method;
   const chatResponse=await chatApiResponse(req,chatService,()=>listLocalChatModels(OLLAMA_HOST),desktopRequestAllowed(req));
   if(chatResponse)return chatResponse;
+  const libraryChatResult=await libraryChatResponse(req,libraryChatService,desktopRequestAllowed(req));
+  if(libraryChatResult)return libraryChatResult;
 
   if (url.pathname === "/api/tasks") return tasksResponse(req,tasksService,PORT);
   if (url.pathname === "/api/notes/settings") return handleNotesSettings(req);
@@ -2416,7 +2427,7 @@ const server = Bun.serve({
 // Never leave an orphaned ffmpeg/syscap holding the mic: on SIGINT/SIGTERM/exit, gracefully reap
 // every tracked child (the recorder, the system-audio capture, the level meter). Previously there
 // was NO signal handler — a server crash/exit left ffmpeg running and the mic "stuck busy".
-installShutdownHooks(() => { clearInterval(notesTimer); clearInterval(tasksTimer); manualNotesController?.abort(); void notesService.preempt(); void tasksService.preempt(); void chatService.preempt(); stopLiveTranscribe(); });
+installShutdownHooks(() => { clearInterval(notesTimer); clearInterval(tasksTimer); manualNotesController?.abort(); void notesService.preempt(); void tasksService.preempt(); void chatService.preempt(); void libraryChatService.preempt(); stopLiveTranscribe(); });
 
 console.log(`
   ┌──────────────────────────────────┐

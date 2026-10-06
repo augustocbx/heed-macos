@@ -172,6 +172,18 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 	};
 
 	const displayNotes = streamingNotes || session.aiNotes || "";
+ useEffect(()=>{
+  const citation=useUIStore.getState().chatSourceFocus;
+  if(!citation||citation.sessionId!==session.id)return;
+  useUIStore.setState({chatSourceFocus:null});
+  if(citation.sourceRevision!==session.transcriptRevision){showToast(tr("The transcript changed. Refresh before asking or retrying."));return;}
+  setFocusedSource({segmentIndex:citation.segmentIndex,paragraphIndex:citation.paragraphIndex});setActiveTab("speakers");
+  if(session.files?.wav&&citation.start!==null){
+   if((audioRef.current?.readyState||0)>=1)seekAudio(citation.start);
+   else useUIStore.setState({taskSourceSeek:{sessionId:session.id,seconds:citation.start,sourceRevision:citation.sourceRevision}});
+  }
+ },[session.id,session.transcriptRevision]);
+
 	const isStreaming = !!streamingNotes && generating;
 
 	return (
@@ -190,7 +202,7 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
     audioRef={audioRef} onTime={setPlaybackTime} onDuration={duration=>{
      setAudioDuration(duration);
      const source=useUIStore.getState().taskSourceSeek;
-     if(source?.sessionId===session.id){useUIStore.setState({taskSourceSeek:null});seekAudio(source.seconds);}
+     if(source?.sessionId===session.id){useUIStore.setState({taskSourceSeek:null});if(source.sourceRevision&&source.sourceRevision!==session.transcriptRevision){showToast(tr("The transcript changed. Refresh before asking or retrying."));return;}seekAudio(source.seconds);}
     }}/>
 
       <TagEditor session={session} onTagClick={onTagClick} />

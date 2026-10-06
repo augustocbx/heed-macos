@@ -1,0 +1,22 @@
+/** Scope controls translate interface copy, never label names or source evidence. */
+export const LIBRARY_CHAT_TRANSLATIONS:Record<string,{'pt-BR':string;fr:string;de:string}>=Object.fromEntries([
+ ['Meeting scope','Escopo das reuniões','Périmètre des réunions','Besprechungsumfang'],
+ ['Selected labels','Etiquetas selecionadas','Étiquettes sélectionnées','Ausgewählte Labels'],
+ ['All meetings','Todas as reuniões','Toutes les réunions','Alle Besprechungen'],
+ ['Search labels','Buscar etiquetas','Rechercher des étiquettes','Labels suchen'],
+ ['Combine selected labels','Combinar etiquetas selecionadas','Combiner les étiquettes sélectionnées','Ausgewählte Labels kombinieren'],
+ ['Match any selected label','Corresponder a qualquer etiqueta selecionada','Correspondre à une étiquette sélectionnée','Einem ausgewählten Label entsprechen'],
+ ['Match all selected labels','Corresponder a todas as etiquetas selecionadas','Correspondre à toutes les étiquettes sélectionnées','Allen ausgewählten Labels entsprechen'],
+ ['Choose labels or explicitly select All meetings before asking.','Escolha etiquetas ou selecione explicitamente Todas as reuniões antes de perguntar.','Choisissez des étiquettes ou sélectionnez explicitement Toutes les réunions avant de poser une question.','Wählen Sie Labels oder ausdrücklich Alle Besprechungen, bevor Sie fragen.'],
+ ['1 eligible meeting','1 reunião disponível','1 réunion admissible','1 verfügbare Besprechung'],
+ ['{count} eligible meetings','{count} reuniões disponíveis','{count} réunions admissibles','{count} verfügbare Besprechungen'],
+ ['{count} matching meetings; {unavailable} need a final transcript.','{count} reuniões correspondentes; {unavailable} precisam de transcrição final.','{count} réunions correspondantes ; {unavailable} nécessitent une transcription finale.','{count} passende Besprechungen; {unavailable} benötigen ein endgültiges Transkript.'],
+ ['Inspect included meetings','Conferir reuniões incluídas','Examiner les réunions incluses','Enthaltene Besprechungen ansehen'],
+ ['No eligible final transcripts in this scope. No broader search was performed.','Nenhuma transcrição final disponível neste escopo. Nenhuma busca mais ampla foi feita.','Aucune transcription finale admissible dans ce périmètre. Aucune recherche plus large n’a été effectuée.','Keine verfügbaren endgültigen Transkripte in diesem Umfang. Es wurde keine breitere Suche durchgeführt.'],
+ ['Historical answer: labels, meetings or transcripts changed.','Resposta histórica: etiquetas, reuniões ou transcrições mudaram.','Réponse historique : les étiquettes, réunions ou transcriptions ont changé.','Historische Antwort: Labels, Besprechungen oder Transkripte haben sich geändert.'],
+ ['Sources when this question was asked','Fontes quando esta pergunta foi feita','Sources au moment de cette question','Quellen zum Zeitpunkt dieser Frage'],
+ ['Not found in the selected meetings.','Não encontrado nas reuniões selecionadas.','Introuvable dans les réunions sélectionnées.','In den ausgewählten Besprechungen nicht gefunden.'],
+ ['Question across selected meetings','Pergunta sobre as reuniões selecionadas','Question sur les réunions sélectionnées','Frage zu den ausgewählten Besprechungen'],
+ ['The selected meetings or labels changed. Refresh the scope before asking.','As reuniões ou etiquetas selecionadas mudaram. Atualize o escopo antes de perguntar.','Les réunions ou étiquettes sélectionnées ont changé. Actualisez le périmètre avant de poser une question.','Die ausgewählten Besprechungen oder Labels haben sich geändert. Aktualisieren Sie den Umfang, bevor Sie fragen.'],
+ ['Coverage is partial. Evidence was sampled across the selected meetings; missing topics may exist in unreviewed excerpts.','A cobertura é parcial. As evidências foram amostradas nas reuniões selecionadas; pode haver assuntos ausentes nos trechos não revisados.','La couverture est partielle. Les preuves ont été échantillonnées dans les réunions sélectionnées ; des sujets peuvent manquer dans les extraits non examinés.','Die Abdeckung ist teilweise. Belege wurden aus den ausgewählten Besprechungen ausgewählt; in ungeprüften Auszügen können weitere Themen vorkommen.'],
+].map(([key,pt,fr,de])=>[key!,{'pt-BR':pt!,fr:fr!,de:de!}]));

@@ -14,6 +14,7 @@ const TABS: Array<{ id: Page; label: string }> = [
 	{ id: "record", label: "Record" },
 	{ id: "sessions", label: "Meetings" },
  { id: "tasks", label: "Tasks" },
+ { id:"chat",label:"Meeting chat" },
 	{ id: "settings", label: "Settings" },
 ];
 
