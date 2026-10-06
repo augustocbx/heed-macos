@@ -210,7 +210,7 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 			<NotesJobStatus session={session} />
    <Tabs tabs={tabs} active={activeTab} onChange={(id) => setActiveTab(id as TabId)} />
 
-			{activeTab === "tasks" && <TasksPanel session={session} onSeek={session.files?.wav?seekAudio:undefined} onShowTranscript={()=>setActiveTab("speakers")}/>}
+			{activeTab === "tasks" && <TasksPanel session={session} onSeek={session.files?.wav?seekAudio:undefined} onShowTranscript={source=>{setFocusedSource(source&&session.segments?.length?{segmentIndex:source.segmentIndex,paragraphIndex:null}:null);setActiveTab("speakers");}}/>}
 			{activeTab === "speakers" && (session.segments?.length ?
 				<SpeakerView
 					segments={session.segments || []}

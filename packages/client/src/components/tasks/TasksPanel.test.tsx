@@ -2,6 +2,7 @@ import {fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {beforeEach,afterEach,expect,test,vi} from 'vitest';
 import {TasksPanel} from './TasksPanel';
 import {setLocale} from '@/lib/i18n';
+import {useUIStore} from '@/stores/ui';
 import type {Session,TasksSnapshot} from '@heed/shared';
 const meeting={id:'m',transcriptFinalized:true,transcript:'Fixture'} as Session;
 const review={sessionId:'m',sourceRevision:'r',status:'ready',updatedAt:'now',suggestions:Array.from({length:5},(_,i)=>({id:`s${i}`,title:`Task ${i+1}`,description:'Review me',assignee:null,dueDate:i===0?'2026-10-09':null,kind:i===0?'explicit':'inferred',state:'suggested',dateReview:i===1?'next Friday':null,evidence:[{segmentIndex:i,sourceRevision:'r',speaker:'Ana',start:i,end:i+1,quote:`Evidence ${i}`}]}))} as TasksSnapshot['review'];
@@ -63,4 +64,38 @@ test('polling preserves the draft and original revision when another tab edits a
 test('meeting task source opens the transcript even when audio is unavailable',async()=>{
  const onShowTranscript=vi.fn();snapshot={tasks:[{...acceptedTask(),evidence:[{segmentIndex:0,sourceRevision:'r',speaker:'Ana',start:null,end:null,quote:'I will follow up.'}]}]};
  render(<TasksPanel session={meeting} onShowTranscript={onShowTranscript}/>);await screen.findByText('Accepted action');fireEvent.click(screen.getByRole('button',{name:'View task source'}));expect(onShowTranscript).toHaveBeenCalledTimes(1);
+});
+
+const taskEvidence={segmentIndex:2,sourceRevision:'r',speaker:'Ana',start:4.64,end:7.12,quote:'I will follow up.'};
+test('meeting task refuses an audio seek when its live transcript changed after the task snapshot',async()=>{
+ const onSeek=vi.fn(),onShowTranscript=vi.fn();
+ snapshot={tasks:[{...acceptedTask(),audioAvailable:true,evidence:[taskEvidence]}]};
+ render(<TasksPanel session={{...meeting,transcriptRevision:'new-revision'}} onSeek={onSeek} onShowTranscript={onShowTranscript}/>);
+ await screen.findByText('Accepted action');fireEvent.click(screen.getByRole('button',{name:'View task source'}));
+ expect(onSeek).not.toHaveBeenCalled();
+});
+test('global task refuses a stale seek after refetching a changed source meeting',async()=>{
+ snapshot={tasks:[{...acceptedTask(),audioAvailable:true,evidence:[taskEvidence]}]};
+ useUIStore.setState({taskSourceSeek:null,chatSourceFocus:null,currentPage:'tasks'});
+ vi.stubGlobal('fetch',vi.fn(async(url:string)=>Response.json(url.includes('/api/sessions')?[{...meeting,transcriptRevision:'new-revision'}]:snapshot)));
+ render(<TasksPanel/>);await screen.findByText('Accepted action');fireEvent.click(screen.getByRole('button',{name:'View task source'}));
+ await waitFor(()=>expect(useUIStore.getState().currentPage).toBe('sessions'));
+ expect(useUIStore.getState().taskSourceSeek).toBeNull();expect(useUIStore.getState().chatSourceFocus).toBeNull();
+});
+test('global task pins the exact source revision and segment when navigating to available audio',async()=>{
+ snapshot={tasks:[{...acceptedTask(),audioAvailable:true,evidence:[taskEvidence]}]};
+ useUIStore.setState({taskSourceSeek:null,chatSourceFocus:null,currentPage:'tasks'});
+ vi.stubGlobal('fetch',vi.fn(async(url:string)=>Response.json(url.includes('/api/sessions')?[{...meeting,transcriptRevision:'r',segments:[{speaker:'Ana',text:'Opening.',start:0,end:1},{speaker:'Ana',text:'No actions yet.',start:1,end:4},{speaker:'Ana',text:taskEvidence.quote,start:4.64,end:7.12}]}]:snapshot)));
+ render(<TasksPanel/>);await screen.findByText('Accepted action');fireEvent.click(screen.getByRole('button',{name:'View task source'}));
+ await waitFor(()=>expect(useUIStore.getState().currentPage).toBe('sessions'));
+ expect(useUIStore.getState().taskSourceSeek).toMatchObject({sessionId:'m',seconds:4.64,sourceRevision:'r'});
+ expect(useUIStore.getState().chatSourceFocus).toMatchObject({sessionId:'m',sourceRevision:'r',segmentIndex:2,quote:'I will follow up.'});
+});
+
+test('current meeting task focuses its source segment and seeks available audio',async()=>{
+ const onSeek=vi.fn(),onShowTranscript=vi.fn();
+ snapshot={tasks:[{...acceptedTask(),audioAvailable:true,evidence:[taskEvidence]}]};
+ render(<TasksPanel session={{...meeting,transcriptRevision:'r'}} onSeek={onSeek} onShowTranscript={onShowTranscript}/>);
+ await screen.findByText('Accepted action');fireEvent.click(screen.getByRole('button',{name:'View task source'}));
+ expect(onShowTranscript).toHaveBeenCalledWith(taskEvidence);expect(onSeek).toHaveBeenCalledWith(4.64);
 });
