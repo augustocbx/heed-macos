@@ -10,6 +10,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -840,6 +842,234 @@ class TransactionTests(unittest.TestCase):
         with self.assertRaises(SmbError):
             self.write(tx, PREFIX + "/meeting.json", body)
         self.assertNotIn("library/" + PREFIX + "/meeting.json", self.server.nodes)
+
+    def replace_recovery_effect_open(self, path, directory=False, data=b""):
+        original = self.server.open
+        replacements = []
+
+        def substituted(candidate, *args, **kwargs):
+            if (
+                candidate == path
+                and not kwargs.get("verification")
+                and not kwargs.get("exclusive")
+                and kwargs.get("access") in ("delete", "write-delete")
+            ):
+                replacements.append(self.server.add(path, data, directory))
+            return original(candidate, *args, **kwargs)
+
+        self.server.open = substituted
+        return replacements
+
+    def test_recovered_file_effect_handle_must_match_before_any_write_or_rename(self):
+        for replacement_data in (b"", b'{"schemaVersion":1'):
+            with self.subTest(prefix=replacement_data):
+                self.server = MemoryServer()
+                self.context["operationId"] = str(uuid4())
+                tx = self.transaction()
+                _, manifest_data, *_ = self.bundle()
+                self.server.fault = "flush"
+                with self.assertRaises(SmbError):
+                    self.write(tx, MANIFEST, manifest_data)
+                stage = "library/" + tx.journal.data["allocations"][MANIFEST]["stage"]
+                tx.abort()
+                resumed = self.transaction()
+                before = len(self.server.events)
+                replacements = self.replace_recovery_effect_open(stage, data=replacement_data)
+                with self.assertRaises(SmbError):
+                    self.write(resumed, MANIFEST, manifest_data)
+                self.assertEqual(len(replacements), 1)
+                self.assertEqual(replacements[0]["data"], replacement_data)
+                self.assertIs(self.server.nodes.get(stage), replacements[0])
+                self.assertNotIn("library/" + MANIFEST, self.server.nodes)
+                self.assertFalse(any(e[0] == "rename" for e in self.server.events[before:]))
+                resumed.abort()
+
+    def test_recovered_directory_effect_handle_must_match_before_rename(self):
+        tx = self.transaction()
+        _, manifest_data, *_ = self.bundle()
+        rename = self.server.rename
+
+        def interrupted(handle, target):
+            if target == "library/meetings":
+                raise SmbError()
+            return rename(handle, target)
+
+        self.server.rename = interrupted
+        with self.assertRaises(SmbError):
+            self.write(tx, MANIFEST, manifest_data)
+        stage = "library/" + tx.journal.data["allocations"]["meetings"]["stage"]
+        tx.abort()
+        self.server.rename = rename
+        resumed = self.transaction()
+        before = len(self.server.events)
+        replacements = self.replace_recovery_effect_open(stage, directory=True)
+        with self.assertRaises(SmbError):
+            self.write(resumed, MANIFEST, manifest_data)
+        self.assertEqual(len(replacements), 1)
+        self.assertIs(self.server.nodes.get(stage), replacements[0])
+        self.assertNotIn("library/meetings", self.server.nodes)
+        self.assertFalse(any(e[0] == "rename" for e in self.server.events[before:]))
+
+    def test_prepared_claim_effect_handle_must_match_before_rename(self):
+        rename = self.server.rename
+
+        def interrupted(handle, target):
+            if target == "library/.heed-claim":
+                raise SmbError()
+            return rename(handle, target)
+
+        self.server.rename = interrupted
+        with self.assertRaises(SmbError):
+            self.transaction()
+        job = json.loads(next(Path(self.app).rglob("*.json")).read_text())
+        self.assertEqual(job["phase"], "prepared")
+        stage = "library/" + job["claim"]["stage"]
+        self.server.rename = rename
+        replacements = self.replace_recovery_effect_open(stage, directory=True)
+        before = len(self.server.events)
+        with self.assertRaises(SmbError):
+            self.transaction()
+        self.assertEqual(len(replacements), 1)
+        self.assertIs(self.server.nodes.get(stage), replacements[0])
+        self.assertNotIn("library/.heed-claim", self.server.nodes)
+        self.assertFalse(any(e[0] == "rename" for e in self.server.events[before:]))
+
+    def make_private_jobs(self, total):
+        for _ in range(total):
+            job = Journal(self.binding, dict(self.context, operationId=str(uuid4())), self.app)
+            job.close()
+        return sorted(Path(self.app).rglob("*.json"))
+
+    def private_enumeration_count(self, run, maximum):
+        real_listdir = os.listdir
+        real_scandir = os.scandir
+        seen = []
+
+        def listed(fd):
+            names = real_listdir(fd)
+            seen.extend(names)
+            return names
+
+        class CountedScan:
+            def __init__(self, fd):
+                self.iterator = real_scandir(fd)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.iterator.close()
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                entry = next(self.iterator)
+                seen.append(entry.name)
+                return entry
+
+        with patch("journal.os.listdir", side_effect=listed), patch(
+            "journal.os.scandir", side_effect=CountedScan
+        ):
+            with self.assertRaises(SmbError):
+                run()
+        self.assertGreater(len(seen), 0)
+        self.assertLessEqual(len(seen), maximum)
+
+    def test_pending_stops_directory_iteration_at_entry_cap(self):
+        self.make_private_jobs(4)
+        with patch("journal.MAX_ENTRIES", 1):
+            self.private_enumeration_count(lambda: pending_transactions(self.binding, self.app), 4)
+
+    def test_constructor_stops_directory_iteration_at_entry_cap(self):
+        self.make_private_jobs(4)
+        with patch("journal.MAX_ENTRIES", 1):
+            self.private_enumeration_count(lambda: Journal(self.binding, self.context, self.app), 3)
+
+    def test_pending_journal_byte_budget_stops_before_reading_next_file(self):
+        jobs = self.make_private_jobs(4)
+        read_inodes = []
+        real_read = os.read
+
+        def counted(fd, size):
+            read_inodes.append(os.fstat(fd).st_ino)
+            return real_read(fd, size)
+
+        with patch("journal.MAX_PENDING_JOURNAL_BYTES", jobs[0].stat().st_size, create=True), patch(
+            "journal.os.read", side_effect=counted
+        ):
+            with self.assertRaises(SmbError):
+                pending_transactions(self.binding, self.app)
+        self.assertEqual(set(read_inodes), {jobs[0].stat().st_ino})
+
+    def test_pending_response_budget_stops_before_processing_remaining_jobs(self):
+        jobs = self.make_private_jobs(4)
+        read_inodes = []
+        real_read = os.read
+
+        def counted(fd, size):
+            read_inodes.append(os.fstat(fd).st_ino)
+            return real_read(fd, size)
+
+        with patch("journal.MAX_PENDING_RESPONSE_BYTES", 100, create=True), patch(
+            "journal.os.read", side_effect=counted
+        ):
+            with self.assertRaises(SmbError):
+                pending_transactions(self.binding, self.app)
+        self.assertEqual(set(read_inodes), {jobs[0].stat().st_ino})
+
+    def test_pending_admission_budget_stops_before_retaining_excess_entries(self):
+        job = Journal(self.binding, self.context, self.app)
+        for _ in range(3):
+            path = f"meetings/{MEETING}/revisions/{uuid4()}/manifest.json"
+            job.data["admissions"][path] = "a" * 64
+            job.data["allocations"][path] = dict(
+                stage=".heed-claim/" + str(uuid4()),
+                metadata=None,
+                bytes=23,
+                sha256="a" * 64,
+                state="planned",
+                directory=False,
+            )
+        job.save()
+        job.close()
+        with patch("journal.MAX_PENDING_ADMISSIONS", 1, create=True):
+            with self.assertRaises(SmbError):
+                pending_transactions(self.binding, self.app)
+
+    def run_fifo_query(self, body):
+        code = (
+            f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})\nimport os, journal\nfrom protocol import SmbError\njournal.physical_uuid=lambda:{PHYSICAL!r}\n"
+            + body
+        )
+        try:
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", "-c", code],
+                capture_output=True,
+                timeout=2,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            self.fail("private FIFO blocked before descriptor regularity validation")
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertEqual(result.stdout, b"bounded-refusal\n")
+
+    def test_fifo_journal_is_rejected_without_waiting_for_writer(self):
+        job_path = self.make_private_jobs(1)[0]
+        job_path.unlink()
+        os.mkfifo(job_path, 0o600)
+        self.run_fifo_query(
+            f"fd=os.open({str(job_path.parent)!r},os.O_RDONLY|os.O_DIRECTORY)\ntry:\n journal.read_json(fd,{job_path.name!r})\nexcept SmbError:\n print('bounded-refusal')\nelse:\n raise AssertionError('FIFO journal accepted')\nfinally:\n os.close(fd)\n"
+        )
+
+    def test_fifo_guard_is_unrecoverable_without_waiting_for_writer(self):
+        job_path = self.make_private_jobs(1)[0]
+        guard = job_path.with_suffix(".guard")
+        guard.unlink()
+        os.mkfifo(guard, 0o600)
+        self.run_fifo_query(
+            f"result=journal.pending_transactions({self.binding!r},{self.app!r})\nassert len(result)==1 and result[0]['recoverable'] is False\nprint('bounded-refusal')\n"
+        )
 
 
 class SdkRenameTests(unittest.TestCase):

@@ -27,6 +27,9 @@ from protocol import (
 from identity import validate_metadata, validate_identity
 
 MAX_JOURNAL = 4_000_000
+MAX_PENDING_JOURNAL_BYTES = 16_000_000
+MAX_PENDING_RESPONSE_BYTES = 1_900_000
+MAX_PENDING_ADMISSIONS = 10_000
 PHASES = {"prepared", "claimed", "checkpointed", "releasing", "released"}
 
 
@@ -100,10 +103,29 @@ def regular(fd, maximum=MAX_JOURNAL):
     return info
 
 
-def read_json(parent, name):
-    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+def bounded_names(parent, maximum):
+    """Stop at the first excess entry instead of materializing an unbounded list."""
+    names = []
+    with os.scandir(parent) as entries:
+        for entry in entries:
+            if len(names) >= maximum:
+                raise SmbError("bounds-exceeded")
+            names.append(entry.name)
+    return names
+
+
+def charge(budget, amount):
+    if amount > budget[0]:
+        raise SmbError("bounds-exceeded")
+    budget[0] -= amount
+
+
+def read_json(parent, name, budget=None):
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
     try:
         info = regular(fd)
+        if budget is not None:
+            charge(budget, info.st_size)
         data = b""
         while len(data) < info.st_size:
             chunk = os.read(fd, min(131072, info.st_size - len(data)))
@@ -278,11 +300,14 @@ class Journal:
             self.app_fd = directory(app_dir)
             self.fd = directory(self.path, create=True)
             self.machine = physical_uuid()
-            names = os.listdir(self.fd)
-            if len(names) >= MAX_ENTRIES * 2:
-                raise SmbError("bounds-exceeded")
+            names = bounded_names(self.fd, max(0, MAX_ENTRIES * 2 - 1))
             existing = self.name in names
-            flags = os.O_RDWR | os.O_NOFOLLOW | (0 if existing else os.O_CREAT | os.O_EXCL)
+            flags = (
+                os.O_RDWR
+                | os.O_NOFOLLOW
+                | os.O_NONBLOCK
+                | (0 if existing else os.O_CREAT | os.O_EXCL)
+            )
             self.guard_fd = os.open(self.guard_name, flags, 0o600, dir_fd=self.fd)
             regular(self.guard_fd, 0)
             try:
@@ -415,9 +440,11 @@ def pending_transactions(binding, app_dir):
     result = []
     try:
         app = directory(app_dir)
-        names = os.listdir(fd)
-        if len(names) > MAX_ENTRIES * 3:
-            raise SmbError("bounds-exceeded")
+        names = bounded_names(fd, MAX_ENTRIES * 3)
+        input_budget = [MAX_PENDING_JOURNAL_BYTES]
+        response_budget = [MAX_PENDING_RESPONSE_BYTES]
+        charge(response_budget, 2)  # The enclosing JSON array.
+        admission_count = 0
         machine = physical_uuid()
         jobs = [n for n in names if n.endswith(".json") and not n.startswith(".")]
         if len(jobs) > MAX_ENTRIES:
@@ -425,13 +452,15 @@ def pending_transactions(binding, app_dir):
         for name in sorted(jobs):
             if not UUID.fullmatch(name[:-5]):
                 raise SmbError("recovery-required")
-            job = validate_job(read_json(fd, name))
+            job = validate_job(read_json(fd, name, budget=input_budget))
             scope = job["scope"]
             if name != scope["operationId"] + ".json":
                 raise SmbError("recovery-required")
             authority = False
             try:
-                guard = os.open(name[:-5] + ".guard", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+                guard = os.open(
+                    name[:-5] + ".guard", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd
+                )
                 try:
                     regular(guard, 0)
                     origin = dict(
@@ -467,14 +496,7 @@ def pending_transactions(binding, app_dir):
                 deviceId=scope["deviceId"],
                 kind=scope["kind"],
                 recoverable=recoverable,
-                admissions=[
-                    dict(
-                        meetingId=p.split("/")[1],
-                        revisionId=p.split("/")[3],
-                        manifestHash=h,
-                    )
-                    for p, h in job["admissions"].items()
-                ],
+                admissions=[],
             )
             if release_only:
                 item["releaseOnly"] = True
@@ -482,9 +504,24 @@ def pending_transactions(binding, app_dir):
                 item["blockedReason"] = (
                     "Original physical owner, exact binding, and durable object receipts are required."
                 )
+            charge(
+                response_budget,
+                len(json.dumps(item, separators=(",", ":")).encode()) + bool(result),
+            )
+            for path, digest in job["admissions"].items():
+                if admission_count >= MAX_PENDING_ADMISSIONS:
+                    raise SmbError("bounds-exceeded")
+                admission = dict(
+                    meetingId=path.split("/")[1], revisionId=path.split("/")[3], manifestHash=digest
+                )
+                charge(
+                    response_budget,
+                    len(json.dumps(admission, separators=(",", ":")).encode())
+                    + bool(item["admissions"]),
+                )
+                admission_count += 1
+                item["admissions"].append(admission)
             result.append(item)
-        if len(json.dumps(result)) > 1_900_000:
-            raise SmbError("bounds-exceeded")
         return result
     finally:
         os.close(fd)

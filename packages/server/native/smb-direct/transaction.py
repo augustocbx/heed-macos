@@ -286,6 +286,14 @@ class Transaction:
             raise SmbError("unsupported-namespace")
         return h, metadata
 
+    def open_owned_effect(self, path, expected, directory=False, access="delete"):
+        """The retained effect handle, not an earlier observation, proves ownership."""
+        handle, actual = self.open_handle(path, directory, access)
+        if not same_object(expected, actual):
+            self.close_handle(handle)
+            raise SmbError("recovery-required")
+        return handle
+
     def close_handle(self, h):
         self.backend.close_handle(h)
         self.handles.remove(h)
@@ -341,12 +349,12 @@ class Transaction:
             stage = self.observe(prior["stage"], True)
             if job["phase"] != "prepared" or not same_object(prior["metadata"], stage or {}):
                 raise SmbError("recovery-required")
-            self.claim, _ = self.open_handle(prior["stage"], True, "delete")
+            self.claim = self.open_owned_effect(prior["stage"], prior["metadata"], True)
             self.backend.rename(self.claim, self.full(CLAIM))
         elif not same_object(prior["metadata"], canonical):
             raise SmbError("destination-busy")
         else:
-            self.claim, _ = self.open_handle(CLAIM, True, "delete")
+            self.claim = self.open_owned_effect(CLAIM, prior["metadata"], True)
         if job["phase"] == "prepared":
             job["phase"] = "claimed"
         prior["state"] = "claimed"
@@ -512,8 +520,11 @@ class Transaction:
             stage = self.observe(item["stage"], directory)
             if not same_object(item["metadata"], stage or {}):
                 raise SmbError("recovery-required")
-            h, _ = self.open_handle(
-                item["stage"], directory, "delete" if directory else "write-delete"
+            h = self.open_owned_effect(
+                item["stage"],
+                item["metadata"],
+                directory,
+                "delete" if directory else "write-delete",
             )
         try:
             if not directory:
