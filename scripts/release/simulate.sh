@@ -181,6 +181,11 @@ check "initialized default is persisted" /usr/bin/python3 "$HEED_REPO_ROOT/scrip
 step "Existing checkout installation with recordings, transcripts, speaker names and settings"
 LEGACY="$SIM_HOME/heed-checkout"
 mkdir -p "$LEGACY/recordings" "$SIM_HOME/.heed-app/sessions" "$SIM_HOME/Applications/Heed.app/Contents/Resources"
+# Model a supported, migrated checkout with its real port and lifecycle helpers.
+mkdir -p "$LEGACY/config" "$LEGACY/scripts" "$LEGACY/packages/desktop"
+cp "$HEED_REPO_ROOT/config/service-ports.json" "$LEGACY/config/"
+cp "$HEED_REPO_ROOT/scripts/service_config.py" "$HEED_REPO_ROOT/scripts/service_runtime.py" "$LEGACY/scripts/"
+cp "$HEED_REPO_ROOT/packages/desktop/guard-lifecycle.py" "$LEGACY/packages/desktop/"
 printf '{"name":"heed","private":true}\n' > "$LEGACY/package.json"
 head -c 48000 /dev/urandom > "$LEGACY/recordings/dual-capture-1.wav"
 printf '{"id":"session-1","title":"Planning","transcript":"Hello","speakers":["Ana"],"files":{"wav":"%s"}}\n' "$LEGACY/recordings/dual-capture-1.wav" \
