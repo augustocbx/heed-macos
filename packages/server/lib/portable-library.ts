@@ -64,6 +64,7 @@ export class PortableLibrary {
   try{for(const key of Object.keys(graph))visit(key);}catch(error){discovered.splice(0);throw error;}
 
   this.edit(next=>{for(const entry of discovered){next.entries[entryKey(entry.manifest)]=entry;const key=meetingKey(entry.manifest);if(!next.aliases[key])next.aliases[key]=Object.values(next.aliases).includes(entry.manifest.meetingId)||!!this.options.sessions.read(entry.manifest.meetingId)?randomUUID():entry.manifest.meetingId;}next.complete=complete;delete next.error;});
+  if(complete){signal?.throwIfAborted();await provider.acknowledgeDiscovery?.(signal);}
   }catch(error){this.edit(next=>{for(const entry of discovered){next.entries[entryKey(entry.manifest)]=entry;const key=meetingKey(entry.manifest);if(!next.aliases[key])next.aliases[key]=Object.values(next.aliases).includes(entry.manifest.meetingId)||!!this.options.sessions.read(entry.manifest.meetingId)?randomUUID():entry.manifest.meetingId;}next.complete=false;next.error=error instanceof Error?error.message:'Library unavailable';});if(signal?.aborted)throw error;}
   return this.snapshot();
  },signal);}

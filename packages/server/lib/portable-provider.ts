@@ -4,6 +4,8 @@ export interface LibraryProvider {
  id:string;name:string;
  transport:'authenticated-network'|'os-managed-folder';
  list(cursor:string|null,limit:number,signal?:AbortSignal):Promise<{commits:PortableCommit[];next:string|null;complete:boolean}>;
+ /** Advance a staged provider checkpoint only after complete validated catalog persistence. */
+ acknowledgeDiscovery?(signal?:AbortSignal):Promise<void>;
  read(path:string,maxBytes:number,signal?:AbortSignal):Promise<Uint8Array>;
  stream(path:string,maxBytes:number,signal?:AbortSignal):AsyncIterable<Uint8Array>;
  /** The adapter verifies exact length/hash before committing an immutable object. */
