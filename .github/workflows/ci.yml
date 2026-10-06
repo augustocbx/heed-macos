@@ -54,4 +54,5 @@ jobs:
       - name: Build menu app
         run: |
           bash packages/desktop/install-menubar.sh --build-only
-          (cd "$RUNNER_TEMP" && "${TMPDIR:-/tmp}/heed-menubar-build/Heed" --self-test)
+          swiftc -O -target "$(uname -m)-apple-macos14.0" packages/desktop/macos/*.swift -o "$RUNNER_TEMP/heed-packaged-menu-check" -framework AppKit
+          (cd "$RUNNER_TEMP" && ./heed-packaged-menu-check --self-test)
