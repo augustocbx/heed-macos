@@ -16,3 +16,4 @@ export type {StorageUsage,StoragePreview} from "./storage";
 export * from "./portable-storage.ts";
 
 export type * from './google-drive';
+export * from "./onedrive.ts";
