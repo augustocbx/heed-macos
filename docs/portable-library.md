@@ -19,13 +19,19 @@ The manifest contains schema, library, meeting and revision UUIDs, at most 32 un
 
 Publish optional audio objects first, then transcript, then manifest, then immutable device marker. An adapter must reject conflicting writes at an existing immutable path. Discovery accepts only valid commit records and verifies their manifests/transcript metadata, never fetching audio. Missing/incomplete records are ignored by adapters; failed or partial listing does not delete previously seen records. The service caps discovery at 100 pages of 100 records, detects repeated cursors and marks truncated/failed discovery incomplete. Import ordering is newest-created first, with stable meeting and revision tie-breakers. Creation dates order import priority, never resolve divergent content.
 
+Queuing a local meeting streams the current local WAV to compute its size and hash, then records an audio reference with the portable revision. Its source path stays in the private catalog and remains protected until publication is verified. Cached audio is also verified with bounded streaming reads before playback; neither operation buffers the entire recording.
+
 ## Revisions and recovery
 
 Library/meeting identity, not local legacy paths, defines reconciliation. Duplicate UUIDs across different libraries receive different device aliases. Exact revision retries are idempotent. Descendants can advance a head when local content has not changed; ancestors do not replace descendants. Divergent branches and unsynchronized local corrections remain conflicts. Explicitly selecting a conflict preserves the current local correction as an immutable revision, then creates a merge revision whose parents include the current head and preserved conflict candidates. Previously committed content remains recoverable in the private catalog.
 
 Import reserves staged copies, immutable catalog artifacts, session replacement and catalog/index overhead before transfer. The durable commit intent distinguishes a complete-session acknowledgment failure from a missing session. Restart reconciles matching complete data, preserves later user corrections as conflicts and releases abandoned staging claims. Staging uses UUID directories and is bounded per operation; no remote text becomes partially visible to AI. Quota failures skip that revision and report imported/skipped/pending counts, preserving retained text. Text is never automatically replaced by summaries or evicted.
 
+Conflict selection persists a commit intent before replacing the complete local session. Restart preserves the selected merge as pending publication, or retains later local corrections as a conflict if the final catalog acknowledgment failed.
+
 Migration streams a verified copy into content-addressed managed media, fsyncs it, verifies its hash, atomically updates every local session reference and removes a legacy source only after no session references it. Active/protected audio is skipped. Interrupted reference writes retain original and verified target plus a private migration journal; both remain protected until retry completes. Playback continues to allow verified legacy paths during migration and subsequently permits managed media paths, with symlink/containment checks.
+
+The migration journal retains at most 10,000 pending entries, rejects files larger than 64 MB and prunes completed history. Additional legacy sources remain untouched for a later bounded batch.
 
 ## Providers, transport and encryption
 

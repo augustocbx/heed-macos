@@ -9,9 +9,9 @@ export async function libraryResponse(req:Request,library:PortableLibrary,migrat
   switch(body.action){
    case 'refresh':return Response.json(await library.discover(req.signal));
    case 'import':if(body.revisionIds!==undefined&&(!Array.isArray(body.revisionIds)||body.revisionIds.length>10000||body.revisionIds.some((id:unknown)=>typeof id!=='string'||!UUID.test(id))))throw new Error('Invalid library selection');return Response.json(await library.importSelected(body.revisionIds,req.signal));
-   case 'queue':if(!localId(body.sessionId))throw new Error('Invalid meeting ID');return Response.json(library.queueLocal(body.sessionId));
+   case 'queue':if(!localId(body.sessionId))throw new Error('Invalid meeting ID');return Response.json(await library.queueLocal(body.sessionId,req.signal));
    case 'publish':if(!UUID.test(body.revisionId))throw new Error('Invalid revision ID');return Response.json(await library.publish(body.revisionId,req.signal));
-   case 'resolve':if(!UUID.test(body.revisionId))throw new Error('Invalid revision ID');return Response.json(library.resolveConflict(body.revisionId));
+   case 'resolve':if(!UUID.test(body.revisionId))throw new Error('Invalid revision ID');return Response.json(await library.resolveConflict(body.revisionId,req.signal));
    case 'audio':if(!localId(body.sessionId))throw new Error('Invalid meeting ID');await library.requestAudio(body.sessionId,req.signal);return Response.json({available:true});
    case 'migrate':if(!migrate)throw new Error('Migration is unavailable');return Response.json(await migrate());
   }

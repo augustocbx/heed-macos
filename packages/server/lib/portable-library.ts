@@ -1,13 +1,13 @@
 import {createHash,randomUUID} from 'node:crypto';
-import {createReadStream,existsSync,mkdirSync,readFileSync,readdirSync,lstatSync,rmSync,writeFileSync,renameSync,openSync,fsyncSync,closeSync} from 'node:fs';
-import {join,dirname} from 'node:path';
+import {createReadStream,existsSync,mkdirSync,readFileSync,readdirSync,lstatSync,realpathSync,readSync,rmSync,writeFileSync,renameSync,openSync,fsyncSync,closeSync} from 'node:fs';
+import {join,dirname,relative,isAbsolute,sep} from 'node:path';
 import type {LibraryPreview,LibrarySnapshot,PortableCommit,PortableManifest,PortableMeeting,PublicationState,Session} from '@heed/shared';
 import {atomicWriteJson} from './atomic-json';import {atomicWrite,SessionTags} from './session-tags';
 import {encode,makeBundle,MAX_ARTIFACT_BYTES,portableMeeting,revisionPath,sha256,UUID,validateBundle,validateCommit,validateManifest} from './portable-schema';
 import {providerPath,type LibraryProvider,type QuotaBudget} from './portable-provider';
-interface Entry {providerId?:string;marker:PortableCommit;manifest:PortableManifest;preview:LibraryPreview;sessionId?:string;payloadHash?:string;commitIntent?:boolean}
+interface Entry {providerId?:string;audioSource?:string;marker:PortableCommit;manifest:PortableManifest;preview:LibraryPreview;sessionId?:string;payloadHash?:string;commitIntent?:boolean;commitState?:PublicationState}
 interface Catalog {version:1;libraryId:string;deviceId:string;aliases:Record<string,string>;heads:Record<string,string>;entries:Record<string,Entry>;complete:boolean;imported:number;skipped:number;error?:string}
-interface Options {root:string;sessions:SessionTags;sessionsDir:string;quota:QuotaBudget;provider?:LibraryProvider;write?:typeof atomicWriteJson}
+interface Options {root:string;sessions:SessionTags;sessionsDir:string;quota:QuotaBudget;recordingsDir?:string;provider?:LibraryProvider;write?:typeof atomicWriteJson}
 const entryKey=(m:PortableManifest|PortableCommit)=>`${m.libraryId}/${m.meetingId}/${m.revisionId}`;
 const meetingKey=(m:PortableManifest|PortableCommit)=>`${m.libraryId}/${m.meetingId}`;
 /** A complete SessionTags write is the only AI visibility boundary; remote previews never enter it. */
@@ -22,7 +22,7 @@ export class PortableLibrary {
   if(!existsSync(this.statePath))this.persist(this.state);
   for(const entry of Object.values(this.state.entries).filter(e=>e.commitIntent&&e.sessionId)){
    const session=options.sessions.read(entry.sessionId!);if(!session)continue;const payload=this.payload(entry);const matches=sha256(encode(portableMeeting(session,entry.manifest.meetingId,payload.audio)))===entry.payloadHash;
-   this.edit(next=>{const item=next.entries[entryKey(entry.manifest)]!;item.preview.state=matches?'verified':'conflict';item.preview.local=true;delete item.commitIntent;next.heads[meetingKey(entry.manifest)]=entry.manifest.revisionId;});
+   this.edit(next=>{const item=next.entries[entryKey(entry.manifest)]!;item.preview.state=matches?(item.commitState||'verified'):'conflict';item.preview.local=true;delete item.commitIntent;delete item.commitState;next.heads[meetingKey(entry.manifest)]=entry.manifest.revisionId;});
   }
   // Previous process jobs cannot be running; discard only our bounded staging directories and claims.
   for(const name of readdirSync(join(options.root,'staging'))){if(!UUID.test(name))continue;const path=join(options.root,'staging',name);if(!lstatSync(path).isDirectory())continue;rmSync(path,{recursive:true});options.quota.release(`library-${name}`);}
@@ -34,6 +34,14 @@ export class PortableLibrary {
  private saveArtifacts(entry:Entry,payload:PortableMeeting){const directory=this.canonical(entry);mkdirSync(directory,{recursive:true,mode:0o700});
   for(const [name,value] of [['meeting.json',payload],['manifest.json',entry.manifest]] as const){const path=join(directory,name);if(existsSync(path)){if(sha256(encode(JSON.parse(readFileSync(path,'utf8'))))!==sha256(encode(value)))throw new Error('Immutable local revision collision');}else atomicWrite(path,encode(value).toString('utf8'));}
   const commits=join(this.options.root,'catalog','commits',entry.marker.deviceId);mkdirSync(commits,{recursive:true,mode:0o700});(this.options.write||atomicWriteJson)(join(commits,`${entry.marker.revisionId}.json`),entry.marker);
+ }
+ private safeAudioSource(path:string):string {
+  if(!isAbsolute(path)||!existsSync(path)||lstatSync(path).isSymbolicLink()||!lstatSync(path).isFile())throw new Error('Local archived audio is unavailable');const actual=realpathSync(path);
+  const roots=[join(this.options.root,'media'),...(this.options.recordingsDir?[this.options.recordingsDir]:[])];if(!roots.some(root=>{if(!existsSync(root))return false;const child=relative(realpathSync(root),actual);return !!child&&!isAbsolute(child)&&child!=='..'&&!child.startsWith(`..${sep}`);}))throw new Error('Audio is outside managed recording roots; migrate it before publication');return actual;
+ }
+ private async inspectAudio(path:string,signal?:AbortSignal):Promise<{bytes:number;hash:string}> {
+  const source=this.safeAudioSource(path),stat=lstatSync(source),hash=createHash('sha256');let bytes=0;
+  for await(const chunk of createReadStream(source)){signal?.throwIfAborted();bytes+=chunk.length;if(bytes>stat.size)throw new Error('Audio changed during integrity verification');hash.update(chunk);}const after=lstatSync(source);if(bytes!==stat.size||after.size!==stat.size||after.mtimeMs!==stat.mtimeMs||after.ino!==stat.ino)throw new Error('Audio changed during integrity verification');return {bytes,hash:hash.digest('hex')};
  }
  private async operation<T>(run:()=>Promise<T>,signal?:AbortSignal):Promise<T>{signal?.throwIfAborted();if(this.active)throw new Error('A library operation is already running');this.active=true;try{return await run();}finally{this.active=false;}}
  selectProvider(provider?:LibraryProvider):void{if(this.active)throw new Error('A library operation is already running');this.options.provider=provider;}
@@ -84,26 +92,29 @@ export class PortableLibrary {
   }
   this.edit(next=>{next.imported=imported;next.skipped=skipped;});return this.snapshot();
  },signal);}
- queueLocal(sessionId:string):LibraryPreview {
-  if(this.active)throw new Error('A library operation is already running');const session=this.options.sessions.read(sessionId);if(!session)throw new Error('Meeting not found');
-  const existingKey=Object.keys(this.state.aliases).find(key=>this.state.aliases[key]===sessionId);const libraryId=existingKey?.split('/')[0]||this.state.libraryId,meetingId=existingKey?.split('/')[1]||randomUUID(),key=`${libraryId}/${meetingId}`;const head=this.state.heads[key],previous=head?this.state.entries[`${key}/${head}`]:undefined;const payload=portableMeeting(session,meetingId,previous?this.payload(previous).audio:undefined);const hash=sha256(encode(payload));
-  if(previous?.payloadHash===hash)return previous.preview;
-  const bundle=makeBundle(libraryId,this.state.deviceId,payload,head?[head]:[]);const entry:Entry={marker:bundle.marker,manifest:bundle.manifest,payloadHash:hash,sessionId,preview:{libraryId,meetingId,revisionId:bundle.manifest.revisionId,title:session.title,createdAt:session.createdAt,bytes:encode(payload).length,local:true,state:'pending',audio:!!payload.audio}};
+ async queueLocal(sessionId:string,signal?:AbortSignal):Promise<LibraryPreview>{return this.operation(()=>this.queueLocalRecord(sessionId,signal),signal);}
+ private async queueLocalRecord(sessionId:string,signal?:AbortSignal):Promise<LibraryPreview> {
+  const session=this.options.sessions.read(sessionId);if(!session)throw new Error('Meeting not found');
+  const existingKey=Object.keys(this.state.aliases).find(key=>this.state.aliases[key]===sessionId);const libraryId=existingKey?.split('/')[0]||this.state.libraryId,meetingId=existingKey?.split('/')[1]||randomUUID(),key=`${libraryId}/${meetingId}`;const head=this.state.heads[key],previous=head?this.state.entries[`${key}/${head}`]:undefined;
+  let audio=previous?this.payload(previous).audio:undefined,audioSource=previous?.audioSource;
+  if(session.files?.wav){audioSource=session.files.wav;this.safeAudioSource(audioSource);const inspected=await this.inspectAudio(audioSource,signal);if(inspected.bytes<12)throw new Error('Invalid local WAV');const header=Buffer.alloc(12),fd=openSync(audioSource,'r');try{readSync(fd,header,0,12,0);}finally{closeSync(fd);}if(header.toString('ascii',0,4)!=='RIFF'||header.toString('ascii',8,12)!=='WAVE')throw new Error('Invalid local WAV');audio={sha256:inspected.hash,bytes:inspected.bytes,format:'wav',mode:'archived',objectPath:`objects/${inspected.hash}`};}
+  const current=this.options.sessions.read(sessionId);if(!current||JSON.stringify(portableMeeting(current,meetingId))!==JSON.stringify(portableMeeting(session,meetingId)))throw new Error('Local meeting changed during publication preparation; retry');
+  const payload=portableMeeting(session,meetingId,audio),hash=sha256(encode(payload));if(previous?.payloadHash===hash){if(audioSource&&previous.audioSource!==audioSource)this.edit(next=>{next.entries[entryKey(previous.manifest)]!.audioSource=audioSource;});return previous.preview;}
+  const bundle=makeBundle(libraryId,this.state.deviceId,payload,head?[head]:[]);const entry:Entry={marker:bundle.marker,manifest:bundle.manifest,payloadHash:hash,sessionId,audioSource,preview:{libraryId,meetingId,revisionId:bundle.manifest.revisionId,title:session.title,createdAt:session.createdAt,bytes:encode(payload).length,local:true,state:'pending',audio:!!payload.audio}};
   const job=this.quotaJob(entry,session);try{this.saveArtifacts(entry,payload);this.edit(next=>{next.entries[entryKey(entry.manifest)]=entry;next.aliases[key]=sessionId;next.heads[key]=entry.manifest.revisionId;});return entry.preview;}finally{job.finish();}
  }
- resolveConflict(revisionId:string):LibraryPreview {
-  if(this.active)throw new Error('A library operation is already running');const selected=Object.values(this.state.entries).find(e=>e.manifest.revisionId===revisionId);if(!selected||selected.preview.state!=='conflict')throw new Error('Conflict revision not found');
+ async resolveConflict(revisionId:string,signal?:AbortSignal):Promise<LibraryPreview>{return this.operation(async()=>{
+  const selected=Object.values(this.state.entries).find(e=>e.manifest.revisionId===revisionId);if(!selected||selected.preview.state!=='conflict')throw new Error('Conflict revision not found');
   const key=meetingKey(selected.manifest),oldHead=this.state.heads[key],old=oldHead?this.state.entries[`${key}/${oldHead}`]:undefined;if(!old?.sessionId)throw new Error('Current local meeting not found');
-  // Preserve the latest local correction as an immutable parent before selecting remote content.
-  this.queueLocal(old.sessionId);const head=this.state.heads[key],previous=head?this.state.entries[`${key}/${head}`]:undefined;if(!previous?.sessionId)throw new Error('Current local meeting not found');
+  await this.queueLocalRecord(old.sessionId,signal);const head=this.state.heads[key],previous=head?this.state.entries[`${key}/${head}`]:undefined;if(!previous?.sessionId)throw new Error('Current local meeting not found');
   const payload=this.payload(selected),session={...this.sessionFor(selected,payload),id:previous.sessionId};const parents=[...new Set([head!,...Object.values(this.state.entries).filter(e=>meetingKey(e.manifest)===key&&e.preview.state==='conflict').map(e=>e.manifest.revisionId)])];
-  const bundle=makeBundle(selected.manifest.libraryId,this.state.deviceId,payload,parents);const entry:Entry={marker:bundle.marker,manifest:bundle.manifest,sessionId:session.id,payloadHash:sha256(encode(payload)),preview:{...selected.preview,revisionId:bundle.manifest.revisionId,local:true,state:'pending'}};
-  const job=this.quotaJob(entry,session);try{this.saveArtifacts(entry,payload);this.options.sessions.save(session);this.edit(next=>{next.entries[entryKey(entry.manifest)]=entry;next.heads[key]=entry.manifest.revisionId;for(const id of parents){const old=next.entries[`${key}/${id}`];if(old?.preview.state==='conflict')old.preview.state='verified';}});return entry.preview;}finally{job.finish();}
- }
+  const bundle=makeBundle(selected.manifest.libraryId,this.state.deviceId,payload,parents);const entry:Entry={marker:bundle.marker,manifest:bundle.manifest,sessionId:session.id,payloadHash:sha256(encode(payload)),commitIntent:true,commitState:'pending',preview:{...selected.preview,revisionId:bundle.manifest.revisionId,local:true,state:'pending'}};
+  const job=this.quotaJob(entry,session);try{this.saveArtifacts(entry,payload);this.edit(next=>{next.entries[entryKey(entry.manifest)]=entry;});this.options.sessions.save(session);this.edit(next=>{delete next.entries[entryKey(entry.manifest)]!.commitIntent;delete next.entries[entryKey(entry.manifest)]!.commitState;next.heads[key]=entry.manifest.revisionId;for(const id of parents){const old=next.entries[`${key}/${id}`];if(old?.preview.state==='conflict')old.preview.state='verified';}});return entry.preview;}finally{job.finish();}
+ },signal);}
  async publish(revisionId:string,signal?:AbortSignal):Promise<LibrarySnapshot>{return this.operation(async()=>{
   const provider=this.provider();const entry=Object.values(this.state.entries).find(e=>e.manifest.revisionId===revisionId);if(!entry?.sessionId)throw new Error('Local revision not found');const payload=this.payload(entry);
   this.edit(next=>{next.entries[entryKey(entry.manifest)]!.preview.state='uploading';});
-  try {if(payload.audio){const path=join(this.options.root,'media',`${payload.audio.sha256}.wav`);if(!existsSync(path)||lstatSync(path).size!==payload.audio.bytes)throw new Error('Archived audio unavailable locally');await provider.writeObjectImmutable(providerPath(payload.audio.objectPath),payload.audio.bytes,payload.audio.sha256,createReadStream(path),signal);}
+  try {if(payload.audio){const path=this.safeAudioSource(entry.audioSource||join(this.options.root,'media',`${payload.audio.sha256}.wav`));if(!existsSync(path)||lstatSync(path).size!==payload.audio.bytes)throw new Error('Archived audio unavailable locally');await provider.writeObjectImmutable(providerPath(payload.audio.objectPath),payload.audio.bytes,payload.audio.sha256,createReadStream(path),signal);}
    const prefix=revisionPath(entry.manifest.meetingId,entry.manifest.revisionId);await provider.writeImmutable(providerPath(`${prefix}/meeting.json`),encode(payload),signal);await provider.writeImmutable(providerPath(`${prefix}/manifest.json`),encode(entry.manifest),signal);await provider.writeImmutable(providerPath(`commits/${entry.marker.deviceId}/${entry.marker.revisionId}.json`),encode(entry.marker),signal);
    const confirmation=await provider.confirm(entry.marker,signal);this.edit(next=>{next.entries[entryKey(entry.manifest)]!.preview.state=confirmation==='remote-confirmed'?'provider-confirmed':'pending';});
    if(confirmation==='remote-confirmed'){const manifest=JSON.parse(Buffer.from(await provider.read(entry.marker.manifestPath,65536,signal)).toString('utf8'));validateBundle(entry.marker,manifest,await provider.read(`${prefix}/meeting.json`,MAX_ARTIFACT_BYTES,signal));this.edit(next=>{next.entries[entryKey(entry.manifest)]!.preview.state='verified';});}
@@ -113,12 +124,12 @@ export class PortableLibrary {
  async requestAudio(sessionId:string,signal?:AbortSignal):Promise<string>{return this.operation(async()=>{
   const key=Object.keys(this.state.aliases).find(key=>this.state.aliases[key]===sessionId),head=key&&this.state.heads[key],entry=key&&head&&this.state.entries[`${key}/${head}`];if(!entry)throw new Error('No archived audio reference');const payload=this.payload(entry),audio=payload.audio;if(!audio)throw new Error('No archived audio reference');const path=join(this.options.root,'media',`${audio.sha256}.wav`);
   const apply=()=>{const session=this.options.sessions.read(sessionId);if(!session)throw new Error('Meeting not found');this.options.sessions.save({...session,files:{...session.files,wav:path}});return path;};
-  if(existsSync(path)){const bytes=readFileSync(path);if(bytes.length===audio.bytes&&sha256(bytes)===audio.sha256)return apply();throw new Error('Cached audio integrity verification failed');}
+  if(existsSync(path)){const inspected=await this.inspectAudio(path,signal);if(inspected.bytes===audio.bytes&&inspected.hash===audio.sha256)return apply();throw new Error('Cached audio integrity verification failed');}
   const provider=this.provider(),job=randomUUID(),id=`library-${job}`,staging=join(this.options.root,'staging',job);this.options.quota.reserve(id,audio.bytes*2+4*encode(this.state).length+131072,[staging,path,join(this.options.sessionsDir,`${sessionId}.json`)]);
   try{mkdirSync(staging,{recursive:true,mode:0o700});const file=join(staging,'verified.wav'),fd=openSync(file,'wx',0o600),hash=createHash('sha256');let received=0;
    try{for await(const chunk of provider.stream(providerPath(audio.objectPath),audio.bytes,signal)){signal?.throwIfAborted();received+=chunk.length;if(received>audio.bytes)throw new Error('Audio transfer exceeded declared size');hash.update(chunk);writeFileSync(fd,chunk);}if(received!==audio.bytes||hash.digest('hex')!==audio.sha256)throw new Error('Audio integrity verification failed');fsyncSync(fd);}finally{closeSync(fd);}
    renameSync(file,path);const dir=openSync(dirname(path),'r');try{fsyncSync(dir);}finally{closeSync(dir);}return apply();
   }finally{rmSync(staging,{recursive:true,force:true});this.options.quota.release(id);}
  },signal);}
- protectedPaths():string[]{return Object.values(this.state.entries).filter(e=>e.preview.state!=='verified').flatMap(e=>{try{const audio=this.payload(e).audio;return audio?[join(this.options.root,'media',`${audio.sha256}.wav`)]:[];}catch{return [];}});}
+ protectedPaths():string[]{return Object.values(this.state.entries).filter(e=>e.preview.state!=='verified').flatMap(e=>{try{const audio=this.payload(e).audio;return audio?[join(this.options.root,'media',`${audio.sha256}.wav`),...(e.audioSource?[e.audioSource]:[])]:[];}catch{return [];}});}
 }
