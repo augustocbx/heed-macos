@@ -1,10 +1,12 @@
 import {afterEach,expect,it,vi} from 'vitest';
 import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {useLocaleStore} from '@/stores/locale';
+import {tr} from '@/lib/i18n';
 import {StorageSettings} from './StorageSettings';
 const fixture={limitBytes:2_000_000_000,usedBytes:1000,reservedBytes:100,protectedBytes:500,reclaimableBytes:600,availableBytes:1_999_998_900,categories:{text:200,media:600,indexes:100,staging:100}};
 const api=vi.hoisted(()=>({status:vi.fn(),preview:vi.fn(),apply:vi.fn()}));
 vi.mock('@/api/storage',()=>({storageApi:api}));
-afterEach(()=>{cleanup();vi.resetAllMocks();});
+afterEach(()=>{cleanup();useLocaleStore.getState().sync("en");vi.resetAllMocks();});
 it('shows authoritative decimal GB and requires reviewed confirmation before removing local media',async()=>{
  api.status.mockResolvedValue(fixture);api.preview.mockResolvedValue({...fixture,requestedLimit:1_000_000_000,removals:[{path:'/synthetic/old.wav',bytes:100}],token:'review'});api.apply.mockResolvedValue({...fixture,limitBytes:1_000_000_000});
  render(<StorageSettings/>);const input=await screen.findByLabelText('Maximum local meeting data (GB)');expect(input).toHaveValue(2);
@@ -25,3 +27,5 @@ it('reset previews the decimal default and allows cancellation without saving',a
  render(<StorageSettings/>);await screen.findByLabelText('Maximum local meeting data (GB)');fireEvent.click(screen.getByRole('button',{name:'Reset to 2 GB'}));
  await screen.findByText('Review storage change');fireEvent.click(screen.getByRole('button',{name:'Cancel'}));expect(api.apply).not.toHaveBeenCalled();expect(screen.queryByText('Review storage change')).not.toBeInTheDocument();
 });
+
+it.each(['en','pt-BR','fr','de'] as const)('supports accessible units and localized quota explanations in %s',async(locale)=>{useLocaleStore.getState().sync(locale);api.status.mockResolvedValue(fixture);api.preview.mockRejectedValue(new Error('Requested quota is below protected meeting data and reservations'));render(<StorageSettings/>);const input=await screen.findByLabelText(tr('Maximum local meeting data (GB)'));fireEvent.change(input,{target:{value:'1'}});fireEvent.click(screen.getByRole('button',{name:tr('Review change')}));await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent(tr('Requested quota is below protected meeting data and reservations')));expect(screen.getAllByText(/ GB$/).length).toBeGreaterThan(0);expect(screen.getByRole('button',{name:tr('Reset to 2 GB')})).toBeEnabled();});

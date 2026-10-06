@@ -12,6 +12,7 @@ import { configuredUiLocale, supportedUiLocale } from "./lib/ui-locale.ts";
 import { finalRecordingResult, recordingFinalizationOptions } from "./lib/final-recording.ts";
 import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, statSync, rmSync } from "node:fs";
 import {randomUUID} from "node:crypto";
+import {validateProcessingWave} from "./lib/processing-wave.ts";
 import {reserveMediaWork} from "./lib/media-budget.ts";
 import { join, resolve, extname } from "node:path";
 import { homedir, cpus } from "node:os";
@@ -313,6 +314,7 @@ function serveStatic(path: string): Response | null {
 
 // --- Transcription (SSE) ---
 async function handleTranscribe(req: Request): Promise<Response> {
+ if(!permissionRequestAllowed(req,PORT))return new Response(null,{status:403});
 	let input: string;
 	let language = "auto";
 	let diarize = true;
@@ -363,13 +365,14 @@ async function handleTranscribe(req: Request): Promise<Response> {
  const directRecovery=!uploadFile && !isUrl && input.endsWith(".wav") && (recordingFinalize || /(?:^|\/)dual-capture-/.test(input));
  const jobId=randomUUID(),workDirectory=join(APP_DIR,'library','staging',`media-${jobId}`);
  let wavPath=directRecovery?resolve(input):join(UPLOAD_DIR,`import-${jobId}.wav`);
- let mediaClaim:ReturnType<typeof reserveMediaWork>;
+ let mediaClaim!:ReturnType<typeof reserveMediaWork>;
  try{
+  if(directRecovery)validateProcessingWave(input);
   const knownSize=uploadFile?.size ?? (!isUrl?statSync(input).size:undefined);
   mediaClaim=reserveMediaWork(managedQuota,jobId,wavPath,workDirectory,knownSize);
   mkdirSync(workDirectory,{recursive:true,mode:0o700});
   if(uploadFile){const safeName=uploadFile.name.replace(/[^a-zA-Z0-9._-]/g,'_');inputFilePath=join(workDirectory,safeName);writeFileSync(inputFilePath,Buffer.from(await uploadFile.arrayBuffer()));input=inputFilePath;}
- }catch(error){if(mediaClaim!)mediaClaim.release();rmSync(workDirectory,{recursive:true,force:true});return Response.json({error:(error as Error).message},{status:409});}
+ }catch(error){if(mediaClaim)mediaClaim.release();rmSync(workDirectory,{recursive:true,force:true});return Response.json({error:(error as Error).message},{status:409});}
  if (recordingFinalize) recordingFinalizationRunning = true;
  transcriptionRequests++;
  try { await preemptNotes(); } catch (error) {
@@ -1331,7 +1334,7 @@ async function beginSysRecording(mode: CaptureMode, attachPath: (path: string) =
 	// stays 0 bytes then jumps; the live loop derives "new audio" from the file SIZE, so a
 	// non-growing file means it never feeds the streaming model → live never appears until stop.
 	// Physical output limit; the margin covers the header and the final FFmpeg packet.
- args.splice(args.length - 1, 0, "-flush_packets", "1", "-fs", String(captureLimitBytes));
+ args.splice(args.length - 1, 0, "-flush_packets", "1", "-rf64", "auto", "-fs", String(captureLimitBytes));
 
 	recorderStartedAt = Date.now();
 	recorderProc = track(Bun.spawn(args, stdinStream ? { stdin: stdinStream, stdout: "pipe", stderr: "pipe" } : { stdout: "pipe", stderr: "pipe" }));
@@ -2365,6 +2368,7 @@ const recordingCoordinator = new RecordingCoordinator({
    recordingWorkDirectory=join(APP_DIR,'library','staging',`capture-${recordingCoordinator.snapshot().meetingId!}`);
    mkdirSync(recordingWorkDirectory,{recursive:true,mode:0o700});
    const id=recordingCoordinator.snapshot().meetingId!;
+   validateProcessingWave(path);
    reserveFinalization(managedQuota,id,path,recordingWorkDirectory,captureMetadataPaths(id));
    return finalizeCapture(path);
   },

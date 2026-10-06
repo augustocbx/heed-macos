@@ -1,4 +1,4 @@
-import {existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync} from 'node:fs';
+import {existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync,rmSync} from 'node:fs';
 import {basename,dirname, join, relative, resolve, sep} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {atomicWriteJson} from './atomic-json';
@@ -51,6 +51,10 @@ export class ManagedQuota {
    for(const [id,item] of Object.entries(this.reservations))if(id.startsWith('write-')){
     const primary=item.paths[0];
     for(const path of item.paths.slice(1))if(path.startsWith(`${primary}.`) && /^\.[0-9a-f-]{36}\.tmp$/.test(path.slice(primary.length)) && existsSync(path) && lstatSync(path).isFile())unlinkSync(path);
+    delete this.reservations[id];recovered=true;
+   }
+   for(const [id,item] of Object.entries(this.reservations))if(/^media-[0-9a-f-]{36}$/i.test(id)){
+    for(const path of item.paths)if(basename(path)===id && (this.options.roots.staging || []).some(root=>containsPath(resolve(root),resolve(path))) && existsSync(path) && lstatSync(path).isDirectory())rmSync(path,{recursive:true});
     delete this.reservations[id];recovered=true;
    }
    for(const item of Object.values(ledger.atomicWrites || {}) as Array<{temporary:string}>){if(existsSync(item.temporary) && lstatSync(item.temporary).isFile())unlinkSync(item.temporary);recovered=true;}

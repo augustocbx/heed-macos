@@ -82,3 +82,9 @@ test('allocated metadata counts atomic siblings once and cleans interrupted writ
  writeFileSync(s.options.ledgerPath,JSON.stringify({version:1,reservations:{provider:{bytes:200,paths:[path]}},atomicWrites:{interrupted:{path,temporary,allocationId:'provider'}}}));
  const resumed=new ManagedQuota(s.options);expect(existsSync(temporary)).toBe(false);expect(resumed.allocation('provider')?.bytes).toBe(200);
 });
+test('restart releases only interrupted manual imports and removes their staging, preserving audio and capture/provider claims',()=>{
+ const s=setup(1000),job='00000000-0000-4000-8000-000000000000',stage=join(s.staging,`media-${job}`),audio=join(s.media,'import.wav');mkdirSync(stage);writeFileSync(join(stage,'upload'),'partial');writeFileSync(audio,'audio');
+ writeFileSync(s.options.ledgerPath,JSON.stringify({version:1,reservations:{[`media-${job}`]:{bytes:100,paths:[stage,audio]},'capture-pending':{bytes:200,paths:[]}}}));
+ const restarted=new ManagedQuota(s.options);expect(existsSync(stage)).toBe(false);expect(existsSync(audio)).toBe(true);expect(restarted.allocation(`media-${job}`)).toBeNull();expect(restarted.allocation('capture-pending')?.bytes).toBe(200);
+});
+test('legacy text sidecars remain protected when eligible audio is evicted',()=>{const s=setup();const audio=join(s.media,'capture.wav'),text=join(s.media,'capture.txt');writeFileSync(audio,'a'.repeat(40));writeFileSync(text,'transcript');const preview=s.quota.preview(20);expect(preview.removals.map(file=>file.path)).toEqual([audio]);s.quota.apply(20,preview.token);expect(existsSync(text)).toBe(true);expect(s.quota.snapshot().categories.text).toBe(10);});

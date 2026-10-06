@@ -1895,7 +1895,7 @@ def _ffmpeg_channel(wav_path, ch, out_path):
     subprocess.run(
         ["ffmpeg", "-y", "-v", "error", "-i", wav_path,
          "-filter_complex", f"[0:a]pan=mono|c0=c{ch},aresample=16000[a]",
-         "-map", "[a]", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", out_path],
+         "-map", "[a]", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-rf64", "auto", out_path],
         check=True,
     )
 
@@ -1934,7 +1934,7 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
     Returns {"turns":[{start,end,speaker,text}], "speakers":[...], "embeddings":{...}, "auto_named":{...}}.
     """
     import engines
-    from managed_work import temporary_audio
+    from managed_work import temporary_audio, validate_processing_wave
     from meeting_language import detect_meeting_language
     from manual_transcription import MODELS, transcribe_complete
     if final_model not in ("parakeet-v3", *MODELS):
@@ -1943,6 +1943,8 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
         raise ValueError("Unsupported final transcription language")
     if not isinstance(manual, bool):
         raise ValueError("Manual transcription flag must be a boolean")
+    if work_directory:
+        validate_processing_wave(wav_path)
     if manual and language != "auto":
         detection = {"language": language, "source": "manual", "samples": 0}
     else:
@@ -2304,6 +2306,9 @@ def process_full(wav_path, language="auto", do_diarize=False, min_speakers=None,
 def split_stereo(wav_path, work_directory=None):
     """Split a stereo WAV into two mono WAVs in ONE ffmpeg call (reads input once).
     Returns (mic_path, sys_path, mic_has_audio, sys_has_audio)."""
+    if work_directory:
+        from managed_work import validate_processing_wave
+        validate_processing_wave(wav_path)
     base = wav_path.rsplit(".", 1)[0]
     if work_directory:
         base = os.path.join(work_directory, os.path.basename(base))
@@ -2318,8 +2323,8 @@ def split_stereo(wav_path, work_directory=None):
             "-filter_complex",
             "[0:a]pan=mono|c0=c0,volumedetect[micout];"
             "[0:a]pan=mono|c0=c1,volumedetect[sysout]",
-            "-map", "[micout]", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", mic_path,
-            "-map", "[sysout]", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", sys_path,
+            "-map", "[micout]", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-rf64", "auto", mic_path,
+            "-map", "[sysout]", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-rf64", "auto", sys_path,
         ],
         capture_output=True, text=True,
     )

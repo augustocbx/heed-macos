@@ -74,7 +74,7 @@ export async function normalizeAudio(inputPath: string, outputPath: string,budge
 			"silenceremove=stop_periods=-1:stop_duration=1:stop_threshold=-40dB,dynaudnorm,afftdn=nf=-25",
 			"-ar", "16000",
 			"-ac", "1",
-			"-c:a", "pcm_s16le",
+			"-c:a", "pcm_s16le", "-rf64", "auto",
             ...(budget?["-fs",String(budget.maxBytes)]:[]),
 			outputPath,
 		],

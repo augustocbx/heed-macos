@@ -5,6 +5,7 @@ import CoreGraphics
 
 struct PermissionRequest: Decodable { let id: String; let action: String }
 
+struct MeetingStorageStatus: Decodable {let limitBytes: Int64;let usedBytes: Int64;let reservedBytes: Int64}
 struct ControlStatus: Decodable {
     let recording: Bool
     let processing: Bool
@@ -14,6 +15,7 @@ struct ControlStatus: Decodable {
     let error: String?
     let pending: Bool
     let starting: Bool?
+    var storage: MeetingStorageStatus? = nil
     var uiLocale: String? = nil
     var permissionRequest: PermissionRequest? = nil
     var meetingDetection: MeetingDetectionState? = nil
@@ -44,6 +46,7 @@ func recordingStatusImage(_ recording: Bool, locale: String = "en") -> NSImage? 
 
 final class MenuController: NSObject, NSApplicationDelegate {
     private var item: NSStatusItem!
+    private let storageMenu = NSMenuItem(title: "Local meeting storage", action: nil, keyEquivalent: "")
     private let statusMenu = NSMenuItem(title: "Preparing services…", action: nil, keyEquivalent: "")
     private let startMenu = NSMenuItem(title: "Start recording", action: #selector(startRecording), keyEquivalent: "")
     private let stopMenu = NSMenuItem(title: "Stop recording", action: #selector(stopRecording), keyEquivalent: "")
@@ -83,6 +86,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         menu.autoenablesItems = false
         statusMenu.isEnabled = false
         menu.addItem(statusMenu)
+        storageMenu.isEnabled = false;menu.addItem(storageMenu)
         menu.addItem(NSMenuItem.separator())
         for entry in [startMenu, stopMenu] { entry.target = self; entry.isEnabled = false; menu.addItem(entry) }
         let open = NSMenuItem(title: "Open interface", action: #selector(openInterface), keyEquivalent: "")
@@ -154,6 +158,12 @@ final class MenuController: NSObject, NSApplicationDelegate {
         }.resume()
     }
     private func updateMenu() {
+        if let storage = state?.storage {
+            let number = NumberFormatter();number.locale = Locale(identifier: locale);number.maximumFractionDigits = 3
+            let used = number.string(from: NSNumber(value: Double(storage.usedBytes) / 1_000_000_000)) ?? "?"
+            let limit = number.string(from: NSNumber(value: Double(storage.limitBytes) / 1_000_000_000)) ?? "?"
+            storageMenu.title = "\(text("Local meeting storage")): \(used) / \(limit) GB"
+        } else { storageMenu.title = text("Local meeting storage") }
         for (entry, key) in localizedItems { entry.title = text(key) }
         for entry in localeItems { entry.state = (entry.representedObject as? String) == locale ? .on : .off }
         slackAutoMenu.state = slackAutoEnabled ? .on : .off

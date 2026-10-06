@@ -31,24 +31,25 @@
 
 **Interfaces:** ManagedQuota.snapshot(), reserve(id, bytes, paths), release(id), preview(limit), apply(limit, token); configuredManagedLimit(value). Snapshots expose limit/used/reserved/protected/reclaimable/available and category totals. Reservations count max(0, promised allocation minus existing assigned files).
 
-- [ ] RED tests for file accounting, durable allocation, concurrent claims, unsafe paths and reduction review.
-- [ ] Implement counting, atomic ledger and reviewed media eviction.
-- [ ] Run service tests and commit.
+- [x] RED tests for file accounting, durable allocation, concurrent claims, unsafe paths and reduction review.
+- [x] Implement counting, atomic ledger and reviewed media eviction.
+- [x] Run service tests and commit.
 
 ## Task 2: Recording and persistence integration
 
 **Files:** packages/server/server.ts, app-config.ts, audio-retention.ts, persistence service adapters, installer configuration.
 
-- [ ] RED HTTP tests for default/preservation, settings origin checks, protected reduction and fresh status.
-- [ ] Replace fixed audio budget with shared accounting/reservations for capture, import and temporary work; protect finalization output.
-- [ ] Persist default on missing/invalid legacy settings and preserve valid preferences during upgrade.
-- [ ] Validate full server suites and native guards.
+- [x] RED HTTP tests for default/preservation, settings origin checks, protected reduction and fresh status.
+- [x] Replace fixed audio budget with shared accounting/reservations for capture, import and temporary work; protect finalization output.
+- [x] Persist default on missing/invalid legacy settings and preserve valid preferences during upgrade.
+- [x] Validate full server suites and native guards.
 
 ## Task 3: Settings and final QA
 
 **Files:** client storage settings/API/locales and focused interaction tests; documentation.
 
-- [ ] RED tests for save/reset/preview confirmation, rejected values and accessible four-locale controls.
-- [ ] Implement category usage, reclaimable preview and reviewed apply flow.
-- [ ] Run complete CI commands, independent review, fix findings, push and verify exact-head CI.
+- [x] RED tests for save/reset/preview confirmation, rejected values and accessible four-locale controls.
+- [x] Implement category usage, reclaimable preview and reviewed apply flow.
+- [x] Run complete local CI commands and independent review; correct all Important findings.
+- [ ] Push and verify exact-head hosted CI.
 - [ ] Stop services, safely remove worktree, merge, then mark only evidenced issue acceptance criteria.

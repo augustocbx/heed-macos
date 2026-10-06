@@ -82,7 +82,7 @@ test("restart recovery finalizes and saves once without any browser, preserving 
  await app.kill(); await app.exited;
  const wav = join(directory,"recordings","capture-recovery.wav");
  mkdirSync(join(directory,"recordings"),{recursive:true});
- writeFileSync(wav,"Synthetic retained audio; duration is provided by the fixture ASR");
+ const audio=Buffer.alloc(44+64_000);audio.write("RIFF");audio.writeUInt32LE(audio.length-8,4);audio.write("WAVEfmt ",8);audio.writeUInt32LE(16,16);audio.writeUInt16LE(1,20);audio.writeUInt16LE(1,22);audio.writeUInt32LE(16000,24);audio.writeUInt32LE(32000,28);audio.writeUInt16LE(2,32);audio.writeUInt16LE(16,34);audio.write("data",36);audio.writeUInt32LE(64_000,40);writeFileSync(wav,audio);
  writeFileSync(join(directory,"recording-manifest.json"),JSON.stringify({version:1,receipts:{},snapshot:{meetingId:"recovery-fixture",state:"finalizing",revision:5,startedAt:1000,path:wav,seconds:2,mode:"both",segments:[{speaker:"Speaker 1",channel:"sys",text:"Bom dia",start:0,end:2.25}],speakerNames:{"Speaker 1":"Ana"},session:null,error:null,maintenance:false}}));
  await startApp();
  expect((await request("/api/recording/status")).body).toMatchObject({state:"failed",path:wav,speakerNames:{"Speaker 1":"Ana"}});

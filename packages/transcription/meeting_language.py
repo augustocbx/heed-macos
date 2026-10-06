@@ -7,7 +7,7 @@ import json
 import os
 import subprocess
 import sys
-import wave
+from managed_work import wave_metadata
 
 MODEL = "mlx-community/whisper-tiny-mlx"
 
@@ -45,9 +45,8 @@ def worker(wav_path=None):
         clip = os.path.join(os.path.dirname(__file__), "assets", "bench_sample.wav")
         mlx_whisper.transcribe(clip, path_or_hf_repo="mlx-community/whisper-base-mlx", language="en")
         return {"model": MODEL, "live_model": "base", "ready": True}
-    with wave.open(wav_path, "rb") as source:
-        duration = source.getnframes() / source.getframerate()
-        channels = source.getnchannels()
+    metadata = wave_metadata(wav_path)
+    duration, channels = metadata["duration"], metadata["channels"]
     offsets = sorted(set([0.0, max(0.0, duration / 2 - 15), max(0.0, duration - 30)]))
     probabilities = []
     for offset in offsets:

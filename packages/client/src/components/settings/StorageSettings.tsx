@@ -8,9 +8,11 @@ export function StorageSettings(){
  const {locale,tr}=useLocale();const [usage,setUsage]=useState<StorageUsage|null>(null);
  const [value,setValue]=useState('2');const [preview,setPreview]=useState<StoragePreview|null>(null);
  const [busy,setBusy]=useState(false);const [error,setError]=useState<string|null>(null);const [saved,setSaved]=useState(false);
+ const busyRef=useRef(false);
  const dirty=useRef(false),sequence=useRef(0),mounted=useRef(true);
  const gb=(bytes:number)=>new Intl.NumberFormat(locale,{maximumFractionDigits:9}).format(bytes/1_000_000_000);
  const refresh=useCallback(async()=>{
+  if(busyRef.current)return;
   const request=++sequence.current;
   try{const next=await storageApi.status();if(!mounted.current || request!==sequence.current)return;setUsage(next);if(!dirty.current)setValue(String(next.limitBytes/1_000_000_000));}
   catch{if(mounted.current && request===sequence.current)setError('Could not check meeting storage.');}
@@ -19,14 +21,14 @@ export function StorageSettings(){
  const review=async(reset=false)=>{
   const bytes=reset?2_000_000_000:Number(value)*1_000_000_000;
   if(!value.trim() || !Number.isSafeInteger(bytes) || bytes<1_048_576 || bytes>8_000_000_000_000){setError('Choose a storage limit between 0.001048576 and 8000 GB using whole bytes.');return;}
-  ++sequence.current;setBusy(true);setError(null);setSaved(false);
+  ++sequence.current;busyRef.current=true;setBusy(true);setError(null);setSaved(false);
   try{const next=await storageApi.preview(bytes);if(mounted.current){setPreview(next);if(reset){dirty.current=true;setValue('2');}}}
-  catch(error){if(mounted.current)setError((error as Error).message);}finally{if(mounted.current)setBusy(false);}
+  catch(error){if(mounted.current)setError((error as Error).message);}finally{busyRef.current=false;if(mounted.current)setBusy(false);}
  };
  const apply=async()=>{
-  if(!preview)return;++sequence.current;setBusy(true);setError(null);
+  if(!preview)return;++sequence.current;busyRef.current=true;setBusy(true);setError(null);
   try{const next=await storageApi.apply(preview.requestedLimit,preview.token);if(mounted.current){setUsage(next);setValue(String(next.limitBytes/1_000_000_000));dirty.current=false;setPreview(null);setSaved(true);}}
-  catch(error){if(mounted.current){setError((error as Error).message);setPreview(null);}}finally{if(mounted.current)setBusy(false);}
+  catch(error){if(mounted.current){setError((error as Error).message);setPreview(null);}}finally{busyRef.current=false;if(mounted.current)setBusy(false);}
  };
  return <article className={styles.card} aria-labelledby="meeting-storage-title">
   <h2 id="meeting-storage-title">{tr('Local meeting storage')}</h2>
