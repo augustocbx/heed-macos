@@ -1,6 +1,6 @@
 import {test,expect} from 'bun:test';import {mkdtempSync,rmSync,readFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import {randomUUID} from 'node:crypto';
 import {ICloudConnections,icloudResponse} from './icloud-connections';
-import {PortableLibrary} from '../portable-library';import {ProviderRegistry} from '../provider-registry';import {SessionTags} from '../session-tags';import {mkdirSync} from 'node:fs';
+import {PortableLibrary} from '../portable-library';import {ProviderRegistry} from '../provider-registry';import {SessionTags} from '../session-tags';import {mkdirSync,writeFileSync,existsSync} from 'node:fs';import {ManagedQuota,MIN_MANAGED_LIMIT} from '../managed-quota';import {atomicWriteJson} from '../atomic-json';
 const dest=randomUUID();
 function fixture(){const root=mkdtempSync(join(tmpdir(),'heed-cloud-config-'));let uploaded=true;let publishCount=0;let localCalls=0;const localId=randomUUID(),rev=randomUUID();const library:any={hasLocalRevision:()=>true,snapshot:()=>({localMeetings:[{id:localId,title:'Synthetic'}],previews:[{revisionId:rev,state:'pending',local:true}],complete:true,imported:1,skipped:0}),withProvider:async(_p:any,fn:any)=>fn(library),discover:async()=>{},importSelected:async()=>{},queueLocal:async()=>{localCalls++;return {revisionId:rev,state:'pending'};},publish:async()=>{publishCount++;}};const native:any={json:async(r:any)=>r.action==='pick'?{bookmark:'YQ==',account:'Yg==',identity:'1:2'}:r.action==='probe'?{header:{format:'heed-portable-library',schemaVersion:1,destinationId:dest},status:'pending-upload',remoteChecksumVerified:false}:r.action==='watch'?{ubiquitous:true,uploaded,state:uploaded?'system-reported-uploaded':'pending-upload',remoteChecksumVerified:false}:{} };const options={configPath:join(root,'icloud.json'),jobsPath:join(root,'jobs.json'),library,native,busy:()=>false};return {root,options,rev,localId,get publishCount(){return publishCount;},get localCalls(){return localCalls;},setUploaded(v:boolean){uploaded=v;},close(){rmSync(root,{recursive:true,force:true});}};}
 test('reviewed binding stays private; system upload never acknowledges pending revision across restart',async()=>{const f=fixture();try{const c=new ICloudConnections(f.options);const selected=await c.select();await c.connect({name:'Fixture',receipt:selected.receipt,create:false});await c.sync();expect(c.protectedRevisionIds()).toEqual([f.rev]);expect(JSON.stringify(c.snapshot())).not.toContain('YQ==');const restarted=new ICloudConnections(f.options);expect(restarted.protectedRevisionIds()).toEqual([f.rev]);expect(restarted.snapshot().connection?.pending).toBe(1);await restarted.disconnect();expect(restarted.snapshot().connection).toBeNull();expect(restarted.protectedRevisionIds()).toEqual([f.rev]);expect(readFileSync(f.options.jobsPath,'utf8')).not.toContain('YQ==');}finally{f.close();}});
@@ -37,4 +37,24 @@ test('real shared catalog lease excludes publication while an awaited folder mut
  await expect(library.publish(randomUUID())).rejects.toThrow('running');expect(()=>providers.activate(original)).toThrow('running');expect(c.snapshot().connection!.id).toBe(original);
  release();await changed;expect(library.snapshot().providerId).toBe(c.snapshot().connection!.id);expect(library.snapshot().providerId).not.toBe(original);expect(library.isBusy()).toBe(false);
  }finally{release?.();await changed?.catch(()=>{});f.close();}
+});
+
+test('double settings failure blocks future access and protects an unqueued sole local audio copy',async()=>{
+ const f=fixture();try{const media=join(f.root,'media');mkdirSync(media);const wav=join(media,'pending.wav');writeFileSync(wav,Buffer.alloc(1200000));let writes=0,fail=false,selected:string|null=null;
+ const providers={assertIdle(){},preferredId:()=>selected,currentId:()=>selected,register(){},unregister(){selected=null;},activate(id:string){if(fail)throw Error('Preference disk failed');selected=id;},deactivate(){selected=null;},withMutation:async(fn:any)=>fn()};
+ const c=new ICloudConnections({...f.options,providers,sessions:()=>[{transcriptFinalized:true,files:{wav}}],write:(path:string,value:any)=>{if(path===f.options.configPath&&++writes===3)throw Error('Configuration restore failed');atomicWriteJson(path,value);}});
+ let receipt=await c.select();await c.connect({name:'Original',receipt:receipt.receipt,create:false});receipt=await c.select();fail=true;await expect(c.connect({name:'Replacement',receipt:receipt.receipt,create:false})).rejects.toThrow('restored');
+ const quota=new ManagedQuota({ledgerPath:join(f.root,'quota.json'),roots:{media:[media]},getLimit:()=>3000000,setLimit:()=>{},protectedPaths:()=>c.protectedLocalPaths()});
+ expect(()=>quota.preview(MIN_MANAGED_LIMIT)).toThrow();expect(existsSync(wav)).toBe(true);expect(c.snapshot().recoveryRequired).toBe(true);await expect(c.select()).rejects.toThrow('recovery');expect(c.protectedRevisionIds()).toEqual([]);
+ }finally{f.close();}
+});
+
+test('selected shared provider cannot bypass recovery after failed pause and failed configuration rollback',async()=>{
+ const f=fixture();try{const sessionsDir=join(f.root,'sessions');mkdirSync(sessionsDir);const library=new PortableLibrary({root:join(f.root,'library'),sessions:new SessionTags(sessionsDir),sessionsDir,quota:{reserve(){},release(){}}});let failPreference=false,failRestore=false,writes=0,nativeCalls=0;
+ const providers=new ProviderRegistry({path:join(f.root,'preference.json'),getLibrary:()=>library,write:(p:string,value:any)=>{if(failPreference)throw Error('Preference failed');atomicWriteJson(p,value);}});
+ const native={...f.options.native,json:async(r:any)=>{nativeCalls++;return f.options.native.json(r);}};
+ const c=new ICloudConnections({...f.options,library,providers,native,write:(p:string,value:any)=>{if(p===f.options.configPath&&++writes===3&&failRestore)throw Error('Restore failed');atomicWriteJson(p,value);}});
+ const selected=await c.select();await c.connect({name:'Original',receipt:selected.receipt,create:false});const id=c.snapshot().connection!.id;expect(library.snapshot().providerId).toBe(id);failPreference=true;failRestore=true;await expect(c.enable(false,id)).rejects.toThrow('restored');expect(library.snapshot().providerId).toBe(id);
+ const before=nativeCalls;await library.discover();expect(library.snapshot().complete).toBe(false);expect(library.snapshot().error).toContain('recovery');expect(nativeCalls).toBe(before);expect(c.unavailable()).toBe(true);
+ }finally{f.close();}
 });

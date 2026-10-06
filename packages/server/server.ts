@@ -130,7 +130,7 @@ if(!synchronizationUnavailable)try{providerRegistry.restore();smbConnections?.st
 
 async function handleLibrary(req:Request):Promise<Response>{
  if(!permissionRequestAllowed(req,PORT))return new Response(null,{status:403});
- if(synchronizationUnavailable)return Response.json({error:'Synchronization unavailable. Preserve its configuration for recovery.',code:'unavailable'},{status:503});
+ if(synchronizationUnavailable||icloudConnections?.unavailable())return Response.json({error:'Synchronization unavailable. Preserve its configuration for recovery.',code:'unavailable'},{status:503});
  try{return await libraryResponse(req,getPortableLibrary(),()=>portableRuntime!.migrate(req.signal),audioWorkBusy);}catch(error){const message=(error as Error).message;return Response.json({error:message,code:/quota|reservation/i.test(message)?'quota-blocked':'unavailable'},{status:/quota|reservation/i.test(message)?409:503});}
 }
 

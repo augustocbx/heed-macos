@@ -108,5 +108,7 @@ export const ICLOUD_TRANSLATIONS: Record<string,Record<string,string>> = {
     "pt-BR": "Desconectar remove acessos futuros à pasta e mantém transcrições locais importadas e cópias pendentes recuperáveis.",
     "fr": "La déconnexion supprime l’accès futur au dossier et conserve les transcriptions importées et les copies récupérables en attente.",
     "de": "Die Trennung beendet den künftigen Ordnerzugriff und bewahrt importierte Transkripte sowie wiederherstellbare ausstehende Kopien."
-  }
+  },
+  "Recovery required": {"pt-BR":"Recuperação necessária","fr":"Récupération nécessaire","de":"Wiederherstellung erforderlich"},
+  "iCloud settings recovery is required. Preserve private configuration and pending copies.": {"pt-BR":"É necessário recuperar as configurações do iCloud. Preserve a configuração privada e as cópias pendentes.","fr":"Les réglages iCloud doivent être récupérés. Conservez la configuration privée et les copies en attente.","de":"Die iCloud-Einstellungen müssen wiederhergestellt werden. Bewahren Sie die private Konfiguration und ausstehende Kopien auf."}
 };
