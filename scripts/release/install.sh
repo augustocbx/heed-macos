@@ -51,6 +51,7 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+phase() { [ -z "${HEED_UPDATE_TRANSACTION_ID:-}" ] || /usr/bin/python3 "$HEED_HELPER" update-phase --phase "$1"; }
 step() { printf '\n==> %s\n' "$*"; }
 fail() { printf '\nInstallation failed: %s\n' "$1" >&2; [ -n "${HEED_LOG:-}" ] && printf 'Full log: %s\n' "$HEED_LOG" >&2; exit 1; }
 
@@ -73,21 +74,24 @@ HEED_GUARD_HELD=0
 HEED_COMMITTED=0
 HEED_SWITCHED=0
 HEED_KEEP_STAGE=0
+HEED_RECOVERY=notReplaced
 
 cleanup() {
     local status=$?
-    if [ "$HEED_GUARD_HELD" = 1 ] && [ "$HEED_COMMITTED" = 1 ]; then
+    if [ -z "${HEED_UPDATE_TRANSACTION_ID:-}" ] && [ "$HEED_GUARD_HELD" = 1 ] && [ "$HEED_COMMITTED" = 1 ]; then
         /usr/bin/python3 "$HEED_CURRENT/packages/desktop/guard-lifecycle.py" release >/dev/null 2>&1 || true
     fi
     if [ "$status" != 0 ] && [ "$HEED_COMMITTED" = 0 ]; then
         # The running version was never stopped: give it back its recording ability first.
-        if [ "$HEED_GUARD_HELD" = 1 ] && [ "$HEED_SWITCHED" = 0 ] && [ -f "$HEED_GUARD_SCRIPT" ]; then
+        if [ -z "${HEED_UPDATE_TRANSACTION_ID:-}" ] && [ "$HEED_GUARD_HELD" = 1 ] && [ "$HEED_SWITCHED" = 0 ] && [ -f "$HEED_GUARD_SCRIPT" ]; then
             /usr/bin/python3 "$HEED_GUARD_SCRIPT" release >/dev/null 2>&1 || true
         fi
         if [ "$HEED_SWITCHED" = 1 ]; then rollback; fi
-        if [ "$HEED_KEEP_STAGE" = 1 ]; then rm -rf "$HEED_TEMP"; return; fi
-        if [ -n "$HEED_STAGE" ] && [ -d "$HEED_STAGE" ]; then rm -rf "$HEED_STAGE"; fi
+        if [ "$HEED_KEEP_STAGE" != 1 ] && [ -n "$HEED_STAGE" ] && [ -d "$HEED_STAGE" ]; then rm -rf "$HEED_STAGE"; fi
         printf 'The existing Heed installation and its data were left in place.\n' >&2
+    fi
+    if [ -n "${HEED_UPDATE_TRANSACTION_ID:-}" ] && [ -n "${HEED_HELPER:-}" ] && [ -n "${HEED_INSTALL_LOCK_FD:-}" ]; then
+        /usr/bin/python3 "$HEED_HELPER" update-result --exit-code "$status" --recovery "$HEED_RECOVERY" || true
     fi
     rm -rf "$HEED_TEMP"
 }
@@ -141,6 +145,23 @@ else
 fi
 HEED_HELPER="$HEED_PAYLOAD/scripts/release/heed_release.py"
 [ -f "$HEED_PAYLOAD/release.json" ] && [ -f "$HEED_HELPER" ] || fail "$HEED_PAYLOAD is not a Heed release payload."
+# Serialize every entry point before preparing components or changing runtime state.
+HEED_LOCK_HELPER="$HEED_PAYLOAD/scripts/release/installation_lock.py"
+[ -f "$HEED_LOCK_HELPER" ] || fail 'The payload does not support safe installation locking.'
+export HEED_HOME
+if [ -z "${HEED_INSTALL_LOCK_FD:-}" ]; then
+    HEED_LOCK_ARGS=(--payload "$HEED_PAYLOAD")
+    [ -z "$HEED_REQUESTED_VERSION" ] || HEED_LOCK_ARGS+=(--version "$HEED_REQUESTED_VERSION")
+    [ "$HEED_SKIP_WARMUP" != 1 ] || HEED_LOCK_ARGS+=(--skip-model-warmup)
+    [ "$HEED_REQUIRE_PERMISSIONS" != 1 ] || HEED_LOCK_ARGS+=(--require-permissions)
+    [ "$HEED_PERMISSION_PROMPT" != 0 ] || HEED_LOCK_ARGS+=(--no-permission-prompt)
+    HEED_LOCK_STATUS=0
+    # The locked child owns installation reporting and recovery; this wrapper only owns its downloads.
+    trap 'rm -rf "$HEED_TEMP"' EXIT
+    /usr/bin/python3 "$HEED_LOCK_HELPER" run --home "$HEED_HOME" -- /bin/bash "$HEED_PAYLOAD/install.sh" "${HEED_LOCK_ARGS[@]}" || HEED_LOCK_STATUS=$?
+    exit "$HEED_LOCK_STATUS"
+fi
+/usr/bin/python3 "$HEED_LOCK_HELPER" verify --home "$HEED_HOME" --fd "$HEED_INSTALL_LOCK_FD" || fail 'Installation lock ownership could not be verified.'
 export HEED_SERVICE_CONFIG_ROOT="$HEED_PAYLOAD"
 HEED_VALIDATED_PORTS="$(/usr/bin/python3 "$HEED_HELPER" ports --owned-release)" || fail 'Invalid Heed service configuration. Follow the diagnostic above; preserve service-ports.json and existing services.'
 HEED_PREVIOUS_PORTS="$(/usr/bin/python3 "$HEED_HELPER" ports --saved)" || fail 'Invalid saved Heed service ports. Nothing was replaced.'
@@ -228,6 +249,7 @@ HEED_PYTHON="$(brew --prefix python@3.14)/bin/python3.14"
 [ -x "$HEED_PYTHON" ] || fail "Python 3.14 from Homebrew was not found at $HEED_PYTHON."
 
 # --- Prepare the new version beside the current one ------------------------------------------
+phase installing
 step "Preparing Heed $HEED_VERSION (the running version is not touched yet)"
 HEED_STAGE="$HEED_VERSIONS/$HEED_VERSION-$(date +%Y%m%d%H%M%S)"
 ditto "$HEED_PAYLOAD" "$HEED_STAGE"
@@ -263,7 +285,7 @@ esac
 HEED_GUARD_SCRIPT="$HEED_STAGE/packages/desktop/guard-lifecycle.py"
 if [ -n "$HEED_PREVIOUS_DIR" ]; then HEED_GUARD_SCRIPT="$HEED_PREVIOUS_DIR/packages/desktop/guard-lifecycle.py"
 elif [ -n "$HEED_LEGACY_ROOT" ]; then HEED_GUARD_SCRIPT="$HEED_LEGACY_ROOT/packages/desktop/guard-lifecycle.py"; fi
-export HEED_LIFECYCLE_GUARD_TOKEN="$(/usr/bin/uuidgen)"
+export HEED_LIFECYCLE_GUARD_TOKEN="${HEED_LIFECYCLE_GUARD_TOKEN:-$(/usr/bin/uuidgen)}"
 /usr/bin/python3 "$HEED_GUARD_SCRIPT" acquire \
     || fail 'Heed is recording, saving or transcribing. Wait until it finishes, then run the installer again.'
 HEED_GUARD_HELD=1
@@ -308,6 +330,8 @@ rollback() {
         return 0
     fi
     local restore_failed=0
+    local HEED_RESTORE_GUARD_ACTION=release
+    [ -z "${HEED_UPDATE_TRANSACTION_ID:-}" ] || HEED_RESTORE_GUARD_ACTION=acquire
     if [ -f "$HEED_BACKUP/native-hosts.list" ]; then
         while IFS= read -r HEED_HOST; do
             cp -p "$HEED_BACKUP/native-hosts/$(printf '%s' "$HEED_HOST" | shasum | cut -c1-12).json" "$HEED_HOST" || true
@@ -342,10 +366,17 @@ rollback() {
                 /usr/bin/python3 "$HEED_HELPER" wait-api --root "$restored_root" --timeout 20 > /dev/null \
                 && HEED_API_PORT="${old_api:-$HEED_API_PORT}" PORT="${old_api:-$HEED_API_PORT}" \
                    HEED_UI_PORT="${old_ui:-$HEED_UI_PORT}" HEED_TRANSCRIPTION_PORT="${old_transcription:-$HEED_TRANSCRIPTION_PORT}" \
-                   /usr/bin/python3 "$HEED_GUARD_SCRIPT" release > /dev/null || restore_failed=1
+                   /usr/bin/python3 "$HEED_GUARD_SCRIPT" "$HEED_RESTORE_GUARD_ACTION" > /dev/null || restore_failed=1
         else
             restore_failed=1
         fi
+    fi
+    if [ -n "${HEED_UPDATE_TRANSACTION_ID:-}" ] && [ -n "$HEED_PREVIOUS_DIR" ] && [ "$restore_failed" = 0 ]; then
+        local restored_version restored_commit
+        restored_version="$(/usr/bin/python3 "$HEED_HELPER" release-field "$HEED_PREVIOUS_DIR/release.json" version)"
+        restored_commit="$(/usr/bin/python3 "$HEED_HELPER" release-field "$HEED_PREVIOUS_DIR/release.json" commit)"
+        HEED_API_PORT="${old_api:-$HEED_API_PORT}" HEED_UI_PORT="${old_ui:-$HEED_UI_PORT}" HEED_TRANSCRIPTION_PORT="${old_transcription:-$HEED_TRANSCRIPTION_PORT}" \
+            /usr/bin/python3 "$HEED_HELPER" wait-ready --root "$HEED_PREVIOUS_DIR" --version "$restored_version" --commit "$restored_commit" --timeout 60 > /dev/null || restore_failed=1
     fi
     if [ "$restore_failed" = 1 ]; then
         # Keep everything that may still be referenced, including the backups, for manual recovery.
@@ -354,12 +385,15 @@ rollback() {
         printf 'The previous installation could not be fully restored. Backups were saved in %s/recovery.\n' "$HEED_HOME" >&2
         return 0
     fi
+    HEED_RECOVERY=restored
     printf 'The previous installation was restored.\n' >&2
 }
 
+phase restarting
 step 'Stopping the running Heed services'
 stop_heed || fail 'Heed services could not be stopped safely. Nothing was replaced.'
 HEED_SWITCHED=1
+HEED_RECOVERY=recoveryRequired
 switch_current "$HEED_STAGE"
 step 'Installing the menu app'
 HEED_MENU_ROOT="$HEED_CURRENT" HEED_RECORDINGS_DIR="$HEED_RECORDINGS" bash "$HEED_CURRENT/packages/desktop/install-menubar.sh" --prebuilt \
@@ -367,10 +401,12 @@ HEED_MENU_ROOT="$HEED_CURRENT" HEED_RECORDINGS_DIR="$HEED_RECORDINGS" bash "$HEE
 /usr/bin/python3 "$HEED_HELPER" migrate-native-hosts --new-root "$HEED_CURRENT" --old-root "$HEED_RUNTIME" \
     ${HEED_LEGACY_ROOT:+--old-root "$HEED_LEGACY_ROOT"} || fail 'The Meet browser bridge could not be updated.'
 
+phase checkingServices
 step 'Waiting for Heed services (models can take a few minutes to load)'
 /usr/bin/python3 "$HEED_HELPER" wait-ready --root "$HEED_STAGE" --version "$HEED_VERSION" --commit "$HEED_COMMIT" --timeout "$HEED_READY_TIMEOUT" \
     || fail "Heed $HEED_VERSION did not become ready. Service logs are in ~/Library/Logs/Heed."
 HEED_COMMITTED=1
+HEED_RECOVERY=retainedTarget
 
 # --- Record the installation ------------------------------------------------------------------
 HEED_PREVIOUS_VERSION="$(state --get version)"
@@ -389,6 +425,7 @@ for HEED_OLD in "$HEED_VERSIONS"/*; do
 done
 
 # --- Permissions ------------------------------------------------------------------------------
+phase checkingPermissions
 step 'Testing macOS permissions'
 HEED_PERMISSION_ARGS=()
 if [ "$HEED_PERMISSION_PROMPT" = 1 ]; then HEED_PERMISSION_ARGS+=(--request); fi

@@ -44,6 +44,7 @@ else
 fi
 "$HEED_BUILD/Heed" --self-test
 if [ "${1:-}" = "--build-only" ]; then
+    "$HEED_BUILD/Heed" --update-client-self-test
     printf 'Build verified: %s\n' "$HEED_BUILD/Heed"
     exit 0
 fi
@@ -86,6 +87,18 @@ mv -f "$HEED_APP/Contents/MacOS/Heed.new" "$HEED_APP/Contents/MacOS/Heed"
 cp "$HEED_DESKTOP/native-keychain/.build/heed-keychain" "$HEED_APP/Contents/Resources/heed-keychain"
 cp "$HEED_DESKTOP/icloud-folder/.build/heed-icloud" "$HEED_APP/Contents/Resources/heed-icloud"
 cp "$HEED_DESKTOP/macos/start-services.sh" "$HEED_APP/Contents/Resources/start-services.sh"
+# Keep trusted update code with the app; running transactions copy it before app replacement.
+HEED_UPDATE_RESOURCES="$HEED_APP/Contents/Resources/update-helper"
+rm -rf "$HEED_UPDATE_RESOURCES"
+mkdir -p "$HEED_UPDATE_RESOURCES/scripts/release" "$HEED_UPDATE_RESOURCES/config"
+for HEED_HELPER_NAME in heed_release.py installation_lock.py release_updates.py update_state.py update_transaction.py; do
+    cp "$HEED_PROJECT_ROOT/scripts/release/$HEED_HELPER_NAME" "$HEED_UPDATE_RESOURCES/scripts/release/$HEED_HELPER_NAME"
+done
+cp "$HEED_PROJECT_ROOT/scripts/service_config.py" "$HEED_PROJECT_ROOT/scripts/service_runtime.py" "$HEED_UPDATE_RESOURCES/scripts/"
+cp "$HEED_PROJECT_ROOT/config/service-ports.json" "$HEED_UPDATE_RESOURCES/config/"
+printf '%s\n' "${HEED_HOME:-$HOME/.heed}" > "$HEED_APP/Contents/Resources/heed-home.txt"
+printf '%s\n' "${HEED_APP_DIR:-$HOME/.heed-app}" > "$HEED_APP/Contents/Resources/heed-app-dir.txt"
+
 printf '%s\n' "$HEED_MENU_ROOT" > "$HEED_APP/Contents/Resources/heed-root.txt"
 if [ -n "${HEED_RECORDINGS_DIR:-}" ]; then
     printf '%s\n' "$HEED_RECORDINGS_DIR" > "$HEED_APP/Contents/Resources/heed-recordings-dir.txt"
@@ -128,7 +141,7 @@ HEED_APP_EXEC="$HEED_APP/Contents/MacOS/Heed" /usr/bin/python3 - "$HEED_AGENT" <
 import os, plistlib, sys
 with open(sys.argv[1], 'wb') as file:
     environment = {key: os.environ[key] for key in ['HEED_API_PORT', 'HEED_UI_PORT', 'HEED_TRANSCRIPTION_PORT']}
-    for key in ['HEED_APP_DIR', 'HEED_RECORDINGS_DIR', 'HEED_TRANSCRIPTION_URL']:
+    for key in ['HEED_HOME', 'HEED_APP_DIR', 'HEED_RECORDINGS_DIR', 'HEED_TRANSCRIPTION_URL']:
         if key in os.environ:
             environment[key] = os.environ[key]
     plistlib.dump({'Label': 'local.heed.menubar', 'ProgramArguments': [os.environ['HEED_APP_EXEC']], 'RunAtLoad': True, 'EnvironmentVariables': environment}, file)
