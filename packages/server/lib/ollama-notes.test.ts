@@ -103,3 +103,14 @@ test("malformed model show metadata fails closed before any generation", async (
  const fake = transport({ show: {} }); await expect(generateLocalNotes({ ...input, fetch: fake.fetcher })).rejects.toThrow("ollama-unavailable");
  expect(fake.requests.some(request => request.url.endsWith("/api/generate"))).toBe(false);
 });
+
+test("structured generation retains local-only and completed-stream checks without applying notes instructions", async () => {
+ const { generateLocalStructured } = await import("./ollama-notes");
+ const fake = transport({ stream: '{"response":"{\\"answer\\":\\"yes\\"}","done":true}' });
+ const text = await generateLocalStructured({ baseUrl: input.baseUrl, model: input.model, system: "Answer using evidence only.", data: { question: "Approved?", evidence: [] }, fetch: fake.fetcher });
+ expect(JSON.parse(text)).toEqual({ answer: "yes" });
+ const body = JSON.parse(fake.requests.at(-1)!.init!.body as string);
+ expect(body.system).toBe("Answer using evidence only.");
+ expect(JSON.parse(body.prompt)).toEqual({ question: "Approved?", evidence: [] });
+ expect(body.format).toBe("json");
+});
