@@ -18,6 +18,12 @@ describe('desktop OAuth loopback',()=>{
   expect(authorization!.searchParams.get('code_challenge_method')).toBe('S256');expect(authorization!.searchParams.get('access_type')).toBe('offline');
   await expect(fetch(`${callback}?code=REPLAY&state=${authorization!.searchParams.get('state')}`)).rejects.toThrow();
  });
+ test('supports registered localhost redirects while binding only a loopback listener',async()=>{
+  const result=await beginDesktopOAuth({authorizationEndpoint:endpoint,clientId:'client',scopes:['scope'],loopbackHost:'localhost',openBrowser:async(url:string)=>{
+   const u=new URL(url),callback=u.searchParams.get('redirect_uri')!;expect(new URL(callback).hostname).toBe('localhost');
+   expect((await fetch(`${callback}?code=PUBLIC_FIXTURE&state=${u.searchParams.get('state')}`)).status).toBe(200);
+  }});expect(new URL(result.redirectUri).hostname).toBe('localhost');
+ });
  test('denial consumes the attempt without leaking provider error text',async()=>{
   await expect(beginDesktopOAuth({authorizationEndpoint:endpoint,clientId:'client',scopes:['scope'],openBrowser:async(url:string)=>{
    const u=new URL(url);await fetch(`${u.searchParams.get('redirect_uri')}?error=access_denied&error_description=SECRET&state=${u.searchParams.get('state')}`);

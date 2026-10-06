@@ -1,13 +1,13 @@
 import {createHash,randomBytes,timingSafeEqual} from 'node:crypto';
 export interface DesktopOAuthOptions {
  authorizationEndpoint:string;clientId:string;scopes:string[];parameters?:Record<string,string>;
- openBrowser:(url:string)=>Promise<void>;signal?:AbortSignal;timeoutMs?:number;
+ openBrowser:(url:string)=>Promise<void>;loopbackHost?:'127.0.0.1'|'localhost';signal?:AbortSignal;timeoutMs?:number;
 }
 export interface DesktopOAuthCode {code:string;redirectUri:string;codeVerifier:string}
 /** Each explicit authorization gets a separate loopback listener, state and PKCE verifier. */
 export async function beginDesktopOAuth(options:DesktopOAuthOptions):Promise<DesktopOAuthCode>{
  const endpoint=new URL(options.authorizationEndpoint);const reserved=new Set(['client_id','redirect_uri','scope','state','response_type','code_challenge','code_challenge_method']);
- if(endpoint.protocol!=='https:'||endpoint.username||endpoint.password||endpoint.hash||!options.clientId||options.clientId.length>1024||!options.scopes.length||options.scopes.some(s=>!s||/\s/.test(s))||Object.keys(options.parameters||{}).some(key=>reserved.has(key)))throw new Error('Invalid desktop authorization configuration');
+ if((options.loopbackHost!==undefined&&!['127.0.0.1','localhost'].includes(options.loopbackHost))||endpoint.protocol!=='https:'||endpoint.username||endpoint.password||endpoint.hash||!options.clientId||options.clientId.length>1024||!options.scopes.length||options.scopes.some(s=>!s||/\s/.test(s))||Object.keys(options.parameters||{}).some(key=>reserved.has(key)))throw new Error('Invalid desktop authorization configuration');
  const timeout=options.timeoutMs??300000;if(!Number.isFinite(timeout)||timeout<1||timeout>600000)throw new Error('Invalid authorization timeout');
  if(options.signal?.aborted)throw new Error('Authorization cancelled');
  const state=randomBytes(32).toString('base64url'),codeVerifier=randomBytes(48).toString('base64url');
@@ -28,7 +28,7 @@ export async function beginDesktopOAuth(options:DesktopOAuthOptions):Promise<Des
   const code=url.searchParams.get('code');if(!code||code.length>8192||url.searchParams.getAll('code').length!==1)return new Response('Invalid authorization response',{status:400,headers});
   finish({code,redirectUri,codeVerifier});return new Response('Authorization received. Return to Heed.',{headers});
  }});
- redirectUri=`http://127.0.0.1:${server.port}/oauth/callback`;
+ redirectUri=`http://${options.loopbackHost||'127.0.0.1'}:${server.port}/oauth/callback`;
  endpoint.searchParams.set('client_id',options.clientId);endpoint.searchParams.set('redirect_uri',redirectUri);endpoint.searchParams.set('scope',options.scopes.join(' '));endpoint.searchParams.set('response_type','code');endpoint.searchParams.set('state',state);endpoint.searchParams.set('code_challenge_method','S256');endpoint.searchParams.set('code_challenge',createHash('sha256').update(codeVerifier).digest('base64url'));
  for(const [key,value] of Object.entries(options.parameters||{}))endpoint.searchParams.set(key,value);
  options.signal?.addEventListener('abort',cancel,{once:true});timer=setTimeout(()=>finish(undefined,new Error('Authorization timed out')),timeout);
