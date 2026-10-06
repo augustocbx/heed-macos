@@ -70,11 +70,17 @@ requires the device administrator, and an absent or stale report shows **Could n
 Use **Settings and permissions…** or the specific Microphone / Screen & System Audio Recording
 action, then **Check permissions again**. Authorization remains user initiated.
 
-An ad-hoc signature change can invalidate macOS authorization even if preflight still reports it
-as allowed. If capture fails after updating, turn the affected Heed permission off and on in
-**System Settings → Privacy & Security**, then quit and reopen Heed. Renew Slack log or shared-folder
-access only if it stops working. **Permission help after updating…** keeps this guidance available
-even after a granted report. Upgrades never reset TCC or request optional access automatically.
+An ad-hoc signature change can invalidate macOS authorization. If system audio remains
+unavailable after authorization, open **Settings and permissions… → Recover system audio
+permission** and confirm in the Heed window. Heed resets only its own ScreenCapture grant,
+restarts its menu app and opens the macOS authorization flow. Meetings, microphone and other
+permissions are preserved. Recovery is unavailable during recording, processing or updates.
+The status stays unavailable until a fresh menu report confirms access; declining macOS access
+never counts as authorization. Upgrades do not reset privacy permissions automatically.
+
+Recovery handles a stale permission without requiring Terminal. Preventing permission identity
+changes between releases still requires a stable Developer ID signature and an installation
+process that preserves the signed bundle. See [permission recovery QA](qa/system-audio-permission-recovery.md).
 
 See [menu update validation](menu-update-validation.md) for automated coverage and remaining
 physical-Mac acceptance.
@@ -132,7 +138,7 @@ The build refuses to package audio files (except the two bundled synthetic test 
 ## Signing and macOS limitations
 
 - Heed does not have an Apple Developer ID yet. Executables are **ad-hoc signed** and the archive is **not notarized**. The installer verifies the SHA-256 checksum published with the release and then removes the download quarantine from the installed copy only. The checksum proves the download matches the release; it does not prove the publisher the way a Developer ID signature would.
-- Because ad-hoc signatures change with every build, macOS may ask for Microphone and Screen & System Audio Recording again after an upgrade, or show Heed as allowed while blocking it. Turn the permission off and on again in System Settings, then reopen Heed.
+- Because ad-hoc signatures change with every build, macOS may ask for Microphone and Screen & System Audio Recording again after an upgrade, or show Heed as allowed while blocking it. Use **Recover system audio permission** in Settings when system audio remains unavailable after authorization.
 - A signed and notarized `.pkg` can replace the archive once a Developer ID is available. Until then, installation runs from Terminal.
 - Permission prompts need a person at the Mac. Real audio capture is not exercised by the installer; record a short test meeting after installing.
 - Loopback ports 48100 (API), 48101 (interface) and 48102 (transcription), or the validated device-local overrides, must be free or used by the matching Heed services. Readiness and shutdown verify service identity and checkout ownership; an unrelated listener is preserved. See [service ports](service-ports.md).

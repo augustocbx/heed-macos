@@ -19,7 +19,11 @@ include update and permission guidance.
 After an upgrade, the new menu reports its version, commit and instance identity with permissions.
 **Permissions need attention** opens the required System Settings destination; **Check permissions
 again** reads a fresh report. A granted report keeps conditional signature-renewal help available.
-No update permission check starts recording or resets privacy permissions.
+No update permission check starts recording or resets privacy permissions. **Recover system audio
+permission** in Settings requires native confirmation, an idle API and the installation lock.
+It renews only Heed's ScreenCapture grant, gracefully restarts the same menu app and requests
+macOS authorization. The API, transcription services, meetings and other grants are retained.
+See [permission recovery QA](../../../docs/qa/system-audio-permission-recovery.md).
 
 Run `bash scripts/release/menu-update-qa.sh` from the repository root for a separate, explicit local
 QA menu. Its isolated bundle and data replace only themselves, use fixture downloads, and simulate

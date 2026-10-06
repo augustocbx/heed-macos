@@ -87,6 +87,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private var permissionCommandID: String?
     private var lastPermissionCommandID: String?
     private var reportingPermissions = false
+    private var screenCaptureRecovery = ScreenCaptureRecovery(arguments: CommandLine.arguments)
     private let slackAccessMenu = NSMenuItem(title: "Allow Slack log access…", action: #selector(authorizeSlackLogs), keyEquivalent: "")
     private let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
@@ -297,7 +298,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private func reportPermissions(commandID: String? = nil, error: String? = nil) {
         guard let endpoints = endpoints, !reportingPermissions || commandID != nil else { return }
         reportingPermissions = true
-        var payload: [String: Any] = ["permissions": ["microphone": microphonePermission,
+        var payload: [String: Any] = ["recoverySupported": true, "permissions": ["microphone": microphonePermission,
             "screenCapture": CGPreflightScreenCaptureAccess(), "slackLogs": slackAutoEnabled ? slackDetector.canReadLogs as Any : NSNull(),
             "slackAutoRecord": slackAutoEnabled]]
         if let build = releaseUpdates.build {
@@ -330,6 +331,28 @@ final class MenuController: NSObject, NSApplicationDelegate {
         case "screenCapture":
             if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
             openPrivacyPane("Privacy_ScreenCapture"); finish(nil)
+        case "recoverScreenCapture":
+            if screenCaptureRecovery.consumeResume(commandID: request.id, action: request.action) {
+                if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
+                openPrivacyPane("Privacy_ScreenCapture")
+                openSettings()
+                finish(nil)
+                return
+            }
+            let recoveryError = "System audio permission recovery could not finish. Reopen Heed and try again after active work or updates finish."
+            guard let endpoints = endpoints, ScreenCaptureRecovery.canBegin(fresh: freshProtectedStatus,
+                  idle: state?.canQuit == true, maintenance: state?.maintenance == true,
+                  updating: releaseUpdates.snapshot.isInstalling, booting: booting, sending: sending) else {
+                finish(recoveryError); return
+            }
+            let alert = NSAlert()
+            alert.messageText = text("Recover system audio permission?")
+            alert.informativeText = text("Heed will clear only its screen and system audio permission, then restart. macOS will ask you to authorize it again. Meetings, settings and other permissions are preserved.")
+            alert.addButton(withTitle: text("Recover and restart")); alert.addButton(withTitle: text("Cancel"))
+            guard alert.runModal() == .alertFirstButtonReturn else { finish("Permission recovery canceled."); return }
+            launchScreenCaptureRecovery(root: endpoints.checkoutRoot, app: Bundle.main.bundleURL.path,
+                commandID: request.id, environment: endpoints.launchEnvironment(base: ProcessInfo.processInfo.environment),
+                ready: { NSApplication.shared.terminate(nil) }, failed: { finish(recoveryError) })
         case "slackLogs":
             requestSlackLogFolder(completion: finish)
         case "accessibility":
@@ -491,6 +514,7 @@ if CommandLine.arguments.contains("--update-client-self-test") {
     try updateClientSelfTests()
     print("Heed update client fixture self-tests passed")
 } else if CommandLine.arguments.contains("--self-test") {
+    permissionRecoverySelfTests()
     try updateSelfTests()
     try serviceNoticeSelfTests()
     func status(_ recording: Bool = false, _ processing: Bool = false, _ ready: Bool = true, _ pending: Bool = false) -> ControlStatus {
