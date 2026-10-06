@@ -2896,7 +2896,7 @@ def _load_models_guarded():
         traceback.print_exc()
 
 
-if __name__ == "__main__":
+def main():
     # Bind before model work: an occupied port must not start a second model loader.
     try:
         server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
@@ -2910,5 +2910,12 @@ if __name__ == "__main__":
 
     try:
         server.serve_forever()
-    except KeyboardInterrupt:
-        server.shutdown()
+    finally:
+        # Request threads are daemons; never wait for their hung inference locks here.
+        server.server_close()
+
+
+if __name__ == "__main__":
+    from worker_lifecycle import worker_entrypoint
+    with worker_entrypoint():
+        main()
