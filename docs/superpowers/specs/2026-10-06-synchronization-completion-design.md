@@ -6,7 +6,7 @@ Implement and validate every active requirement in [the synchronization TODO](..
 
 Base: `880a0bf6f17128e5bff57854cc4a7337e338d29d`; its integrated main CI passed. See [the investigation and exact criterion mapping](../../qa/synchronization-completion-investigation.md). English project content, English/PT meeting fixtures, and English/PT-BR/French/German interface translations remain required. Both available devices run macOS 27.0.1; macOS 14 runtime compatibility must be separately established.
 
-This is the written design for review. Direct-SMB product implementation has not started. A separate confirmed installer-simulator fixture defect can be corrected without changing the production protocol or installer safety gates.
+The owner approved this written design and its detailed implementation on October 6, 2026. Execution follows [the implementation plan](../plans/2026-10-06-synchronization-completion.md) in draft PR #84. The separate installer-simulator and detached native self-test fixture defects were repaired without changing production safety gates; [source-bound evidence](../../qa/synchronization-completion-evidence.md) records 73 passing complete-simulation checks. Direct-SMB implementation and original provider/device acceptance remain in progress.
 
 ## Selected architecture
 

@@ -19,6 +19,7 @@
 - Ship the complete hash-locked arm64/macOS-14-compatible transitive wheel set and install with `--no-index --require-hashes`. No implicit downloads, source builds or arbitrary interpreter fallback.
 - New direct destinations use exactly `format`, `schemaVersion: 3`, `destinationId` in their header. Reject direct writes/deletes to v1/v2; preserve mounted/iCloud support and portable payload schema version 1.
 - Require authenticated SMB3 with actual signed or authenticated encrypted traffic. Reject guest/null sessions, unsupported identities, reparse/multiple-link/DFS paths and namespace enforcement failures.
+- Remote SMB uses port 445; alternate QA ports are explicitly limited to 48000–48999 on `localhost` or `127.0.0.1`. The settings interface defaults to 445.
 - Credentials cross helper boundaries on stdin only and persist only in the existing unsynchronized Keychain vault. No secrets in arguments, environment, configuration, logs or browser storage.
 - One guardian owns a complete operation. Pin server/volume/stable object identity and all parents; never treat the SMB CREATE handle ID as a persistent receipt.
 - Exclusive create, non-replacing rename, whole-operation exclusion with no takeover, permanent fences before effects, durable original-owner receipts, marker-last publication and complete read-back verification are mandatory.
@@ -59,7 +60,8 @@ Separate modules may be refined when SDK constraints require it; record concrete
 - Produce `DirectSmbIdentity {serverGuid:string;volumeSerial:string;volumeCreated:string;rootId:string;rootCreated:string}`; all numeric identities are fixed lowercase hex strings, nonzero/non-sentinel, obtained from supported server queries rather than CREATE FileId.
 - Produce `DirectSmbProbe {identity:DirectSmbIdentity;dialect:string;authentication:'authenticated';security:'signed'|'encrypted';encrypted:boolean;readOnly:boolean;namespaceSafe:boolean;destinationId:string|null;destinationVersion:3|null;empty:boolean}`.
 - Produce `validateDirectEndpoint(value:unknown):DirectSmbEndpoint`, `validateDirectCredentials(value:unknown):DirectSmbCredentials`, `validateDirectProbe(value:unknown):DirectSmbProbe`.
-- Produce `DirectSmbNative.probe(endpoint,credentials,signal?):Promise<DirectSmbProbe>`, `initialize(endpoint,credentials,expectedIdentity,destinationId,signal?):Promise<DirectSmbProbe>` and `open(binding,credentials,context,signal?):Promise<DirectSmbSession>`.
+- Produce `DirectSmbTransactionContext = TransactionContext & {appDir:string}` for explicit per-operation private authority.
+- Produce `DirectSmbNative.probe(endpoint,credentials,signal?):Promise<DirectSmbProbe>`, `initialize(endpoint,credentials,expectedIdentity,destinationId,signal?):Promise<DirectSmbProbe>` and `open(binding,credentials,context:DirectSmbTransactionContext,signal?):Promise<DirectSmbSession>`.
 - `DirectSmbBinding` contains `id`, `name`, `endpoint`, `identity`, `destinationId`, `destinationVersion:3`, `connectionGeneration`, `credentialRef`, `readOnly`, `security`.
 - `DirectSmbSession` has `command(action:string,value?:Record<string,unknown>,signal?):Promise<unknown>`, `read(path,maxBytes,signal?):Promise<Uint8Array>`, `stream(path,maxBytes,signal?):AsyncIterable<Uint8Array>`, `write(path,bytes,sha256,source,signal?):Promise<void>`, `close():Promise<void>`.
 - Guardian startup is one bounded newline JSON stdin object `{protocol:1,action:'probe'|'initialize'|'transaction',endpoint,credentials,identity?,destinationId?,binding?,context?,appDir?}`. Output is sanitized `{ok:false,error:code}` or `{ok:true,value:probe}`; transaction ready is `{ok:true,ready:true,checkpointed:boolean,completed?:true}`. Subsequent sequenced newline RPC frames `{id,action,...value}` match the existing mounted guardian framing (binary chunks at most 131072 bytes); malformed/extra/oversized frames refuse effects. Credentials appear only in startup stdin.
@@ -75,7 +77,7 @@ Separate modules may be refined when SDK constraints require it; record concrete
 **Files:** Direct remote authority unit; Task 1 transport changes only when required by its public interface.
 
 **Interfaces:**
-- Consume Task 1 endpoint/session/identity. Transaction context is the existing `TransactionContext` from `portable-provider.ts`.
+- Consume Task 1 endpoint/session/identity. Portable transaction context is the existing `TransactionContext` from `portable-provider.ts`; the native call receives `DirectSmbTransactionContext`, including this original app directory.
 - Produce guardian actions `inventory`, `list`, `read`, `write`, `write-pending`, `retire-pending`, `write-fence`, `write-deletion`, `checkpoint`, `close` and `confirm`. Values reuse existing portable schemas; `confirm` consumes `{commit:PortableCommit}` and returns `'remote-confirmed'` only after complete artifact read-back.
 - Private per-binding journals live under the original app directory, record physical owner, exact endpoint/destination/generation, operation and stable receipts before effects. Produce a bounded sanitized `pendingTransactions(binding,appDir)` query; it never trusts a copied journal as physical authority.
 
@@ -90,6 +92,7 @@ Separate modules may be refined when SDK constraints require it; record concrete
 **Files:** Direct provider/admission unit and remote authority deletion implementation/tests.
 
 **Interfaces:**
+- The provider passes `{...context,appDir}` to native `open`, with no mutable/global native-instance directory selection.
 - Produce `DirectSmbProvider(binding:DirectSmbBinding,native:DirectSmbNative,getCredentials:()=>Promise<DirectSmbCredentials>,appDir:string,quota?:QuotaBudget)` implementing `LibraryProvider` and `RemoteTransaction`.
 - Extend `DeletionCapabilities.destinationVersion` to `1|2|3`. `revisionMetadata` and `exclusion` plus presence of `withTransaction` explicitly admit direct v3 coordination; numeric comparisons alone never admit new versions.
 - Guardian `remove-exact` consumes `{jobId,artifact:ArtifactIdentity}` and returns `'removed'|'already-removed'` only for verified exact deletion/absence owned by the original operation.
@@ -181,7 +184,7 @@ Separate modules may be refined when SDK constraints require it; record concrete
 
 **Files:** Public sanitized acceptance evidence, owned opt-in harness additions only.
 
-**Interfaces:** Consume Tasks 1–8. Both Macs resolve credentials/account bindings locally; owner enters credentials through the reviewed UI/Keychain flow. Uniquely owned disposable libraries have explicit synthetic creation receipts; parent/private roots are never cleanup targets.
+**Interfaces:** Consume Tasks 1–8. Both Macs resolve credentials/account bindings locally; owner enters credentials through the reviewed UI/Keychain flow. The owner confirmed no separate QA users exist and explicitly authorized uninstalling the existing Heed installation, including disposable current Heed data, for fresh native/device acceptance. Prepare the reviewed build/restoration and verify idle ownership before this change; do not affect other applications or unknown provider contents. Uniquely owned disposable libraries have explicit synthetic creation receipts; parent/private roots are never cleanup targets.
 
 - [ ] Obtain independent source review of identity, ancestor pinning, claim release and deletion before effects on a real disposable server folder.
 - [ ] Execute real authenticated SMB create/nonreplace/namespace-sharing enforcement, competing-client and target/ancestor replacement tests, lost-response recovery and complete publication/read-back/deletion. Unsupported enforcement gates write/delete and retains acceptance pending.
