@@ -1,0 +1,2 @@
+import {expect,it} from 'vitest';import {GOOGLE_DRIVE_TRANSLATIONS} from './translations-google-drive';import {tr} from './i18n';
+it('preserves every Google Drive consent and recovery message in all four locales',()=>{for(const [key,translations] of Object.entries(GOOGLE_DRIVE_TRANSLATIONS)){expect(tr(key,'en')).toBe(key);for(const locale of ['pt-BR','fr','de'] as const){expect(translations[locale]).toBeTruthy();expect(tr(key,locale)).toBe(translations[locale]);}}});

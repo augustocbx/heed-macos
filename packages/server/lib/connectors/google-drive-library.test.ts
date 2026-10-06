@@ -1,0 +1,25 @@
+import {test,expect} from 'bun:test';import {join} from 'node:path';import {readFileSync} from 'node:fs';
+import {GoogleDriveLibraryManager} from './google-drive-library';import {driveFixture} from './google-drive-fixtures';import type {GoogleFolder} from './google-auth';
+function fixture(){const f=driveFixture();let state:{connected:boolean;authorizing:boolean;generation:number;folder:GoogleFolder;accessMode:'app-files'|'existing-readonly'}={...f.auth.snapshot(),accessMode:'app-files'};const auth={request:f.auth.request,snapshot:()=>structuredClone(state),selectFolder(folder:GoogleFolder){state={...state,generation:state.generation+1,folder};}};const manager=()=>new GoogleDriveLibraryManager({root:join(f.root,'libraries'),auth,vault:f.vault});return {...f,manager,auth,readOnly(){state.accessMode='existing-readonly';}};}
+test('inspects eligible existing libraries by stable ID and keeps local and Drive capacity separate',async()=>{const f=fixture();try{
+ const manager=f.manager();const selected=await manager.select(f.folder.id);expect(selected.destinationId).toBe(f.folder.destinationId);expect(f.auth.snapshot().folder.id).toBe(f.folder.id);const capacity=await manager.capacity();expect(capacity).toEqual({limit:2000000000,usage:1000});expect(Object.keys(capacity)).not.toContain('managedUsage');
+ f.readOnly();expect((await manager.select(f.folder.id)).canUpload).toBe(false);
+}finally{f.cleanup();}});
+test('refuses ordinary folders, ambiguous library headers, shortcuts and forbidden capabilities',async()=>{const f=fixture();try{
+ f.files.set('ordinary',{id:'ordinary',name:'Ordinary folder',mimeType:'application/vnd.google-apps.folder',parents:[],capabilities:{canDownload:true,canAddChildren:true}});await expect(f.manager().select('ordinary')).rejects.toThrow('Heed library');
+ f.files.set('duplicate-header',{...f.files.get('header')!,id:'duplicate-header'});await expect(f.manager().select(f.folder.id)).rejects.toThrow('ambiguous');f.files.delete('duplicate-header');f.files.get('header')!.capabilities.canDownload=false;await expect(f.manager().select(f.folder.id)).rejects.toThrow('permission');
+}finally{f.cleanup();}});
+test('explicit creation reserves stable folder/header IDs and verifies the shared portable header before selecting',async()=>{const f=fixture();try{
+ const manager=f.manager();await expect(manager.create({parentId:f.folder.id,name:'New library',confirmed:false})).rejects.toThrow('Confirm');const created=await manager.create({parentId:f.folder.id,name:'New library',confirmed:true});expect(created.id).not.toBe(f.folder.id);expect(created.destinationId).not.toBe(f.folder.destinationId);expect(f.auth.snapshot().folder.id).toBe(created.id);
+ const header=[...f.files.values()].find(file=>file.name==='heed-library.json'&&file.parents.includes(created.id))!;expect(JSON.parse(Buffer.from(header.bytes!).toString())).toEqual({format:'heed-portable-library',schemaVersion:1,destinationId:created.destinationId});expect(readFileSync(join(f.root,'libraries','creation.json'),'utf8')).not.toContain('SECRET');
+}finally{f.cleanup();}});
+test('creation retries keep their reserved IDs after interrupted acknowledgment',async()=>{const f=fixture();try{
+ let fail=true;const auth={...f.auth,request:async(...args:Parameters<typeof f.auth.request>)=>{const response=await f.auth.request(...args);if(args[0].includes('uploadType=multipart')&&fail){fail=false;throw new Error('synthetic acknowledgment lost');}return response;}};
+ const manager=new GoogleDriveLibraryManager({root:join(f.root,'libraries'),auth,vault:f.vault});await expect(manager.create({parentId:f.folder.id,name:'Durable library',confirmed:true})).rejects.toThrow();const before=[...f.files.keys()];const restored=f.manager();const result=await restored.create({parentId:f.folder.id,name:'Durable library',confirmed:true});expect([...f.files.keys()]).toEqual(before);expect(f.auth.snapshot().folder.id).toBe(result.id);
+}finally{f.cleanup();}});
+test('transient reserved-file lookup failure cannot be mistaken for absence and recreate metadata',async()=>{const f=fixture();try{
+ let failHeader=true;const auth={...f.auth,request:async(...args:Parameters<typeof f.auth.request>)=>{const response=await f.auth.request(...args);if(args[0].includes('uploadType=multipart')&&failHeader){failHeader=false;throw new Error('lost acknowledgment');}return response;}};
+ const manager=new GoogleDriveLibraryManager({root:join(f.root,'libraries'),auth,vault:f.vault});const input={parentId:f.folder.id,name:'Durable library',confirmed:true};await expect(manager.create(input)).rejects.toThrow();const before=f.requests.filter(u=>u.pathname==='/drive/v3/files').length;
+ const unavailable={...f.auth,request:async(...args:Parameters<typeof f.auth.request>)=>args[0].includes('/files/generated-1?')?new Response('{}',{status:503}):f.auth.request(...args)};
+ await expect(new GoogleDriveLibraryManager({root:join(f.root,'libraries'),auth:unavailable,vault:f.vault}).create(input)).rejects.toThrow();expect(f.requests.filter(u=>u.pathname==='/drive/v3/files')).toHaveLength(before);
+}finally{f.cleanup();}});

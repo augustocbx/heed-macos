@@ -1,3 +1,4 @@
+import {GOOGLE_DRIVE_TRANSLATIONS} from './translations-google-drive';
 import {LIBRARY_CHAT_TRANSLATIONS} from "./translations-library-chat";
 import { CHAT_TRANSLATIONS } from "./translations-chat";
 /** Interface language is independent of transcription language. Missing translations use English. */
@@ -18,7 +19,7 @@ export function useLocale() {
  return {locale,tr:(text:string,vars?:Record<string,string|number>)=>tr(text,locale,vars)};
 }
 import {STORAGE_TRANSLATIONS} from "./translations-storage";
-const TRANSLATIONS={...SHELL_TRANSLATIONS,...CONTENT_TRANSLATIONS,...NOTES_TRANSLATIONS,...TASKS_TRANSLATIONS,...CHAT_TRANSLATIONS,...DETECTION_TRANSLATIONS,...LIBRARY_CHAT_TRANSLATIONS,...STORAGE_TRANSLATIONS,...LIBRARY_TRANSLATIONS,...SMB_TRANSLATIONS};
+const TRANSLATIONS={...SHELL_TRANSLATIONS,...CONTENT_TRANSLATIONS,...NOTES_TRANSLATIONS,...TASKS_TRANSLATIONS,...CHAT_TRANSLATIONS,...DETECTION_TRANSLATIONS,...LIBRARY_CHAT_TRANSLATIONS,...STORAGE_TRANSLATIONS,...LIBRARY_TRANSLATIONS,...SMB_TRANSLATIONS,...GOOGLE_DRIVE_TRANSLATIONS};
 export function tr(text:string,locale:Locale=useLocaleStore.getState().locale,vars?:Record<string,string|number>):string {
  const chosen=normalizeLocale(locale);
  const key=text.trim();
