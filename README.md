@@ -30,31 +30,25 @@ The screenshots below use demonstration meeting data.
 
 Contributions through forks and pull requests are welcome. Only @augustocbx can merge into the default branch. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Installation
+## Installation for normal use (production)
+
+For everyday use, install a **published release**. It includes the prebuilt native executables and the compiled interface, runs independently of a Git checkout, and starts from the Heed menu app.
 
 Requirements: **Apple Silicon**, **macOS 14 or later**, [Homebrew](https://brew.sh), and Apple's Command Line Tools (`xcode-select --install`). A minimum RAM requirement has not been validated across all Macs.
 
-Install the latest release:
+Run this command in Terminal to install or upgrade to the latest stable release:
 
 ```sh
 curl -fsSL https://github.com/augustocbx/heed-macos/releases/latest/download/install.sh | bash
 ```
+
+Open `~/Applications/Heed.app` after installation. The installed runtime is managed under `~/.heed/runtime/`; you do not need to clone the repository or keep a source folder to use Heed. For source changes, see [Development setup](#development-setup).
 
 Every version is available on the [Releases page](https://github.com/augustocbx/heed-macos/releases) with its archive, installer and checksums. See [Releases, installation and removal](docs/releases.md) for specific versions, what is installed, permissions, upgrades, uninstalling and signing limitations. Remove Heed with `bash ~/.heed/bin/uninstall.sh`.
 
 The installer prepares Bun, Node.js, FFmpeg, Python and its environment, dependencies, the interface, and the menu app; the Swift executables are prebuilt in the release. **Bun 1.4.2** is the version used for validation; the installer downloads Bun if it is missing. Initial preparation downloads the local FluidAudio/Parakeet models. The measured model set takes approximately **1.7 GB of additional disk space**, outside the audio quota. Installation and the initial download require an internet connection.
 
 Ollama is also installed for AI notes. Its models are optional and are not downloaded automatically; transcription does not require a notes model. Do not run the installer with `sudo`.
-
-### Install from a checkout (development)
-
-```sh
-git clone https://github.com/augustocbx/heed-macos.git
-cd heed-macos
-bash install-macos.sh
-```
-
-This builds the Swift executables locally and runs Heed from the checkout.
 
 ## Permissions and use
 
@@ -79,7 +73,7 @@ In **System Settings → Privacy & Security**, allow:
 - **Screen & System Audio Recording**, to capture other participants.
 - **Microphone**, to capture your voice.
 
-macOS may display Heed, Bun, or the capture component as the requesting app. If no prompt appears, check these settings manually. The capture executable is `<project-folder>/packages/transcription/native/heed-parakeet/.build/release/heed-syscap`. Each Mac needs its own permissions.
+macOS may display Heed, Bun, or the capture component as the requesting app. If no prompt appears, check these settings manually. In a release installation, the capture executable is `~/.heed/runtime/current/packages/transcription/native/heed-parakeet/.build/release/heed-syscap`; a development installation uses the same relative path inside its checkout. Each Mac needs its own permissions.
 
 Updating the locally signed app may invalidate its previous authorization. If capture is denied even though Heed appears enabled, turn its **Screen & System Audio Recording** permission off and on again, then accept the restart requested by macOS. Slack log access remains a separate folder-picker authorization.
 
@@ -125,7 +119,7 @@ See [automatic notes behavior and validation](docs/automatic-notes.md) for sched
 
 ## Storage and retention
 
-Audio files are stored in this checkout's `recordings/` folder. Meetings and transcripts are stored in `~/.heed-app/sessions/`; configuration is stored in `~/.heed-app/`. Models are stored in `~/Library/Application Support/FluidAudio/Models/`.
+New release installations store audio in `~/.heed/recordings/`. An upgrade from a checkout preserves that checkout’s existing `recordings/` folder so saved audio paths remain valid. Development installations store audio in the checkout’s `recordings/` folder. Meetings and transcripts are stored in `~/.heed-app/sessions/`; configuration is stored in `~/.heed-app/`. Models are stored in `~/Library/Application Support/FluidAudio/Models/`.
 
 The quota on each machine is **2,000,000,000 bytes**, counting eligible audio files in `recordings/`, including archived files in that folder. When needed, the oldest audio is deleted first. Transcript text is preserved, and the interface indicates when a meeting's audio is no longer available.
 
@@ -159,9 +153,9 @@ The menu and interface send idempotent commands to the local API. A backend coor
 
 ## Updates
 
-Stop recording and wait for the meeting to finish saving before updating **each Mac**, then run the installer of the new release (the same command as the installation). The installer checks for active capture, commands, or processing and refuses to restart in that state. It prepares the new version beside the running one, preserves recordings, meetings, speaker names, settings and connections, and restores the previous version if the new one does not start.
+For a release installation, open **Heed → Updates**, choose **Check for updates…**, then **Update…** when a newer stable release is available. You can also rerun the release installation command above from Terminal. Stop recording and wait for saving and other processing to finish before updating **each Mac**. The installer checks for active capture, commands, or processing and refuses to restart in that state. It prepares the new version beside the running one, preserves recordings, meetings, speaker names, settings and connections, and restores the previous version if the new one does not start.
 
-For a checkout installation:
+For a [development checkout](#development-setup), update the source and rebuild locally:
 
 ```sh
 git pull --ff-only
@@ -174,11 +168,25 @@ If you move the checkout, run it again to update the project path used by the me
 
 Create, rename and delete tags inline in meeting cards and detail. Removing a tag from one meeting is separate from deleting it everywhere. See [meeting tags](docs/meeting-tags.md) for controls, naming rules and save recovery.
 
+## Development setup
+
+Use a Git checkout when changing source code or contributing to Heed:
+
+```sh
+git clone https://github.com/augustocbx/heed-macos.git
+cd heed-macos
+bash install-macos.sh
+```
+
+This builds the Swift executables and interface locally and runs Heed from that checkout. Keep the checkout at the installed path while using this mode. For everyday use, follow [Installation for normal use (production)](#installation-for-normal-use-production).
+
 ## Diagnostics and tests
 
 See [troubleshooting](troubleshooting.md) for known recording, permissions, connection, automatic-notes, retention, and timer problems, with recovery steps and validation limits.
 
 Services are local: interface **48101**, Bun API **48100**, Python transcription **48102**, and Ollama **11434**. Logs are stored in `~/Library/Logs/Heed/`.
+
+The HTTP checks below query the running app. Run the Bun, Python and build checks from a [development checkout](#development-setup).
 
 ```sh
 curl -fsS http://localhost:48100/api/desktop/control/status
