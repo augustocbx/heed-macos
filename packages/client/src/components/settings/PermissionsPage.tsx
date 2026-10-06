@@ -86,6 +86,6 @@ export function PermissionsPage() {
    <p>{tr(row.description)}</p>
    {(!row.allowed || row.id !== 'slackLogs') && <><p className={styles.help}>{tr(row.help)}</p><button disabled={disabled} onClick={() => void authorize(row.id)}>{tr(action === row.id ? 'Opening authorization…' : row.button)}</button></>}
   </article>)}</div>
-  <aside className={styles.tip}><strong>{tr('Already authorized, but recording still fails?')}</strong><p>{tr('After an update, macOS may require renewed authorization. In Settings, turn Heed off and on for the indicated permission. If macOS asks, choose “Quit & Reopen”. Return to this page and check the status before testing.')}</p><p>{tr('Keep the Heed interface open during automatic recording.')}</p></aside>
+  <aside className={styles.tip}><strong>{tr('Already authorized, but recording still fails?')}</strong><p>{tr('After an update, macOS may require renewed authorization. In Settings, turn Heed off and on for the indicated permission. If macOS asks, choose “Quit & Reopen”. Return to this page and check the status before testing.')}</p><p>{tr('Recording continues with browser tabs closed. Keep the Heed app and local services running.')}</p></aside>
  </section>;
 }
