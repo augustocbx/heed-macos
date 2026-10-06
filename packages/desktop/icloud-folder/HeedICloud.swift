@@ -42,6 +42,8 @@ func selfTests() throws {
     try check(read == Data("Synthetic fixture".utf8),"Public file coordination preserves local content")
 }
 if CommandLine.arguments == [CommandLine.arguments[0],"--self-test"] {
-    do { try selfTests(); print("iCloud capability prototype self-tests passed") }
+    do { try selfTests(); try protocolTests(); print("iCloud capability prototype self-tests passed") }
     catch { fputs("iCloud capability prototype failed\n",stderr);exit(1) }
-} else { fputs("Usage: heed-icloud --self-test\n",stderr);exit(2) }
+} else if CommandLine.arguments.count == 1 {
+    do { try runtime() } catch { fputs("iCloud folder operation unavailable. Check account, access, hydration and library integrity.\n", stderr); exit(1) }
+} else { fputs("Usage: heed-icloud [--self-test]\n",stderr);exit(2) }
