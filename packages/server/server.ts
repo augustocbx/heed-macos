@@ -2446,7 +2446,10 @@ const recordingCoordinator = new RecordingCoordinator({
     if (syscapProc) { try { syscapProc.kill(); } catch {} syscapProc = null; }
     if (recorderProc) { await gracefulStop(recorderProc,1500,"SIGINT"); recorderProc = null; }
     stopLiveTranscribe(); stopLevelMeter();
-    if(!recorderPath || !existsSync(recorderPath))releaseCapture(managedQuota,_meetingId);
+    if(!recorderPath || !existsSync(recorderPath)){
+     cleanupCaptureWork(_meetingId);
+     releaseCapture(managedQuota,_meetingId);
+    }
     throw error;
    } finally { recorderStarting = false; }
   },
