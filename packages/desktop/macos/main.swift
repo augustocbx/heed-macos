@@ -61,6 +61,10 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private let noticeMenu = NSMenuItem(title:"Service status…",action:#selector(showServiceStatus),keyEquivalent:"")
     private let retryMenu = NSMenuItem(title:"Retry service startup",action:#selector(retryServices),keyEquivalent:"")
     private var booting = false
+    private lazy var releaseUpdates = ReleaseUpdateClient(endpoints: { [weak self] in self?.endpoints })
+    private let updatesMenu = UpdateMenu()
+    private let menuInstanceID = UUID().uuidString
+    private var updateTimer: Timer?
     private var state: ControlStatus?
     private var freshProtectedStatus = false
     private var sending = false
@@ -116,6 +120,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         accessibilityMenu.target = self; menu.addItem(accessibilityMenu)
         menu.addItem(NSMenuItem.separator())
         let quit = NSMenuItem(title: "Quit menu app", action: #selector(quitApp), keyEquivalent: "")
+        menu.addItem(updatesMenu.item)
         quit.target = self; menu.addItem(quit)
         localizedItems = [(startMenu, "Start recording"), (stopMenu, "Stop recording"),
             (open, "Open interface"), (settings, "Settings and permissions…"),
@@ -134,12 +139,29 @@ final class MenuController: NSObject, NSApplicationDelegate {
         localizedItems.append((accessibilityMenu, "Authorize Accessibility"))
         for (app, entry) in detectionMenus { localizedItems.append((entry, app == "zoom" ? "Automatically record Zoom meetings" : app == "teams" ? "Automatically record Teams meetings" : "Automatically record Google Meet meetings")) }
         item.menu = menu
-        if let folder = slackLogAccess.restore() { slackDetector.setAuthorizedLogRoot(folder) }
-        smbFolderAccess.restore()
+        if updateQARoot() == nil {
+            if let folder = slackLogAccess.restore() { slackDetector.setAuthorizedLogRoot(folder) }
+            smbFolderAccess.restore()
+        }
+        updatesMenu.check = { [weak self] in self?.releaseUpdates.check(manual: true) }
+        updatesMenu.install = { [weak self] in self?.confirmUpdate() }
+        updatesMenu.retry = { [weak self] in self?.releaseUpdates.retry() }
+        updatesMenu.permissions = { [weak self] in self?.reportPermissions(); self?.releaseUpdates.checkPermissions() }
+        updatesMenu.settings = { [weak self] in self?.openSettings() }
+        updatesMenu.guidance = { [weak self] in self?.showUpdatePermissionHelp() }
+        var firstUpdateStatus = true
+        releaseUpdates.onChange = { [weak self] snapshot in
+            guard let self = self else { return }
+            self.updatesMenu.render(snapshot, build: self.releaseUpdates.build, locale: self.locale)
+            if firstUpdateStatus { firstUpdateStatus = false; self.releaseUpdates.check(manual: false) }
+        }
+        releaseUpdates.refreshStatus()
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.releaseUpdates.check(manual: false) }
         updateMenu(); bootServices(); poll()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.poll() }
     }
     private func bootServices() {
+        if updateQARoot() != nil {return}
         guard !booting,let endpoints = endpoints, let script = Bundle.main.path(forResource: "start-services", ofType: "sh") else { return }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
@@ -161,9 +183,10 @@ final class MenuController: NSObject, NSApplicationDelegate {
     }
     @objc private func retryServices() {
         guard !booting,!sending,state?.canQuit != false else{return}
-        endpoints=try? ServiceEndpoints.load();serviceNotices=[];bootServices();refreshServiceNotices(force:true);poll()
+        endpoints=try? ServiceEndpoints.load();releaseUpdates.refreshStatus(force:true);serviceNotices=[];bootServices();refreshServiceNotices(force:true);poll()
     }
     private func poll() {
+        releaseUpdates.refreshStatus()
         guard !polling else { return }
         refreshServiceNotices()
         guard let endpoints = endpoints else { self.state = nil; self.statusMenu.title = self.text("Service unavailable — open the interface"); self.updateMenu(); return }
@@ -194,6 +217,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         }
     }
     private func updateMenu() {
+        updatesMenu.render(releaseUpdates.snapshot, build: releaseUpdates.build, locale: locale)
         let unavailable=serviceNotices.filter{$0.state != "ready"}
         let notice=unavailable.first{$0.state == "conflict"} ?? unavailable.first
         noticeMenu.title=notice?.message(locale:locale) ?? text("Service status…")
@@ -220,6 +244,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         item.button?.image = recordingStatusImage(recording, locale: locale)
         item.button?.contentTintColor = recording ? .systemRed : nil
         item.button?.toolTip = "Heed — \(statusMenu.title)"
+        if updateQARoot() != nil {statusMenu.title = "Heed Update QA — simulated services"; item.button?.toolTip = "Heed Update QA"}
     }
     private var slackAutoEnabled: Bool {
         if !UserDefaults.standard.bool(forKey: "HeedDetectionSettingsMigrated"), UserDefaults.standard.object(forKey: "HeedSlackAutoRecord") != nil { return UserDefaults.standard.bool(forKey: "HeedSlackAutoRecord") }
@@ -243,7 +268,9 @@ final class MenuController: NSObject, NSApplicationDelegate {
         let observation = !slackAutoEnabled ? "disabled" : !slackRunning ? "closed" : slackSignal == nil ? "unavailable" : slackSignal == true ? "meeting detected" : "waiting for the next meeting"
         slackStateMenu.title = "Slack: \(text(observation))"
         if lastSlackObservation != observation { logSlack(observation); lastSlackObservation = observation }
-        if slackAutoEnabled && slackRunning && !slackDetector.canReadLogs && !promptedForSlackAccess { authorizeSlackLogs() }
+        if slackAutoEnabled && slackRunning && !slackDetector.canReadLogs && !promptedForSlackAccess
+            && !releaseUpdates.snapshot.isInstalling && state?.maintenance != true
+            && releaseUpdates.snapshot.permissionVersion != releaseUpdates.build?.version { authorizeSlackLogs() }
         for (app, detector) in [("zoom", zoomDetector), ("teams", teamsDetector)] {
             let enabled = detection.enabled[app] == true
             let result = enabled ? detector.poll() : (nil, "degraded")
@@ -273,6 +300,9 @@ final class MenuController: NSObject, NSApplicationDelegate {
         var payload: [String: Any] = ["permissions": ["microphone": microphonePermission,
             "screenCapture": CGPreflightScreenCaptureAccess(), "slackLogs": slackAutoEnabled ? slackDetector.canReadLogs as Any : NSNull(),
             "slackAutoRecord": slackAutoEnabled]]
+        if let build = releaseUpdates.build {
+            payload["build"] = ["version": build.version, "commit": build.commit as Any? ?? NSNull(), "instanceId": menuInstanceID]
+        }
         if let commandID = commandID { payload["commandId"] = commandID }
         if let error = error { payload["error"] = error }
         var request = URLRequest(url: endpoints.apiURL("/api/desktop/permissions/report"))
@@ -377,6 +407,21 @@ final class MenuController: NSObject, NSApplicationDelegate {
     }
     @objc private func openInterface() { openVerifiedInterface(settings: false) }
     @objc private func openSettings() { openVerifiedInterface(settings: true) }
+    private func confirmUpdate() {
+        guard let version = releaseUpdates.snapshot.release?.manifest.version, releaseUpdates.snapshot.canInstall else { return }
+        let alert = NSAlert()
+        alert.messageText = String(format: text("Install Heed %@?"), version)
+        alert.informativeText = text("Heed will restart. Meeting data and settings are preserved. macOS permissions may need renewal after the update.")
+        alert.addButton(withTitle: text("Update")); alert.addButton(withTitle: text("Cancel"))
+        if alert.runModal() == .alertFirstButtonReturn { releaseUpdates.install() }
+    }
+    private func showUpdatePermissionHelp() {
+        let alert = NSAlert()
+        alert.messageText = text("Permissions after updating")
+        alert.informativeText = text("Enable Heed under System Settings > Privacy & Security > Microphone and Screen & System Audio Recording. If capture still fails after updating, turn the affected permission off and on, then quit and reopen Heed. A restricted microphone requires your device administrator. Reauthorize Slack or shared folders only if their access no longer works. Heed never resets permissions automatically.")
+        alert.addButton(withTitle: text("Settings and permissions…")); alert.addButton(withTitle: text("Close"))
+        if alert.runModal() == .alertFirstButtonReturn {openSettings()}
+    }
     @objc private func toggleSlackAuto() { configureDetection(app: "slack", enabled: !slackAutoEnabled) }
     @objc private func toggleMeetingAuto(_ sender: NSMenuItem) {
         guard let app = sender.representedObject as? String else { return }
@@ -442,7 +487,11 @@ if CommandLine.arguments.contains("--service-diagnostics") {
     }
     exit(1)
 }
-if CommandLine.arguments.contains("--self-test") {
+if CommandLine.arguments.contains("--update-client-self-test") {
+    try updateClientSelfTests()
+    print("Heed update client fixture self-tests passed")
+} else if CommandLine.arguments.contains("--self-test") {
+    try updateSelfTests()
     try serviceNoticeSelfTests()
     func status(_ recording: Bool = false, _ processing: Bool = false, _ ready: Bool = true, _ pending: Bool = false) -> ControlStatus {
         ControlStatus(recording: recording, processing: processing, seconds: 0, ready: ready, clientConnected: true, error: nil, pending: pending, starting: false, meetingId: recording ? "fixture" : nil)
@@ -483,7 +532,7 @@ if CommandLine.arguments.contains("--self-test") {
     try smbFolderAccessSelfTests()
     print("Heed menubar self-tests passed")
 } else {
-    let lockURL = FileManager.default.homeDirectoryForCurrentUser
+    let lockURL = (updateQARoot()?.appendingPathComponent("home") ?? FileManager.default.homeDirectoryForCurrentUser)
         .appendingPathComponent("Library/Application Support/Heed/menubar.lock")
     guard let instanceLock = MenuInstanceLock(url: lockURL) else { exit(0) }
     // During an upgrade an older app may not yet hold this lock. Retain the

@@ -144,7 +144,7 @@ class ServiceIntegrationTest(unittest.TestCase):
         result = subprocess.run(['bash', '-eu', '-c', fragment + '\nprintf "%s" "$HEED_GUARD_SCRIPT"'],
                                 env=environment, capture_output=True, text=True)
         self.assertEqual(result.stdout, str(previous / 'packages/desktop/guard-lifecycle.py'))
-        rollback = script.split('rollback() {', 1)[1].split("\nstep 'Stopping the running Heed services'", 1)[0]
+        rollback = script.split('rollback() {', 1)[1].split("\nphase restarting", 1)[0]
         result = subprocess.run(['bash', '-eu', '-c', 'rollback() {' + rollback + '\nrollback'],
                                 env=environment, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -178,6 +178,28 @@ class ServiceIntegrationTest(unittest.TestCase):
         self.assertTrue(result_file.exists(), 'Permission failure must not strand the install-owned maintenance guard')
         self.assertEqual(result_file.read_text(), 'release')
 
+    def test_locked_installer_wrapper_preserves_the_child_outcome_and_exit_status(self):
+        script=(ROOT/'scripts/release/install.sh').read_text()
+        cleanup=script.split('cleanup() {',1)[1].split('\ntrap cleanup EXIT',1)[0]
+        wrapper=script[script.index('if [ -z "${HEED_INSTALL_LOCK_FD:-}" ]; then'):script.index('/usr/bin/python3 "$HEED_LOCK_HELPER" verify')]
+        payload=self.directory/'payload';payload.mkdir()
+        shutil.copyfile(ROOT/'scripts/release/installation_lock.py',payload/'installation_lock.py')
+        temporary=self.directory/'download';temporary.mkdir()
+        for status in [0,3,1]:
+            with self.subTest(status=status):
+                temporary.mkdir(exist_ok=True)
+                (payload/'install.sh').write_text(f'#!/bin/bash\nprintf "Child outcome: target retained, permissions need attention.\\n"\nexit {status}\n')
+                result=subprocess.run(['bash','-eu','-c','cleanup() {'+cleanup+'\ntrap cleanup EXIT\n'+wrapper],
+                    env={**self.env,'HEED_HOME':str(self.directory/'.heed'),'HEED_TEMP':str(temporary),
+                         'HEED_GUARD_HELD':'0','HEED_COMMITTED':'0','HEED_SWITCHED':'0','HEED_STAGE':'',
+                         'HEED_KEEP_STAGE':'0','HEED_PAYLOAD':str(payload),'HEED_LOCK_HELPER':str(payload/'installation_lock.py'),
+                         'HEED_REQUESTED_VERSION':'','HEED_SKIP_WARMUP':'0','HEED_REQUIRE_PERMISSIONS':'0','HEED_PERMISSION_PROMPT':'0'},
+                    capture_output=True,text=True)
+                self.assertEqual(result.returncode,status,result.stderr)
+                self.assertIn('Child outcome: target retained',result.stdout)
+                self.assertNotIn('existing Heed installation',result.stderr)
+                self.assertFalse(temporary.exists())
+
     def test_rollback_restores_saved_ports_before_restarting_previous_version(self):
         script = (ROOT / 'scripts/release/install.sh').read_text()
         stage = self.directory / 'stage'
@@ -201,7 +223,7 @@ class ServiceIntegrationTest(unittest.TestCase):
         preferences.write_text(json.dumps({'version': 1, 'api': 48310, 'ui': 48311, 'transcription': 48312}))
         backup = self.directory / 'backup'
         backup.mkdir()
-        rollback = script.split('rollback() {', 1)[1].split("\nstep 'Stopping the running Heed services'", 1)[0]
+        rollback = script.split('rollback() {', 1)[1].split("\nphase restarting", 1)[0]
         environment = {**self.env, 'HEED_STAGE': str(stage), 'HEED_HELPER': str(helper),
                        'HEED_PREVIOUS_PORTS': '48210 48211 48212', 'HEED_PREVIOUS_DIR': str(self.directory / 'old'),
                        'HEED_BACKUP': str(backup), 'HEED_APP': str(self.directory / 'app-bundle'),

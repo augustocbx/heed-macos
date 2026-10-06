@@ -8,8 +8,9 @@ Read-time waiting status names recording, transcription, notes generation, task 
 
 - Before the correction, the strengthened production HTTP regression started a second task before the accepted chat question (`taskCalls: 2`, expected `1`); the live-blocker regression also failed because waiting status was absent.
 - After the correction, real isolated HTTP tests passed for meeting and label-scoped chat with both automatic notes and tasks pending. The accepted question started immediately after the held task, ahead of background work; maximum simultaneous generation remained one and citation revision/quote were preserved.
-- Server suite: 592 tests passed, 3,365 assertions, zero failures.
+- Server suite after integration with main `74a5832`: 616 tests passed across 91 files, 3,467 assertions, zero failures.
 - Interface suite: 321 tests passed across 60 files using the CI-compatible `NODE_OPTIONS=--no-experimental-webstorage`.
+- Main integration preserves update-maintenance admission guards alongside chat priority and initializes the live waiting-status projection after recording maintenance recovery.
 - Client typecheck and production build passed. The existing bundle-size warning remains.
 - Component regressions cover blocker updates through actual polling, historical-answer preservation, cancellation identity and waiting-note status. Existing queue/preemption/history/retry/source guards remain covered by the full suites.
 

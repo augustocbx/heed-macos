@@ -7,7 +7,9 @@ export interface DesktopPermissionSnapshot {
  slackLogs: boolean | null;
  slackAutoRecord: boolean | null;
 }
+export interface PermissionBuild { version: string; commit: string | null; instanceId: string }
 export interface PermissionReport {
+ build?: PermissionBuild;
  permissions: DesktopPermissionSnapshot;
  commandId?: string;
  error?: string | null;
@@ -41,6 +43,10 @@ export function permissionReport(body: unknown): PermissionReport | null {
  for (const key of ['screenCapture', 'slackLogs', 'slackAutoRecord']) {
   if (p[key] !== null && typeof p[key] !== 'boolean') return null;
  }
+ if (body.build !== undefined && (!object(body.build) || typeof body.build.version !== 'string'
+  || !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(body.build.version)
+  || (body.build.commit !== null && (typeof body.build.commit !== 'string' || !/^[a-f0-9]{40}$/.test(body.build.commit)))
+  || typeof body.build.instanceId !== 'string' || !body.build.instanceId.length || body.build.instanceId.length > 100)) return null;
  if (body.commandId !== undefined && (typeof body.commandId !== 'string' || !body.commandId.length || body.commandId.length > 100)) return null;
  if (body.error !== undefined && body.error !== null && (typeof body.error !== 'string' || body.error.length > 2048)) return null;
  return { permissions: {
@@ -48,7 +54,7 @@ export function permissionReport(body: unknown): PermissionReport | null {
   screenCapture: p.screenCapture as boolean | null,
   slackLogs: p.slackLogs as boolean | null,
   slackAutoRecord: p.slackAutoRecord as boolean | null,
- }, ...(body.commandId === undefined ? {} : { commandId: body.commandId as string }),
+ }, ...(body.build === undefined ? {} : {build: {...body.build as unknown as PermissionBuild}}), ...(body.commandId === undefined ? {} : { commandId: body.commandId as string }),
  ...(body.error === undefined ? {} : { error: body.error as string | null }) };
 }
 
@@ -56,6 +62,7 @@ export function permissionReport(body: unknown): PermissionReport | null {
 export class DesktopPermissions {
  private command: PermissionCommand | null = null;
  private permissions: DesktopPermissionSnapshot | null = null;
+ private build: PermissionBuild | null = null;
  private updatedAt: number | null = null;
  private error: string | null = null;
  private expire(now: number) {
@@ -67,7 +74,7 @@ export class DesktopPermissions {
  status(now = Date.now()) {
   this.expire(now);
   const controllerConnected = this.updatedAt !== null && now - this.updatedAt < 12_000;
-  return { controllerConnected, updatedAt: this.updatedAt,
+  return { controllerConnected, updatedAt: this.updatedAt, build: controllerConnected && this.build ? {...this.build} : null,
    permissions: controllerConnected && this.permissions ? { ...this.permissions } : null,
    error: this.error, pending: this.command !== null };
  }
@@ -85,6 +92,7 @@ export class DesktopPermissions {
  report(report: PermissionReport, now = Date.now()) {
   this.expire(now);
   this.permissions = { ...report.permissions };
+  this.build = report.build ? {...report.build} : null;
   this.updatedAt = now;
   if (report.commandId && this.command?.id === report.commandId) {
    this.command = null;
