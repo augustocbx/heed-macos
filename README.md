@@ -30,6 +30,8 @@ The screenshots below use demonstration meeting data.
 
 Contributions through forks and pull requests are welcome. Only @augustocbx can merge into the default branch. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+<a id="installation"></a>
+
 ## Installation for normal use (production)
 
 For everyday use, install a **published release**. It includes the prebuilt native executables and the compiled interface, runs independently of a Git checkout, and starts from the Heed menu app.
