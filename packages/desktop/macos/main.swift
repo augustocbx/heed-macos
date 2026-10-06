@@ -61,7 +61,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private let noticeMenu = NSMenuItem(title:"Service status…",action:#selector(showServiceStatus),keyEquivalent:"")
     private let retryMenu = NSMenuItem(title:"Retry service startup",action:#selector(retryServices),keyEquivalent:"")
     private var booting = false
-    private lazy var releaseUpdates = ReleaseUpdateClient(endpoints: endpoints)
+    private lazy var releaseUpdates = ReleaseUpdateClient(endpoints: { [weak self] in self?.endpoints })
     private let updatesMenu = UpdateMenu()
     private let menuInstanceID = UUID().uuidString
     private var updateTimer: Timer?
@@ -183,7 +183,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
     }
     @objc private func retryServices() {
         guard !booting,!sending,state?.canQuit != false else{return}
-        endpoints=try? ServiceEndpoints.load();serviceNotices=[];bootServices();refreshServiceNotices(force:true);poll()
+        endpoints=try? ServiceEndpoints.load();releaseUpdates.refreshStatus(force:true);serviceNotices=[];bootServices();refreshServiceNotices(force:true);poll()
     }
     private func poll() {
         releaseUpdates.refreshStatus()
@@ -487,7 +487,10 @@ if CommandLine.arguments.contains("--service-diagnostics") {
     }
     exit(1)
 }
-if CommandLine.arguments.contains("--self-test") {
+if CommandLine.arguments.contains("--update-client-self-test") {
+    try updateClientSelfTests()
+    print("Heed update client fixture self-tests passed")
+} else if CommandLine.arguments.contains("--self-test") {
     try updateSelfTests()
     try serviceNoticeSelfTests()
     func status(_ recording: Bool = false, _ processing: Bool = false, _ ready: Bool = true, _ pending: Bool = false) -> ControlStatus {

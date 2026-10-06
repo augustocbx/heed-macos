@@ -11,6 +11,7 @@ and synthetic data; no release was published for QA.
 | Installation-wide serialization | Real lock/process tests cover concurrent entry points, inherited descriptors, surviving children and uninstall deleting the runtime directory. |
 | Production helper contracts | A real loopback HTTP fixture checks the recording-maintenance endpoint and ownership; validated configuration is exercised without injected activity mocks. |
 | Recovery state races | Regression tests cover completion while status takes the lock and durable intent before requesting maintenance. |
+| Review regressions | Tests exercise a second CLI transaction, maintenance refusal and lost acknowledgement, producer lifetime after HTTP disconnect, safe payload cleanup, corrected native configuration, idle polling and the outer installer exit status. |
 | Four languages and permission states | Native build/self-tests and bridge tests cover menu states, scheduling, locale coverage and matching-build report expiration. |
 | Separate QA app replacement | CLI-triggered local transaction replaced the actual separate QA bundle. The replacement process submitted a fresh matching 0.1.1 report; completion, permission attention and five synthetic data digests passed. Installer, maintenance and services are simulated in this UI fixture. |
 | Actual menu initiation | Pending. Computer Use timed out when selecting the separate QA app; no successful click was observed. CLI initiation does not satisfy this criterion. |
@@ -18,11 +19,29 @@ and synthetic data; no release was published for QA.
 | Real macOS authorization and capture | Pending. Permission values in fixtures are synthetic. No real Microphone, ScreenCaptureKit, Slack or folder authorization was changed. No real post-upgrade capture/intelligibility claim. |
 | Public stable-to-stable upgrade | Pending: local fixture versions do not prove upgrading between two published stable releases. |
 
-Automated checks: 604 server tests, 307 interface tests after main integration, interface production build, native menu
-self-tests, 70 Python release/helper/transaction tests and shell syntax checks. The CLI dispatch test
+Automated checks after review fixes: 610 server tests, 307 interface tests after main integration, interface production build, native menu
+self-tests, 84 Python release/helper/transaction tests, 29 service configuration/runtime tests and shell syntax checks. The CLI dispatch test
 also verifies trusted helper copying, detached-worker arguments and inherited lock ownership; a
 physical menu-to-worker run remains pending. Exact-head CI status is recorded in the pull request.
 CI is separate from physical QA.
+
+## Review corrections
+
+PR #80's seven confirmed findings were addressed with behavioral regressions:
+
+- A fresh transaction records its own log path and resets previous permission/verification fields; prior diagnostic logs remain available.
+- Disconnecting a streamed operation keeps processing admission until the producer actually finishes. Both stream-unit tests and a real isolated model-pull HTTP fixture reject maintenance during the disconnected job.
+- Failed maintenance acquisition queries the actual lease. Confirmed busy processing without a lease permits explicit retry; a lost acknowledgement releases only the matching transaction. Unknown ownership or failed release preserves recovery material.
+- Native requests capture the current endpoints and installed build when admitted. Corrected configuration reaches later calls, while in-flight installation keeps its original configuration.
+- Safe terminal and busy transactions discard the installer, archive and extracted payload. Diagnostics, coordinator helpers and uncertain recovery material remain. Cleanup refuses symlinks and records a warning without changing verified installation success.
+- Native status polling uses a 60-second idle interval and a 2-second active interval. Manual actions queue behind a status read, and forced service retries are coalesced without being lost.
+- The outer installation-lock wrapper owns temporary download cleanup; the locked child owns outcome reporting. Child exit codes, including permission-related exit 3, pass through unchanged.
+
+Claude reviewed the correction diff with `medium` effort and confirmed these fixes. It also identified
+that subprocess fixture tests must not run in the production installer self-test. Those tests now use
+the separate `--update-client-self-test` mode, exercised by `install-menubar.sh --build-only` in local
+validation and CI. Production `--self-test` retains the existing checks without the new fixture launches.
+This read-only second opinion is separate from executed tests and the pending physical acceptance gates.
 
 ## Reproduce the isolated menu fixture
 

@@ -10,13 +10,14 @@ let base: string;
 let finalizeCalls = 0;
 let releaseFinalization: (() => void) | undefined;
 let finalizationBody: any;
+let releaseModelPull: (() => void) | undefined;
 const request = async (path: string, body?: unknown, origin?: string, method = body === undefined ? "GET" : "POST") => {
  const response = await fetch(`${base}${path}`, { method, headers: { "Content-Type": "application/json", ...(origin ? { Origin: origin } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
  return { status: response.status, body: response.status === 403 ? null : await response.json() };
 };
 
 async function startApp() {
- app = Bun.spawn([process.execPath, resolve(import.meta.dir, "../server.ts")], { cwd: resolve(import.meta.dir, "../../.."), env: { ...process.env, PORT: base.split(":").at(-1)!, HEED_APP_DIR: directory, HEED_RECORDINGS_DIR: join(directory, "recordings"), HEED_TRANSCRIPTION_URL: `http://127.0.0.1:${sidecar.port}` }, stdout: "ignore", stderr: "pipe" });
+ app = Bun.spawn([process.execPath, resolve(import.meta.dir, "../server.ts")], { cwd: resolve(import.meta.dir, "../../.."), env: { ...process.env, PORT: base.split(":").at(-1)!, HEED_APP_DIR: directory, HEED_RECORDINGS_DIR: join(directory, "recordings"), HEED_TRANSCRIPTION_URL: `http://127.0.0.1:${sidecar.port}`, OLLAMA_HOST: `http://127.0.0.1:${sidecar.port}` }, stdout: "ignore", stderr: "pipe" });
  const deadline = Date.now() + 8000;
  while (Date.now() < deadline) {
   try { if ((await fetch(`${base}/api/desktop/control/status`)).ok) return; } catch {}
@@ -29,6 +30,14 @@ async function restartApp() { app.kill(); await app.exited; await startApp(); }
 beforeAll(async () => {
  directory = mkdtempSync(join(tmpdir(), "heed-recording-http-"));
  sidecar = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
+  if (new URL(req.url).pathname === '/api/pull') {
+   const body = new ReadableStream<Uint8Array>({async start(controller) {
+    controller.enqueue(new TextEncoder().encode('{"status":"pulling"}\n'));
+    await new Promise<void>(resolve => {releaseModelPull=resolve;});
+    controller.enqueue(new TextEncoder().encode('{"status":"success"}\n')); controller.close();
+   }});
+   return new Response(body);
+  }
   if (new URL(req.url).pathname === "/finalize") {
    finalizeCalls++; finalizationBody = await req.json();
    await new Promise<void>(resolve => { releaseFinalization = resolve; });
@@ -117,6 +126,21 @@ test('an admitted asynchronous mutation prevents installation before its JSON bo
  } finally {controller!.enqueue(new TextEncoder().encode('"en"}'));controller!.close();await pending;}
  expect((await request('/api/recording/maintenance',{acquire:true,owner:'pending-json'})).status).toBe(200);
  expect((await request('/api/recording/maintenance',{acquire:false,owner:'pending-json'})).status).toBe(200);
+});
+
+test('disconnecting a real model-pull stream cannot admit installation before the pull finishes', async () => {
+ const response=await fetch(base+'/api/models/pull?id=synthetic-update-test');
+ const reader=response.body!.getReader();
+ try {
+  expect(new TextDecoder().decode((await reader.read()).value)).toContain('pulling');
+  await reader.cancel(); await Bun.sleep(20);
+  expect((await request('/api/desktop/control/status')).body.processingKinds).toContain('synchronization');
+  expect((await request('/api/recording/maintenance',{acquire:true,owner:'stream-updater'})).status).toBe(409);
+ } finally {releaseModelPull?.();releaseModelPull=undefined;}
+ const deadline=Date.now()+2000;
+ while ((await request('/api/desktop/control/status')).body.processingKinds.length && Date.now()<deadline) await Bun.sleep(10);
+ expect((await request('/api/recording/maintenance',{acquire:true,owner:'stream-updater'})).status).toBe(200);
+ expect((await request('/api/recording/maintenance',{acquire:false,owner:'stream-updater'})).status).toBe(200);
 });
 
 test('the installer guard can adopt the existing durable update transaction', async () => {

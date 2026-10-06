@@ -43,7 +43,7 @@ import { sessionAudioResponse } from "./lib/session-audio.ts";
 import { SessionTags, TagError, tagResponse } from "./lib/session-tags.ts";
 const sessionTags = new SessionTags(SESSIONS_DIR);
 import { RecordingCoordinator } from "./lib/recording-coordinator.ts";
-import {ProcessingMaintenance} from './lib/processing-maintenance.ts';
+import {ProcessingMaintenance, retainProcessingStream} from './lib/processing-maintenance.ts';
 import type { FinalCapture, RecordingSnapshot } from "../shared/types/recording-coordinator.ts";
 import { DesktopPermissions, desktopRequestAllowed as permissionRequestAllowed, permissionAction, permissionReport } from "./lib/desktop-permissions.ts";
 import { removeChannelCopies } from "./lib/audio-retention.ts";
@@ -2513,15 +2513,8 @@ async function withProcessingAdmission(req:Request, run:()=>Promise<Response>):P
  try {
   const response = await run();
   if (response.body && response.headers.get('Content-Type')?.startsWith('text/event-stream')) {
-   const reader = response.body.getReader(); streaming = true;
-   const body = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-     try {const next = await reader.read(); if (next.done) {release(); controller.close();} else controller.enqueue(next.value);}
-     catch (error) {release(); controller.error(error);}
-    },
-    async cancel(reason) {try {await reader.cancel(reason);} finally {release();}},
-   });
-   return new Response(body,{status:response.status,headers:response.headers});
+   const guarded = retainProcessingStream(response,release); streaming = true;
+   return guarded;
   }
   return response;
  } finally {if (!streaming) release();}

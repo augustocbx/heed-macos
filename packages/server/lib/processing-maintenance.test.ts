@@ -14,6 +14,36 @@ function create(active: () => string[] = () => [], write?: (path: string, value:
 }
 afterEach(() => {for (const directory of directories.splice(0)) rmSync(directory, {recursive:true, force:true});});
 
+test('disconnecting a streamed operation keeps maintenance blocked until the producer finishes', async () => {
+ const {gate} = create(); let finish!:()=>void; let cancelled = false;
+ const pending = new Promise<void>(resolve => {finish = resolve;});
+ const source = new ReadableStream<Uint8Array>({
+  async start(controller) {controller.enqueue(new Uint8Array([1])); await pending; controller.enqueue(new Uint8Array([2])); controller.close();},
+  cancel() {cancelled = true;},
+ });
+ expect(module!.retainProcessingStream).toBeFunction();
+ const response = module!.retainProcessingStream(new Response(source), gate.enter('synchronization'));
+ const reader = response.body!.getReader(); await reader.read(); await reader.cancel();
+ expect(cancelled).toBe(false);
+ expect(() => gate.acquire('updater',transaction)).toThrow('active');
+ finish();
+ for (let count=0; count<20 && gate.active().length; count++) await Bun.sleep(1);
+ expect(gate.active()).toEqual([]);
+ gate.acquire('updater',transaction);
+});
+
+for (const failure of [false,true]) test(`stream producer ${failure ? 'failure' : 'completion'} releases admission once`, async () => {
+ let releases = 0;
+ const source = new ReadableStream<Uint8Array>({start(controller) {
+  if (failure) controller.error(Error('producer failed')); else {controller.enqueue(new Uint8Array([1])); controller.close();}
+ }});
+ expect(module!.retainProcessingStream).toBeFunction();
+ const response = module!.retainProcessingStream(new Response(source),() => {releases++;});
+ if (failure) await expect(response.arrayBuffer()).rejects.toThrow('producer failed');
+ else expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([1]));
+ expect(releases).toBe(1);
+});
+
 for (const kind of ['recording', 'saving', 'transcription', 'notes', 'tasks', 'chat', 'libraryChat', 'synchronization', 'authorization']) {
  test(`active ${kind} prevents update acquisition and permits explicit retry when finished`, () => {
   let jobs = [kind]; const {gate} = create(() => jobs);

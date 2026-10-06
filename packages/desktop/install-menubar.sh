@@ -44,6 +44,7 @@ else
 fi
 "$HEED_BUILD/Heed" --self-test
 if [ "${1:-}" = "--build-only" ]; then
+    "$HEED_BUILD/Heed" --update-client-self-test
     printf 'Build verified: %s\n' "$HEED_BUILD/Heed"
     exit 0
 fi

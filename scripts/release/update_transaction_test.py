@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 try: import update_transaction as updater
 except ModuleNotFoundError: updater = None
@@ -178,6 +178,114 @@ class TransactionTests(unittest.TestCase):
                 with InstallationLock(self.home):pass
         finally:
             for descriptor in inherited:os.close(descriptor)
+
+    def test_cli_retry_uses_a_new_valid_log_path(self):
+        prior=self.run_fixture()
+        old_log=Path(prior['logPath']);old_log.write_text('Preserve the previous diagnostic log.')
+        updater.save(self.context,{**prior,'phase':'waitingForIdle','recovery':'notReplaced'})
+        started=[]
+        def launch(*args,**kwargs):
+            started.append(updater.current_state(self.context))
+        with patch.object(updater.subprocess,'Popen',side_effect=launch),patch('sys.stdout',new=io.StringIO()):
+            code=updater.main(['install','--root',str(self.context.root),'--home',str(self.home),
+                               '--version','1.0.0','--macos','14.0'])
+        self.assertEqual(code,0)
+        state=updater.current_state(self.context)
+        self.assertEqual(len(started),1)
+        self.assertNotEqual(state['transactionId'],prior['transactionId'])
+        self.assertEqual(state['logPath'],str(self.home/'updates'/state['transactionId']/'update.log'))
+        self.assertEqual(old_log.read_text(),'Preserve the previous diagnostic log.')
+
+    def test_busy_acquisition_refusal_without_a_lease_allows_explicit_retry(self):
+        idle={'maintenanceProtocol':2,'maintenance':False,'updateTransactionId':None,'processingKinds':[]}
+        busy={**idle,'processingKinds':['notes']}
+        self.dependencies.activity=Mock(side_effect=[idle,idle,busy])
+        def refuse(ctx,owner,transaction,acquire):
+            raise UpdateError('maintenance-failed','Active processing refused maintenance.')
+        self.dependencies.maintenance=refuse
+        state=self.run_fixture()
+        self.assertEqual(state['phase'],'waitingForIdle')
+        self.assertEqual(state['errorCode'],'busy')
+        self.assertEqual(state['recovery'],'notReplaced')
+        self.assertEqual(self.calls,[])
+
+    def test_failed_acquisition_with_unavailable_status_preserves_recovery_material(self):
+        idle={'maintenanceProtocol':2,'maintenance':False,'updateTransactionId':None,'processingKinds':[]}
+        self.dependencies.activity=Mock(side_effect=[idle,idle,UpdateError('unverified-service','Unavailable')])
+        self.dependencies.maintenance=Mock(side_effect=UpdateError('maintenance-failed','Unknown acknowledgement'))
+        state=self.run_fixture()
+        self.assertEqual(state['recovery'],'recoveryRequired')
+        self.dependencies.maintenance.assert_called_once()
+        self.assertTrue((self.home/'updates'/state['transactionId']/'install.sh').exists())
+
+    def test_failed_acquisition_releases_only_a_verified_matching_lease(self):
+        for matching in [True,False]:
+            with self.subTest(matching=matching):
+                updater.save(self.context,{'state':'available','release':self.release})
+                released=[]; acquired=[]
+                def maintenance(ctx,owner,transaction,acquire):
+                    if acquire:
+                        acquired.append(transaction)
+                        raise UpdateError('maintenance-failed','Lost acknowledgement')
+                    released.append(transaction)
+                def activity(ctx):
+                    return {'maintenanceProtocol':2,'maintenance':bool(acquired),'processingKinds':[],
+                            'updateTransactionId':(acquired[0] if matching else '22222222-2222-4222-8222-222222222222') if acquired else None}
+                self.dependencies.activity=activity;self.dependencies.maintenance=maintenance
+                state=self.run_fixture()
+                self.assertEqual(state['recovery'],'notReplaced')
+                self.assertEqual(released,acquired if matching else [])
+                self.assertFalse(any(call[0]=='install' for call in self.calls))
+
+    def test_asset_cleanup_failure_does_not_change_verified_installation_outcome(self):
+        def installed(ctx,script,payload,*args):payload.mkdir();return 0
+        self.dependencies.installer=installed
+        with patch.object(updater.shutil,'rmtree',side_effect=OSError('Cleanup unavailable')):
+            state=self.run_fixture()
+        self.assertEqual(state['phase'],'completed')
+        self.assertEqual(state['recovery'],'retainedTarget')
+        self.assertIn('Cleanup unavailable',state['cleanupWarning'])
+
+    def test_asset_cleanup_cannot_follow_a_payload_symlink(self):
+        outside=Path(self.temp.name)/'keep';outside.mkdir();(outside/'important').write_text('Keep this')
+        def installed(ctx,script,payload,*args):payload.symlink_to(outside);return 0
+        self.dependencies.installer=installed
+        state=self.run_fixture()
+        self.assertEqual(state['phase'],'completed')
+        self.assertIn('symbolic links',state['cleanupWarning'])
+        self.assertEqual((outside/'important').read_text(),'Keep this')
+
+    def test_completed_update_removes_payloads_but_keeps_diagnostics_and_helpers(self):
+        retained=[]
+        def installed(ctx,script,payload,lock,transaction,owner):
+            payload.mkdir();(payload/'release.json').write_text('synthetic payload')
+            helpers=payload.parent/'coordinator';helpers.mkdir();(helpers/'worker.py').write_text('synthetic helper')
+            log=payload.parent/'update.log';log.write_text('Keep diagnostics')
+            retained.extend([helpers,log])
+            return 0
+        self.dependencies.installer=installed
+        state=self.run_fixture();folder=self.home/'updates'/state['transactionId']
+        self.assertEqual(state['phase'],'completed')
+        self.assertFalse((folder/'install.sh').exists())
+        self.assertFalse((folder/'heed-macos-1.2.0-arm64.tar.gz').exists())
+        self.assertFalse((folder/'heed-macos-1.2.0-arm64').exists())
+        self.assertTrue(all(path.exists() for path in retained))
+        self.assertTrue((folder/'status.json').exists())
+
+    def test_busy_after_download_removes_retry_payloads(self):
+        self.dependencies.activity=Mock(side_effect=[
+            {'maintenanceProtocol':2,'processingKinds':[]}, {'maintenanceProtocol':2,'processingKinds':['notes']}])
+        state=self.run_fixture();folder=self.home/'updates'/state['transactionId']
+        self.assertEqual(state['phase'],'waitingForIdle')
+        self.assertFalse((folder/'install.sh').exists())
+        self.assertFalse((folder/'heed-macos-1.2.0-arm64.tar.gz').exists())
+
+    def test_uncertain_recovery_keeps_the_verified_downloads(self):
+        self.dependencies.services=lambda *args:False
+        state=self.run_fixture();folder=self.home/'updates'/state['transactionId']
+        self.assertEqual(state['recovery'],'recoveryRequired')
+        self.assertTrue((folder/'install.sh').is_file())
+        self.assertTrue((folder/'heed-macos-1.2.0-arm64.tar.gz').is_file())
 
     def test_pinned_manifest_and_notes_revalidated_before_control(self):
         self.manifest['assets']['installer']['url']='https://untrusted.example/install.sh'

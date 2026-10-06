@@ -3,6 +3,28 @@ import {atomicWriteJson} from './atomic-json';
 
 export type ProcessingKind = 'mediaImport' | 'migration' | 'synchronization';
 export interface UpdateLease {schema:1; transactionId:string; owner:string}
+
+/** A disconnected SSE consumer does not stop its asynchronous producer's work. */
+export function retainProcessingStream(response:Response, release:()=>void):Response {
+ const reader = response.body!.getReader();
+ let disconnected = false;
+ const body = new ReadableStream<Uint8Array>({
+  async start(controller) {
+   try {
+    while (true) {
+     const next = await reader.read();
+     if (next.done) break;
+     if (!disconnected) controller.enqueue(next.value);
+    }
+    if (!disconnected) controller.close();
+   } catch (error) {
+    if (!disconnected) controller.error(error);
+   } finally {reader.releaseLock(); release();}
+  },
+  cancel() {disconnected = true;}, // Drain the producer until its actual work ends.
+ });
+ return new Response(body,{status:response.status,statusText:response.statusText,headers:response.headers});
+}
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 function validOwner(owner:unknown):owner is string {return typeof owner === 'string' && !!owner.trim() && owner.length <= 128;}
 

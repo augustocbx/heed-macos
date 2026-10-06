@@ -156,6 +156,8 @@ if [ -z "${HEED_INSTALL_LOCK_FD:-}" ]; then
     [ "$HEED_REQUIRE_PERMISSIONS" != 1 ] || HEED_LOCK_ARGS+=(--require-permissions)
     [ "$HEED_PERMISSION_PROMPT" != 0 ] || HEED_LOCK_ARGS+=(--no-permission-prompt)
     HEED_LOCK_STATUS=0
+    # The locked child owns installation reporting and recovery; this wrapper only owns its downloads.
+    trap 'rm -rf "$HEED_TEMP"' EXIT
     /usr/bin/python3 "$HEED_LOCK_HELPER" run --home "$HEED_HOME" -- /bin/bash "$HEED_PAYLOAD/install.sh" "${HEED_LOCK_ARGS[@]}" || HEED_LOCK_STATUS=$?
     exit "$HEED_LOCK_STATUS"
 fi

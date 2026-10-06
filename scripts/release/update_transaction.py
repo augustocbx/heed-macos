@@ -161,6 +161,26 @@ def extract_payload(archive,directory,name):
     return directory / name
 
 
+def discard_payloads(context,state):
+    """Keep diagnostics and recovery material; discard only a safe transaction's assets."""
+    if state.get('recovery') == 'recoveryRequired': return state
+    try:
+        manifest=state['release']['manifest']
+        validate_manifest(manifest,manifest['version'],context.architecture,context.macos)
+        folder=update_state.directory(context.home,state['transactionId'])
+        names=[manifest['assets'][kind]['name'] for kind in ['installer','payload']]
+        names.append('heed-macos-%s-arm64' % manifest['version'])
+        for name in names:
+            path=folder/name
+            if path.is_symlink(): raise ValueError('Update assets cannot be symbolic links.')
+            if path.is_dir(): shutil.rmtree(path)
+            elif path.exists(): path.unlink()
+    except (OSError,ValueError,KeyError) as error:
+        # Cleanup must not change a verified installation outcome.
+        return save(context,{**state,'cleanupWarning':str(error)})
+    return state
+
+
 def installer(context,script,payload,lock,transaction,owner):
     folder=update_state.directory(context.home,transaction)
     environment={**os.environ,'HEED_HOME':str(context.home),'HEED_APP_DIR':str(context.app_dir),
@@ -235,7 +255,7 @@ def finish_verification(context,state,deps,exit_code):
             deps.maintenance(retained,state['owner'],state['transactionId'],False)
     else:
         deps.maintenance(retained,state['owner'],state['transactionId'],False)
-    return save(context,{**state,'phase':'completed' if exit_code==0 and target else 'failed'})
+    return discard_payloads(context,save(context,{**state,'phase':'completed' if exit_code==0 and target else 'failed'}))
 
 
 def run_update(context,release,dependencies=None,transaction=None,inherited_fd=None):
@@ -263,7 +283,7 @@ def run_update(context,release,dependencies=None,transaction=None,inherited_fd=N
                 if status.get('maintenance') and status.get('updateTransactionId')!=transaction:
                     raise UpdateError('maintenance-failed','Another maintenance owner is active.')
                 return not status['processingKinds']
-            if not idle(): return save(context,{**state,'phase':'waitingForIdle','errorCode':'busy'})
+            if not idle(): return discard_payloads(context,save(context,{**state,'phase':'waitingForIdle','errorCode':'busy'}))
             for kind in ['installer','payload']:
                 asset=manifest['assets'][kind]
                 download_verified(asset,folder/asset['name'],deps.transport,
@@ -271,7 +291,7 @@ def run_update(context,release,dependencies=None,transaction=None,inherited_fd=N
             state.update(phase='verifying',progress=None); save(context,state)
             archive=folder/manifest['assets']['payload']['name']
             name=validate_archive(archive,manifest); payload=extract_payload(archive,folder,name)
-            if not idle(): return save(context,{**state,'phase':'waitingForIdle','errorCode':'busy'})
+            if not idle(): return discard_payloads(context,save(context,{**state,'phase':'waitingForIdle','errorCode':'busy'}))
             state.update(phase='installing',recovery='recoveryRequired'); save(context,state)
             held=True
             deps.maintenance(context,owner,transaction,True)
@@ -281,10 +301,21 @@ def run_update(context,release,dependencies=None,transaction=None,inherited_fd=N
             return finish_verification(context,state,deps,code)
         except (OSError,ValueError,KeyError) as error:
             code=error.code if isinstance(error,UpdateError) else 'update-failed'
+            phase='failed'
             if held and not invoked:
-                try: deps.maintenance(context,owner,transaction,False); held=False
-                except ValueError: pass
-            return save(context,{**state,'phase':'failed','errorCode':code,'recovery':'recoveryRequired' if held else 'notReplaced'})
+                try:
+                    lease=deps.activity(context)
+                    if (lease.get('maintenanceProtocol')==2 and type(lease.get('maintenance')) is bool
+                        and isinstance(lease.get('processingKinds'),list)):
+                        if lease.get('maintenance') and lease.get('updateTransactionId')==transaction:
+                            deps.maintenance(context,owner,transaction,False); held=False
+                        elif lease.get('maintenance') is False and lease.get('updateTransactionId') is None:
+                            held=False
+                            if lease['processingKinds']: phase='waitingForIdle'; code='busy'
+                        elif lease.get('maintenance') and isinstance(lease.get('updateTransactionId'),str):
+                            held=False  # Never release another transaction's lease.
+                except (OSError,ValueError,KeyError): pass
+            return discard_payloads(context,save(context,{**state,'phase':phase,'errorCode':code,'recovery':'recoveryRequired' if held else 'notReplaced'}))
 
 
 def reconcile_transaction(context,dependencies=None):
@@ -350,7 +381,9 @@ def main(argv=None):
                 state=save(context,{**state,'transactionId':transaction,'owner':str(uuid.uuid4()),'phase':'downloading',
                                     'targetVersion':state['release']['manifest']['version'],'targetCommit':state['release']['manifest']['commit'],
                                     'installedRoot':str(context.root),'installedVersion':context.installed_version,'installedCommit':context.installed_commit,
-                                    'recovery':'notReplaced','errorCode':None,'permissionState':'unknown'})
+                                    'recovery':'notReplaced','errorCode':None,'permissionState':'unknown','logPath':str(folder/'update.log'),
+                                    'progress':None,'missingPermissions':[],'optionalAccess':[],
+                                    'verifiedVersion':None,'verifiedCommit':None,'permissionVersion':None,'cleanupWarning':None})
                 command=[sys.executable,str(helper),'worker',*sys.argv[2:]] if argv is None else [sys.executable,str(helper),'worker',*argv[1:]]
                 log=os.open(folder/'coordinator.log',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
                 try:

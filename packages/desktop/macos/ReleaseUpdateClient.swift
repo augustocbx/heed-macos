@@ -64,14 +64,19 @@ final class ReleaseUpdateClient {
     private(set) var snapshot = UpdateSnapshot()
     private(set) var inFlight = false
     private let queue = DispatchQueue(label: "local.heed.release-updates", qos: .utility)
-    private let endpoints: ServiceEndpoints?
-    let build: InstalledMenuBuild?
+    private let endpoints: () -> ServiceEndpoints?
+    private(set) var build: InstalledMenuBuild?
+    private let now: () -> Double
+    private var lastStatusAttempt: Double?
+    private var pendingCommands: [String] = []
+    private var pendingStatusRefresh = false
     private let home: String
     private let qaRoot = updateQARoot()
     private let instanceID = UUID().uuidString
-    init(endpoints: ServiceEndpoints?) {
+    init(endpoints: @escaping () -> ServiceEndpoints?, now: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime }) {
+        self.now = now
         self.endpoints = endpoints
-        self.build = InstalledMenuBuild.load(root: endpoints?.checkoutRoot)
+        self.build = InstalledMenuBuild.load(root: endpoints()?.checkoutRoot)
         home = ProcessInfo.processInfo.environment["HEED_HOME"] ?? Bundle.main.url(forResource: "heed-home", withExtension: "txt").flatMap {try? String(contentsOf: $0, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)} ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".heed").path
     }
     static func automaticCheckDue(lastAttempt: Double?, now: Double = Date().timeIntervalSince1970) -> Bool {
@@ -83,13 +88,46 @@ final class ReleaseUpdateClient {
     }
     func install() { guard snapshot.canInstall else {return}; run("install") }
     func retry() { snapshot.recovery == "recoveryRequired" ? run("recover") : install() }
-    func refreshStatus() {run("status")}
+    func refreshStatus(force: Bool = false) {
+        guard !inFlight else {
+            if force { pendingStatusRefresh = true }
+            return
+        }
+        let current = now()
+        let interval = snapshot.isInstalling ? 2.0 : 60.0
+        guard force || lastStatusAttempt == nil || current - lastStatusAttempt! >= interval else { return }
+        lastStatusAttempt = current
+        run("status")
+    }
     func checkPermissions() {guard !snapshot.isInstalling, snapshot.permissionVersion == build?.version else {return}; run("permissions")}
+    private func runPendingCommands() {
+        while !inFlight && !pendingCommands.isEmpty {
+            switch pendingCommands.removeFirst() {
+            case "check": check(manual: true)
+            case "install": install()
+            case "recover": retry()
+            case "permissions": checkPermissions()
+            default: break
+            }
+        }
+        if !inFlight && pendingStatusRefresh {
+            pendingStatusRefresh = false
+            refreshStatus(force: true)
+        }
+    }
     private func run(_ command: String, automatic: Bool = false) {
-        guard !inFlight else {return}
+        guard !inFlight else {
+            // A periodic status read must not consume a user action. Revalidate it
+            // against the completed snapshot before admitting the queued command.
+            if command != "status", !automatic, !pendingCommands.contains(command) { pendingCommands.append(command) }
+            return
+        }
         inFlight = true
+        // Capture one configuration per request so a retry cannot retarget active work.
+        let endpoints = endpoints()
+        build = InstalledMenuBuild.load(root: endpoints?.checkoutRoot)
+        let build = build, home = home, qaRoot = qaRoot, instanceID = instanceID
         if command == "check" {snapshot.state = "checking"; onChange?(snapshot)}
-        let endpoints = endpoints, build = build, home = home, qaRoot = qaRoot, instanceID = instanceID
         queue.async { [weak self] in
             var result = UpdateSnapshot()
             do {
@@ -130,6 +168,7 @@ final class ReleaseUpdateClient {
             DispatchQueue.main.async {
                 guard let self = self else {return}
                 self.inFlight = false; self.snapshot = completed; self.onChange?(completed)
+                self.runPendingCommands()
             }
         }
     }
