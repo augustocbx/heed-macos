@@ -1,0 +1,25 @@
+.dialog {
+	position: fixed;
+	inset: 0;
+	margin: auto;
+	width: min(36rem, calc(100% - 2rem));
+	max-width: calc(100% - 2rem);
+	max-height: calc(100dvh - 2rem);
+	overflow-y: auto;
+	overflow-wrap: anywhere;
+	padding: 1.25rem;
+	border: 1px solid var(--border-light);
+	border-radius: var(--radius-lg);
+	background: var(--white);
+	color: var(--text);
+	box-shadow: var(--shadow-lg);
+}
+
+.dialog::backdrop {
+	background: rgba(15, 23, 42, 0.45);
+}
+
+.dialog :is(button, summary):focus-visible {
+	outline: 2px solid var(--blue);
+	outline-offset: 3px;
+}
