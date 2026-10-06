@@ -29,10 +29,12 @@ jobs:
         run: python3 -m unittest discover -s packages/transcription -p meeting_language_test.py
       - name: Manual transcription selection tests
         run: python3 -m unittest discover -s packages/transcription -p manual_transcription_test.py
+      - name: Native transcription deadline and owned process cleanup tests
+        run: python3 -m unittest discover -s packages/transcription -p '*worker_test.py'
       - name: Managed audio working directory tests
         run: python3 -m unittest discover -s packages/transcription -p managed_work_test.py
       - name: Check Python syntax
-        run: python3 -m py_compile packages/transcription/transcription_server.py packages/transcription/voice_identity.py packages/transcription/meeting_language.py packages/transcription/manual_transcription.py packages/desktop/browser-meet/native-host.py packages/desktop/browser-meet/register-host.py packages/transcription/managed_work.py
+        run: python3 -m py_compile packages/transcription/transcription_server.py packages/transcription/voice_identity.py packages/transcription/meeting_language.py packages/transcription/manual_transcription.py packages/desktop/browser-meet/native-host.py packages/desktop/browser-meet/register-host.py packages/transcription/managed_work.py packages/transcription/native_worker.py packages/transcription/process_ownership.py packages/transcription/engines.py
       - name: Build interface
         run: bun run build
       - name: Check installers
