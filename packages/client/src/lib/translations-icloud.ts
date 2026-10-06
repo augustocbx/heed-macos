@@ -19,6 +19,11 @@ export const ICLOUD_TRANSLATIONS: Record<string,Record<string,string>> = {
     "fr": "Vérifiez la connexion iCloud, les autorisations du dossier, les téléchargements, l’espace cloud et la limite locale, puis réessayez.",
     "de": "Prüfen Sie iCloud-Anmeldung, Ordnerrechte, Downloads, Cloud-Speicher und das lokale Speicherlimit; versuchen Sie es dann erneut."
   },
+  "The synchronization destination changed. Refresh and review before continuing.": {
+    "pt-BR": "O destino de sincronização mudou. Atualize e revise antes de continuar.",
+    "fr": "La destination de synchronisation a changé. Actualisez et vérifiez avant de continuer.",
+    "de": "Das Synchronisierungsziel hat sich geändert. Aktualisieren und prüfen Sie es, bevor Sie fortfahren."
+  },
   "Choose iCloud folder": {
     "pt-BR": "Escolher pasta do iCloud",
     "fr": "Choisir un dossier iCloud",
