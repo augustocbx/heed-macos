@@ -1,4 +1,5 @@
-import {existsSync,readFileSync,lstatSync} from 'node:fs';
+import {readPrivateJson} from './connectors/private-json';
+import {existsSync} from 'node:fs';
 import {atomicWriteJson} from './atomic-json';
 import type {LibraryProvider} from './portable-provider';
 interface Library {snapshot():{providerId?:string};isBusy():boolean;isMutationOwner():boolean;withMutation<T>(run:()=>Promise<T>,signal?:AbortSignal):Promise<T>;selectProvider(provider?:LibraryProvider):void}
@@ -8,7 +9,7 @@ const validId=(id:unknown):id is string=>typeof id==='string'&&/^[A-Za-z0-9_-]{1
 /** Device-only selection; portable meeting identities never depend on a connector preference. */
 export class ProviderRegistry {
  private factories=new Map<string,()=>LibraryProvider>();private error:string|null=null;private preference:Preference={version:1,preferredId:null};
- constructor(private options:Options){try{if(existsSync(options.path)){const stat=lstatSync(options.path);if(!stat.isFile()||stat.size>16384)throw new Error('Invalid provider preference');const value=JSON.parse(readFileSync(options.path,'utf8'));if(!value||Object.keys(value).sort().join(',')!=='preferredId,version'||value.version!==1||value.preferredId!==null&&!validId(value.preferredId))throw new Error('Invalid provider preference; preserve it for recovery.');this.preference=value;}}catch{this.error='Invalid provider preference; preserve it for recovery.';}}
+ constructor(private options:Options){try{if(existsSync(options.path)){const value=readPrivateJson<Preference>(options.path,16384);if(!value||Object.keys(value).sort().join(',')!=='preferredId,version'||value.version!==1||value.preferredId!==null&&!validId(value.preferredId))throw new Error('Invalid provider preference; preserve it for recovery.');this.preference=value;}}catch{this.error='Invalid provider preference; preserve it for recovery.';}}
  unavailable(){return this.error!==null;}
  assertAvailable(){if(this.error)throw new Error(this.error);}
  withMutation<T>(run:()=>Promise<T>,signal?:AbortSignal):Promise<T>{this.assertAvailable();return this.options.getLibrary().withMutation(run,signal);}

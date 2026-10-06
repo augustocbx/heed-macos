@@ -64,13 +64,13 @@ export class SmbProvider implements LibraryProvider {
  readonly transport='authenticated-network' as const;
  readonly id:string;readonly name:string;readonly readOnly:boolean;
  readonly capabilities:{read:boolean;write:boolean;transportSecurity:'signed'|'encrypted'|'unknown';remoteDeletion:false;durability:'share-readback'};
- constructor(private binding:SmbBinding,private native:SmbNative=new MacSmbNative()){
+ constructor(private binding:SmbBinding,private native:SmbNative=new MacSmbNative(),private guard?:()=>void){
   this.id=binding.id;this.name=binding.name;this.readOnly=binding.readOnly;
   this.capabilities={read:binding.security!=='unknown',write:!binding.readOnly&&binding.security!=='unknown',transportSecurity:binding.security,remoteDeletion:false,durability:'share-readback'};
  }
  private request(action:SmbRequest['action'],extra:Partial<SmbRequest>={}):SmbRequest{return {action,root:this.binding.root,identity:this.binding.identity,destinationId:this.binding.destinationId,stagingId:this.binding.id,...extra};}
  private async access(write:boolean,signal?:AbortSignal){
-  signal?.throwIfAborted();const probe=smbProbe(await this.native.json(this.request('probe'),signal));
+  this.guard?.();signal?.throwIfAborted();const probe=smbProbe(await this.native.json(this.request('probe'),signal));
   if(probe.security==='unknown'||(this.binding.security==='encrypted'&&probe.security!=='encrypted')||['fsid','sourceHash','mountPath'].some(k=>probe.identity[k as keyof SmbIdentity]!==this.binding.identity[k as keyof SmbIdentity]))throw failure();
   const header=destinationHeader(await this.native.json(this.request('header'),signal));if(header?.destinationId!==this.binding.destinationId)throw new Error('SMB destination identity changed. Test and confirm the connection again.');
   if(write&&(this.readOnly||probe.identity.readOnly))throw new Error('SMB library is read-only. Import remains available.');
