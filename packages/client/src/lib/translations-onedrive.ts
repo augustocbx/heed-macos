@@ -213,5 +213,15 @@ export const ONEDRIVE_TRANSLATIONS: Record<string,Record<string,string>> = {
     "pt-BR": "A Microsoft controla a região de armazenamento. O Heed não altera a localização dos dados da conta.",
     "fr": "Microsoft contrôle la région de stockage. Heed ne modifie pas la localisation des données du compte.",
     "de": "Microsoft bestimmt die Speicherregion. Heed ändert den Speicherort der Kontodaten nicht."
+  },
+  "OneDrive settings recovery is required. Preserve configuration and pending copies.": {
+    "pt-BR": "É necessário recuperar as configurações do OneDrive. Preserve a configuração e as cópias pendentes.",
+    "fr": "La récupération des paramètres OneDrive est nécessaire. Conservez la configuration et les copies en attente.",
+    "de": "Die OneDrive-Einstellungen müssen wiederhergestellt werden. Bewahren Sie Konfiguration und ausstehende Kopien auf."
+  },
+  "OneDrive synchronization unavailable. Preserve its configuration for recovery.": {
+    "pt-BR": "A sincronização do OneDrive está indisponível. Preserve sua configuração para recuperação.",
+    "fr": "La synchronisation OneDrive est indisponible. Conservez sa configuration pour la récupération.",
+    "de": "Die OneDrive-Synchronisierung ist nicht verfügbar. Bewahren Sie ihre Konfiguration zur Wiederherstellung auf."
   }
 };
