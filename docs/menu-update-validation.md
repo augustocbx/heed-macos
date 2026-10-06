@@ -18,7 +18,7 @@ and synthetic data; no release was published for QA.
 | Real macOS authorization and capture | Pending. Permission values in fixtures are synthetic. No real Microphone, ScreenCaptureKit, Slack or folder authorization was changed. No real post-upgrade capture/intelligibility claim. |
 | Public stable-to-stable upgrade | Pending: local fixture versions do not prove upgrading between two published stable releases. |
 
-Automated checks: 604 server tests, 293 interface tests, interface production build, native menu
+Automated checks: 604 server tests, 307 interface tests after main integration, interface production build, native menu
 self-tests, 70 Python release/helper/transaction tests and shell syntax checks. The CLI dispatch test
 also verifies trusted helper copying, detached-worker arguments and inherited lock ownership; a
 physical menu-to-worker run remains pending. Exact-head CI status is recorded in the pull request.
