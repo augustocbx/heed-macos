@@ -118,3 +118,15 @@ test("tool-shaped model output cannot mutate a meeting or become an answer",asyn
  await expect(answerMeetingQuestion({sessions:[s],question:"Budget?",history:[],model:"local",generate:async()=>'{"tool":"delete_meeting","arguments":{"sessionId":"meeting-a"}}'})).rejects.toThrow("invalid-answer");
  expect(JSON.stringify(s)).toBe(before);
 });
+
+test('captured installed-model shape without mandatory notFound remains rejected despite valid cited claims',async()=>{
+ const session=meeting();const evidence=transcriptEvidence(session);
+ const captured=JSON.stringify({claims:[{text:'The budget was not approved.',evidenceIds:[evidence[0]!.id]}]});
+ await expect(answerMeetingQuestion({sessions:[session],question:'Budget?',history:[],model:'local',generate:async()=>captured})).rejects.toThrow('invalid-answer');
+});
+
+
+test('decoder compatibility never removes strict postdecode claim and citation limits',async()=>{
+ const session=meeting(),id=transcriptEvidence(session)[0]!.id;
+ for(const [claims,reason] of [[[{text:'',evidenceIds:[id]}],'invalid-evidence'],[[{text:'x'.repeat(2001),evidenceIds:[id]}],'invalid-evidence'],[Array.from({length:13},()=>({text:'Supported',evidenceIds:[id]})),'invalid-answer'],[[{text:'Supported',evidenceIds:Array(21).fill(id)}],'invalid-evidence']] as const){await expect(answerMeetingQuestion({sessions:[session],question:'Budget?',history:[],model:'local',generate:async()=>JSON.stringify({claims,notFound:false})})).rejects.toThrow(reason);}
+});

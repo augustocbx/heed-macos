@@ -6,13 +6,15 @@
  * Interactive installer + updater for heed.
  *
  * Usage:
- *   npx create-heed           # install heed (first time)
- *   npx create-heed update    # pull latest changes (from anywhere)
+ *   node packages/cli/bin/cli.mjs           # install this fork
+ *   node /path/to/heed-macos/packages/cli/bin/cli.mjs update
  */
 
-import { execSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from "node:fs";
+import { execSync, execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+const CLI_COMMAND = `node ${JSON.stringify(fileURLToPath(import.meta.url))}`;
 import { createInterface } from "node:readline";
 import { platform, homedir, cpus, totalmem } from "node:os";
 
@@ -66,7 +68,7 @@ function pySupported(command) {
 // --- Flags / non-interactive install ---
 // The core (record → transcribe → diarize → copy) installs with zero questions — only progress. The
 // one heavy OPTIONAL piece (AI notes = Ollama + LLM) is gated behind the preset. `--yes` / no-TTY
-// accept the safe defaults so `npx create-heed --yes` (or CI) runs unattended.
+// accept the safe defaults so the checked-out CLI with `--yes` (or CI) runs unattended.
 const ARGV = process.argv.slice(2);
 const IS_TTY = Boolean(process.stdin.isTTY);
 const FLAGS = {
@@ -134,7 +136,14 @@ function run(command, label) {
 // and leaves the user on stale code — the exact way an existing clone breaks after history is rewritten.
 // The install dir holds heed's OWN code (user data lives in ~/.heed-app), so realigning it to the
 // remote is safe: fast-forward when we cleanly can, otherwise hard-reset to origin/main.
+function assertForkOrigin(dir) {
+	const origin = execFileSync('git', ['-C', dir, 'remote', 'get-url', 'origin'], { encoding: 'utf8' }).trim();
+	if (!/^(?:https:\/\/github\.com\/|git@github\.com:)augustocbx\/heed-macos(?:\.git)?\/?$/.test(origin)) {
+		throw new Error('This CLI requires an augustocbx/heed-macos origin. Preserve the existing checkout and install this fork in a separate directory.');
+	}
+}
 function syncRepoToMain(dir) {
+	assertForkOrigin(dir);
 	if (!cmd(`cd "${dir}" && git fetch origin main 2>&1`)) cmd(`cd "${dir}" && git fetch origin 2>&1`);
 	// HEAD is an ancestor of origin/main → a clean fast-forward is possible (prudent: no reset needed).
 	const canFF = cmd(`cd "${dir}" && git merge-base --is-ancestor HEAD origin/main && echo ok`) === "ok";
@@ -145,12 +154,19 @@ function syncRepoToMain(dir) {
 
 // Poll the transcription server's /health until it reports ready (models loaded), or time out. Used
 // to open the UI exactly when heed is usable — no arbitrary sleep that opens a dead page or waits too long.
-async function waitForHealth(timeoutMs = 90000) {
+function serviceUrl(targetDir,service,client=false) {
+ const python=existsSync(join(targetDir,'.venv/bin/python3'))?join(targetDir,'.venv/bin/python3'):'python3';
+ return execFileSync(python,[join(targetDir,'scripts/service_config.py'),service,client?'--client-url':'--url'],{encoding:'utf8'}).trim();
+}
+async function waitForHealth(targetDir, timeoutMs = 90000) {
 	const start = Date.now();
 	while (Date.now() - start < timeoutMs) {
 		try {
-			const h = await fetch("http://localhost:5002/health", { signal: AbortSignal.timeout(1500) });
-			if (h.ok && (await h.json()).ready) return true;
+			const h = await fetch(serviceUrl(targetDir,"transcription",true)+"/health", { signal: AbortSignal.timeout(1500) });
+			const health=await h.json();
+			const ui=await fetch(serviceUrl(targetDir,"ui")+"/.well-known/heed-service",{signal:AbortSignal.timeout(1500)});
+			const uiHealth=await ui.json();
+			if(ui.ok && uiHealth.service==="heed-ui" && uiHealth.protocolVersion===1 && uiHealth.checkoutRoot===realpathSync(targetDir) && h.ok && health.service==="heed-transcription" && health.protocolVersion===1 && Number.isInteger(health.pid) && health.pid>0 && health.ready===true)return true;
 		} catch {}
 		await new Promise((r) => setTimeout(r, 1500));
 	}
@@ -309,7 +325,7 @@ async function main() {
 		syncRepoToMain(targetDir);
 	} else {
 		info("Cloning from GitHub...");
-		run(`git clone https://github.com/isjunrod/heed.git "${targetDir}"`, "Downloaded");
+		run(`git clone https://github.com/augustocbx/heed-macos.git "${targetDir}"`, "Downloaded");
 	}
 	info("Installing JavaScript dependencies...");
 	run(`cd "${targetDir}" && bun install`, "Dependencies installed");
@@ -389,7 +405,7 @@ async function main() {
 			sidecarOk = true;
 		} else if (!hasCommand("swift")) {
 			info("Swift toolchain not found — Parakeet needs it for the fastest engine.");
-			info(`For Parakeet later: ${C.cyan}xcode-select --install${C.reset} then re-run ${C.bold}npx create-heed${C.reset}.`);
+			info(`For Parakeet later: ${C.cyan}xcode-select --install${C.reset} then re-run ${C.bold}${CLI_COMMAND}${C.reset}.`);
 		} else if (existsSync(sidecarDir)) {
 			info("Building Parakeet sidecar (first build downloads CoreML deps, ~1-2 min)...");
 			sidecarOk = run(`cd "${sidecarDir}" && swift build -c release`, "Parakeet sidecar built (Apple Neural Engine)");
@@ -398,7 +414,7 @@ async function main() {
 
 		// GUARANTEE a working engine. On Apple Silicon the .venv is the lightweight core (livekit + numpy,
 		// NO whisper) because the engine is normally the Parakeet sidecar. If that sidecar isn't available,
-		// the server has nothing to transcribe with and dies at load (dead :5002 → "can't start
+		// the server has nothing to transcribe with and dies at load (dead transcription endpoint → "can't start
 		// transcription"). So install the fallback engine (MLX-Whisper on Metal) and pin it — "press
 		// record" must always work, even without Xcode/Swift.
 		// Parakeet is available now → clear any stale fallback pin from an earlier engine-less run,
@@ -422,7 +438,7 @@ async function main() {
 					ok("Engine set to MLX-Whisper (Metal)");
 				} catch (e) { warn(`Could not pin fallback engine: ${e.message}`); }
 			} else {
-				err("Fallback engine install failed — transcription may not work. Retry: npx create-heed fallback");
+				err(`Fallback engine install failed — transcription may not work. Retry: ${CLI_COMMAND} fallback`);
 			}
 		}
 
@@ -459,7 +475,7 @@ async function main() {
 		info("Health check (confirming transcription + diarization work here)...");
 		if (!run(`"${venvPython}" "${doctorPy}"`, "Health check passed")) {
 			warn("A check failed above. If transcription failed, install the fallback engine:");
-			log(`  ${C.bold}npx create-heed fallback${C.reset}`);
+			log(`  ${C.bold}${CLI_COMMAND} fallback${C.reset}`);
 		}
 	}
 	log("");
@@ -483,7 +499,7 @@ async function main() {
 
 		// Wait until heed is actually ready (models loaded), not an arbitrary sleep.
 		info("Starting services (loading models)...");
-		await waitForHealth();
+		await waitForHealth(targetDir);
 
 		// Launch desktop panel
 		const panelChild = spawn("python3", ["packages/desktop/main.py"], {
@@ -503,7 +519,7 @@ async function main() {
 		});
 	} else {
 		log(`  ${C.dim}Starting heed...${C.reset}`);
-		log(`  ${C.dim}Open ${C.cyan}http://localhost:5170${C.dim} in your browser${C.reset}`);
+		log(`  ${C.dim}Open ${C.cyan}${serviceUrl(targetDir,"ui")}${C.dim} in your browser${C.reset}`);
 		log("");
 
 		const child = spawn("bun", ["run", "dev"], {
@@ -514,8 +530,8 @@ async function main() {
 
 		// Auto-open the browser once heed is ready (Mac only — `open`; Linux users open it themselves).
 		if (IS_MAC) {
-			waitForHealth().then((ready) => {
-				if (ready) { try { execSync("open http://localhost:5170", { stdio: "ignore" }); } catch {} }
+			waitForHealth(targetDir).then((ready) => {
+				if (ready) { try { execFileSync("open",[serviceUrl(targetDir,"ui")], { stdio: "ignore" }); } catch {} }
 			});
 		}
 
@@ -555,11 +571,12 @@ async function update() {
 
 	if (!heedDir) {
 		err("heed installation not found.");
-		info("Run `npx create-heed` first to install.");
+		info(`Run ${CLI_COMMAND} first to install.`);
 		process.exit(1);
 	}
 
 	info(`Found heed at ${C.dim}${heedDir}${C.reset}`);
+	assertForkOrigin(heedDir);
 
 	const currentHash = cmd(`cd "${heedDir}" && git rev-parse --short HEAD`);
 	info(`Current: ${C.dim}${currentHash}${C.reset}`);
@@ -659,9 +676,9 @@ async function fallback() {
 	log(`${C.bold}  heed fallback${C.reset} — install the fallback transcription engine`);
 	log("");
 	const heedDir = findHeedDir();
-	if (!heedDir) { err("heed installation not found. Run `npx create-heed` first."); process.exit(1); }
+	if (!heedDir) { err(`heed installation not found. Run ${CLI_COMMAND} first.`); process.exit(1); }
 	const venvPy = join(heedDir, ".venv", "bin", "python3");
-	if (!existsSync(venvPy)) { err("No .venv found. Run `npx create-heed` first."); process.exit(1); }
+	if (!existsSync(venvPy)) { err(`No .venv found. Run ${CLI_COMMAND} first.`); process.exit(1); }
 	info(`Found heed at ${C.dim}${heedDir}${C.reset}`);
 	const reqPath = join(heedDir, "packages", "transcription", "requirements-fallback.txt");
 	warn("Installing fallback engine (~1.6GB: torch + pyannote + faster-whisper + mlx). One time.");
@@ -686,14 +703,14 @@ async function doctor() {
 	log(`${C.bold}  heed doctor${C.reset} — checking your install`);
 	log("");
 	const heedDir = findHeedDir();
-	if (!heedDir) { err("heed installation not found. Run `npx create-heed` first."); process.exit(1); }
+	if (!heedDir) { err(`heed installation not found. Run ${CLI_COMMAND} first.`); process.exit(1); }
 	const venvPy = join(heedDir, ".venv", "bin", "python3");
-	if (!existsSync(venvPy)) { err("No .venv found. Run `npx create-heed` first."); process.exit(1); }
+	if (!existsSync(venvPy)) { err(`No .venv found. Run ${CLI_COMMAND} first.`); process.exit(1); }
 	const doctorPy = join(heedDir, "packages", "transcription", "doctor.py");
 	const okDoc = run(`"${venvPy}" "${doctorPy}"`, "Doctor finished");
 	if (!okDoc) {
 		warn("Some checks failed. If transcription failed, install the fallback engine:");
-		log(`  ${C.bold}npx create-heed fallback${C.reset}`);
+		log(`  ${C.bold}${CLI_COMMAND} fallback${C.reset}`);
 	}
 }
 

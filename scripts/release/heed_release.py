@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -21,12 +22,112 @@ NATIVE_HOST_DIRS = [
 NATIVE_HOST_NAME = "local.heed.meet.json"
 
 
+def service_configuration():
+    # Standalone uninstall helpers are copied out before deleting the runtime.
+    # Their configuration still comes from the intact installed payload.
+    root = pathlib.Path(os.environ.get("HEED_SERVICE_CONFIG_ROOT", str(pathlib.Path(__file__).resolve().parents[2]))).resolve()
+    sys.path.insert(0, str(root / "scripts"))
+    from service_config import service_config, service_port
+    return service_config(), service_port
+
+
+def service_identity(base, service, root=None):
+    service_configuration()
+    from service_runtime import read_identity
+    return read_identity(base, service, root)
+
+
+def command_ports(args):
+    ports = args.service_ports
+    if args.owned_release:
+        from service_config import transcription_url
+        from service_runtime import separately_managed_transcription
+        if separately_managed_transcription(transcription_url(), ports['transcription']):
+            raise ValueError('The packaged installer requires its own versioned transcription service. Use the checkout with the override, or remove HEED_TRANSCRIPTION_URL before installing this release. Existing services and data were preserved.')
+    if args.saved:
+        from service_config import saved_service_ports
+        ports = saved_service_ports()
+    elif args.defaults:
+        from service_config import DEFAULTS, service_port
+        ports = {key: service_port(DEFAULTS[key], key + " port") for key in ['api', 'ui', 'transcription']}
+    if ports is not None:
+        print("%d %d %d" % tuple(ports[key] for key in ["api", "ui", "transcription"]))
+    return 0
+
+
+def command_restore_port_absence(args):
+    """Undo only this install's newly created device configuration; preserve unknown edits."""
+    path = pathlib.Path(os.environ.get('HEED_APP_DIR', str(pathlib.Path.home() / '.heed-app'))) / 'service-ports.json'
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return 0
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 4096:
+            raise ValueError('The device port configuration changed; it was preserved.')
+        raw = os.read(descriptor, 4097)
+        expected = {'version': 1, **args.service_ports}
+        value = json.loads(raw)
+        if len(raw) > 4096 or not isinstance(value, dict) or value != expected or any(type(value[key]) is not int for key in expected):
+            raise ValueError('The device port configuration changed; it was preserved.')
+        current = os.lstat(path)
+        if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+            raise ValueError('The device port configuration changed; it was preserved.')
+        os.unlink(path)
+        parent = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+    finally:
+        os.close(descriptor)
+    return 0
+
+
+def configuration_root(candidates):
+    """Recognize intact payloads/checkouts before importing their runtime helpers."""
+    for candidate in candidates:
+        if not candidate:
+            continue
+        root = pathlib.Path(candidate).resolve()
+        script = root / 'scripts/service_config.py'
+        if not script.is_file() or script.is_symlink():
+            continue
+        for name, field in [('release.json', 'app'), ('package.json', 'name')]:
+            descriptor = None
+            try:
+                descriptor = os.open(root / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                info = os.fstat(descriptor)
+                if not stat.S_ISREG(info.st_mode) or info.st_size > 16384:
+                    continue
+                raw = os.read(descriptor, 16385)
+                if len(raw) <= 16384 and json.loads(raw).get(field) == 'heed':
+                    return str(root)
+            except (OSError, ValueError, AttributeError):
+                continue
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+    raise ValueError('The installed safe service configuration was not found. Migrate the checkout with the latest install-macos.sh first. Nothing was removed.')
+
+
+def command_configuration_root(args):
+    print(configuration_root(args.candidate))
+    return 0
+
+
 def fetch_json(url, timeout=3.0, method="GET", body=None):
     """Return (status, parsed JSON or None, raw text). Connection errors return status None."""
     data = None if body is None else json.dumps(body).encode()
     request = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        # Local ownership checks and permission mutations must not follow redirects.
+        class NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *args):
+                return None
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+        with opener.open(request, timeout=timeout) as response:
             raw = response.read(65536).decode("utf-8", "replace")
             status = response.status
     except urllib.error.HTTPError as error:
@@ -59,7 +160,7 @@ def identity_problem(kind, status, data, version, commit=None):
     return None
 
 
-def check_services(version, api_port, ui_port, transcription_port, commit=None):
+def check_services(version, api_port, ui_port, transcription_port, commit=None, root=None):
     checks = {
         "API": ("api", "http://127.0.0.1:%d/api/version" % api_port),
         # The interface proxies /api to the API, so this proves the interface port is Heed's.
@@ -68,6 +169,19 @@ def check_services(version, api_port, ui_port, transcription_port, commit=None):
     }
     result = {}
     for name, (kind, url) in checks.items():
+        service = {"API": "heed-api", "Interface": "heed-ui", "Transcription": "heed-transcription"}[name]
+        base = url.rsplit('/health' if kind == 'transcription' else '/api/version', 1)[0]
+        probe = base + ('/health' if kind == 'transcription' else '/.well-known/heed-service')
+        if fetch_json(probe)[0] is None:
+            result[name] = "not responding"
+            continue
+        identity = service_identity(base, service, root)
+        if identity is None:
+            result[name] = "has no matching Heed service/root identity (another application may own this port)"
+            continue
+        if kind == "transcription" and identity.get("ready") is not True:
+            result[name] = "is still loading the transcription engines"
+            continue
         status, data, _ = fetch_json(url)
         result[name] = identity_problem(kind, status, data, version, commit)
     return result
@@ -78,7 +192,7 @@ def command_wait_ready(args):
     foreign_since = {}
     last = {}
     while True:
-        last = check_services(args.version, args.api_port, args.ui_port, args.transcription_port, args.commit)
+        last = check_services(args.version, args.api_port, args.ui_port, args.transcription_port, args.commit, args.root)
         if all(problem is None for problem in last.values()):
             print("Heed %s services are ready (API %d, interface %d, transcription %d)."
                   % (args.version, args.api_port, args.ui_port, args.transcription_port))
@@ -101,6 +215,18 @@ def command_wait_ready(args):
         time.sleep(args.interval)
 
 
+def command_wait_api(args):
+    """Wait only for an owned API; model loading is irrelevant to guard release."""
+    deadline = time.monotonic() + args.timeout
+    while True:
+        if service_identity("http://127.0.0.1:%d" % args.api_port, "heed-api", args.root) is not None:
+            return 0
+        if time.monotonic() >= deadline:
+            print("The previous Heed API did not return its expected identity. Its maintenance guard was not released.", file=sys.stderr)
+            return 1
+        time.sleep(min(args.interval, max(0, deadline - time.monotonic())))
+
+
 # audioWork covers manual transcription and every other job that holds audio.
 BUSY_KEYS = ["recording", "processing", "pending", "starting", "audioWork"]
 
@@ -109,10 +235,16 @@ def command_busy(args):
     """Exit 0 when Heed is idle or not running, 1 when audio work is active, 2 when the state is unknown."""
     status, data, _ = fetch_json("http://127.0.0.1:%d/api/desktop/control/status" % args.api_port)
     if status is None:
+        if listener_pids(args.api_port):
+            print("The configured API listener did not return recording status. Nothing was stopped.", file=sys.stderr)
+            return 2
         return 0
-    if status != 200 or not isinstance(data, dict) or not isinstance(data.get("recording"), bool):
-        print("Port %d is used by another application, not Heed. It was not stopped; free the port and run the installer again."
+    if service_identity("http://127.0.0.1:%d" % args.api_port, "heed-api", args.root) is None:
+        print("Port %d is used by another application or an unsupported service. It was not stopped; verify the configured port before retrying."
               % args.api_port, file=sys.stderr)
+        return 2
+    if status != 200 or not isinstance(data, dict) or not all(type(data.get(key)) is bool for key in BUSY_KEYS):
+        print("Heed returned incomplete or unsupported recording status. Migrate its checkout with the latest install-macos.sh first. Its services and data were not changed.", file=sys.stderr)
         return 2
     active = [key for key in BUSY_KEYS if data.get(key)]
     if active:
@@ -169,6 +301,9 @@ def request_permission(base, action, timeout):
 
 def command_permissions(args):
     base = "http://127.0.0.1:%d" % args.api_port
+    if service_identity(base, "heed-api", args.root) is None:
+        print("The configured API has no matching Heed identity. No permission request was sent.", file=sys.stderr)
+        return 4
     permissions = read_permissions(base, args.timeout)
     if permissions is None:
         print("The Heed menu app did not report permissions. Open Heed from ~/Applications and check Settings and permissions.", file=sys.stderr)
@@ -201,9 +336,11 @@ def under(path, roots):
 
 
 def listener_pids(port):
-    output = subprocess.run(["/usr/sbin/lsof", "-t", "-nP", "-iTCP:%d" % port, "-sTCP:LISTEN"],
-                            capture_output=True, text=True).stdout
-    return sorted({int(pid) for pid in output.split()})
+    result = subprocess.run(["/usr/sbin/lsof", "-t", "-nP", "-iTCP:%d" % port, "-sTCP:LISTEN"],
+                            capture_output=True, text=True)
+    if result.returncode not in (0, 1):
+        raise RuntimeError('Could not inspect the configured listener. No services were changed.')
+    return sorted({int(pid) for pid in result.stdout.split()})
 
 
 def process_cwd(pid):
@@ -213,18 +350,38 @@ def process_cwd(pid):
     return paths[0] if paths else None
 
 
+def owned_listener(pid, roots):
+    cwd = process_cwd(pid)
+    if not cwd or not under(cwd, roots):
+        return False
+    command = subprocess.run(['ps', '-ww', '-p', str(pid), '-o', 'command='],
+                             capture_output=True, text=True).stdout.strip()
+    service_configuration()
+    from service_runtime import owned_process
+    # The approved runtime root may contain multiple immutable version folders.
+    # Match the actual checkout and exact service entrypoint, not merely its cwd.
+    directory = pathlib.Path(os.path.realpath(cwd))
+    for candidate in [directory, directory.parent, directory.parent.parent]:
+        if under(str(candidate), roots) and any(owned_process(str(candidate), service, cwd, command)
+                                               for service in ['api', 'ui', 'transcription']):
+            return True
+    return False
+
+
 def command_stop_services(args):
     roots = [root for root in args.root if root]
     owned = []
     for port in args.ports:
         for pid in listener_pids(port):
-            cwd = process_cwd(pid)
-            if not cwd or not under(cwd, roots):
+            if not owned_listener(pid, roots):
                 print("Port %d belongs to another application (PID %d). It was not stopped; free the port and run the installer again."
                       % (port, pid), file=sys.stderr)
                 return 2
             owned.append(pid)
     for pid in set(owned):
+        if not owned_listener(pid, roots):
+            print("The listener's ownership changed. No signal was sent to PID %d." % pid, file=sys.stderr)
+            return 2
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -334,9 +491,24 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
 
     def ports(command):
-        command.add_argument("--api-port", type=int, default=int(os.environ.get("HEED_API_PORT", "5001")))
-        command.add_argument("--ui-port", type=int, default=int(os.environ.get("HEED_UI_PORT", "5170")))
-        command.add_argument("--transcription-port", type=int, default=int(os.environ.get("HEED_TRANSCRIPTION_PORT", "5002")))
+        command.add_argument("--api-port", type=int)
+        command.add_argument("--ui-port", type=int)
+        command.add_argument("--transcription-port", type=int)
+        command.add_argument("--root", help="Expected canonical checkout root of the running services")
+
+    configuration = commands.add_parser("ports")
+    configuration.add_argument("--saved", action="store_true", help="Return only the previous device-local ports, without environment overrides")
+    configuration.add_argument("--defaults", action="store_true", help="Return validated checkout defaults, without environment overrides")
+    configuration.add_argument("--owned-release", action="store_true", help="Require the packaged install's own versioned transcription endpoint")
+    configuration.set_defaults(handler=command_ports)
+
+    restore_absence = commands.add_parser('restore-port-absence')
+    ports(restore_absence)
+    restore_absence.set_defaults(handler=command_restore_port_absence)
+
+    config_root = commands.add_parser('config-root')
+    config_root.add_argument('--candidate', action='append', required=True)
+    config_root.set_defaults(handler=command_configuration_root)
 
     ready = commands.add_parser("wait-ready")
     ready.add_argument("--version", required=True)
@@ -346,6 +518,12 @@ def main(argv=None):
     ready.add_argument("--foreign-grace", type=float, default=20)
     ports(ready)
     ready.set_defaults(handler=command_wait_ready)
+
+    api_ready = commands.add_parser("wait-api")
+    api_ready.add_argument("--timeout", type=float, default=20)
+    api_ready.add_argument("--interval", type=float, default=0.5)
+    ports(api_ready)
+    api_ready.set_defaults(handler=command_wait_api)
 
     permissions = commands.add_parser("permissions")
     permissions.add_argument("--request", action="store_true")
@@ -395,6 +573,18 @@ def main(argv=None):
     remaining.set_defaults(handler=command_remaining)
 
     args = parser.parse_args(argv)
+    if args.command in ["ports", "restore-port-absence", "wait-ready", "wait-api", "permissions", "busy", "stop-services"]:
+        defaults, validate = service_configuration()
+        args.service_ports = {key: validate(defaults[key] if getattr(args, key + "_port", None) is None else getattr(args, key + "_port"), key + " port")
+                              for key in ["api", "ui", "transcription"]}
+        if args.command != "ports":
+            for key, value in args.service_ports.items():
+                setattr(args, key + "_port", value)
+            if hasattr(args, "root") and args.command != "stop-services" and args.root is None:
+                from service_config import ROOT
+                args.root = str(ROOT)
+        if args.command == "stop-services":
+            args.ports = [validate(port, "Stop service port") for port in args.ports]
     return args.handler(args)
 
 

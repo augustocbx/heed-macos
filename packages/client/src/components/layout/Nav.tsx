@@ -36,6 +36,9 @@ export function Nav() {
 	const setPage = useUIStore((s) => s.setPage);
 	const showToast = useUIStore((s) => s.showToast);
 	const health = useHealthStore((s) => s.health);
+ const diagnosticsUnavailable=useHealthStore(s=>s.diagnosticsUnavailable);
+ const apiUnknown=diagnosticsUnavailable||health.services?.find(item=>item.service==='api')?.state==='unavailable';
+ const transcriptionUnknown=apiUnknown||health.services?.find(item=>item.service==='transcription')?.state==='unavailable';
 	const checkHealth = useHealthStore((s) => s.check);
 	const modelsData = useModelsStore((s) => s.data);
 	const loadModels = useModelsStore((s) => s.load);
@@ -86,7 +89,7 @@ export function Nav() {
 	}, [checkHealth, loadModels, refreshSetup]);
 
 	// Gray while loading, then green/red. Down badges are clickable → open the QuickFix popover.
-	const dotClass = (ok: boolean) => `${styles.dot} ${!healthLoaded ? "" : ok ? styles.dotOk : styles.dotErr}`;
+	const dotClass = (ok: boolean,unknown=false) => `${styles.dot} ${!healthLoaded||unknown ? "" : ok ? styles.dotOk : styles.dotErr}`;
 
 	const currentModel = modelsData?.models.find((m) => m.id === modelsData.current?.id);
 	const isCpuOnly = modelsData?.current?.num_gpu === 0;
@@ -100,7 +103,7 @@ export function Nav() {
 		: engine === "parakeet" ? "Parakeet v3"
 		: engine === "mlx" ? `MLX ${whisperInfo.final_model}`
 		: `whisper ${whisperInfo.final_model}`;
-	const diarLabel = pyannoteInfo?.model?.toLowerCase().includes("fluidaudio") ? "FluidAudio" : "pyannote";
+	const diarLabel = !pyannoteInfo ? "..." : pyannoteInfo.model?.toLowerCase().includes("fluidaudio") ? "FluidAudio" : "pyannote";
 
 	return (
 		<nav className={styles.nav}>
@@ -156,7 +159,7 @@ export function Nav() {
 							aria-label={tr('Local notes engine (Ollama)')}
 							onClick={healthLoaded && !health.ollama ? () => setFixOpen("ollama") : undefined}
 						>
-							<div className={dotClass(health.ollama)} />
+							<div className={dotClass(health.ollama,apiUnknown)} />
 							<span className={styles.label}>{tr('ollama')}</span>
 							<span className={styles.statusItemChevron} aria-hidden="true">⌄</span>
 							<div className={styles.infoTooltip} role="tooltip">
@@ -176,17 +179,17 @@ export function Nav() {
 							aria-label={tr('Transcription engine details')}
 							onClick={healthLoaded && !health.whisper ? () => setFixOpen("engine") : undefined}
 						>
-							<div className={dotClass(health.whisper)} />
+							<div className={dotClass(health.whisper,transcriptionUnknown)} />
 							<span className={styles.label}>{engineLabel}</span>
 							<span className={styles.statusItemChevron} aria-hidden="true">⌄</span>
 							<div className={styles.infoTooltip} role="tooltip">
 								<div className={styles.infoTooltipHead}>
 									<div className={styles.infoTooltipTitle}>
-										{engine === "parakeet" ? "Parakeet (Apple Neural Engine)" : engine === "mlx" ? "MLX-Whisper (Apple GPU)" : tr("Whisper auto profile")}
+										{!whisperInfo ? tr('Transcription engine') : engine === "parakeet" ? "Parakeet (Apple Neural Engine)" : engine === "mlx" ? "MLX-Whisper (Apple GPU)" : tr("Whisper auto profile")}
 									</div>
 									<span className={styles.infoTooltipBadge}>{tr('transcription')}</span>
 								</div>
-								{engine === "parakeet" ? (
+								{!whisperInfo?<div className={styles.infoTooltipLine}>{tr('No verified transcription profile.')}</div>:engine === "parakeet" ? (
 									<>
 										<div className={styles.infoTooltipLine}><strong>{tr('Model:')}</strong>{tr(' parakeet-tdt-v3')}</div>
 										<div className={styles.infoTooltipLine}><strong>{tr('Runs on:')}</strong>{tr(' Apple Neural Engine')}</div>
@@ -210,15 +213,15 @@ export function Nav() {
 							aria-label={tr('Speaker diarization details')}
 							onClick={healthLoaded && !health.pyannote ? () => setFixOpen("diar") : undefined}
 						>
-							<div className={dotClass(health.pyannote)} />
+							<div className={dotClass(health.pyannote,transcriptionUnknown)} />
 							<span className={styles.label}>{diarLabel}</span>
 							<span className={styles.statusItemChevron} aria-hidden="true">⌄</span>
 							<div className={styles.infoTooltip} role="tooltip">
 								<div className={styles.infoTooltipHead}>
-									<div className={styles.infoTooltipTitle}>{tr(diarLabel === "FluidAudio" ? "FluidAudio diarization" : "Pyannote auto tuning")}</div>
+									<div className={styles.infoTooltipTitle}>{tr(!pyannoteInfo ? 'Speaker diarization' : diarLabel === "FluidAudio" ? "FluidAudio diarization" : "Pyannote auto tuning")}</div>
 									<span className={styles.infoTooltipBadge}>{tr('who said what')}</span>
 								</div>
-								{diarLabel === "FluidAudio" ? (
+								{!pyannoteInfo?<div className={styles.infoTooltipLine}>{tr('No verified diarization profile.')}</div>:diarLabel === "FluidAudio" ? (
 									<>
 										<div className={styles.infoTooltipLine}><strong>{tr('Model:')}</strong>{tr(' FluidAudio CoreML')}</div>
 										<div className={styles.infoTooltipLine}><strong>{tr('Runs on:')}</strong>{tr(' Apple Neural Engine')}</div>

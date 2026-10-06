@@ -15,6 +15,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Server tests
         run: bun test packages/server/lib
+      - name: Validated service configuration and safe process rollback tests
+        run: python3 -m unittest discover -s scripts -p 'service_*_test.py'
       - name: Scoped Meet bridge tests
         run: bun test packages/desktop/browser-meet
       - name: Mounted SMB filesystem safety tests
@@ -27,16 +29,18 @@ jobs:
         run: python3 -m unittest discover -s packages/transcription -p meeting_language_test.py
       - name: Manual transcription selection tests
         run: python3 -m unittest discover -s packages/transcription -p manual_transcription_test.py
+      - name: Native transcription deadline and owned process cleanup tests
+        run: python3 -m unittest discover -s packages/transcription -p '*worker_test.py'
       - name: Managed audio working directory tests
         run: python3 -m unittest discover -s packages/transcription -p managed_work_test.py
       - name: Check Python syntax
-        run: python3 -m py_compile packages/transcription/transcription_server.py packages/transcription/voice_identity.py packages/transcription/meeting_language.py packages/transcription/manual_transcription.py packages/desktop/browser-meet/native-host.py packages/desktop/browser-meet/register-host.py packages/transcription/managed_work.py
+        run: python3 -m py_compile packages/transcription/transcription_server.py packages/transcription/voice_identity.py packages/transcription/meeting_language.py packages/transcription/manual_transcription.py packages/desktop/browser-meet/native-host.py packages/desktop/browser-meet/register-host.py packages/transcription/managed_work.py packages/transcription/native_worker.py packages/transcription/process_ownership.py packages/transcription/worker_lifecycle.py packages/transcription/doctor.py packages/transcription/engines.py
       - name: Build interface
         run: bun run build
       - name: Check installers
         run: bash -n install-macos.sh packages/desktop/install-menubar.sh packages/desktop/macos/start-services.sh packages/desktop/native-keychain/build.sh packages/desktop/icloud-folder/build.sh scripts/release/build-release.sh scripts/release/install.sh scripts/release/uninstall.sh scripts/release/simulate.sh
       - name: Release installer helper tests
-        run: cd scripts/release && /usr/bin/python3 -m unittest heed_release_test
+        run: cd scripts/release && /usr/bin/python3 -m unittest heed_release_test service_integration_test
       - name: Validate native capture without physical devices
         run: |
           swiftc -O -target "$(uname -m)-apple-macos14.0" packages/transcription/native/heed-parakeet/Sources/heed-syscap/*.swift -o "$RUNNER_TEMP/heed-syscap-check"

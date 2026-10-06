@@ -12,11 +12,12 @@ final class SmbFolderAccess {
     private var executing: String?
     private var completed: String?
     private let session: URLSession
+    private let endpoints = try? ServiceEndpoints.load()
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 6
-        session = URLSession(configuration: configuration)
+        session = ServiceEndpoints.session(configuration: configuration)
     }
     static func address(_ value: String) -> URL? {
         guard value.count <= 2048, !value.contains("@"), !value.contains("\\"),
@@ -83,15 +84,16 @@ final class SmbFolderAccess {
         }
     }
     private func finish(_ id: String, folder: String?, failed: Bool) {
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:5001/api/smb")!)
+        guard let endpoints = endpoints else { executing = nil; return }
+        var request = URLRequest(url: endpoints.apiURL("/api/smb"))
         request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = Self.reportBody(id, folder: folder, failed: failed)
-        session.dataTask(with: request) { [weak self] _, response, _ in
+        endpoints.perform(session: session, request: request) { [weak self] _, response, _ in
             DispatchQueue.main.async {
                 self?.executing = nil
                 if (response as? HTTPURLResponse)?.statusCode == 200 { self?.completed = id }
             }
-        }.resume()
+        }
     }
     static func reportBody(_ id: String, folder: String?, failed: Bool) -> Data? {
         return try? JSONSerialization.data(withJSONObject: ["action": "desktop-report", "id": id,

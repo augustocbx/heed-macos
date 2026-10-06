@@ -1,3 +1,6 @@
+import {configuredServicePorts} from './lib/service-ports';
+import {ServiceDiagnostics} from './lib/service-diagnostics';
+import {isTranscriptionHealth} from '../shared/lib/service-identity';
 import {createGoogleDriveController} from './lib/connectors/google-drive-runtime';
 import {CLOUD_CONNECTIONS_ENABLED,CLOUD_CONNECTIONS_PENDING_NOTICE} from '@heed/shared';
 import {disabledCloudProtectedPaths} from './lib/disabled-cloud-protection';
@@ -16,7 +19,7 @@ import { LibraryChatService, libraryChatResponse } from "./lib/library-chat.ts";
 import { MeetingTasksService } from "./lib/meeting-tasks.ts";
 import { tasksResponse } from "./lib/tasks-http.ts";
 import { generateTaskSuggestions } from "./lib/task-generation.ts";
-import { MeetingChatService, CHAT_SYSTEM, chatApiResponse, type ChatGenerationRequest } from "./lib/meeting-chat.ts";
+import { MeetingChatService, CHAT_SYSTEM, chatResponseSchema, chatApiResponse, type ChatGenerationRequest } from "./lib/meeting-chat.ts";
 import { MeetingDetectionController } from "./lib/meeting-detection.ts";
 import { readReleaseInfo } from "./lib/release-info.ts";
 import { meetingDetectionRoute } from "./lib/meeting-detection-http.ts";
@@ -25,7 +28,7 @@ import { automaticNotesSettings, validateNotesSettings } from "./lib/notes-setti
 import { generateLocalNotes, listLocalNotesModels, generateLocalStructured, listLocalChatModels } from "./lib/ollama-notes.ts";
 import { configuredUiLocale, supportedUiLocale } from "./lib/ui-locale.ts";
 import { finalRecordingResult, recordingFinalizationOptions } from "./lib/final-recording.ts";
-import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, statSync, rmSync } from "node:fs";
+import { realpathSync, readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, statSync, rmSync } from "node:fs";
 import {randomUUID} from "node:crypto";
 import {validateProcessingWave} from "./lib/processing-wave.ts";
 import {reserveMediaWork} from "./lib/media-budget.ts";
@@ -83,7 +86,10 @@ function pruneAudio() {
  const current=managedQuota.snapshot();return {...current,bytes:current.usedBytes,removed:[],overLimit:current.usedBytes+current.reservedBytes>current.limitBytes};
 }
 
-const PORT = Number(process.env.PORT) || 5001;
+const SERVICE_PORTS = configuredServicePorts();
+const PORT = SERVICE_PORTS.api;
+const API_IDENTITY = {service:"heed-api",protocolVersion:1,checkoutRoot:realpathSync(resolve(import.meta.dir,"../..")),pid:process.pid};
+const serviceDiagnostics=new ServiceDiagnostics({root:API_IDENTITY.checkoutRoot,ports:SERVICE_PORTS,env:process.env});
 const RELEASE_INFO = readReleaseInfo(join(import.meta.dir, "..", ".."));
 
 const STATIC_ROOT = join(import.meta.dir, "..", "client", "dist");
@@ -127,9 +133,9 @@ export function getPortableLibrary(){return portableRuntime!.get();}
 /** Device preference lives outside the portable schema and managed-meeting quota. */
 export const providerRegistry=new ProviderRegistry({path:join(APP_DIR,'provider-preference.json'),getLibrary:getPortableLibrary});
 synchronizationUnavailable=providerRegistry.unavailable();
-try{smbConnections=new SmbConnections({path:join(LIBRARY_DIR,'catalog','smb-connections.json'),catalogPath:join(LIBRARY_DIR,'catalog','state.json'),sessions:()=>sessionTags.snapshot().sessions,registry:providerRegistry,get library(){return getPortableLibrary();},busy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
+try{smbConnections=new SmbConnections({quota:managedQuota,privateRoot:APP_DIR,path:join(LIBRARY_DIR,'catalog','smb-connections.json'),catalogPath:join(LIBRARY_DIR,'catalog','state.json'),sessions:()=>sessionTags.snapshot().sessions,registry:providerRegistry,get library(){return getPortableLibrary();},busy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
 }catch{synchronizationUnavailable=true;console.error('SMB configuration unavailable. Preserve synchronization configuration for recovery.');}
-try{icloudConnections=new ICloudConnections({configPath:join(APP_DIR,'icloud-folder.json'),jobsPath:join(LIBRARY_DIR,'catalog','icloud-jobs.json'),library:getPortableLibrary,sessions:()=>sessionTags.snapshot().sessions,providers:providerRegistry,busy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
+try{icloudConnections=new ICloudConnections({quota:managedQuota,privateRoot:APP_DIR,configPath:join(APP_DIR,'icloud-folder.json'),jobsPath:join(LIBRARY_DIR,'catalog','icloud-jobs.json'),library:getPortableLibrary,sessions:()=>sessionTags.snapshot().sessions,providers:providerRegistry,busy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
 }catch{synchronizationUnavailable=true;console.error('iCloud configuration unavailable. Preserve synchronization configuration for recovery.');}
 if(CLOUD_CONNECTIONS_ENABLED.googleDrive)try{googleDriveInitializing=true;googleDrive=createGoogleDriveController({appDir:APP_DIR,libraryDir:LIBRARY_DIR,registry:providerRegistry,listSessions:()=>sessionTags.snapshot().sessions,audioBusy:()=>audioWorkBusy()||!!manualNotesController||notesService.busy||tasksService.busy||chatService.busy||libraryChatService.busy});}catch{googleDriveUnavailable=true;console.error('Google Drive unavailable. Preserve its connection configuration for recovery.');}finally{googleDriveInitializing=false;}
 
@@ -1580,6 +1586,7 @@ async function refreshLiveTuning() {
 		const r = await fetch(`${TRANSCRIPTION_SERVER}/health`, { signal: AbortSignal.timeout(2000) });
 		if (r.ok) {
 			const h = await r.json() as { live_tuning?: { chunk_s?: number; interval_ms?: number; mode?: "chunk" | "full" | "stream"; model?: string }; whisper_info?: {live_model?: string} };
+			if(!isTranscriptionHealth(h))return;
 			recordingLiveModel = h.live_tuning?.model || h.whisper_info?.live_model;
 			if (h.live_tuning?.chunk_s && h.live_tuning?.interval_ms) {
 				liveTuning = { chunk_s: h.live_tuning.chunk_s, interval_ms: h.live_tuning.interval_ms, mode: h.live_tuning.mode || "chunk" };
@@ -1674,7 +1681,7 @@ async function processStreamLive(
 	if (!liveWarmLatched) {
 		try {
 			const h = await fetch(`${TRANSCRIPTION_SERVER}/health`, { signal: AbortSignal.timeout(1000) }).then((r) => r.json()).catch(() => null);
-			if (h?.warm) liveWarmLatched = true;
+			if (isTranscriptionHealth(h) && h.warm) liveWarmLatched = true;
 			else return; // not warm yet — skip this tick, recorder still capturing
 		} catch { return; }
 	}
@@ -2213,7 +2220,8 @@ function handleDiscardOrphaned(url: URL): Response {
 }
 
 // --- Health check ---
-async function handleHealth(): Promise<Response> {
+async function handleHealth(refresh=false): Promise<Response> {
+ const diagnostics=serviceDiagnostics.get(refresh);
 	let ollamaOk = false;
 	let txServer: any = { ready: false };
 	try {
@@ -2222,9 +2230,12 @@ async function handleHealth(): Promise<Response> {
 	} catch {}
 	try {
 		const res = await fetch(`${TRANSCRIPTION_SERVER}/health`, { signal: AbortSignal.timeout(3000) });
-		txServer = await res.json();
+		const health = await res.json(); txServer = res.ok && isTranscriptionHealth(health) ? health : {ready:false};
 	} catch {}
+ const services=await diagnostics;
+ if(services.find(service=>service.service==='transcription')?.state!=='ready')txServer={ready:false};
 	return Response.json({
+  services,
 		ollama: ollamaOk,
 		whisper: txServer.whisper || false,
 		pyannote: txServer.pyannote || false,
@@ -2245,7 +2256,7 @@ function hydratedRecordingSnapshot(snapshot: RecordingSnapshot = recordingCoordi
 }
 function desktopRecordingStatus() {
  const state = hydratedRecordingSnapshot();
- return {...state, snapshot:state, seconds:Math.floor(state.seconds), recording:!!recorderProc && recorderProc.exitCode === null,
+ return {...API_IDENTITY, ...state, snapshot:state, seconds:Math.floor(state.seconds), recording:!!recorderProc && recorderProc.exitCode === null,
   processing:["stopping","finalizing"].includes(state.state) || recordingFinalizationRunning,
   starting:state.state === "starting", pending:false, audioWork:audioWorkBusy(), clientConnected:true, ready:!state.maintenance,
   smbCommand:smbConnections?.desktopCommand()||null,meetingDetection:meetingDetection.status(),language:recordingLanguage,uiLocale:configuredUiLocale(loadConfig()),storage:{...managedQuota.snapshot(),bytes:managedQuota.snapshot().usedBytes},quotaStopped:!!quotaStopResult};
@@ -2283,7 +2294,7 @@ async function handleDesktopControl(req: Request, pathname: string): Promise<Res
  try {
   if (req.method === "GET" && pathname.endsWith("/status")) {
    const status = desktopRecordingStatus();
-   try { const health = await fetch(`${TRANSCRIPTION_SERVER}/health`,{signal:AbortSignal.timeout(1500)}); const data=await health.json(); status.ready = !status.maintenance && data.whisper === true; } catch {status.ready=false;}
+   try { const health = await fetch(`${TRANSCRIPTION_SERVER}/health`,{signal:AbortSignal.timeout(1500)}); const data=await health.json(); status.ready = health.ok && isTranscriptionHealth(data) && !status.maintenance && data.whisper === true; } catch {status.ready=false;}
    return Response.json({...status,permissionRequest:desktopPermissions.request()});
   }
   const body = await req.json();
@@ -2382,7 +2393,7 @@ const chatService: MeetingChatService = new MeetingChatService({
  generate:generateChatEvidence,
 });
 function generateChatEvidence(input:ChatGenerationRequest) {
- return generateLocalStructured({baseUrl:OLLAMA_HOST,model:input.model,system:CHAT_SYSTEM,requireCompletion:true,contextTokens:8192,maxInputBytes:5500,
+ return generateLocalStructured({baseUrl:OLLAMA_HOST,model:input.model,system:CHAT_SYSTEM,outputSchema:chatResponseSchema(input.evidence),requireCompletion:true,contextTokens:8192,maxInputBytes:5500,
   data:{question:input.question,history:input.history.slice(-2).map(turn=>({question:turn.question.slice(0,100),answer:turn.answer?.claims.slice(0,2).map(claim=>claim.text).join("\n").slice(0,200)})),evidence:input.evidence},signal:input.signal,
   numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))});
 }
@@ -2454,7 +2465,7 @@ const detectionTimer = setInterval(async () => {
   const detection = meetingDetection.status();
   const needsModel = detection.sources.some(source => detection.enabled[source.app] && source.state === "active");
   if (needsModel) {
-   try { const response = await fetch(`${TRANSCRIPTION_SERVER}/health`,{signal:AbortSignal.timeout(1500)}); const health = await response.json(); detectionModelReady = response.ok && health.whisper === true; }
+   try { const response = await fetch(`${TRANSCRIPTION_SERVER}/health`,{signal:AbortSignal.timeout(1500)}); const health = await response.json(); detectionModelReady = response.ok && isTranscriptionHealth(health) && health.whisper === true; }
    catch { detectionModelReady = false; }
   } else detectionModelReady = false;
   await meetingDetection.tick();
@@ -2470,6 +2481,8 @@ const server = Bun.serve({
 	async fetch(req, httpServer) {
 		const url = new URL(req.url);
 		const method = req.method;
+  if(url.pathname === "/.well-known/heed-service")return desktopRequestAllowed(req)?Response.json(API_IDENTITY,{headers:{"Cache-Control":"no-store"}}):new Response(null,{status:403});
+  if(url.pathname === "/.well-known/heed-services")return desktopRequestAllowed(req)&&method==='GET'?Response.json(await serviceDiagnostics.get(url.searchParams.get('refresh')==='1'),{headers:{'Cache-Control':'no-store'}}):new Response(null,{status:403});
   const chatResponse=await chatApiResponse(req,chatService,()=>listLocalChatModels(OLLAMA_HOST),desktopRequestAllowed(req));
   if(chatResponse)return chatResponse;
   const libraryChatResult=await libraryChatResponse(req,libraryChatService,desktopRequestAllowed(req));
@@ -2534,7 +2547,7 @@ const server = Bun.serve({
 		if (method === "POST" && url.pathname === "/api/sysrecord/stop") { httpServer.timeout(req, 0); return handleSysRecordStop(req); }
 		if (method === "GET" && url.pathname === "/api/sysrecord/levels") return desktopRequestAllowed(req) ? handleSysLevelsSSE() : new Response(null,{status:403});
 		if (method === "GET" && url.pathname === "/api/sysrecord/live") return desktopRequestAllowed(req) ? handleLiveTranscribe() : new Response(null,{status:403});
-		if (method === "GET" && url.pathname === "/api/health") return handleHealth();
+		if (method === "GET" && url.pathname === "/api/health") return handleHealth(url.searchParams.get('refresh')==='1');
 		if (method === "GET" && url.pathname === "/api/version") return Response.json(RELEASE_INFO);
 		if (method === "GET" && url.pathname === "/api/recovery/list") return handleListOrphaned();
 		if (method === "DELETE" && url.pathname === "/api/recovery/discard") return handleDiscardOrphaned(url);

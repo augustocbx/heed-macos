@@ -1,6 +1,14 @@
 // API request/response types
 
+export interface ServiceDiagnostic {
+ service: 'api' | 'ui' | 'transcription';
+ port: number;
+ state: 'ready' | 'stopped' | 'starting' | 'unhealthy' | 'conflict' | 'unavailable';
+ application?: string;
+}
+
 export interface HealthResponse {
+ services?: ServiceDiagnostic[];
 	ollama: boolean;
 	whisper: boolean;
 	pyannote: boolean;

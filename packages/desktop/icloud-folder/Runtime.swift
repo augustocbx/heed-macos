@@ -52,7 +52,7 @@ func checkpoint(root: URL, binding: CloudBinding) throws {
     guard let token = Data(base64Encoded: binding.account), try sameAccount(token),
           try ScopedFiles(root: root, expected: binding.identity).identity == binding.identity else { throw CloudFailure("iCloud account or selected folder changed") }
 }
-func coordinated<T>(_ root: URL, binding: CloudBinding, path: String = "heed-library.json", temporary: String? = nil, write: Bool, operation: @escaping (ScopedFiles) throws -> T) throws -> T {
+func coordinated<T>(_ root: URL, binding: CloudBinding, path: String = "heed-library.json", temporary: String? = nil, write: Bool, deleting: Bool = false, operation: @escaping (ScopedFiles) throws -> T) throws -> T {
     var coordinatorError: NSError?, result: Result<T, Error>?
     let target = root.appendingPathComponent(path).standardizedFileURL
     guard target.resolvingSymlinksInPath().path == target.path else { throw CloudFailure("Unsafe coordinated path") }
@@ -69,7 +69,7 @@ func coordinated<T>(_ root: URL, binding: CloudBinding, path: String = "heed-lib
             guard temp.standardizedFileURL.path == stage.path else { result = .failure(CloudFailure("Staging moved outside selected scope")); return }
             accessor(url)
         }
-    } else if write { coordinator.coordinate(writingItemAt: target, options: .forReplacing, error: &coordinatorError, byAccessor: accessor) }
+    } else if write { coordinator.coordinate(writingItemAt: target, options: deleting ? .forDeleting : .forReplacing, error: &coordinatorError, byAccessor: accessor) }
     else { coordinator.coordinate(readingItemAt: target, options: [], error: &coordinatorError, byAccessor: accessor) }
     if let error = coordinatorError { throw error }
     guard let result = result else { throw CloudFailure("File coordination unavailable") }
@@ -82,13 +82,13 @@ func header(_ files: ScopedFiles) throws -> [String: Any]? {
     var data = Data(), bytes = [UInt8](repeating: 0, count: 16385)
     let count = Darwin.read(fd, &bytes, bytes.count); guard count == info.st_size else { throw CloudFailure("Library descriptor changed") }; data.append(contentsOf: bytes.prefix(count))
     guard let value = try JSONSerialization.jsonObject(with: data) as? [String: Any], value.count == 3,
-          value["format"] as? String == "heed-portable-library", value["schemaVersion"] as? Int == 1,
+          value["format"] as? String == "heed-portable-library", [1,2].contains(value["schemaVersion"] as? Int ?? 0),
           let id = value["destinationId"] as? String, UUID(uuidString: id) != nil else { throw CloudFailure("Unsupported library descriptor") }
     return value
 }
-func createHeader(_ files: ScopedFiles, id: String, validate: () throws -> Void = {}) throws -> [String: Any] {
-    guard UUID(uuidString: id) != nil else { throw CloudFailure("Invalid destination identity") }
-    if let existing = try header(files) { guard existing["destinationId"] as? String == id else { throw CloudFailure("Destination identity changed") }; return existing }
+func createHeader(_ files: ScopedFiles, id: String, version: Int = 1, validate: () throws -> Void = {}) throws -> [String: Any] {
+    guard UUID(uuidString: id) != nil, [1,2].contains(version) else { throw CloudFailure("Invalid destination identity") }
+    if let existing = try header(files) { guard existing["destinationId"] as? String == id, existing["schemaVersion"] as? Int == version else { throw CloudFailure("Destination identity changed") }; return existing }
     let lock = openat(files.fd, ".heed-library-create.lock", O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
     guard lock >= 0 else { throw CloudFailure("Library creation lock unavailable") }
     var lockInfo = stat()
@@ -99,7 +99,7 @@ func createHeader(_ files: ScopedFiles, id: String, validate: () throws -> Void 
         let name = withUnsafePointer(to: item.pointee.d_name) { $0.withMemoryRebound(to: CChar.self, capacity: 1024) { String(cString: $0) } }
         guard [".", "..", ".DS_Store", ".heed-library-create.lock", ".heed-library-create.pending"].contains(name) else { throw CloudFailure("Create a new empty library folder") }
     }
-    let value: [String: Any] = ["format": "heed-portable-library", "schemaVersion": 1, "destinationId": id]
+    let value: [String: Any] = ["format": "heed-portable-library", "schemaVersion": version, "destinationId": id]
     let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
     let temporary = ".heed-library-create.pending", fd = openat(files.fd, temporary, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
     guard fd >= 0 else { throw CloudFailure("Cannot create library descriptor") }; var ownedStage = false
@@ -109,8 +109,8 @@ func createHeader(_ files: ScopedFiles, id: String, validate: () throws -> Void 
         var existing = [UInt8](repeating: 0, count: Int(stagingInfo.st_size))
         guard Darwin.read(fd, &existing, existing.count) == existing.count,
               let descriptor = try JSONSerialization.jsonObject(with: Data(existing)) as? [String: Any], descriptor.count == 3,
-              descriptor["format"] as? String == "heed-portable-library", descriptor["schemaVersion"] as? Int == 1,
-              let existingId = descriptor["destinationId"] as? String, UUID(uuidString: existingId) != nil else { throw CloudFailure("Unknown descriptor staging must be preserved") }
+              descriptor["format"] as? String == "heed-portable-library", descriptor["schemaVersion"] as? Int == version,
+              let existingId = descriptor["destinationId"] as? String, existingId == id, UUID(uuidString: existingId) != nil else { throw CloudFailure("Unknown descriptor staging must be preserved") }
     }
     ownedStage = true
     guard ftruncate(fd, 0) == 0, lseek(fd, 0, SEEK_SET) == 0 else { throw CloudFailure("Descriptor staging reset failed") }
@@ -119,8 +119,8 @@ func createHeader(_ files: ScopedFiles, id: String, validate: () throws -> Void 
     guard renameatx_np(files.fd, temporary, files.fd, "heed-library.json", UInt32(RENAME_EXCL)) == 0, fsync(files.fd) == 0 else { throw CloudFailure("Library descriptor creation changed") }
     return value
 }
-func requireHeader(_ files: ScopedFiles, destinationId: String?) throws {
-    guard let destinationId = destinationId, let value = try header(files), value["destinationId"] as? String == destinationId else { throw CloudFailure("Library identity changed") }
+func requireHeader(_ files: ScopedFiles, destinationId: String?, version: Int = 1) throws {
+    guard let destinationId = destinationId, let value = try header(files), value["destinationId"] as? String == destinationId, value["schemaVersion"] as? Int == version else { throw CloudFailure("Library identity changed") }
 }
 struct CloudRequest: Decodable {
     let action: String
@@ -131,6 +131,10 @@ struct CloudRequest: Decodable {
     let bytes: Int?
     let sha256: String?
     let stagingId: String?
+    let destinationVersion: Int?
+    let jobId: String?
+    let privateRoot: String?
+    let connectionGeneration: String?
 }
 func outputJSON<T: Encodable>(_ value: T) throws { FileHandle.standardOutput.write(try JSONEncoder().encode(value)); FileHandle.standardOutput.write(Data([10])) }
 func dictionaryJSON(_ value: Any) throws { FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .fragmentsAllowed])); FileHandle.standardOutput.write(Data([10])) }
@@ -138,7 +142,7 @@ func readRequest() throws -> CloudRequest {
     var header = Data()
     while let byte = try FileHandle.standardInput.read(upToCount: 1), !byte.isEmpty {
         if byte[0] == 10 { return try JSONDecoder().decode(CloudRequest.self, from: header) }
-        header.append(byte); guard header.count <= 150000 else { throw CloudFailure("Request too large") }
+        header.append(byte); guard header.count <= 2_100_000 else { throw CloudFailure("Request too large") }
     }
     throw CloudFailure("Incomplete request")
 }
@@ -169,13 +173,34 @@ func runtime() throws {
             try dictionaryJSON(["header": value as Any? ?? NSNull(), "status": try observe(root).state, "remoteChecksumVerified": false])
         case "create":
             guard let id = request.destinationId else { throw CloudFailure("Missing library identity") }
-            let value = try coordinated(root, binding: binding, temporary: ".heed-library-create.pending", write: true) { try checkpoint(root: root, binding: binding); return try createHeader($0, id: id, validate: { try checkpoint(root: root, binding: binding) }) }; try dictionaryJSON(value)
+            let value = try coordinated(root, binding: binding, temporary: ".heed-library-create.pending", write: true) { try checkpoint(root: root, binding: binding); return try createHeader($0, id: id, version: request.destinationVersion ?? 1, validate: { try checkpoint(root: root, binding: binding) }) }; try dictionaryJSON(value)
         case "list":
-            let paths = try coordinated(root, binding: binding, path: "commits", write: false) { files in try requireHeader(files, destinationId: request.destinationId); return try files.listCommits() }; try outputJSON(paths)
+            let paths = try coordinated(root, binding: binding, path: "commits", write: false) { files in try requireHeader(files, destinationId: request.destinationId, version: request.destinationVersion ?? 1); return try files.listCommits() }; try outputJSON(paths)
+        case "inventory":
+            let value = try coordinated(root,binding:binding,write:false) { files -> [String:Any] in
+                try requireHeader(files,destinationId:request.destinationId,version:request.destinationVersion ?? 1)
+                guard try header(files)?["schemaVersion"] as? Int == 2 else {throw CloudFailure("V2 inventory requires a new library")}
+                return ["commits":try files.listCommits(),"deletions":try files.listControls("deletions"),"pending":try files.listControls("pending")]
+            }; try dictionaryJSON(value)
+        case "remove-exact":
+            guard let path=request.path,let job=request.jobId,let bytes=request.bytes,let hash=request.sha256,let destination=request.destinationId else {throw CloudFailure("Missing exact deletion bounds")}
+            let result = try coordinated(root,binding:binding,path:path,write:true,deleting:true) { files in
+                try requireHeader(files,destinationId:destination,version:request.destinationVersion ?? 1)
+                guard try header(files)?["schemaVersion"] as? Int == 2 else {throw CloudFailure("V1 deletion is unavailable")}
+                return try exactCloudRemoval(files,job:job,destination:destination,path:path,bytes:bytes,hash:hash,validate:{try checkpoint(root:root,binding:binding)})
+            }; try dictionaryJSON(["result":result,"confirmation":"pending-propagation"])
+        case "retire-pending":
+            guard let path=request.path,let job=request.jobId,let bytes=request.bytes,let hash=request.sha256,path == "control/pending/\(job).json" else {throw CloudFailure("Invalid pending retirement")}
+            let result = try coordinated(root,binding:binding,path:path,write:true,deleting:true) { files in
+                try requireHeader(files,destinationId:request.destinationId,version:request.destinationVersion ?? 1)
+                guard try header(files)?["schemaVersion"] as? Int == 2 else {throw CloudFailure("V1 retirement is unavailable")}
+                return try files.removeMetadata(path,bytes:bytes,hash:hash,job:job,validate:{try checkpoint(root:root,binding:binding)})
+            };try dictionaryJSON(["result":result])
         case "read", "write", "status", "hydrate", "watch":
             guard let path = request.path else { throw CloudFailure("Missing artifact path") }; _ = try artifactPath(path)
+            if path.hasPrefix("control/") && request.destinationVersion != 2 {throw CloudFailure("V1 controls are unavailable")}
             if ["status", "hydrate", "watch"].contains(request.action) {
-                try coordinated(root, binding: binding, write: false) { files in try requireHeader(files, destinationId: request.destinationId); _ = try artifactPath(path) }
+                try coordinated(root, binding: binding, write: false) { files in try requireHeader(files, destinationId: request.destinationId, version: request.destinationVersion ?? 1); _ = try artifactPath(path) }
                 let target = root.appendingPathComponent(path)
                 // Resolve symlinks before a provider request; coordinated descriptor I/O still validates every component.
                 guard target.resolvingSymlinksInPath().standardizedFileURL.path == target.standardizedFileURL.path else { throw CloudFailure("Unsafe artifact path") }
@@ -192,7 +217,7 @@ func runtime() throws {
                 guard let max = request.maxBytes, max >= 0, max <= 8_000_000_000_000 else { throw CloudFailure("Invalid read bounds") }
                 let state = try observe(root.appendingPathComponent(path))
                 if state.ubiquitous && ![URLUbiquitousItemDownloadingStatus.current.rawValue, URLUbiquitousItemDownloadingStatus.downloaded.rawValue].contains(state.downloaded ?? "") { throw CloudFailure("Artifact hydration pending") }
-                try coordinated(root, binding: binding, path: path, write: false) { files in try requireHeader(files, destinationId: request.destinationId); try files.stream(path, max: max, validate: { try checkpoint(root: root, binding: binding) }) { FileHandle.standardOutput.write($0) } }
+                try coordinated(root, binding: binding, path: path, write: false) { files in try requireHeader(files, destinationId: request.destinationId, version: request.destinationVersion ?? 1); try files.stream(path, max: max, validate: { try checkpoint(root: root, binding: binding) }) { FileHandle.standardOutput.write($0) } }
             } else {
                 guard let bytes = request.bytes, let hash = request.sha256 else { throw CloudFailure("Missing object bounds") }
                 guard let owner = request.stagingId, UUID(uuidString: owner) != nil else { throw CloudFailure("Missing staging owner") }
@@ -201,7 +226,9 @@ func runtime() throws {
                 try checkpoint(root: root, binding: binding)
                 // Ancestors are created exclusively beneath the retained descriptor; final items have individual coordination.
                 try ScopedFiles(root: root, expected: binding.identity).ensureParents(path)
-                try coordinated(root, binding: binding, path: path, temporary: temporary, write: true) { files in try requireHeader(files, destinationId: request.destinationId); try files.write(path, bytes: bytes, digest: hash, stagingId: owner, validate: { try checkpoint(root: root, binding: binding) }) { try FileHandle.standardInput.read(upToCount: $0) ?? Data() } }; try dictionaryJSON(["localWriteVerified": true, "remoteChecksumVerified": false])
+                try coordinated(root, binding: binding, path: path, temporary: temporary, write: true) { files in try requireHeader(files, destinationId: request.destinationId, version: request.destinationVersion ?? 1); let canonical=request.destinationVersion == 2 && path.hasSuffix("/manifest.json");if canonical {signal(SIGTERM,SIG_IGN)};let admission:CloudAdmission?
+                    if canonical {guard let privateRoot=request.privateRoot,let generation=request.connectionGeneration else {throw CloudFailure("Original admission receipt is required")};admission=try CloudAdmission(privateRoot:privateRoot,generation:generation,remoteIdentity:binding.identity+"/"+digest(Data((binding.account+binding.bookmark+(request.destinationId ?? "")).utf8)),path:path,bytes:bytes,hash:hash)}else {admission=nil}
+                    try files.write(path, bytes: bytes, digest: hash, stagingId: owner, exclusive: canonical, existingAdmission:admission.map {receipt in {fd in try receipt.matches(fd)}}, beforePublication:{fd in try admission?.prepare(fd)}, validate: { try checkpoint(root: root, binding: binding) }) { try FileHandle.standardInput.read(upToCount: $0) ?? Data() } }; try dictionaryJSON(["localWriteVerified": true, "remoteChecksumVerified": false])
             }
         default: throw CloudFailure("Unsupported folder operation")
         }

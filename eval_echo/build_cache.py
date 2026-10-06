@@ -2,6 +2,10 @@
 transcribe the SYSTEM channel (the OTHER speaker = the foreign speech that must NOT end up in the
 mic transcript) and the RAW mic (Junior + echo). Cache everything so config iterations are fast.
 Config-independent → run once."""
+import sys as _service_sys
+from pathlib import Path as _ServicePath
+_service_sys.path.insert(0,str(_ServicePath(__file__).resolve().parents[1]/"scripts"))
+from service_config import transcription_url
 import json, os, subprocess, urllib.request
 
 ROOT = os.path.dirname(__file__)
@@ -11,7 +15,7 @@ os.makedirs(CACHE, exist_ok=True)
 
 
 def tx(wav, lang="es"):
-    r = urllib.request.Request("http://127.0.0.1:5002/transcribe",
+    r = urllib.request.Request("http://127.0.0.1:48102/transcribe",
         data=json.dumps({"wav_path": wav, "language": lang}).encode(),
         headers={"Content-Type": "application/json"})
     return (json.load(urllib.request.urlopen(r, timeout=180)).get("text") or "").strip()

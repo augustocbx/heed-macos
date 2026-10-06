@@ -18,11 +18,7 @@ set -euo pipefail
 HEED_RELEASE_VERSION="development"
 HEED_REPOSITORY="${HEED_REPOSITORY:-augustocbx/heed-macos}"
 HEED_HOME="${HEED_HOME:-$HOME/.heed}"
-HEED_API_PORT="${HEED_API_PORT:-5001}"
-HEED_UI_PORT="${HEED_UI_PORT:-5170}"
-HEED_TRANSCRIPTION_PORT="${HEED_TRANSCRIPTION_PORT:-5002}"
 HEED_READY_TIMEOUT="${HEED_READY_TIMEOUT:-900}"
-export HEED_API_PORT HEED_UI_PORT HEED_TRANSCRIPTION_PORT
 export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 # Canonical HEED_HOME; never /, the home folder, one of its ancestors, or a system folder.
@@ -80,13 +76,13 @@ HEED_KEEP_STAGE=0
 
 cleanup() {
     local status=$?
-    if [ "$HEED_GUARD_HELD" = 1 ] && [ "$HEED_COMMITTED" = 1 ] && [ "$status" = 0 ]; then
+    if [ "$HEED_GUARD_HELD" = 1 ] && [ "$HEED_COMMITTED" = 1 ]; then
         /usr/bin/python3 "$HEED_CURRENT/packages/desktop/guard-lifecycle.py" release >/dev/null 2>&1 || true
     fi
     if [ "$status" != 0 ] && [ "$HEED_COMMITTED" = 0 ]; then
         # The running version was never stopped: give it back its recording ability first.
-        if [ "$HEED_GUARD_HELD" = 1 ] && [ "$HEED_SWITCHED" = 0 ] && [ -f "$HEED_TEMP/guard-lifecycle.py" ]; then
-            /usr/bin/python3 "$HEED_TEMP/guard-lifecycle.py" release >/dev/null 2>&1 || true
+        if [ "$HEED_GUARD_HELD" = 1 ] && [ "$HEED_SWITCHED" = 0 ] && [ -f "$HEED_GUARD_SCRIPT" ]; then
+            /usr/bin/python3 "$HEED_GUARD_SCRIPT" release >/dev/null 2>&1 || true
         fi
         if [ "$HEED_SWITCHED" = 1 ]; then rollback; fi
         if [ "$HEED_KEEP_STAGE" = 1 ]; then rm -rf "$HEED_TEMP"; return; fi
@@ -145,6 +141,15 @@ else
 fi
 HEED_HELPER="$HEED_PAYLOAD/scripts/release/heed_release.py"
 [ -f "$HEED_PAYLOAD/release.json" ] && [ -f "$HEED_HELPER" ] || fail "$HEED_PAYLOAD is not a Heed release payload."
+export HEED_SERVICE_CONFIG_ROOT="$HEED_PAYLOAD"
+HEED_VALIDATED_PORTS="$(/usr/bin/python3 "$HEED_HELPER" ports --owned-release)" || fail 'Invalid Heed service configuration. Follow the diagnostic above; preserve service-ports.json and existing services.'
+HEED_PREVIOUS_PORTS="$(/usr/bin/python3 "$HEED_HELPER" ports --saved)" || fail 'Invalid saved Heed service ports. Nothing was replaced.'
+HEED_PRIOR_PORTS_EXISTED=0
+[ -z "$HEED_PREVIOUS_PORTS" ] || HEED_PRIOR_PORTS_EXISTED=1
+HEED_PREVIOUS_PORT_ARGS=()
+if [ -n "$HEED_PREVIOUS_PORTS" ]; then read -r -a HEED_PREVIOUS_PORT_ARGS <<< "$HEED_PREVIOUS_PORTS"; fi
+read -r HEED_API_PORT HEED_UI_PORT HEED_TRANSCRIPTION_PORT <<< "$HEED_VALIDATED_PORTS"
+export HEED_API_PORT HEED_UI_PORT HEED_TRANSCRIPTION_PORT
 HEED_VERSION="$(/usr/bin/python3 "$HEED_HELPER" release-field "$HEED_PAYLOAD/release.json" version)"
 if [ -n "$HEED_REQUESTED_VERSION" ] && [ "$HEED_REQUESTED_VERSION" != "$HEED_VERSION" ]; then
     fail "The payload contains Heed $HEED_VERSION, not the requested $HEED_REQUESTED_VERSION."
@@ -178,6 +183,15 @@ if [ -f "$HEED_APP/Contents/Resources/heed-root.txt" ]; then
     esac
 fi
 [ -n "$HEED_LEGACY_ROOT" ] || HEED_LEGACY_ROOT="$(state --get legacyRoot)"
+HEED_PREVIOUS_ROOT="${HEED_PREVIOUS_DIR:-$HEED_LEGACY_ROOT}"
+if [ -n "$HEED_PREVIOUS_ROOT" ] && [ ! -f "$HEED_PREVIOUS_ROOT/scripts/service_config.py" ]; then
+    fail 'The previous checkout predates safe service-port configuration. Migrate that checkout with the latest install-macos.sh first, then retry the release installer. Its services and data were not replaced.'
+fi
+if [ -n "$HEED_PREVIOUS_ROOT" ] && [ "$HEED_PRIOR_PORTS_EXISTED" = 0 ]; then
+    HEED_PREVIOUS_PORTS="$(HEED_SERVICE_CONFIG_ROOT="$HEED_PREVIOUS_ROOT" /usr/bin/python3 "$HEED_HELPER" ports --defaults)" \
+        || fail 'Could not validate the previous checkout defaults. Nothing was replaced.'
+    read -r -a HEED_PREVIOUS_PORT_ARGS <<< "$HEED_PREVIOUS_PORTS"
+fi
 if [ -n "$HEED_PREVIOUS_DIR" ]; then
     printf 'Upgrading from Heed %s.\n' "$(state --get version)"
 elif [ -n "$HEED_LEGACY_ROOT" ]; then
@@ -239,20 +253,22 @@ cd "$HEED_HOME"
 # --- Switch versions -------------------------------------------------------------------------
 step 'Checking that no meeting is being recorded or processed'
 HEED_BUSY_STATUS=0
-/usr/bin/python3 "$HEED_HELPER" busy || HEED_BUSY_STATUS=$?
+/usr/bin/python3 "$HEED_HELPER" busy --root "${HEED_PREVIOUS_DIR:-${HEED_LEGACY_ROOT:-$HEED_STAGE}}" || HEED_BUSY_STATUS=$?
 case "$HEED_BUSY_STATUS" in
     0) ;;
-    2) fail "Port $HEED_API_PORT is used by another application. Nothing was replaced." ;;
+    2) fail 'Could not verify complete recording status from the expected Heed build. Check the service diagnostic above; migrate an unsupported checkout with the latest install-macos.sh first. Nothing was replaced.' ;;
     *) fail 'Heed is recording, saving or transcribing. Wait until it finishes, then run the installer again.' ;;
 esac
-HEED_GUARD_SCRIPT="$HEED_TEMP/guard-lifecycle.py"
-cp "$HEED_STAGE/packages/desktop/guard-lifecycle.py" "$HEED_GUARD_SCRIPT"
+# The guard imports runtime helpers and verifies its own checkout root. Keep its tree intact.
+HEED_GUARD_SCRIPT="$HEED_STAGE/packages/desktop/guard-lifecycle.py"
+if [ -n "$HEED_PREVIOUS_DIR" ]; then HEED_GUARD_SCRIPT="$HEED_PREVIOUS_DIR/packages/desktop/guard-lifecycle.py"
+elif [ -n "$HEED_LEGACY_ROOT" ]; then HEED_GUARD_SCRIPT="$HEED_LEGACY_ROOT/packages/desktop/guard-lifecycle.py"; fi
 export HEED_LIFECYCLE_GUARD_TOKEN="$(/usr/bin/uuidgen)"
 /usr/bin/python3 "$HEED_GUARD_SCRIPT" acquire \
     || fail 'Heed is recording, saving or transcribing. Wait until it finishes, then run the installer again.'
 HEED_GUARD_HELD=1
 export HEED_LIFECYCLE_GUARD_HELD=1
-/usr/bin/python3 "$HEED_HELPER" busy \
+/usr/bin/python3 "$HEED_HELPER" busy --root "${HEED_PREVIOUS_DIR:-${HEED_LEGACY_ROOT:-$HEED_STAGE}}" \
     || fail 'Heed is recording, saving or transcribing. Wait until it finishes, then run the installer again.'
 
 HEED_BACKUP="$HEED_TEMP/backup"
@@ -267,7 +283,7 @@ done < <(/usr/bin/python3 "$HEED_HELPER" native-hosts)
 stop_heed() {
     launchctl bootout "gui/$(id -u)/local.heed.menubar" 2>/dev/null || true
     /usr/bin/python3 "$HEED_HELPER" stop-services --root "$HEED_RUNTIME" ${HEED_LEGACY_ROOT:+--root "$HEED_LEGACY_ROOT"} \
-        --ports "$HEED_API_PORT" "$HEED_UI_PORT" "$HEED_TRANSCRIPTION_PORT"
+        --ports "$HEED_API_PORT" "$HEED_UI_PORT" "$HEED_TRANSCRIPTION_PORT" ${HEED_PREVIOUS_PORT_ARGS[@]+"${HEED_PREVIOUS_PORT_ARGS[@]}"}
 }
 switch_current() { # target directory or empty
     if [ -n "$1" ]; then
@@ -279,8 +295,8 @@ switch_current() { # target directory or empty
 rollback() {
     # A meeting or transcription may have started on the new version while it was being verified.
     # Taking the maintenance guard is atomic: it fails while any audio work runs, and blocks new work.
-    if ! /usr/bin/python3 "$HEED_HELPER" busy >/dev/null 2>&1 \
-        || ! HEED_LIFECYCLE_GUARD_TOKEN="$(/usr/bin/uuidgen)" /usr/bin/python3 "$HEED_GUARD_SCRIPT" acquire >/dev/null 2>&1; then
+    if ! /usr/bin/python3 "$HEED_HELPER" busy --root "$HEED_STAGE" >/dev/null 2>&1 \
+        || ! /usr/bin/python3 "$HEED_STAGE/packages/desktop/guard-lifecycle.py" acquire >/dev/null 2>&1; then
         printf '\nHeed %s is running and busy, so it was not rolled back. Run the installer again after the meeting.\n' "$HEED_VERSION" >&2
         HEED_KEEP_STAGE=1
         return 0
@@ -298,6 +314,18 @@ rollback() {
         done < "$HEED_BACKUP/native-hosts.list"
     fi
     switch_current "$HEED_PREVIOUS_DIR" || restore_failed=1
+    # The menu installer saves device ports before launching. Restore the old bridge/bootstrap
+    # configuration before restarting its app, including envless browser-native hosts.
+    local old_api old_ui old_transcription
+    if [ -n "$HEED_PREVIOUS_PORTS" ]; then
+        read -r old_api old_ui old_transcription <<< "$HEED_PREVIOUS_PORTS"
+        if [ "${HEED_PRIOR_PORTS_EXISTED:-1}" = 1 ]; then
+            HEED_API_PORT="$old_api" PORT="$old_api" HEED_UI_PORT="$old_ui" HEED_TRANSCRIPTION_PORT="$old_transcription" \
+                /usr/bin/python3 "$HEED_STAGE/scripts/service_config.py" api --save > /dev/null || restore_failed=1
+        else
+            /usr/bin/python3 "$HEED_HELPER" restore-port-absence > /dev/null || restore_failed=1
+        fi
+    fi
     rm -rf "$HEED_APP" || restore_failed=1
     if [ -d "$HEED_BACKUP/Heed.app" ]; then ditto "$HEED_BACKUP/Heed.app" "$HEED_APP" || restore_failed=1; fi
     if [ -f "$HEED_BACKUP/agent.plist" ]; then
@@ -305,6 +333,19 @@ rollback() {
         launchctl bootstrap "gui/$(id -u)" "$HEED_AGENT" 2>/dev/null || restore_failed=1
     else
         rm -f "$HEED_AGENT"
+    fi
+    if [ "$HEED_GUARD_HELD" = 1 ]; then
+        local restored_root="${HEED_PREVIOUS_DIR:-$HEED_LEGACY_ROOT}"
+        if [ -n "$restored_root" ] && [ "$restore_failed" = 0 ]; then
+            HEED_API_PORT="${old_api:-$HEED_API_PORT}" PORT="${old_api:-$HEED_API_PORT}" \
+                HEED_UI_PORT="${old_ui:-$HEED_UI_PORT}" HEED_TRANSCRIPTION_PORT="${old_transcription:-$HEED_TRANSCRIPTION_PORT}" \
+                /usr/bin/python3 "$HEED_HELPER" wait-api --root "$restored_root" --timeout 20 > /dev/null \
+                && HEED_API_PORT="${old_api:-$HEED_API_PORT}" PORT="${old_api:-$HEED_API_PORT}" \
+                   HEED_UI_PORT="${old_ui:-$HEED_UI_PORT}" HEED_TRANSCRIPTION_PORT="${old_transcription:-$HEED_TRANSCRIPTION_PORT}" \
+                   /usr/bin/python3 "$HEED_GUARD_SCRIPT" release > /dev/null || restore_failed=1
+        else
+            restore_failed=1
+        fi
     fi
     if [ "$restore_failed" = 1 ]; then
         # Keep everything that may still be referenced, including the backups, for manual recovery.
@@ -327,7 +368,7 @@ HEED_MENU_ROOT="$HEED_CURRENT" HEED_RECORDINGS_DIR="$HEED_RECORDINGS" bash "$HEE
     ${HEED_LEGACY_ROOT:+--old-root "$HEED_LEGACY_ROOT"} || fail 'The Meet browser bridge could not be updated.'
 
 step 'Waiting for Heed services (models can take a few minutes to load)'
-/usr/bin/python3 "$HEED_HELPER" wait-ready --version "$HEED_VERSION" --commit "$HEED_COMMIT" --timeout "$HEED_READY_TIMEOUT" \
+/usr/bin/python3 "$HEED_HELPER" wait-ready --root "$HEED_STAGE" --version "$HEED_VERSION" --commit "$HEED_COMMIT" --timeout "$HEED_READY_TIMEOUT" \
     || fail "Heed $HEED_VERSION did not become ready. Service logs are in ~/Library/Logs/Heed."
 HEED_COMMITTED=1
 
@@ -352,7 +393,7 @@ step 'Testing macOS permissions'
 HEED_PERMISSION_ARGS=()
 if [ "$HEED_PERMISSION_PROMPT" = 1 ]; then HEED_PERMISSION_ARGS+=(--request); fi
 HEED_PERMISSION_STATUS=0
-/usr/bin/python3 "$HEED_HELPER" permissions ${HEED_PERMISSION_ARGS[@]+"${HEED_PERMISSION_ARGS[@]}"} || HEED_PERMISSION_STATUS=$?
+/usr/bin/python3 "$HEED_HELPER" permissions --root "$HEED_STAGE" ${HEED_PERMISSION_ARGS[@]+"${HEED_PERMISSION_ARGS[@]}"} || HEED_PERMISSION_STATUS=$?
 if [ "$HEED_PERMISSION_STATUS" != 0 ]; then
     printf '\nHeed records only after Microphone and Screen & System Audio Recording are allowed for Heed in\n'
     printf 'System Settings > Privacy & Security. After allowing them, quit and reopen Heed from the menu bar.\n'

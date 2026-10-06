@@ -14,8 +14,11 @@ struct MeetingDetectionState: Decodable {
 final class MeetingDetectionClient {
     private let session: URLSession
     private let defaults: UserDefaults
+    private let endpoints: ServiceEndpoints?
     private var identities: [String: MeetingSignalIdentity] = [:]
-    init(session: URLSession, defaults: UserDefaults = .standard) { self.session = session; self.defaults = defaults }
+    init(session: URLSession, defaults: UserDefaults = .standard, endpoints: ServiceEndpoints? = try? ServiceEndpoints.load()) {
+        self.session = session; self.defaults = defaults; self.endpoints = endpoints
+    }
     func observation(app: String, signal: Bool?, capability: String) -> [String: Any] {
         let callKey = "HeedDetectionCall.\(app)", sequenceKey = "HeedDetectionSequence.\(app)"
         var identity = identities[app] ?? MeetingSignalIdentity(callId: defaults.string(forKey: callKey))
@@ -29,17 +32,19 @@ final class MeetingDetectionClient {
         return body
     }
     func report(app: String, signal: Bool?, capability: String) {
+        guard let endpoints = endpoints else { return }
         let body = observation(app: app, signal: signal, capability: capability)
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:5001/api/meeting-detection/report")!)
+        var request = URLRequest(url: endpoints.apiURL("/api/meeting-detection/report"))
         request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        session.dataTask(with: request).resume()
+        endpoints.perform(session: session, request: request) { _, _, _ in }
     }
     func configure(app: String, enabled: Bool, completion: @escaping (Bool) -> Void) {
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:5001/api/meeting-detection/settings")!)
+        guard let endpoints = endpoints else { completion(false); return }
+        var request = URLRequest(url: endpoints.apiURL("/api/meeting-detection/settings"))
         request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: [app: enabled])
-        session.dataTask(with: request) { _, response, _ in DispatchQueue.main.async { completion((response as? HTTPURLResponse)?.statusCode == 200) } }.resume()
+        endpoints.perform(session: session, request: request) { _, response, _ in DispatchQueue.main.async { completion((response as? HTTPURLResponse)?.statusCode == 200) } }
     }
 }
 
@@ -57,4 +62,36 @@ func meetingDetectionClientSelfTests() throws {
     precondition(initial["callId"] as? String == restored["callId"] as? String, "Menu restart must retain manual-stop call identity")
     precondition(initial["sequence"] as? Int == 1 && restored["sequence"] as? Int == 2, "Menu restart must advance the persisted sequence")
     precondition(Set(restored.keys) == ["app", "detectorId", "sequence", "callId", "state", "capability"], "Never transmit private meeting content")
+    try meetingDetectionForeignServiceSelfTest()
+}
+
+private final class ForeignMeetingServiceProtocol: URLProtocol {
+    static var requests: [URLRequest] = []
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.requests.append(request)
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("{\"service\":\"foreign-api\",\"protocolVersion\":1,\"pid\":123,\"checkoutRoot\":\"/synthetic/foreign\"}".utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
+private func meetingDetectionForeignServiceSelfTest() throws {
+    ForeignMeetingServiceProtocol.requests = []
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [ForeignMeetingServiceProtocol.self]
+    let session = URLSession(configuration: configuration)
+    defer { session.invalidateAndCancel() }
+    let suite = "heed-foreign-detection-\(UUID().uuidString)", defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let client = MeetingDetectionClient(session: session, defaults: defaults)
+    var accepted: Bool?
+    client.configure(app: "zoom", enabled: true) { accepted = $0 }
+    let deadline = Date().addingTimeInterval(3)
+    while accepted == nil && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+    precondition(accepted == false, "A foreign service cannot acknowledge detection configuration")
+    precondition(!ForeignMeetingServiceProtocol.requests.isEmpty && ForeignMeetingServiceProtocol.requests.allSatisfy { $0.httpMethod == "GET" && $0.url?.path == "/.well-known/heed-service" }, "Never send detection reports or settings to an unverified service")
 }

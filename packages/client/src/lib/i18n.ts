@@ -1,3 +1,5 @@
+import {SERVICE_TRANSLATIONS} from './translations-services';
+import {DELETION_TRANSLATIONS} from './translations-deletion';
 import {GOOGLE_DRIVE_TRANSLATIONS} from './translations-google-drive';
 import {ONEDRIVE_TRANSLATIONS} from "./translations-onedrive";
 import {ICLOUD_TRANSLATIONS} from "./translations-icloud";
@@ -21,7 +23,7 @@ export function useLocale() {
  return {locale,tr:(text:string,vars?:Record<string,string|number>)=>tr(text,locale,vars)};
 }
 import {STORAGE_TRANSLATIONS} from "./translations-storage";
-const TRANSLATIONS={...SHELL_TRANSLATIONS,...CONTENT_TRANSLATIONS,...NOTES_TRANSLATIONS,...TASKS_TRANSLATIONS,...CHAT_TRANSLATIONS,...DETECTION_TRANSLATIONS,...LIBRARY_CHAT_TRANSLATIONS,...STORAGE_TRANSLATIONS,...LIBRARY_TRANSLATIONS,...SMB_TRANSLATIONS,...GOOGLE_DRIVE_TRANSLATIONS,...ONEDRIVE_TRANSLATIONS,...ICLOUD_TRANSLATIONS};
+const TRANSLATIONS={...SERVICE_TRANSLATIONS,...DELETION_TRANSLATIONS,...SHELL_TRANSLATIONS,...CONTENT_TRANSLATIONS,...NOTES_TRANSLATIONS,...TASKS_TRANSLATIONS,...CHAT_TRANSLATIONS,...DETECTION_TRANSLATIONS,...LIBRARY_CHAT_TRANSLATIONS,...STORAGE_TRANSLATIONS,...LIBRARY_TRANSLATIONS,...SMB_TRANSLATIONS,...GOOGLE_DRIVE_TRANSLATIONS,...ONEDRIVE_TRANSLATIONS,...ICLOUD_TRANSLATIONS};
 export function tr(text:string,locale:Locale=useLocaleStore.getState().locale,vars?:Record<string,string|number>):string {
  const chosen=normalizeLocale(locale);
  const key=text.trim();
