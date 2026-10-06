@@ -49,7 +49,7 @@ Ollama is also installed for AI notes. Its models are optional and are not downl
 
 ## Permissions and use
 
-The app is installed at `~/Applications/Heed.app`. The LaunchAgent at `~/Library/LaunchAgents/local.heed.menubar.plist` starts the menu icon when you log in. Use the menu to start or stop recording and open [http://localhost:5170](http://localhost:5170).
+The app is installed at `~/Applications/Heed.app`. The LaunchAgent at `~/Library/LaunchAgents/local.heed.menubar.plist` starts the menu icon when you log in. Use the menu to start or stop recording and open [http://localhost:48101](http://localhost:48101).
 
 ### Automatic start for Slack meetings
 
@@ -129,14 +129,14 @@ Do not copy `recordings/`, `.venv`, or `~/.heed-app/` to install on another Mac.
 ```mermaid
 flowchart TD
     S[Slack: newly connected meeting in local logs] --> A[macOS menu app / LaunchAgent]
-    A --> B[Bun API localhost:5001]
-    B <--> C[Open browser localhost:5170]
+    A --> B[Bun API localhost:48100]
+    B <--> C[Open browser localhost:48101]
     B --> D[ScreenCaptureKit: system audio]
     B --> E[AVAudioEngine: default microphone]
     D --> K[Native capture: timestamp-aligned channels]
     E --> K
     K --> F[FFmpeg: one PCM input, local stereo WAV]
-    F --> G[Python localhost:5002 / MLX previews and native finalization]
+    F --> G[Python localhost:48102 / MLX previews and native finalization]
     G --> C
     C --> H[Local session JSON and timestamps]
     H --> B
@@ -167,11 +167,11 @@ Create, rename and delete tags inline in meeting cards and detail. Removing a ta
 
 See [troubleshooting](troubleshooting.md) for known recording, permissions, connection, automatic-notes, retention, and timer problems, with recovery steps and validation limits.
 
-Services are local: interface **5170**, Bun API **5001**, Python transcription **5002**, and Ollama **11434**. Logs are stored in `~/Library/Logs/Heed/`.
+Services are local: interface **48101**, Bun API **48100**, Python transcription **48102**, and Ollama **11434**. Logs are stored in `~/Library/Logs/Heed/`.
 
 ```sh
-curl -fsS http://localhost:5001/api/desktop/control/status
-curl -fsS http://localhost:5001/api/sessions
+curl -fsS http://localhost:48100/api/desktop/control/status
+curl -fsS http://localhost:48100/api/sessions
 curl -fsS http://localhost:11434/api/tags
 bun run doctor
 bun test packages/server/lib
@@ -181,7 +181,7 @@ bun run build
 bash packages/desktop/install-menubar.sh --build-only
 ```
 
-The control status reports `recording`, `processing`, `starting`, `ready`, and the authoritative lifecycle snapshot. `/api/recording/status` exposes the current meeting ID, lifecycle stage and recoverable failure. Browser connection is not required for capture or saving. Quit and updates are guarded while a meeting is active. For an existing meeting, `curl -I http://localhost:5001/api/sessions/ID/audio` checks availability and metadata without downloading the audio.
+The control status reports `recording`, `processing`, `starting`, `ready`, and the authoritative lifecycle snapshot. `/api/recording/status` exposes the current meeting ID, lifecycle stage and recoverable failure. Browser connection is not required for capture or saving. Quit and updates are guarded while a meeting is active. For an existing meeting, `curl -I http://localhost:48100/api/sessions/ID/audio` checks availability and metadata without downloading the audio.
 
 ## Known limitations
 

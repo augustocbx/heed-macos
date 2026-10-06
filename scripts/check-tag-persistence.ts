@@ -1,3 +1,6 @@
+import {configuredServicePorts} from '../packages/server/lib/service-ports';
+import {localServiceUrl,servicePort} from '../packages/shared/lib/service-config';
+import {isTranscriptionHealth} from '../packages/shared/lib/service-identity';
 /** Opt-in production-server acceptance using synthetic WAV audio and installed local engines. */
 import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -6,11 +9,11 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 import type { Session, TranscribeResult } from "../packages/shared/types";
 
-const usage = `Usage: bun scripts/check-tag-persistence.ts --audio /outside/repo/synthetic.wav --language en|pt --model <installed-local-model> [--transcription-url http://127.0.0.1:5002] [--ollama-url http://127.0.0.1:11434] [--output /outside/repo/evidence]
+const usage = `Usage: bun scripts/check-tag-persistence.ts --audio /outside/repo/synthetic.wav --language en|pt --model <installed-local-model> [--transcription-url http://127.0.0.1:48102] [--ollama-url http://127.0.0.1:11434] [--output /outside/repo/evidence]
 Supply only synthetic spoken English or Brazilian Portuguese WAV audio. Run while all apps using these engines are idle. This starts only isolated Heed servers, never capture or engine services. --output retains synthetic evidence in a new subdirectory; otherwise all temporary files are removed.`;
 const { values } = parseArgs({ options: {
  audio: { type: "string" }, language: { type: "string" }, model: { type: "string" },
- "transcription-url": { type: "string", default: "http://127.0.0.1:5002" },
+ "transcription-url": { type: "string", default: process.env.HEED_TRANSCRIPTION_URL || `http://127.0.0.1:${configuredServicePorts().transcription}` },
  "ollama-url": { type: "string", default: "http://127.0.0.1:11434" },
  output: { type: "string" }, help: { type: "boolean", default: false },
 } });
@@ -21,7 +24,7 @@ function localUrl(value: string): string {
  const url = new URL(value);
  assert(["http:", "https:"].includes(url.protocol) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
   && !url.username && !url.password && !url.search && !url.hash && url.pathname === "/", "Engine URLs must be local origins without credentials or paths.");
- return url.origin;
+ return localServiceUrl(url.origin,"QA engine");
 }
 function contained(parent: string, child: string): boolean { const path = relative(parent, child); return path === "" || (!path.startsWith(`..${sep}`) && path !== ".." && !path.startsWith(sep)); }
 function outsideLibrary(path: string): void {
@@ -84,7 +87,7 @@ async function stopServer() {
 async function startServer() {
  controller.signal.throwIfAborted();
  reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
- const port = reservation.port; reservation.stop(true); reservation = undefined;
+ const port = servicePort(reservation.port!,"QA API"); reservation.stop(true); reservation = undefined;
  base = `http://127.0.0.1:${port}`;
  server = Bun.spawn([process.execPath, join(runtime, "packages/server/server.ts")], { cwd: runtime,
   env: { ...process.env, PORT: String(port), HEED_APP_DIR: appDirectory, HEED_TRANSCRIPTION_URL: transcriptionUrl, OLLAMA_HOST: ollamaUrl },
@@ -121,7 +124,7 @@ function copySources(source: string, destination: string, hashes: Record<string,
 try {
  step("Checking installed engines (no downloads or service changes)");
  const health = await json(`${transcriptionUrl}/health`);
- assert(health.ready === true && health.whisper_info?.final_model === "parakeet-v3", "ASR must be ready with installed Parakeet v3.");
+ assert(isTranscriptionHealth(health) && health.ready === true && health.whisper_info?.final_model === "parakeet-v3", "ASR must be ready with installed Parakeet v3.");
  report.transcriptionHealth = health;
  const models = await json(`${ollamaUrl}/api/tags`);
  assert(models.models?.some((model: { name: string }) => model.name === values.model), `Requested Ollama model ${values.model} is not installed.`);
@@ -129,6 +132,7 @@ try {
  const hashes: Record<string, string> = {};
  copySources(join(repository, "packages/server"), join(runtime, "packages/server"), hashes);
  copySources(join(repository, "packages/shared"), join(runtime, "packages/shared"), hashes);
+ copySources(join(repository,"config"),join(runtime,"config"),hashes);
  mkdirSync(join(runtime, "node_modules/@heed"), { recursive: true });
  symlinkSync(join(runtime, "packages/shared"), join(runtime, "node_modules/@heed/shared"), "dir");
  report.sourceHashes = hashes;

@@ -3,11 +3,15 @@ sidecar) exactly as processStreamLive does — /stream/feed (text) + /diar/live 
 live cadence — and score the whole experience: first-text latency, text-feed stutter WHILE diarizing,
 speaker phantoms, flicker, naming, label latency. Produces one killer scorecard across the 4.
 
-Run: ../.venv/bin/python3 live_bench.py   (server must be up + warm on :5002)
+Run: ../.venv/bin/python3 live_bench.py   (server must be up + warm on :48102)
 """
+import sys as _service_sys
+from pathlib import Path as _ServicePath
+_service_sys.path.insert(0,str(_ServicePath(__file__).resolve().parents[1]/"scripts"))
+from service_config import transcription_url
 import json, os, subprocess, time, urllib.request
 
-SRV = "http://127.0.0.1:5002"
+SRV = transcription_url()
 RECS = [
     ("dual-capture-1782880963595.wav", "4-spk (man+girl)"),
     ("dual-capture-1782873076439.wav", "3-spk"),
