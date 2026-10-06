@@ -79,7 +79,7 @@ Reopen the interface after installation and check permissions again if macOS req
 
 **Symptom:** The menu cannot start recording, the interface is disconnected, or transcription is unavailable.
 
-**Checks:** Reopen [the local interface](http://localhost:5170). Keep its tab open during recording, transcription, and final saving; minimizing it is supported. The default local ports are interface **5170**, Bun API **5001**, Python transcription **5002**, and Ollama **11434**. Check them individually:
+**Checks:** Reopen [the local interface](http://localhost:5170) to inspect the backend recording state or recovery actions. Recording, live transcription and durable final saving continue when all tabs are closed. The default local ports are interface **5170**, Bun API **5001**, Python transcription **5002**, and Ollama **11434**. Check them individually:
 
 ```sh
 curl -fsS http://localhost:5001/api/desktop/control/status
@@ -89,9 +89,9 @@ curl -fsS http://localhost:5002/health
 curl -fsS http://localhost:11434/api/tags
 ```
 
-The control response's `clientConnected` describes interface tabs; the permissions response's `controllerConnected` describes the native menu app. These are separate connections. Control status also reports `recording`, `processing`, `pending`, `starting`, and `ready`. Python health includes model readiness details such as `warm` and `load_error`; the API health summary does not include those fields.
+The permissions response's `controllerConnected` describes the native menu app. Recording status contains the authoritative lifecycle `state`, meeting ID and revision, with separate `recording`, `processing`, `starting`, and `ready` indicators. The legacy control `clientConnected` field no longer requires a browser owner. Python health includes model readiness details such as `warm` and `load_error`; the API health summary does not include those fields.
 
-**Recovery:** Reopen the tab for an interface disconnect. Reopen `~/Applications/Heed.app` if the native menu app is not running. If required services or transcription models remain unavailable, wait until capture and saving are idle and run the installer from the intended checkout. While idle, use the installed Python environment's diagnostic:
+**Recovery:** Reopen the tab to attach to the current meeting. If retained audio needs finalization, retry from the recovery panel. To leave an unrecoverable capture, choose **Keep audio and leave recovery**; Heed retains its audio and speaker checkpoint for manual recovery. Reopen `~/Applications/Heed.app` if the native menu app is not running. If required services or transcription models remain unavailable, wait until capture and saving are idle and run the installer from the intended checkout. While idle, use the installed Python environment's diagnostic:
 
 ```sh
 bun run doctor
