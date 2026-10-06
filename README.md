@@ -196,7 +196,7 @@ The control status reports `recording`, `processing`, `starting`, `ready`, and t
 
 ## Known limitations
 
-Automatic start on macOS supports new meetings in the installed Slack app. Automatic start and stop for Google Meet, Microsoft Teams, and Zoom are not implemented. The original PipeWire-based detector remains Linux-specific.
+Automatic start on macOS supports new meetings in the installed Slack app. Optional Zoom/Teams desktop and scoped Chrome/Edge Google Meet detection are disabled by default and require separate authorization/setup. See [automatic meeting detection](docs/meeting-detection.md) for supported evidence, unknown-state/manual-stop behavior and the remaining physical application/version acceptance gates. The original PipeWire-based detector remains Linux-specific.
 
 The previous capture path could discard microphone buffers while combining two FFmpeg inputs, shortening the file and cutting speech. Unified native capture replaces that path. Older recordings may still contain missing audio; this correction applies to new recordings. Playback uses the file's actual duration. Audio that was never captured or was deleted cannot be reconstructed from the transcript.
 

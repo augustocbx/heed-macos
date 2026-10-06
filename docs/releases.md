@@ -90,7 +90,9 @@ The build refuses to package audio files (except the two bundled synthetic test 
 - Because ad-hoc signatures change with every build, macOS may ask for Microphone and Screen & System Audio Recording again after an upgrade, or show Heed as allowed while blocking it. Turn the permission off and on again in System Settings, then reopen Heed.
 - A signed and notarized `.pkg` can replace the archive once a Developer ID is available. Until then, installation runs from Terminal.
 - Permission prompts need a person at the Mac. Real audio capture is not exercised by the installer; record a short test meeting after installing.
-- Ports 5001 (API), 5170 (interface) and 5002 (transcription) must be free or used by Heed. Issue #58 moves these defaults.
+- Loopback ports 48100 (API), 48101 (interface) and 48102 (transcription), or the validated device-local overrides, must be free or used by the matching Heed services. Readiness and shutdown verify service identity and checkout ownership; an unrelated listener is preserved. See [service ports](service-ports.md).
+- A checkout predating safe port configuration, or reporting an incomplete recording-work state, must first be migrated with the latest checkout `install-macos.sh`. The release installer refuses replacement rather than guessing ownership or starting services on the old prohibited ports.
+- The packaged installer verifies its own versioned transcription service. A separately managed `HEED_TRANSCRIPTION_URL` is supported by checkout runtimes; use a checkout for that configuration, or remove the override before installing the complete packaged stack. An HTTP localhost/127.0.0.1 override on the configured transcription port remains compatible.
 
 ## Simulation
 
