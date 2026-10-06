@@ -1,5 +1,5 @@
 import {existsSync,lstatSync,readFileSync} from 'node:fs';import {join} from 'node:path';
-import {PortableLibrary,type PortableLibraryOptions} from './portable-library';import {migrateLegacyAudio,migrationProtectedPaths} from './portable-migration';import {UUID} from './portable-schema';
+import {PortableLibrary,type PortableLibraryOptions} from './portable-library';import {migrateLegacyAudio,migrationProtectedPaths} from './portable-migration';import {UUID} from './portable-schema';import {RemoteDeletion} from './remote-deletion';
 /** Lazy initialization leaves existing text usable even when no catalog write fits the quota. */
 export class PortableLibraryRuntime {
  private library?:PortableLibrary;
@@ -11,7 +11,8 @@ export class PortableLibraryRuntime {
  protectedPaths(revisionIds?:string[]):string[]{
   const fallback=[this.options.recordingsDir,join(this.options.root,'media')];
   try{
-   const paths=['state.json','migrations.json'].map(name=>join(this.options.root,'catalog',name));const signature=paths.map(path=>{if(!existsSync(path))return 'missing';const stat=lstatSync(path);if(!stat.isFile()||stat.size>64_000_000)throw new Error('Invalid library protection journal');return `${stat.ino}:${stat.size}:${stat.mtimeMs}`;}).join('|');
+   const deletionPath=join(this.options.root,'catalog','remote-deletions.json');let deletionExists=true;try{lstatSync(deletionPath);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')deletionExists=false;else throw error;}if(deletionExists&&new RemoteDeletion({path:deletionPath}).hasUnresolved())return fallback;
+   const paths=['state.json','migrations.json','remote-deletions.json'].map(name=>join(this.options.root,'catalog',name));const signature=paths.map(path=>{if(!existsSync(path))return 'missing';const stat=lstatSync(path);if(!stat.isFile()||stat.size>64_000_000)throw new Error('Invalid library protection journal');return `${stat.ino}:${stat.size}:${stat.mtimeMs}`;}).join('|');
    if(!this.cache||this.cache.signature!==signature){
     const entries:NonNullable<PortableLibraryRuntime['cache']>['entries']=[];
     if(existsSync(paths[0]!)){const state=JSON.parse(readFileSync(paths[0]!,'utf8'));if(state.version!==1||!state.entries||typeof state.entries!=='object'||Array.isArray(state.entries)||Object.keys(state.entries).length>10000)throw new Error('Invalid protection catalog');

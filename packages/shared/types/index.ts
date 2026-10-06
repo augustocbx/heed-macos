@@ -14,6 +14,7 @@ export * from "./chat.ts";
 export * from "./library-chat.ts";
 export type {StorageUsage,StoragePreview} from "./storage";
 export * from "./portable-storage.ts";
+export * from './remote-deletion';
 
 export type * from './google-drive';
 export * from "./onedrive.ts";
