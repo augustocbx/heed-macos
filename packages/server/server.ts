@@ -18,6 +18,7 @@ import { tasksResponse } from "./lib/tasks-http.ts";
 import { generateTaskSuggestions } from "./lib/task-generation.ts";
 import { MeetingChatService, CHAT_SYSTEM, chatApiResponse, type ChatGenerationRequest } from "./lib/meeting-chat.ts";
 import { MeetingDetectionController } from "./lib/meeting-detection.ts";
+import { readReleaseInfo } from "./lib/release-info.ts";
 import { meetingDetectionRoute } from "./lib/meeting-detection-http.ts";
 import { AutomaticNotesService, notesHash, renderNotesTranscript } from "./lib/automatic-notes.ts";
 import { automaticNotesSettings, validateNotesSettings } from "./lib/notes-settings.ts";
@@ -83,6 +84,7 @@ function pruneAudio() {
 }
 
 const PORT = Number(process.env.PORT) || 5001;
+const RELEASE_INFO = readReleaseInfo(join(import.meta.dir, "..", ".."));
 
 const STATIC_ROOT = join(import.meta.dir, "..", "client", "dist");
 // Recordings stored in the project root
@@ -369,6 +371,7 @@ function serveStatic(path: string): Response | null {
 // --- Transcription (SSE) ---
 async function handleTranscribe(req: Request): Promise<Response> {
  if(!permissionRequestAllowed(req,PORT))return new Response(null,{status:403});
+ if(recordingCoordinator.snapshot().maintenance)return Response.json({error:"Heed is being updated. Try again when the update finishes."},{status:409});
 	let input: string;
 	let language = "auto";
 	let diarize = true;
@@ -2244,7 +2247,7 @@ function desktopRecordingStatus() {
  const state = hydratedRecordingSnapshot();
  return {...state, snapshot:state, seconds:Math.floor(state.seconds), recording:!!recorderProc && recorderProc.exitCode === null,
   processing:["stopping","finalizing"].includes(state.state) || recordingFinalizationRunning,
-  starting:state.state === "starting", pending:false, clientConnected:true, ready:!state.maintenance,
+  starting:state.state === "starting", pending:false, audioWork:audioWorkBusy(), clientConnected:true, ready:!state.maintenance,
   smbCommand:smbConnections?.desktopCommand()||null,meetingDetection:meetingDetection.status(),language:recordingLanguage,uiLocale:configuredUiLocale(loadConfig()),storage:{...managedQuota.snapshot(),bytes:managedQuota.snapshot().usedBytes},quotaStopped:!!quotaStopResult};
 }
 async function handleRecordingControl(req: Request, pathname: string): Promise<Response> {
@@ -2268,6 +2271,8 @@ async function handleRecordingControl(req: Request, pathname: string): Promise<R
   }
   if (pathname === "/api/recording/maintenance") {
    if (typeof body.acquire !== "boolean" || typeof body.owner !== "string" || !body.owner.trim() || body.owner.length > 128) return Response.json({error:"Choose a valid maintenance owner"},{status:400});
+   // Installers must not replace services while any audio work (including manual transcription) runs.
+   if (body.acquire && audioWorkBusy()) return Response.json({error:"Wait for the current recording or transcription to finish."},{status:409});
    return Response.json(hydratedRecordingSnapshot(recordingCoordinator.setMaintenance(body.acquire,body.owner)));
   }
   return Response.json({error:"Unknown recording control endpoint"},{status:404});
@@ -2530,6 +2535,7 @@ const server = Bun.serve({
 		if (method === "GET" && url.pathname === "/api/sysrecord/levels") return desktopRequestAllowed(req) ? handleSysLevelsSSE() : new Response(null,{status:403});
 		if (method === "GET" && url.pathname === "/api/sysrecord/live") return desktopRequestAllowed(req) ? handleLiveTranscribe() : new Response(null,{status:403});
 		if (method === "GET" && url.pathname === "/api/health") return handleHealth();
+		if (method === "GET" && url.pathname === "/api/version") return Response.json(RELEASE_INFO);
 		if (method === "GET" && url.pathname === "/api/recovery/list") return handleListOrphaned();
 		if (method === "DELETE" && url.pathname === "/api/recovery/discard") return handleDiscardOrphaned(url);
 

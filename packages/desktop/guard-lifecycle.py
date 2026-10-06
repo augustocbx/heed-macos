@@ -41,7 +41,7 @@ def guard(action, base_url, owner):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=["acquire", "release"])
-    parser.add_argument("--base-url", default="http://127.0.0.1:5001")
+    parser.add_argument("--base-url", default="http://127.0.0.1:" + os.environ.get("HEED_API_PORT", "5001"))
     parser.add_argument("--owner", default=os.environ.get("HEED_LIFECYCLE_GUARD_TOKEN"))
     arguments = parser.parse_args()
     try:

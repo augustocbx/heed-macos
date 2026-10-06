@@ -1,0 +1,73 @@
+name: Release
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      simulate:
+        description: Run the install/upgrade/uninstall simulation on the built archive
+        type: boolean
+        default: true
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    # Apple Silicon runner: the payload ships arm64 executables built here from the tagged commit.
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Check the tag matches VERSION
+        if: github.event_name == 'push'
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match VERSION $VERSION. Tag releases as v<VERSION>."
+            exit 1
+          fi
+      - name: Build release assets
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            bash scripts/release/build-release.sh --output dist/release
+          else
+            bash scripts/release/build-release.sh --output dist/release --allow-untagged
+          fi
+      - name: Install runtime dependencies for the simulation
+        if: github.event_name == 'push' || inputs.simulate
+        run: HOMEBREW_NO_AUTO_UPDATE=1 brew install ffmpeg python@3.14 ollama node
+      - name: Simulate install, upgrade, failure recovery and uninstall
+        if: github.event_name == 'push' || inputs.simulate
+        run: bash scripts/release/simulate.sh --artifacts dist/release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: heed-release-assets
+          path: dist/release/
+      - name: Publish the GitHub Release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          PRERELEASE=""
+          case "$VERSION" in *-*) PRERELEASE="--prerelease" ;; esac
+          cat > "$RUNNER_TEMP/notes.md" <<NOTES
+          ## Install or upgrade
+
+          \`\`\`sh
+          curl -fsSL https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/install.sh | bash
+          \`\`\`
+
+          Or download \`heed-macos-$VERSION-arm64.tar.gz\` and \`SHA256SUMS\`, extract the archive and run \`bash install.sh\` inside it.
+          Requires an Apple Silicon Mac with macOS 14 or later and Homebrew. See [installation guide](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/docs/releases.md).
+
+          NOTES
+          gh release create "$GITHUB_REF_NAME" dist/release/* --verify-tag --title "Heed $VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" --generate-notes $PRERELEASE

@@ -22,7 +22,7 @@ export function desktopRequestAllowed(req: Request, port: number | string): bool
  try {
   const source = new URL(origin);
   return ['http:', 'https:'].includes(source.protocol) && local(source.hostname)
-   && ['5170', String(port)].includes(source.port);
+   && [process.env.HEED_UI_PORT || '5170', String(port)].includes(source.port);
  } catch { return false; }
 }
 
