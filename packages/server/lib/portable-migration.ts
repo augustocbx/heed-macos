@@ -1,0 +1,31 @@
+import {createHash,randomUUID} from 'node:crypto';
+import {createReadStream,existsSync,mkdirSync,openSync,closeSync,writeFileSync,fsyncSync,renameSync,lstatSync,realpathSync,readFileSync,unlinkSync,rmSync} from 'node:fs';
+import {join,relative,isAbsolute,sep} from 'node:path';import {atomicWriteJson} from './atomic-json';import type {SessionTags} from './session-tags';import type {QuotaBudget} from './portable-provider';
+interface Plan {source:string;target:string;hash:string;bytes:number;complete:boolean}
+interface Options {libraryRoot:string;recordingsDir:string;sessionsDir:string;sessions:SessionTags;quota:QuotaBudget;protectedPaths:()=>string[];signal?:AbortSignal}
+const contained=(root:string,path:string)=>{const child=relative(root,path);return !!child&&!isAbsolute(child)&&child!=='..'&&!child.startsWith(`..${sep}`);};
+async function hashFile(path:string,signal?:AbortSignal){const hash=createHash('sha256');for await(const chunk of createReadStream(path)){signal?.throwIfAborted();hash.update(chunk);}return hash.digest('hex');}
+function plans(root:string):Plan[]{const path=join(root,'catalog','migrations.json');if(!existsSync(path))return [];const data=JSON.parse(readFileSync(path,'utf8'));if(data.version!==1||!Array.isArray(data.plans))throw new Error('Invalid audio migration journal');return data.plans;}
+export function migrationProtectedPaths(root:string):string[]{return plans(root).filter(plan=>!plan.complete).flatMap(plan=>[plan.source,plan.target]);}
+/** Copy -> verify -> references -> delete. Any interrupted prefix preserves usable audio. */
+export async function migrateLegacyAudio(options:Options):Promise<{migrated:number;pending:number;errors:string[]}>{
+ const {libraryRoot,sessions,quota,signal}=options;for(const name of ['catalog','media','staging'])mkdirSync(join(libraryRoot,name),{recursive:true,mode:0o700});
+ const ledger=join(libraryRoot,'catalog','migrations.json'),journal=plans(libraryRoot);const persist=()=>atomicWriteJson(ledger,{version:1,plans:journal});const errors:string[]=[];let migrated=0;
+ const legacy=realpathSync(options.recordingsDir);const grouped=new Map<string,string[]>();
+ for(const session of sessions.snapshot().sessions){const source=session.files?.wav;if(typeof source!=='string'||!existsSync(source)||lstatSync(source).isSymbolicLink()||!lstatSync(source).isFile()||!contained(legacy,realpathSync(source)))continue;const ids=grouped.get(source)||[];ids.push(session.id);grouped.set(source,ids);}
+ for(const [source,ids] of grouped){signal?.throwIfAborted();if(options.protectedPaths().some(path=>path===source||source.startsWith(`${path}${sep}`)))continue;let reservation:string|undefined,stage:string|undefined;
+  try{const stat=lstatSync(source),hash=await hashFile(source,signal),target=join(libraryRoot,'media',`${hash}.wav`);let plan=journal.find(p=>p.source===source&&!p.complete);if(plan&&(plan.hash!==hash||plan.bytes!==stat.size))throw new Error('Legacy audio changed during an incomplete migration');if(!plan){plan={source,target,hash,bytes:stat.size,complete:false};journal.push(plan);persist();}
+   if(!contained(join(libraryRoot,'media'),plan.target)||plan.target!==target)throw new Error('Invalid managed migration target');
+   const job=randomUUID();reservation=`library-${job}`;stage=join(libraryRoot,'staging',job);quota.reserve(reservation,stat.size*2+ids.reduce((n,id)=>n+4*Buffer.byteLength(JSON.stringify(sessions.read(id))),0)+131072,[stage,target,ledger,...ids.map(id=>join(options.sessionsDir,`${id}.json`))]);mkdirSync(stage,{recursive:true,mode:0o700});
+   if(!existsSync(target)){const temporary=join(stage,'audio.wav'),fd=openSync(temporary,'wx',0o600),copied=createHash('sha256');let bytes=0;try{for await(const chunk of createReadStream(source)){signal?.throwIfAborted();bytes+=chunk.length;if(bytes>stat.size)throw new Error('Legacy audio grew during migration');copied.update(chunk);writeFileSync(fd,chunk);}if(bytes!==stat.size||copied.digest('hex')!==hash)throw new Error('Legacy audio changed during migration');fsyncSync(fd);}finally{closeSync(fd);}renameSync(temporary,target);const dir=openSync(join(libraryRoot,'media'),'r');try{fsyncSync(dir);}finally{closeSync(dir);}}
+   if(lstatSync(target).size!==stat.size||await hashFile(target,signal)!==hash)throw new Error('Managed audio verification failed');
+   for(const id of ids){const session=sessions.read(id);if(session?.files?.wav!==source)continue;sessions.save({...session,files:{...session.files,wav:target}});migrated++;}
+   if(!sessions.snapshot().sessions.some(session=>session.files?.wav===source)&&!options.protectedPaths().includes(source)){if(await hashFile(source,signal)!==hash)throw new Error('Legacy audio changed before cleanup');unlinkSync(source);}
+   plan.complete=true;persist();
+  }catch(error){if(signal?.aborted)throw error;errors.push(error instanceof Error?error.message:'Audio migration failed');}
+  finally{if(stage)rmSync(stage,{recursive:true,force:true});if(reservation)quota.release(reservation);}
+ }
+ // A crash after the last reference update may leave only the unreferenced source to clean up.
+ for(const plan of journal.filter(p=>!p.complete&&!grouped.has(p.source))){try{if(options.protectedPaths().includes(plan.source)||(existsSync(plan.source)&&!contained(legacy,realpathSync(plan.source)))||!contained(join(libraryRoot,'media'),plan.target))continue;if(existsSync(plan.target)&&lstatSync(plan.target).size===plan.bytes&&await hashFile(plan.target,signal)===plan.hash&&!sessions.snapshot().sessions.some(s=>s.files?.wav===plan.source)){if(existsSync(plan.source)){if(lstatSync(plan.source).isSymbolicLink()||await hashFile(plan.source,signal)!==plan.hash)continue;unlinkSync(plan.source);}plan.complete=true;persist();}}catch(error){errors.push(error instanceof Error?error.message:'Migration cleanup unavailable');}}
+ return {migrated,pending:journal.filter(p=>!p.complete).length,errors};
+}

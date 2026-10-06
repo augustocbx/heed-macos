@@ -13,3 +13,4 @@ export * from "./tasks.ts";
 export * from "./chat.ts";
 export * from "./library-chat.ts";
 export type {StorageUsage,StoragePreview} from "./storage";
+export * from "./portable-storage.ts";

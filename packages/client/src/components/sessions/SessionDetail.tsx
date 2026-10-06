@@ -198,7 +198,7 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 
 			{showTranscribe && <RetranscribeDialog session={session} onClose={()=>setShowTranscribe(false)} onBusy={setTranscribing}/>}
    <div className={styles.meta}>{meta}</div>
-   <SessionAudioPlayer sessionId={session.id} available={!!session.files?.wav}
+   <SessionAudioPlayer archived={session.audioArchived} sessionId={session.id} available={!!session.files?.wav}
     audioRef={audioRef} onTime={setPlaybackTime} onDuration={duration=>{
      setAudioDuration(duration);
      const source=useUIStore.getState().taskSourceSeek;

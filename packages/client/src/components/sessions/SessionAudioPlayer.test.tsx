@@ -1,4 +1,4 @@
-import {render, screen, fireEvent} from '@testing-library/react';
+import {render, screen, fireEvent, waitFor} from '@testing-library/react';
 import {createRef} from 'react';
 import {describe, it, expect, vi} from 'vitest';
 import {SessionAudioPlayer} from './SessionAudioPlayer.tsx';
@@ -42,3 +42,10 @@ describe('meeting audio player',()=>{
   } finally {vi.unstubAllGlobals();}
  });
 });
+
+it('downloads archived audio only after explicit request and displays quota failure',async()=>{
+ const {libraryApi}=await import('@/api/library');vi.mocked(libraryApi.audio).mockRejectedValueOnce(new Error('Managed meeting quota has insufficient available space')).mockResolvedValueOnce({available:true});
+ const audioRef={current:null};render(<SessionAudioPlayer sessionId="imported-fixture" available={false} archived audioRef={audioRef} onTime={()=>{}} onDuration={()=>{}}/>);
+ expect(libraryApi.audio).not.toHaveBeenCalled();fireEvent.click(screen.getByRole('button',{name:'Download archived audio'}));expect(await screen.findByRole('alert')).toHaveTextContent('Increase the storage limit');fireEvent.click(screen.getByRole('button',{name:'Download archived audio'}));await waitFor(()=>expect(screen.getByLabelText('Meeting audio')).toBeInTheDocument());expect(libraryApi.audio).toHaveBeenCalledWith('imported-fixture');
+});
+vi.mock('@/api/library',()=>({libraryApi:{audio:vi.fn()}}));

@@ -1,0 +1,40 @@
+# Portable meeting library, schema v1
+
+The private device root is `HEED_APP_DIR/library`. Catalog state, identity aliases, sync checkpoints and migration journals are local only. Existing session files remain the authoritative application/AI store. Imported previews never enter that store; a complete verified transcript is atomically saved before import success. Legacy session IDs remain local aliases so task and chat links survive identity migration.
+
+## Portable representation
+
+Logical provider layout:
+
+```
+meetings/<meeting UUID>/revisions/<revision UUID>/meeting.json
+meetings/<meeting UUID>/revisions/<revision UUID>/manifest.json
+commits/<device UUID>/<revision UUID>.json
+objects/<audio SHA-256>
+```
+
+`meeting.json` explicitly includes schemaVersion=1, meeting UUID, title, created/updated dates, duration, language and transcription/live model names, finalized transcript and timed speaker segments, speaker names, tags, notes, summary and pinned state. Optional audio references include SHA-256, byte count, WAV format, `archived` mode and the exact `objects/<hash>` path. Biometric embeddings, credentials, native/live databases, absolute paths, local expiration/cache state, job metadata and unknown fields are rejected. Global accepted tasks remain local, independent of media eviction. Task/chat portable artifacts require a later explicitly versioned schema extension; they are not silently embedded in v1.
+
+The manifest contains schema, library, meeting and revision UUIDs, at most 32 unique parent revision UUIDs, and exactly one required transcript artifact (`meeting.json`) with exact byte length and lowercase SHA-256. Transcript artifacts are capped at 16 MB; segments at 100,000. Unknown versions/fields, invalid timing, nonfinal transcripts, malformed UUIDs, parent self-cycles, path traversal and hash/identity mismatches fail closed. Hashes use exact compact UTF-8 JSON bytes. The commit contains the device UUID, identities, exact relative manifest path and manifest hash. Provider adapters map this logical layout to their own IDs if needed.
+
+Publish optional audio objects first, then transcript, then manifest, then immutable device marker. An adapter must reject conflicting writes at an existing immutable path. Discovery accepts only valid commit records and verifies their manifests/transcript metadata, never fetching audio. Missing/incomplete records are ignored by adapters; failed or partial listing does not delete previously seen records. The service caps discovery at 100 pages of 100 records, detects repeated cursors and marks truncated/failed discovery incomplete. Import ordering is newest-created first, with stable meeting and revision tie-breakers. Creation dates order import priority, never resolve divergent content.
+
+## Revisions and recovery
+
+Library/meeting identity, not local legacy paths, defines reconciliation. Duplicate UUIDs across different libraries receive different device aliases. Exact revision retries are idempotent. Descendants can advance a head when local content has not changed; ancestors do not replace descendants. Divergent branches and unsynchronized local corrections remain conflicts. Explicitly selecting a conflict preserves the current local correction as an immutable revision, then creates a merge revision whose parents include the current head and preserved conflict candidates. Previously committed content remains recoverable in the private catalog.
+
+Import reserves staged copies, immutable catalog artifacts, session replacement and catalog/index overhead before transfer. The durable commit intent distinguishes a complete-session acknowledgment failure from a missing session. Restart reconciles matching complete data, preserves later user corrections as conflicts and releases abandoned staging claims. Staging uses UUID directories and is bounded per operation; no remote text becomes partially visible to AI. Quota failures skip that revision and report imported/skipped/pending counts, preserving retained text. Text is never automatically replaced by summaries or evicted.
+
+Migration streams a verified copy into content-addressed managed media, fsyncs it, verifies its hash, atomically updates every local session reference and removes a legacy source only after no session references it. Active/protected audio is skipped. Interrupted reference writes retain original and verified target plus a private migration journal; both remain protected until retry completes. Playback continues to allow verified legacy paths during migration and subsequently permits managed media paths, with symlink/containment checks.
+
+## Providers, transport and encryption
+
+`LibraryProvider` exposes bounded paginated commits, bounded metadata reads, streaming requested media, immutable writes and explicit publication confirmation. Credentials remain the adapter's device-specific responsibility. `authenticated-network` adapters must use authenticated SMB encryption/signing or authenticated HTTPS; OS-managed folders rely on operating-system account/access controls. A successful local folder write returns `local-only` until a provider establishes remote publication. States distinguish pending, uploading, provider-confirmed, verified, conflict and unavailable. Read-back verification follows remote confirmation.
+
+SHA-256 provides integrity, not encryption or authentication against a malicious writer able to replace every artifact. Schema v1 has no client-side encryption and exports no keys. Optional client-side encryption requires a separately versioned envelope, authenticated encryption, explicit key creation/storage in macOS Keychain, recovery/export controlled by the user, rotation/revocation semantics and adapters rejecting unknown envelopes. Models, binaries, logs, OS credentials and provider caches remain outside managed meeting quota.
+
+Audio is optional. Imports retain complete text without downloading it. An explicit playback request reserves media/staging/session replacement space, streams only the selected object, rejects overrun/truncation/hash mismatch, fsyncs then exposes the verified local cache. Quota-blocked and unavailable sources are distinct API outcomes. Local cache removal changes device availability only; it is never a remote deletion. Remote deletion requires a future distinct confirmed versioned tombstone action; ordinary discovery and cache cleanup have no delete contract.
+
+## Validation limits
+
+Synthetic tests cover strict format, privacy, path/hash corruption, stable aliases, concurrent revisions and clock skew, restart/commit acknowledgment failure, partial listing, quota pressure, streaming audio and interrupted migration. No real destination/accounts/shares or private meeting data are used. Equivalent M1/M4 Pro, English/Portuguese meeting and actual provider transport/confirmation/permission scenarios remain manual acceptance gates. macOS 14+ is the declared platform target; automated native builds are separate evidence from physical-device acceptance.
