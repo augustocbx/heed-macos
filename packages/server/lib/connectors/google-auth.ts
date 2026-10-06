@@ -1,5 +1,6 @@
-import {existsSync,mkdirSync,readFileSync} from 'node:fs';
+import {existsSync,mkdirSync} from 'node:fs';
 import {randomUUID} from 'node:crypto';
+import {readPrivateJson} from './private-json';
 import {dirname} from 'node:path';
 import {atomicWriteJson} from '../atomic-json';
 import {beginDesktopOAuth,type DesktopOAuthOptions} from './oauth-pkce';
@@ -11,7 +12,7 @@ export const GOOGLE_SCOPES={
 } as const;
 import type {GoogleAccessMode,GoogleFolder,GoogleConnectionSnapshot} from '@heed/shared';
 export type {GoogleAccessMode,GoogleFolder,GoogleConnectionSnapshot} from '@heed/shared';
-interface State {version:1;generation:number;connectionId?:string;clientId?:string;accessMode?:GoogleAccessMode;credentialRef?:string;requiresAuthorization?:boolean;folder?:GoogleFolder}
+interface State {version:1;generation:number;connectionId?:string;clientId?:string;accessMode?:GoogleAccessMode;credentialRef?:string;pendingRemovalRefs?:string[];requiresAuthorization?:boolean;folder?:GoogleFolder}
 interface Tokens {accessToken:string;refreshToken:string;expiresAt:number;scopes:string[]}
 interface Options {path:string;vault:SecretVault;openBrowser:(url:string)=>Promise<void>;oauth?:typeof beginDesktopOAuth;fetch?:(input:string|URL,init?:RequestInit)=>Promise<Response>;now?:()=>number;write?:typeof atomicWriteJson}
 export class GoogleConnectionError extends Error {
@@ -29,8 +30,9 @@ export class GoogleAuth {
  private state:State;private active?:AbortController;private job?:Promise<void>;private error?:string;private refresh?:Promise<Tokens>;
  constructor(private options:Options){
   mkdirSync(dirname(options.path),{recursive:true,mode:0o700});
-  this.state=existsSync(options.path)?JSON.parse(readFileSync(options.path,'utf8')):{version:1,generation:0};
-  if(this.state.version!==1||!Number.isSafeInteger(this.state.generation)||this.state.generation<0||(this.state.accessMode&&!Object.hasOwn(GOOGLE_SCOPES,this.state.accessMode)))throw new Error('Invalid Google connection state; preserve it for recovery');
+  this.state=existsSync(options.path)?readPrivateJson<State>(options.path,65536):{version:1,generation:0};
+  const uuid=(value:unknown)=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);const folder=this.state?.folder;
+  if(!this.state||Object.keys(this.state).some(key=>!['version','generation','connectionId','clientId','accessMode','credentialRef','pendingRemovalRefs','requiresAuthorization','folder'].includes(key))||(this.state.pendingRemovalRefs&&(!Array.isArray(this.state.pendingRemovalRefs)||this.state.pendingRemovalRefs.length>64||new Set(this.state.pendingRemovalRefs).size!==this.state.pendingRemovalRefs.length||this.state.pendingRemovalRefs.some(ref=>!uuid(ref)||ref===this.state.credentialRef)))||(this.state.credentialRef&&!uuid(this.state.credentialRef))||(this.state.connectionId&&!uuid(this.state.connectionId))||(this.state.clientId&&(typeof this.state.clientId!=='string'||this.state.clientId.length>256||!/^[-A-Za-z0-9_]+\.apps\.googleusercontent\.com$/.test(this.state.clientId)))||(folder&&(!/^[-A-Za-z0-9_]{1,256}$/.test(folder.id)||typeof folder.name!=='string'||folder.name.length>512||(folder.driveId!==undefined&&(typeof folder.driveId!=='string'||!/^[-A-Za-z0-9_]{1,256}$/.test(folder.driveId)))||!uuid(folder.destinationId)||typeof folder.canUpload!=='boolean'||Object.keys(folder).some(key=>!['id','name','destinationId','canUpload','driveId'].includes(key))))||this.state.version!==1||!Number.isSafeInteger(this.state.generation)||this.state.generation<0||(this.state.accessMode&&!Object.hasOwn(GOOGLE_SCOPES,this.state.accessMode)))throw new Error('Invalid Google connection state; preserve it for recovery');
  }
  private now(){return (this.options.now||Date.now)();}
  private persist(next:State){(this.options.write||atomicWriteJson)(this.options.path,next);this.state=next;}
@@ -44,15 +46,23 @@ export class GoogleAuth {
   return this.snapshot();
  }
  private async authorize(input:{clientId:string;accessMode:GoogleAccessMode},controller:AbortController){
-  const old=this.state.credentialRef;let newReference:string|undefined;
+  await this.cleanupRetired();controller.signal.throwIfAborted();const old=this.state.credentialRef;
+  const code=await (this.options.oauth||beginDesktopOAuth)({authorizationEndpoint:'https://accounts.google.com/o/oauth2/v2/auth',clientId:input.clientId,scopes:[GOOGLE_SCOPES[input.accessMode]],parameters:{access_type:'offline',prompt:'consent'},openBrowser:this.options.openBrowser,signal:controller.signal} satisfies DesktopOAuthOptions);
+  controller.signal.throwIfAborted();
+  const raw=await this.tokenRequest({client_id:input.clientId,code:code.code,code_verifier:code.codeVerifier,redirect_uri:code.redirectUri,grant_type:'authorization_code'},controller.signal);
+  const tokens=this.parseTokens(raw,input.accessMode);controller.signal.throwIfAborted();
+  const newReference=randomUUID();this.persist({...this.state,pendingRemovalRefs:this.retired(newReference)});
   try{
-   const code=await (this.options.oauth||beginDesktopOAuth)({authorizationEndpoint:'https://accounts.google.com/o/oauth2/v2/auth',clientId:input.clientId,scopes:[GOOGLE_SCOPES[input.accessMode]],parameters:{access_type:'offline',prompt:'consent'},openBrowser:this.options.openBrowser,signal:controller.signal} satisfies DesktopOAuthOptions);
-   controller.signal.throwIfAborted();
-   const raw=await this.tokenRequest({client_id:input.clientId,code:code.code,code_verifier:code.codeVerifier,redirect_uri:code.redirectUri,grant_type:'authorization_code'},controller.signal);
-   const tokens=this.parseTokens(raw,input.accessMode);controller.signal.throwIfAborted();newReference=await this.options.vault.put(tokens);controller.signal.throwIfAborted();
-   this.persist({version:1,generation:this.state.generation+1,connectionId:randomUUID(),clientId:input.clientId,accessMode:input.accessMode,credentialRef:newReference});
-  }finally{if(newReference&&this.state.credentialRef!==newReference)await this.options.vault.remove(newReference).catch(()=>{});}
-  if(old&&old!==newReference)await this.options.vault.remove(old).catch(()=>{});
+   await this.options.vault.put(tokens,newReference);controller.signal.throwIfAborted();
+   this.persist({version:1,generation:this.state.generation+1,connectionId:randomUUID(),clientId:input.clientId,accessMode:input.accessMode,credentialRef:newReference,pendingRemovalRefs:this.retired(old).filter(ref=>ref!==newReference)});
+  }finally{await this.cleanupRetired();}
+ }
+ private retired(reference?:string):string[]{const refs=[...new Set([...(this.state.pendingRemovalRefs||[]),...(reference?[reference]:[])])];if(refs.length>64)throw new GoogleConnectionError('storage-unavailable','Credential cleanup limit reached');return refs;}
+ private async cleanupRetired():Promise<void>{
+  const refs=this.state.pendingRemovalRefs||[];if(!refs.length)return;const remaining:string[]=[];
+  for(const ref of refs){try{await this.options.vault.remove(ref);}catch{remaining.push(ref);}}
+  try{this.persist({...this.state,pendingRemovalRefs:remaining});}catch{throw new GoogleConnectionError('storage-unavailable','Credential cleanup is unavailable');}
+  if(remaining.length)throw new GoogleConnectionError('storage-unavailable','Credential cleanup is unavailable');
  }
  async wait():Promise<void>{await this.job;}
  async cancel():Promise<GoogleConnectionSnapshot>{this.active?.abort();await this.job;return this.snapshot();}
@@ -66,6 +76,7 @@ export class GoogleAuth {
  private parseTokens(raw:Record<string,unknown>,mode:GoogleAccessMode,previous?:Tokens):Tokens{
   const access=raw.access_token,refresh=raw.refresh_token??previous?.refreshToken,expires=raw.expires_in;
   const scopes=typeof raw.scope==='string'?raw.scope.split(/\s+/).filter(Boolean):previous?.scopes;
+  if(scopes&&mode!=='existing-readwrite'&&scopes.some(scope=>scope.startsWith('https://www.googleapis.com/auth/drive')&&scope!==GOOGLE_SCOPES[mode]))throw new GoogleConnectionError('unexpected-scopes','A broader Drive grant was returned than explicitly requested');
   if(!scopes?.includes(GOOGLE_SCOPES[mode]))throw new GoogleConnectionError('missing-scopes','Required Drive permission was not granted');
   if(typeof access!=='string'||!access||access.length>16384||typeof refresh!=='string'||!refresh||refresh.length>16384||typeof expires!=='number'||!Number.isFinite(expires)||expires<1||expires>86400||typeof raw.token_type!=='string'||raw.token_type.toLowerCase()!=='bearer')throw new GoogleConnectionError('provider-response','Invalid Google token response');
   return {accessToken:access,refreshToken:refresh,expiresAt:this.now()+expires*1000,scopes};
@@ -103,7 +114,7 @@ export class GoogleAuth {
  async disconnect(revoke=false):Promise<GoogleConnectionSnapshot>{
   await this.cancel();await this.refresh?.catch(()=>{});const reference=this.state.credentialRef;let failure:string|undefined;
   if(revoke&&reference){try{const tokens=await this.options.vault.get<Tokens>(reference);if(tokens){const response=await (this.options.fetch||fetch)('https://oauth2.googleapis.com/revoke',{method:'POST',body:new URLSearchParams({token:tokens.refreshToken}),headers:{'Content-Type':'application/x-www-form-urlencoded'},redirect:'error',signal:AbortSignal.timeout(30000)});if(!response.ok)failure='revocation-failed';await response.body?.cancel();}}catch{failure='revocation-failed';}}
-  this.persist({version:1,generation:this.state.generation+1,connectionId:this.state.connectionId,clientId:this.state.clientId,accessMode:this.state.accessMode});
-  if(reference)try{await this.options.vault.remove(reference);}catch{failure=failure||'storage-unavailable';}this.error=failure;return this.snapshot();
+  this.persist({version:1,generation:this.state.generation+1,connectionId:this.state.connectionId,clientId:this.state.clientId,accessMode:this.state.accessMode,pendingRemovalRefs:this.retired(reference)});
+  try{await this.cleanupRetired();}catch{failure=failure||'storage-unavailable';}this.error=failure;return this.snapshot();
  }
 }

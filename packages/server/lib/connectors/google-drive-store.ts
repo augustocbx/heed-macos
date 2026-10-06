@@ -1,5 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto';
-import {existsSync,mkdirSync,readFileSync} from 'node:fs';import {dirname} from 'node:path';
+import {existsSync,mkdirSync} from 'node:fs';import {dirname} from 'node:path';
+import {readPrivateJson,privateRecord} from './private-json';
 import {atomicWriteJson} from '../atomic-json';
 import {GoogleConnectionError,readGoogleJson,type GoogleAuth,type GoogleFolder} from './google-auth';
 import type {SecretVault} from './keychain-vault';
@@ -18,7 +19,7 @@ function artifactPath(value:string):string{
 }
 function size(file:RemoteFile){if(typeof file.size!=='string'||!/^\d+$/.test(file.size))throw new Error('Invalid Drive object metadata');const bytes=Number(file.size);if(!Number.isSafeInteger(bytes)||bytes<0)throw new Error('Invalid Drive object metadata');return bytes;}
 function metadata(value:unknown):RemoteFile{
- const file=value as RemoteFile;if(!file||!ID.test(file.id)||typeof file.name!=='string'||file.name.length>512||typeof file.mimeType!=='string'||file.trashed||file.mimeType==='application/vnd.google-apps.shortcut'||(file.parents&&(!Array.isArray(file.parents)||file.parents.length>1||file.parents.some(p=>!ID.test(p)))))throw new Error('Invalid Drive object metadata');return file;
+ const file=value as RemoteFile;if(!file||!ID.test(file.id)||typeof file.name!=='string'||file.name.length>512||typeof file.mimeType!=='string'||(file.sha256Checksum!==undefined&&(typeof file.sha256Checksum!=='string'||!HASH.test(file.sha256Checksum)))||(file.version!==undefined&&(typeof file.version!=='string'||file.version.length>256))||file.trashed||file.mimeType==='application/vnd.google-apps.shortcut'||(file.parents&&(!Array.isArray(file.parents)||file.parents.length>1||file.parents.some(p=>!ID.test(p)))))throw new Error('Invalid Drive object metadata');return file;
 }
 function url(path:string,parameters:Record<string,string>={}){const u=new URL(`${API}/${path}`);for(const [key,value] of Object.entries(parameters))u.searchParams.set(key,value);u.searchParams.set('supportsAllDrives','true');return u.toString();}
 function sha(bytes:Uint8Array){return createHash('sha256').update(bytes).digest('hex');}
@@ -27,10 +28,14 @@ export class GoogleDriveStore {
  private state:State;
  constructor(private options:Options){
   if(!ID.test(options.folder.id))throw new Error('Invalid Drive folder');mkdirSync(dirname(options.path),{recursive:true,mode:0o700});
-  this.state=existsSync(options.path)?JSON.parse(readFileSync(options.path,'utf8')):{version:1,folderId:options.folder.id,destinationId:options.folder.destinationId,files:{},directories:{},jobs:{}};
-  if(this.state.version!==1||this.state.folderId!==options.folder.id||this.state.destinationId!==options.folder.destinationId||!this.state.files||!this.state.directories||!this.state.jobs||Object.keys(this.state.jobs).length>10000)throw new Error('Invalid Drive provider state; preserve it for recovery');
+  this.state=existsSync(options.path)?readPrivateJson<State>(options.path,33554432):{version:1,folderId:options.folder.id,destinationId:options.folder.destinationId,files:{},directories:{},jobs:{}};
+  const entries=(value:unknown)=>privateRecord(value,MAX_FILES)&&Object.entries(value).every(([path,entry])=>{try{artifactPath(path);const e=entry as DriveEntry;return !!e&&Object.keys(e).every(key=>['path','id','parentId','bytes','sha256','version'].includes(key))&&e.path===path&&ID.test(e.id)&&ID.test(e.parentId)&&Number.isSafeInteger(e.bytes)&&e.bytes>=0&&(e.sha256===undefined||HASH.test(e.sha256))&&(e.version===undefined||(typeof e.version==='string'&&e.version.length<=256));}catch{return false;}});
+  const directories=(value:unknown)=>privateRecord(value,MAX_FILES)&&Object.entries(value).every(([path,id])=>{try{artifactPath(`${path}/entry`);return typeof id==='string'&&ID.test(id)&&path.split('/').length<=6;}catch{return false;}});
+  const token=(value:unknown)=>typeof value==='string'&&value.length>0&&value.length<=8192;
+  const candidate=this.state?.candidate;
+  if(!this.state||Object.keys(this.state).some(key=>!['version','folderId','destinationId','files','directories','jobs','checkpoint','candidate'].includes(key))||this.state.version!==1||this.state.folderId!==options.folder.id||this.state.destinationId!==options.folder.destinationId||!entries(this.state.files)||!directories(this.state.directories)||!privateRecord(this.state.jobs,10000)||(this.state.checkpoint!==undefined&&!token(this.state.checkpoint))||(candidate&&(!token(candidate.checkpoint)||!entries(candidate.files)||!directories(candidate.directories)||typeof candidate.nonce!=='string'||!/^[a-f0-9-]{36}$/.test(candidate.nonce)))||Object.entries(this.state.jobs).some(([path,job])=>{try{artifactPath(path);return !job||Object.keys(job).some(key=>!['id','bytes','hash','uploadRef','offset','done'].includes(key))||!ID.test(job.id)||!Number.isSafeInteger(job.bytes)||job.bytes<1||!HASH.test(job.hash)||typeof job.uploadRef!=='string'||!/^[a-f0-9-]{36}$/.test(job.uploadRef)||!Number.isSafeInteger(job.offset)||job.offset<0||job.offset>job.bytes||(job.done!==undefined&&typeof job.done!=='boolean');}catch{return true;}}))throw new Error('Invalid Drive provider state; preserve it for recovery');
  }
- private persist(next:State){(this.options.write||atomicWriteJson)(this.options.path,next);this.state=next;}
+ private persist(next:State){if(Object.keys(next.files).length>MAX_FILES||Object.keys(next.directories).length>MAX_FILES||Object.keys(next.jobs).length>10000||(next.candidate&&(Object.keys(next.candidate.files).length>MAX_FILES||Object.keys(next.candidate.directories).length>MAX_FILES))||Buffer.byteLength(JSON.stringify(next))>33554432)throw new Error('Drive provider state limit reached');(this.options.write||atomicWriteJson)(this.options.path,next);this.state=next;}
  private edit(change:(next:State)=>void){const next=structuredClone(this.state);change(next);this.persist(next);}
  private binding(write=false){const current=this.options.auth.snapshot();
   if(!current.connected||current.authorizing||current.generation!==this.options.generation||current.folder?.id!==this.options.folder.id||current.folder.destinationId!==this.options.folder.destinationId)throw new GoogleConnectionError('connection-changed','Google library connection changed');
@@ -69,10 +74,10 @@ export class GoogleDriveStore {
   if(!header||Object.keys(header).sort().join(',')!=='destinationId,format,schemaVersion'||header.format!=='heed-portable-library'||header.schemaVersion!==1||header.destinationId!==this.options.folder.destinationId)throw new Error('Drive library identity changed');
  }
  private entry(path:string,file:RemoteFile,parentId:string):DriveEntry{return {path,id:file.id,parentId,bytes:size(file),sha256:file.sha256Checksum,version:file.version};}
- private async addEntry(files:Record<string,DriveEntry>,path:string,file:RemoteFile,parentId:string,signal?:AbortSignal){
+ private async addEntry(files:Record<string,DriveEntry>,path:string,file:RemoteFile,parentId:string,directories:Record<string,string>,signal?:AbortSignal){
   artifactPath(path);const entry=this.entry(path,file,parentId),old=files[path];
-  if(old&&old.id!==entry.id){if(old.bytes!==entry.bytes)throw new Error('Conflicting immutable Drive paths');
-   if(!old.sha256||!entry.sha256){if(entry.bytes>65536)throw new Error('Ambiguous Drive objects require manual reconciliation');const oldFile=await this.file(old.id,signal);if(sha(await this.download(oldFile,65536,signal))!==sha(await this.download(file,65536,signal)))throw new Error('Conflicting immutable Drive paths');}
+  if(old&&old.id!==entry.id){const oldFile=await this.validateEntry(path,old,directories,signal);file=await this.validateEntry(path,entry,directories,signal);if(old.bytes!==entry.bytes)throw new Error('Conflicting immutable Drive paths');
+   if(!old.sha256||!entry.sha256){if(entry.bytes>65536)throw new Error('Ambiguous Drive objects require manual reconciliation');if(sha(await this.download(oldFile,65536,signal))!==sha(await this.download(file,65536,signal)))throw new Error('Conflicting immutable Drive paths');}
    else if(old.sha256!==entry.sha256)throw new Error('Conflicting immutable Drive paths');
    if(old.id.localeCompare(entry.id)<=0)return;
   }files[path]=entry;
@@ -85,7 +90,7 @@ export class GoogleDriveStore {
     if(!parent.path&&file.name==='heed-library.json')continue;
     const property=file.properties?.heedPath;const path=property||`${parent.path?`${parent.path}/`:''}${file.name}`;
     if(file.mimeType===FOLDER){if(!parent.path&&!['commits','meetings','objects'].includes(file.name))continue;if(property||file.name==='.'||file.name==='..'||file.name.includes('/')||path.split('/').length>6)throw new Error('Invalid Drive library directory');if(directories[path]&&directories[path]!==file.id)throw new Error('Ambiguous Drive library directories');directories[path]=file.id;queue.push({id:file.id,path});}
-    else {if(property){if(parent.path||file.properties?.heedDestination!==this.options.folder.destinationId)throw new Error('Drive object is outside the selected library');}else if(!parent.path)continue;await this.addEntry(files,path,file,parent.id,signal);}
+    else {if(property){if(parent.path||file.properties?.heedDestination!==this.options.folder.destinationId)throw new Error('Drive object is outside the selected library');}else if(!parent.path)continue;await this.addEntry(files,path,file,parent.id,directories,signal);}
     if(Object.keys(files).length+Object.keys(directories).length>MAX_FILES)throw new Error('Drive library metadata limit reached');
    }
   }return {checkpoint:start.startPageToken,files,directories,nonce:randomUUID()};
@@ -104,7 +109,7 @@ export class GoogleDriveStore {
     if(parent===this.options.folder.id&&file.name==='heed-library.json')continue;
     const path=file.properties?.heedPath||(parentPath?`${parentPath}/${file.name}`:undefined);if(!path)continue;
     if(file.properties?.heedPath&&(parent!==this.options.folder.id||file.properties.heedDestination!==this.options.folder.destinationId))throw new Error('Drive object is outside the selected library');
-    if(old&&old.path!==path)throw new Error('Immutable Drive path changed');await this.addEntry(files,path,file,parent!,signal);
+    if(old&&old.path!==path)throw new Error('Immutable Drive path changed');await this.addEntry(files,path,file,parent!,directories,signal);
    }
    if(typeof result.nextPageToken==='string'){if(seen.has(result.nextPageToken))throw new Error('Drive changes repeated a checkpoint');seen.add(result.nextPageToken);page=result.nextPageToken;continue;}
    if(typeof result.newStartPageToken!=='string')throw new Error('Invalid final Drive checkpoint');return {checkpoint:result.newStartPageToken,files,directories,nonce:randomUUID()};
@@ -118,6 +123,9 @@ export class GoogleDriveStore {
  private async resolve(path:string,signal?:AbortSignal):Promise<RemoteFile>{
   artifactPath(path);const candidates=this.state.candidate?.files||this.state.files;let directories=this.state.candidate?.directories||this.state.directories;let entry=candidates[path];
   if(!entry){const discovered=await this.scan(signal);entry=discovered.files[path];directories=discovered.directories;if(!entry)throw new Error('Drive object is unavailable');}
+  return this.validateEntry(path,entry,directories,signal);
+ }
+ private async validateEntry(path:string,entry:DriveEntry,directories:Record<string,string>,signal?:AbortSignal):Promise<RemoteFile>{
   const file=await this.file(entry.id,signal);
   let parent=entry.parentId;let directory=path.split('/').slice(0,-1).join('/');
   for(let depth=0;parent!==this.options.folder.id;depth++){if(depth>=6||!directory||directories[directory]!==parent)throw new Error('Drive object is outside the selected library');const folder=await this.file(parent,signal);const expectedName=directory.split('/').at(-1);directory=directory.split('/').slice(0,-1).join('/');const expectedParent=directory?directories[directory]:this.options.folder.id;if(folder.mimeType!==FOLDER||folder.name!==expectedName||!expectedParent||folder.parents?.[0]!==expectedParent)throw new Error('Drive object is outside the selected library');parent=expectedParent;}

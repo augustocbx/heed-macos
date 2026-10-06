@@ -5,7 +5,7 @@ export const libraryApi={
  refresh:()=>apiClient.post<LibrarySnapshot>('/api/library',{action:'refresh'}),
  importSelected:(revisionIds:string[])=>apiClient.post<LibrarySnapshot>('/api/library',{action:'import',revisionIds}),
  resolve:(revisionId:string)=>apiClient.post<LibraryPreview>('/api/library',{action:'resolve',revisionId}),
- publish:(revisionId:string)=>apiClient.post<LibrarySnapshot>('/api/library',{action:'publish',revisionId}),
+ publish:(revisionId:string,expectedProviderId:string)=>apiClient.post<LibrarySnapshot>('/api/library',{action:'publish',revisionId,expectedProviderId}),
  audio:(sessionId:string)=>apiClient.post<{available:true}>('/api/library',{action:'audio',sessionId}),
  migrate:()=>apiClient.post<{migrated:number;pending:number;errors:string[]}>('/api/library',{action:'migrate'}),
 };

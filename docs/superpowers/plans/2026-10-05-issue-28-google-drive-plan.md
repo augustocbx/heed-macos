@@ -40,10 +40,12 @@ Interfaces: GoogleConnection controller snapshot/connect/cancel/disconnect/selec
 ### Task 3: HTTP, Settings and portable integration
 
 Files: server/server.ts, client/api/google-drive.ts, components/settings/GoogleDriveSettings.tsx and tests, translations-google-drive.ts.
-- [ ] Rebase merged storage/quota foundations, use selected provider through existing PortableLibrary, test imported complete sessions remain offline AI-ready and pending sources protected.
-- [ ] Write failing actual isolated server/UI tests for hostile origins, explicit access consent, connection status, create/select/switch/disconnect and capacity distinction; implement four-locale UI and guarded routes.
+- [x] Rebase merged storage/quota foundations, use selected provider through existing PortableLibrary, test imported complete sessions remain offline AI-ready and pending sources protected.
+- [x] Write failing actual isolated server/UI tests for hostile origins, explicit access consent, connection status, create/select/switch/disconnect and capacity distinction; implement four-locale UI and guarded routes.
 
 ### Task 4: verify and publish
 
-- [ ] Run entire current CI workflow, frozen install, synthetic integration and native helper compile; document real-account/two-Mac acceptance limits.
+- [x] Run entire current CI workflow, frozen install, synthetic integration and native helper compile; document real-account/two-Mac acceptance limits.
 - [ ] Independent parent review, fix proven findings with regressions; commit/push English PR Refs #28 with no auto-close, exact-head match, clean worktree and stopped own services.
+
+Review regressions cover duplicate-change ancestry before any content read, failed disconnect protection of newly finalized unqueued WAVs, durable retired credentials after locked-vault restart, and bounded private journals. Generic republishing binds the currently displayed destination, including an already verified revision after switching providers.

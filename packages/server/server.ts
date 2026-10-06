@@ -1,3 +1,5 @@
+import {createGoogleDriveController} from './lib/connectors/google-drive-runtime';
+import {googleDriveResponse,type GoogleDriveController} from './lib/connectors/google-drive-http';
 import {SmbConnections} from './lib/smb-connections.ts';
 import {smbResponse} from './lib/smb-http.ts';
 import {ProviderRegistry} from './lib/provider-registry.ts';
@@ -53,7 +55,7 @@ function audioWorkBusy() {
 }
 async function preemptNotes() {
  manualNotesController?.abort();
- await Promise.all([notesService.preempt(), tasksService.preempt(), chatService.preempt(), libraryChatService.preempt(), manualNotesDone]);
+ await Promise.all([notesService.preempt(), tasksService.preempt(), chatService.preempt(), libraryChatService.preempt(), googleDrive?.preempt(), manualNotesDone]);
 }
 function cleanupCaptureWork(id:string){if(!/^[a-zA-Z0-9_-]{1,180}$/.test(id))return;const directory=join(APP_DIR,'library','staging',`capture-${id}`);rmSync(directory,{recursive:true,force:true});if(recordingWorkDirectory===directory)recordingWorkDirectory=null;}
 function protectAudio(path: string) { retainedProcessing.set(path, Date.now() + 120_000); }
@@ -84,8 +86,12 @@ const FALLBACK_MODEL = process.env.HEED_MODEL || null;
 ensureAppDirs([UPLOAD_DIR]);
 let portableRuntime:PortableLibraryRuntime|undefined;
 let smbConnections:SmbConnections|undefined;
+let googleDrive:GoogleDriveController|undefined;
+let googleDriveUnavailable=false;
+let googleDriveInitializing=false;
+const googleProtectedPaths=()=>{if(googleDriveUnavailable||googleDriveInitializing)return [UPLOAD_DIR,join(LIBRARY_DIR,'media')];try{return googleDrive?.protectedPaths()||[];}catch{googleDriveUnavailable=true;return [UPLOAD_DIR,join(LIBRARY_DIR,'media')];}};
 let synchronizationUnavailable=false;
-const synchronizationProtectedPaths=()=>{if(synchronizationUnavailable)return [UPLOAD_DIR,join(LIBRARY_DIR,'media')];try{return [...(smbConnections?.protectedLocalPaths()||[]),...(portableRuntime?.protectedPaths(smbConnections?.protectedRevisionIds())||[])];}catch{synchronizationUnavailable=true;return [UPLOAD_DIR,join(LIBRARY_DIR,'media')];}};
+const synchronizationProtectedPaths=()=>{if(synchronizationUnavailable)return [UPLOAD_DIR,join(LIBRARY_DIR,'media')];try{return [...googleProtectedPaths(),...(smbConnections?.protectedLocalPaths()||[]),...(portableRuntime?.protectedPaths(smbConnections?.protectedRevisionIds())||[])];}catch{synchronizationUnavailable=true;return [UPLOAD_DIR,join(LIBRARY_DIR,'media')];}};
 const captureProtectedPaths=()=>[...retainedProcessing.keys(),...((recorderPath && (recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning))?[recorderPath]:[])];
 const managedQuota=createAppQuota({
  recordingsDir:UPLOAD_DIR,
@@ -105,9 +111,10 @@ export function getPortableLibrary(){return portableRuntime!.get();}
 export const providerRegistry=new ProviderRegistry({path:join(APP_DIR,'provider-preference.json'),getLibrary:getPortableLibrary});
 synchronizationUnavailable=providerRegistry.unavailable();
 try{smbConnections=new SmbConnections({path:join(LIBRARY_DIR,'catalog','smb-connections.json'),catalogPath:join(LIBRARY_DIR,'catalog','state.json'),sessions:()=>sessionTags.snapshot().sessions,registry:providerRegistry,get library(){return getPortableLibrary();},busy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
- if(providerRegistry.preferredId())providerRegistry.restore();
  if(!synchronizationUnavailable)smbConnections.start();
 }catch{synchronizationUnavailable=true;console.error('Synchronization unavailable. Preserve device preferences and connection configuration for recovery.');}
+try{googleDriveInitializing=true;googleDrive=createGoogleDriveController({appDir:APP_DIR,libraryDir:LIBRARY_DIR,registry:providerRegistry,listSessions:()=>sessionTags.snapshot().sessions,audioBusy:()=>audioWorkBusy()||!!manualNotesController||notesService.busy||tasksService.busy||chatService.busy||libraryChatService.busy});}catch{googleDriveUnavailable=true;console.error('Google Drive unavailable. Preserve its connection configuration for recovery.');}finally{googleDriveInitializing=false;}
+if(!synchronizationUnavailable&&providerRegistry.preferredId())try{providerRegistry.restore();}catch{console.error('Synchronization preference could not be restored. Check destination access and storage.');}
 
 async function handleLibrary(req:Request):Promise<Response>{
  if(!permissionRequestAllowed(req,PORT))return new Response(null,{status:403});
@@ -2495,6 +2502,7 @@ const server = Bun.serve({
 		if (url.pathname.startsWith("/api/recording/")) { httpServer.timeout(req,0); return handleRecordingControl(req,url.pathname); }
 		if (url.pathname.startsWith("/api/meeting-detection/")) return meetingDetectionRoute(req,meetingDetection,PORT);
 		if (url.pathname.startsWith("/api/desktop/control/")) { httpServer.timeout(req,0); return handleDesktopControl(req, url.pathname); }
+		if(url.pathname==='/api/google-drive'){httpServer.timeout(req,0);if(!permissionRequestAllowed(req,PORT))return new Response(null,{status:403});return synchronizationUnavailable||googleDriveUnavailable||!googleDrive?Response.json({error:'Google Drive unavailable. Preserve its configuration for recovery.',code:'unavailable'},{status:503,headers:{'Cache-Control':'no-store'}}):googleDriveResponse(req,googleDrive,PORT);}
 		if(url.pathname==='/api/smb'){httpServer.timeout(req,0);if(!desktopRequestAllowed(req))return new Response(null,{status:403});return synchronizationUnavailable||!smbConnections?Response.json({error:'Synchronization unavailable. Preserve its configuration for recovery.'},{status:503}):smbResponse(req,smbConnections);}
 		if (url.pathname==='/api/library'){httpServer.timeout(req,0);return handleLibrary(req);}
 		if (url.pathname==='/api/storage' || url.pathname.startsWith('/api/storage/')) return handleStorage(req);
@@ -2516,7 +2524,7 @@ const server = Bun.serve({
 // Never leave an orphaned ffmpeg/syscap holding the mic: on SIGINT/SIGTERM/exit, gracefully reap
 // every tracked child (the recorder, the system-audio capture, the level meter). Previously there
 // was NO signal handler — a server crash/exit left ffmpeg running and the mic "stuck busy".
-installShutdownHooks(() => { smbConnections?.close();clearInterval(notesTimer); clearInterval(tasksTimer); manualNotesController?.abort(); void notesService.preempt(); void tasksService.preempt(); void chatService.preempt(); void libraryChatService.preempt(); stopLiveTranscribe(); });
+installShutdownHooks(async () => { smbConnections?.close();await googleDrive?.preempt();clearInterval(notesTimer); clearInterval(tasksTimer); manualNotesController?.abort(); void notesService.preempt(); void tasksService.preempt(); void chatService.preempt(); void libraryChatService.preempt(); stopLiveTranscribe(); });
 
 console.log(`
   ┌──────────────────────────────────┐

@@ -1,11 +1,11 @@
-import type {PortableCommit} from '@heed/shared';import type {LibraryProvider} from '../portable-provider';import {providerPath} from '../portable-provider';
+import type {PortableCommit,PortableMeeting} from '@heed/shared';import type {LibraryProvider} from '../portable-provider';import {providerPath} from '../portable-provider';
 import {encode,MAX_ARTIFACT_BYTES,revisionPath,sha256,validateBundle,validateCommit,validateManifest,validateMeeting} from '../portable-schema';import {GoogleDriveStore} from './google-drive-store';
 export class GoogleDriveProvider implements LibraryProvider {
  readonly id:string;readonly name:string;readonly readOnly:boolean;readonly capabilities:{read:true;write:boolean;transportSecurity:'encrypted';remoteDeletion:false;durability:'provider-receipt'};readonly transport='authenticated-network' as const;
  private active=new Map<AbortController,Promise<unknown>>();
  private async execute<T>(signal:AbortSignal|undefined,run:(signal:AbortSignal)=>Promise<T>):Promise<T>{const controller=new AbortController();const combined=signal?AbortSignal.any([signal,controller.signal]):controller.signal;const job=Promise.resolve().then(()=>run(combined));this.active.set(controller,job);try{return await job;}finally{this.active.delete(controller);}}
  async preempt(){const jobs=[...this.active];for(const [controller] of jobs)controller.abort();await Promise.allSettled(jobs.map(([,job])=>job));}
- constructor(private options:{id:string;name:string;store:GoogleDriveStore;readOnly?:boolean}){this.id=options.id;this.name=options.name;this.readOnly=options.readOnly===true;this.capabilities={read:true,write:!this.readOnly,transportSecurity:'encrypted',remoteDeletion:false,durability:'provider-receipt'};}
+ constructor(private options:{id:string;name:string;store:GoogleDriveStore;readOnly?:boolean;onConfirmed?:(marker:PortableCommit,payload:PortableMeeting,signal?:AbortSignal)=>Promise<void>}){this.id=options.id;this.name=options.name;this.readOnly=options.readOnly===true;this.capabilities={read:true,write:!this.readOnly,transportSecurity:'encrypted',remoteDeletion:false,durability:'provider-receipt'};}
  list(cursor:string|null,limit:number,signal?:AbortSignal){return this.execute(signal,s=>this.listCore(cursor,limit,s));}
  acknowledgeDiscovery(signal?:AbortSignal){return this.execute(signal,s=>this.acknowledgeDiscoveryCore(s));}
  read(path:string,maxBytes:number,signal?:AbortSignal){return this.execute(signal,s=>this.readCore(path,maxBytes,s));}
@@ -37,6 +37,6 @@ export class GoogleDriveProvider implements LibraryProvider {
   await this.options.store.write(path,bytes.length,sha256(bytes),chunks(),signal);
  }
  private async confirmCore(raw:PortableCommit,signal?:AbortSignal):Promise<'remote-confirmed'>{
-  const marker=validateCommit(raw);await this.required(marker,signal);const path=`commits/${marker.deviceId}/${marker.revisionId}.json`,bytes=encode(marker);await this.options.store.verify(path,bytes.length,sha256(bytes),signal);return 'remote-confirmed';
+  const marker=validateCommit(raw);const payload=await this.required(marker,signal);const path=`commits/${marker.deviceId}/${marker.revisionId}.json`,bytes=encode(marker);await this.options.store.verify(path,bytes.length,sha256(bytes),signal);await this.options.onConfirmed?.(marker,payload,signal);return 'remote-confirmed';
  }
 }

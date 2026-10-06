@@ -21,6 +21,7 @@ export const LIBRARY_TRANSLATIONS:Record<string,{'pt-BR':string;fr:string;de:str
  ['Migrate legacy audio','Migrar áudio antigo','Migrer l’ancien audio','Bestehendes Audio migrieren'],
  ['Some audio migrations remain pending. Original audio is preserved.','Algumas migrações de áudio estão pendentes. O áudio original foi preservado.','Certaines migrations audio restent en attente. L’audio original est conservé.','Einige Audiomigrationen stehen aus. Das Originalaudio bleibt erhalten.'],
  ['Managed audio migration completed.','Migração de áudio gerenciado concluída.','Migration de l’audio géré terminée.','Migration des verwalteten Audios abgeschlossen.'],
+ ['Publish this revision','Publicar esta revisão','Publier cette révision','Diese Revision veröffentlichen'],
  ['Download archived audio','Baixar áudio arquivado','Télécharger l’audio archivé','Archiviertes Audio herunterladen'],
  ['Downloading audio…','Baixando áudio…','Téléchargement de l’audio…','Audio wird heruntergeladen…'],
  ['Archived audio is unavailable. The transcript remains available.','O áudio arquivado está indisponível. A transcrição continua disponível.','L’audio archivé est indisponible. La transcription reste disponible.','Archiviertes Audio ist nicht verfügbar. Das Transkript bleibt verfügbar.'],
