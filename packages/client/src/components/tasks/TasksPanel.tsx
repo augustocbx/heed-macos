@@ -41,7 +41,7 @@ export function TasksPanel({session,onSeek,onShowTranscript}:Props){
  const loadAfterMutation=async()=>{const result=await tasksApi.list(session?.id);setSnapshot(result);};
  const openSource=async(task:TaskView,evidence?:TaskEvidence)=>{
   if(session?.id===task.sessionId){
-   const currentSource=task.sourceState==='available'&&session.transcriptRevision===task.sourceRevision;
+   const currentSource=task.sourceState==='available'&&session.transcriptRevision===task.sourceRevision&&(!evidence||evidence.sourceRevision===task.sourceRevision);
    onShowTranscript?.(currentSource?evidence:undefined);
    if(!currentSource&&evidence)useUIStore.getState().showToast('The transcript changed. Refresh before asking or retrying.');
    if(currentSource&&evidence?.start!==null&&evidence?.start!==undefined&&task.audioAvailable&&onSeek)onSeek(evidence.start);
@@ -50,10 +50,10 @@ export function TasksPanel({session,onSeek,onShowTranscript}:Props){
   await mutate(async()=>{
    const meeting=(await sessionsApi.list()).find(s=>s.id===task.sessionId);if(!meeting)throw new Error('Source meeting deleted');
    useSessionsStore.getState().accept(meeting);useSessionsStore.getState().view(meeting);
-   const currentSource=task.sourceState==='available'&&meeting.transcriptRevision===task.sourceRevision;
+   const currentSource=task.sourceState==='available'&&meeting.transcriptRevision===task.sourceRevision&&(!evidence||evidence.sourceRevision===task.sourceRevision);
    useUIStore.setState({currentPage:'sessions',
     chatSourceFocus:currentSource&&evidence?{...evidence,id:`${task.sessionId}:${task.sourceRevision}:${evidence.segmentIndex}:0`,sessionId:task.sessionId,segmentIndex:meeting.segments?.length?evidence.segmentIndex:null,paragraphIndex:null}:null,
-    taskSourceSeek:currentSource&&task.audioAvailable&&evidence?.start!==null&&evidence?.start!==undefined?{sessionId:task.sessionId,seconds:evidence.start,sourceRevision:task.sourceRevision}:null});
+    taskSourceSeek:currentSource&&meeting.files?.wav&&task.audioAvailable&&evidence?.start!==null&&evidence?.start!==undefined?{sessionId:task.sessionId,seconds:evidence.start,sourceRevision:task.sourceRevision}:null});
    if(!currentSource&&evidence)useUIStore.getState().showToast('The transcript changed. Refresh before asking or retrying.');
   });
  };

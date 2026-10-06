@@ -85,7 +85,7 @@ test('global task refuses a stale seek after refetching a changed source meeting
 test('global task pins the exact source revision and segment when navigating to available audio',async()=>{
  snapshot={tasks:[{...acceptedTask(),audioAvailable:true,evidence:[taskEvidence]}]};
  useUIStore.setState({taskSourceSeek:null,chatSourceFocus:null,currentPage:'tasks'});
- vi.stubGlobal('fetch',vi.fn(async(url:string)=>Response.json(url.includes('/api/sessions')?[{...meeting,transcriptRevision:'r',segments:[{speaker:'Ana',text:'Opening.',start:0,end:1},{speaker:'Ana',text:'No actions yet.',start:1,end:4},{speaker:'Ana',text:taskEvidence.quote,start:4.64,end:7.12}]}]:snapshot)));
+ vi.stubGlobal('fetch',vi.fn(async(url:string)=>Response.json(url.includes('/api/sessions')?[{...meeting,transcriptRevision:'r',files:{wav:'synthetic.wav'},segments:[{speaker:'Ana',text:'Opening.',start:0,end:1},{speaker:'Ana',text:'No actions yet.',start:1,end:4},{speaker:'Ana',text:taskEvidence.quote,start:4.64,end:7.12}]}]:snapshot)));
  render(<TasksPanel/>);await screen.findByText('Accepted action');fireEvent.click(screen.getByRole('button',{name:'View task source'}));
  await waitFor(()=>expect(useUIStore.getState().currentPage).toBe('sessions'));
  expect(useUIStore.getState().taskSourceSeek).toMatchObject({sessionId:'m',seconds:4.64,sourceRevision:'r'});
@@ -98,4 +98,20 @@ test('current meeting task focuses its source segment and seeks available audio'
  render(<TasksPanel session={{...meeting,transcriptRevision:'r'}} onSeek={onSeek} onShowTranscript={onShowTranscript}/>);
  await screen.findByText('Accepted action');fireEvent.click(screen.getByRole('button',{name:'View task source'}));
  expect(onShowTranscript).toHaveBeenCalledWith(taskEvidence);expect(onSeek).toHaveBeenCalledWith(4.64);
+});
+
+test('global task with a stale available-audio snapshot does not leave a deferred seek for missing current audio',async()=>{
+ snapshot={tasks:[{...acceptedTask(),audioAvailable:true,evidence:[taskEvidence]}]};
+ useUIStore.setState({taskSourceSeek:null,chatSourceFocus:null,currentPage:'tasks'});
+ vi.stubGlobal('fetch',vi.fn(async(url:string)=>Response.json(url.includes('/api/sessions')?[{...meeting,transcriptRevision:'r',files:{}}]:snapshot)));
+ render(<TasksPanel/>);await screen.findByText('Accepted action');fireEvent.click(screen.getByRole('button',{name:'View task source'}));
+ await waitFor(()=>expect(useUIStore.getState().currentPage).toBe('sessions'));
+ expect(useUIStore.getState().taskSourceSeek).toBeNull();
+});
+test('task evidence from a different revision cannot focus or seek the current transcript',async()=>{
+ const onSeek=vi.fn(),onShowTranscript=vi.fn();
+ snapshot={tasks:[{...acceptedTask(),audioAvailable:true,evidence:[{...taskEvidence,sourceRevision:'different-revision'}]}]};
+ render(<TasksPanel session={{...meeting,transcriptRevision:'r'}} onSeek={onSeek} onShowTranscript={onShowTranscript}/>);
+ await screen.findByText('Accepted action');fireEvent.click(screen.getByRole('button',{name:'View task source'}));
+ expect(onSeek).not.toHaveBeenCalled();expect(onShowTranscript).toHaveBeenCalledWith(undefined);
 });
