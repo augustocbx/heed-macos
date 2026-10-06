@@ -199,6 +199,11 @@ def validate_rpc(value, sequence):
         "close": (),
         "checkpoint": (),
         "inventory": (),
+        "write-pending": ("value",),
+        "retire-pending": ("value",),
+        "write-fence": ("value",),
+        "write-deletion": ("value",),
+        "confirm": ("commit",),
     }
     if action not in fields:
         raise SmbError("unsupported-coordination")

@@ -16,9 +16,16 @@ from protocol import (
     validate_path,
     duplicate_free,
 )
-from identity import validate_identity, stable_hex, receipt, validate_metadata, same_object
+from identity import (
+    validate_identity,
+    stable_hex,
+    receipt,
+    validate_metadata,
+    same_object,
+)
 
 HEADER = "heed-library.json"
+MAX_HANDLES = 512
 
 
 def protected_connection_type():
@@ -192,7 +199,7 @@ class SmbProtocolBackend:
             encrypted=encrypted,
         )
 
-    def open(self, path, directory=False, access="read", exclusive=False):
+    def open(self, path, directory=False, access="read", exclusive=False, verification=False):
         from smbprotocol.open import (
             Open,
             ImpersonationLevel,
@@ -201,15 +208,23 @@ class SmbProtocolBackend:
             ShareAccess,
         )
         from smbprotocol.file_info import FileAttributes
-        from smbprotocol.exceptions import AccessDenied, ObjectNameCollision
+        from smbprotocol.exceptions import (
+            AccessDenied,
+            ObjectNameCollision,
+            ObjectNameNotFound,
+            ObjectPathNotFound,
+            SharingViolation,
+        )
 
         validate_path(path, directory)
-        if access not in ("read", "write", "delete", "maximum"):
+        if len(self.handles) >= MAX_HANDLES:
+            raise SmbError("bounds-exceeded")
+        if access not in ("read", "write", "delete", "write-delete", "maximum"):
             raise SmbError("invalid-input")
         mask = 0x80 | (0x1 if access == "read" else 0)
-        if access == "delete":
-            mask |= 0x10000
-        if access == "write":
+        if access in ("delete", "write-delete"):
+            mask |= 0x10001
+        if access in ("write", "write-delete"):
             mask |= 0x3
         if access == "maximum":
             mask = 0x02000000
@@ -224,14 +239,22 @@ class SmbProtocolBackend:
                 ImpersonationLevel.Impersonation,
                 mask,
                 FileAttributes.FILE_ATTRIBUTE_NORMAL,
-                ShareAccess.FILE_SHARE_READ,
-                CreateDisposition.FILE_CREATE if exclusive else CreateDisposition.FILE_OPEN,
+                (
+                    7
+                    if verification and access == "read" and not exclusive
+                    else ShareAccess.FILE_SHARE_READ
+                ),
+                (CreateDisposition.FILE_CREATE if exclusive else CreateDisposition.FILE_OPEN),
                 options,
             )
         except AccessDenied:
             raise SmbError("access-denied") from None
         except ObjectNameCollision:
             raise SmbError("destination-exists") from None
+        except (ObjectNameNotFound, ObjectPathNotFound):
+            raise FileNotFoundError() from None
+        except SharingViolation:
+            raise SmbError("destination-busy") from None
         self.handles.append(h)
         return h
 
@@ -373,6 +396,35 @@ class SmbProtocolBackend:
             raise SmbError("transport-unavailable")
         return h
 
+    def write(self, handle, data, offset):
+        return handle.write(data, offset=offset, write_through=True)
+
+    def rename(self, handle, target):
+        """Network destinations are share-relative; never descriptor-relative."""
+        from smbprotocol.file_info import FileRenameInformation
+        from smbprotocol.open import SMB2SetInfoRequest
+        from smbprotocol.exceptions import ObjectNameCollision
+
+        validate_path(target)
+        info = FileRenameInformation()
+        info["replace_if_exists"] = False
+        info["root_directory"] = 0
+        info["file_name"] = target.replace("/", "\\").encode("utf-16-le")
+        request = SMB2SetInfoRequest()
+        request["info_type"] = info.INFO_TYPE
+        request["file_info_class"] = info.INFO_CLASS
+        request["file_id"] = handle.file_id
+        request["buffer"] = info.pack()
+        try:
+            self.connection.receive(
+                self.connection.send(
+                    request, sid=self.session.session_id, tid=self.tree.tree_connect_id
+                ),
+                resolve_symlinks=False,
+            )
+        except ObjectNameCollision:
+            raise SmbError("destination-exists") from None
+
     def flush(self, handle):
         handle.flush()
 
@@ -468,6 +520,8 @@ class DirectTransport:
             components = path.split("/")
             for n in range(1, len(components)):
                 self.pin("/".join(components[:n]), True)
+        if len(self.pins) >= MAX_HANDLES:
+            raise SmbError("bounds-exceeded")
         h = self.backend.open(full, directory=directory)
         try:
             metadata = validate_metadata(self.backend.metadata(h), directory)
@@ -485,6 +539,12 @@ class DirectTransport:
             raise
         self.pins.append((full, h, metadata))
         return h
+
+    def unpin(self, handle):
+        # Remove only after CLOSE is acknowledged. An ambiguous close stops the
+        # operation and retains private recovery authority.
+        self.backend.close_handle(handle)
+        self.pins = [pin for pin in self.pins if pin[1] is not handle]
 
     def listing(self, handle):
         result = []

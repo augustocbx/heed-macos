@@ -1,0 +1,492 @@
+"""Private original-machine/physical-directory authority for direct SMB effects.
+
+Wire query: {protocol:1,action:'pending',binding:DirectSmbBinding,appDir:string}.
+Files: appDir/library/catalog/direct-smb/<binding UUID>/<operation UUID>.{json,guard}.
+Version 1 is private state, unrelated to portable payload/coordination versions.
+No copied receipt, generation change, elapsed time, or remote bytes grants authority.
+"""
+
+import fcntl
+import hashlib
+import json
+import os
+import re
+import stat
+import subprocess
+from uuid import uuid4
+
+from protocol import (
+    SmbError,
+    UUID,
+    MAX_ENTRIES,
+    duplicate_free,
+    exact,
+    validate_path,
+    validate_endpoint,
+)
+from identity import validate_metadata, validate_identity
+
+MAX_JOURNAL = 4_000_000
+PHASES = {"prepared", "claimed", "checkpointed", "releasing", "released"}
+
+
+def physical_uuid():
+    result = subprocess.run(
+        ["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+        capture_output=True,
+        timeout=5,
+        check=False,
+    )
+    if result.returncode or len(result.stdout) > 65536:
+        raise SmbError("recovery-required")
+    match = re.search(rb'"IOPlatformUUID"\s*=\s*"([A-Fa-f0-9-]{36})"', result.stdout)
+    if (
+        not match
+        or not re.fullmatch(rb"[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}", match[1])
+        or set(match[1].replace(b"-", b"")) == {48}
+    ):
+        raise SmbError("recovery-required")
+    return match[1].decode().lower()
+
+
+def local_identity(info):
+    birth = getattr(info, "st_birthtime_ns", None)
+    if birth is None:
+        value = getattr(info, "st_birthtime", None)
+        if value is None:
+            raise SmbError("unsupported-identity")
+        birth = int(value * 1_000_000_000)
+    return [str(info.st_dev), str(info.st_ino), str(birth)]
+
+
+def directory(path, create=False):
+    if (
+        not isinstance(path, str)
+        or not path.startswith("/")
+        or os.path.realpath(path) != path
+        or any(p in (".", "..") for p in path.split("/"))
+    ):
+        raise SmbError("recovery-required")
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for name in path.split("/")[1:]:
+            if not name:
+                continue
+            if create:
+                try:
+                    os.mkdir(name, 0o700, dir_fd=fd)
+                    os.fsync(fd)
+                except FileExistsError:
+                    pass
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def regular(fd, maximum=MAX_JOURNAL):
+    info = os.fstat(fd)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or info.st_uid != os.getuid()
+        or info.st_mode & 0o077
+        or info.st_size > maximum
+    ):
+        raise SmbError("recovery-required")
+    return info
+
+
+def read_json(parent, name):
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+    try:
+        info = regular(fd)
+        data = b""
+        while len(data) < info.st_size:
+            chunk = os.read(fd, min(131072, info.st_size - len(data)))
+            if not chunk:
+                raise SmbError("recovery-required")
+            data += chunk
+        value = json.loads(data, object_pairs_hook=duplicate_free)
+        return value
+    except (ValueError, UnicodeError, RecursionError):
+        raise SmbError("recovery-required") from None
+    finally:
+        os.close(fd)
+
+
+def scope_for(binding, context):
+    for key in ("id", "destinationId", "connectionGeneration"):
+        if not UUID.fullmatch(binding.get(key, "")):
+            raise SmbError("invalid-input")
+    exact(context, ("operationId", "deviceId", "kind"))
+    if any(not UUID.fullmatch(context.get(k, "")) for k in ("operationId", "deviceId")) or context[
+        "kind"
+    ] not in ("read", "publish", "delete"):
+        raise SmbError("invalid-input")
+    return dict(
+        bindingId=binding["id"],
+        endpoint=binding["endpoint"],
+        identity=binding["identity"],
+        destinationId=binding["destinationId"],
+        connectionGeneration=binding["connectionGeneration"],
+        **context,
+    )
+
+
+def validate_job(job):
+    exact(
+        job,
+        (
+            "version",
+            "scope",
+            "origin",
+            "phase",
+            "claim",
+            "allocations",
+            "admissions",
+            "effects",
+            "confirmed",
+        ),
+    )
+    if job["version"] != 1 or type(job["version"]) is not int or job["phase"] not in PHASES:
+        raise SmbError("recovery-required")
+    scope = job["scope"]
+    exact(
+        scope,
+        (
+            "bindingId",
+            "endpoint",
+            "identity",
+            "destinationId",
+            "connectionGeneration",
+            "operationId",
+            "deviceId",
+            "kind",
+        ),
+    )
+    for key in (
+        "bindingId",
+        "destinationId",
+        "connectionGeneration",
+        "operationId",
+        "deviceId",
+    ):
+        if not isinstance(scope[key], str) or not UUID.fullmatch(scope[key]):
+            raise SmbError("recovery-required")
+    if scope["kind"] not in ("read", "publish", "delete"):
+        raise SmbError("recovery-required")
+    validate_endpoint(scope["endpoint"])
+    validate_identity(scope["identity"])
+    origin = exact(job["origin"], ("physical", "appPath", "app", "catalog", "guard"))
+    for key in ("physical", "appPath"):
+        if not isinstance(origin[key], str) or not re.fullmatch("[a-f0-9]{64}", origin[key]):
+            raise SmbError("recovery-required")
+    for key in ("app", "catalog", "guard"):
+        if (
+            not isinstance(origin[key], list)
+            or len(origin[key]) != 3
+            or any(
+                not isinstance(n, str) or not re.fullmatch("[0-9]{1,30}", n) for n in origin[key]
+            )
+        ):
+            raise SmbError("recovery-required")
+    claim = job["claim"]
+    if claim is not None:
+        exact(claim, ("stage", "metadata", "state"))
+        if (
+            not isinstance(claim["stage"], str)
+            or not claim["stage"].startswith(".heed-stage-")
+            or not UUID.fullmatch(claim["stage"][12:])
+            or claim["state"] not in ("allocating", "renaming", "claimed")
+        ):
+            raise SmbError("recovery-required")
+        if claim["metadata"] is not None:
+            validate_metadata(claim["metadata"], True)
+    elif job["phase"] != "prepared":
+        raise SmbError("recovery-required")
+
+    if type(job["effects"]) is not int or not 0 <= job["effects"] <= 100000:
+        raise SmbError("recovery-required")
+    for key in ("allocations", "admissions", "confirmed"):
+        if not isinstance(job[key], dict) or len(job[key]) > MAX_ENTRIES:
+            raise SmbError("bounds-exceeded")
+    for path, item in job["admissions"].items():
+        parts = path.split("/")
+        if (
+            len(parts) != 5
+            or parts[0] != "meetings"
+            or parts[2] != "revisions"
+            or parts[4] != "manifest.json"
+            or not UUID.fullmatch(parts[1])
+            or not UUID.fullmatch(parts[3])
+            or path not in job["allocations"]
+            or item != job["allocations"][path]["sha256"]
+        ):
+            raise SmbError("recovery-required")
+    for path, item in job["allocations"].items():
+        validate_path(path)
+        exact(item, ("stage", "metadata", "bytes", "sha256", "state", "directory"))
+        if (
+            not isinstance(item["stage"], str)
+            or not re.fullmatch(r"\.heed-claim/[a-f0-9-]{36}", item["stage"])
+            or not UUID.fullmatch(item["stage"].split("/")[1])
+            or item["state"]
+            not in (
+                "planned",
+                "allocating",
+                "writing",
+                "verified",
+                "renaming",
+                "published",
+            )
+            or type(item["directory"]) is not bool
+        ):
+            raise SmbError("recovery-required")
+        if item["metadata"] is not None:
+            validate_metadata(item["metadata"], item["directory"])
+        if (
+            type(item["bytes"]) is not int
+            or item["bytes"] < 0
+            or not isinstance(item["sha256"], str)
+            or not re.fullmatch("[a-f0-9]{64}", item["sha256"])
+        ):
+            raise SmbError("recovery-required")
+    for path, digest in job["confirmed"].items():
+        if (
+            not re.fullmatch(r"commits/[a-f0-9-]{36}/[a-f0-9-]{36}\.json", path)
+            or not isinstance(digest, str)
+            or not re.fullmatch("[a-f0-9]{64}", digest)
+        ):
+            raise SmbError("recovery-required")
+    return job
+
+
+class Journal:
+    def __init__(self, binding, context, app_dir):
+        self.fd = self.app_fd = self.guard_fd = None
+        self.app_dir = app_dir
+        self.scope = scope_for(binding, context)
+        self.path = app_dir + "/library/catalog/direct-smb/" + binding["id"]
+        self.name = context["operationId"] + ".json"
+        self.guard_name = context["operationId"] + ".guard"
+        self.previous = None
+        try:
+            self.app_fd = directory(app_dir)
+            self.fd = directory(self.path, create=True)
+            self.machine = physical_uuid()
+            names = os.listdir(self.fd)
+            if len(names) >= MAX_ENTRIES * 2:
+                raise SmbError("bounds-exceeded")
+            existing = self.name in names
+            flags = os.O_RDWR | os.O_NOFOLLOW | (0 if existing else os.O_CREAT | os.O_EXCL)
+            self.guard_fd = os.open(self.guard_name, flags, 0o600, dir_fd=self.fd)
+            regular(self.guard_fd, 0)
+            try:
+                fcntl.flock(self.guard_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise SmbError("destination-busy") from None
+            self.origin = self.current_origin()
+            if existing:
+                self.data = validate_job(read_json(self.fd, self.name))
+                if self.data["origin"] != self.origin or self.data["scope"] != self.scope:
+                    raise SmbError("recovery-required")
+                self.previous = json.loads(json.dumps(self.data))
+            else:
+                os.fsync(self.guard_fd)
+                os.fsync(self.fd)
+                self.data = dict(
+                    version=1,
+                    scope=self.scope,
+                    origin=self.origin,
+                    phase="prepared",
+                    claim=None,
+                    allocations={},
+                    admissions={},
+                    effects=0,
+                    confirmed={},
+                )
+                self.save()
+        except BaseException:
+            self.close()
+            raise
+
+    def current_origin(self):
+        app = directory(self.app_dir)
+        catalog = directory(self.path)
+        try:
+            app_identity = local_identity(os.fstat(app))
+            catalog_identity = local_identity(os.fstat(catalog))
+            if app_identity != local_identity(
+                os.fstat(self.app_fd)
+            ) or catalog_identity != local_identity(os.fstat(self.fd)):
+                raise SmbError("recovery-required")
+            info = regular(self.guard_fd, 0)
+            actual = os.stat(self.guard_name, dir_fd=self.fd, follow_symlinks=False)
+            if local_identity(info) != local_identity(actual) or not stat.S_ISREG(actual.st_mode):
+                raise SmbError("recovery-required")
+            return dict(
+                physical=hashlib.sha256(
+                    ("heed-direct-smb-device-v1:" + self.machine).encode()
+                ).hexdigest(),
+                appPath=hashlib.sha256(
+                    ("heed-direct-smb-app-v1:" + self.app_dir).encode()
+                ).hexdigest(),
+                app=app_identity,
+                catalog=catalog_identity,
+                guard=local_identity(info),
+            )
+        finally:
+            os.close(app)
+            os.close(catalog)
+
+    def check(self):
+        if self.fd is None or self.current_origin() != self.origin:
+            raise SmbError("recovery-required")
+        if self.previous is not None and read_json(self.fd, self.name) != self.previous:
+            raise SmbError("recovery-required")
+
+    def save(self):
+        self.check()
+        validate_job(self.data)
+        content = json.dumps(self.data, separators=(",", ":")).encode()
+        if len(content) > MAX_JOURNAL:
+            raise SmbError("bounds-exceeded")
+        name = "." + self.name + "." + str(uuid4())
+        fd = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=self.fd,
+        )
+        try:
+            remaining = memoryview(content)
+            while remaining:
+                n = os.write(fd, remaining)
+                if n <= 0:
+                    raise SmbError("recovery-required")
+                remaining = remaining[n:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        self.check()
+        os.replace(name, self.name, src_dir_fd=self.fd, dst_dir_fd=self.fd)
+        os.fsync(self.fd)
+        self.previous = json.loads(content)
+
+    def begin_effect(self):
+        self.check()
+        if self.data["phase"] not in ("claimed", "checkpointed"):
+            raise SmbError("recovery-required")
+        self.data["phase"] = "claimed"
+        self.data["effects"] += 1
+        self.save()
+
+    def finish(self):
+        self.data["phase"] = "released"
+        self.save()
+        self.check()
+        os.unlink(self.name, dir_fd=self.fd)
+        os.fsync(self.fd)
+        os.unlink(self.guard_name, dir_fd=self.fd)
+        os.fsync(self.fd)
+        self.close()
+
+    def close(self):
+        for name in ("guard_fd", "fd", "app_fd"):
+            fd = getattr(self, name, None)
+            if fd is not None:
+                os.close(fd)
+                setattr(self, name, None)
+
+
+def pending_transactions(binding, app_dir):
+    """Pure bounded local query; positive recovery hints still require SMB revalidation."""
+    scope_for(binding, dict(operationId=binding["id"], deviceId=binding["id"], kind="read"))
+    path = app_dir + "/library/catalog/direct-smb/" + binding["id"]
+    try:
+        fd = directory(path)
+    except FileNotFoundError:
+        return []
+    app = None
+    result = []
+    try:
+        app = directory(app_dir)
+        names = os.listdir(fd)
+        if len(names) > MAX_ENTRIES * 3:
+            raise SmbError("bounds-exceeded")
+        machine = physical_uuid()
+        jobs = [n for n in names if n.endswith(".json") and not n.startswith(".")]
+        if len(jobs) > MAX_ENTRIES:
+            raise SmbError("bounds-exceeded")
+        for name in sorted(jobs):
+            if not UUID.fullmatch(name[:-5]):
+                raise SmbError("recovery-required")
+            job = validate_job(read_json(fd, name))
+            scope = job["scope"]
+            if name != scope["operationId"] + ".json":
+                raise SmbError("recovery-required")
+            authority = False
+            try:
+                guard = os.open(name[:-5] + ".guard", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+                try:
+                    regular(guard, 0)
+                    origin = dict(
+                        physical=hashlib.sha256(
+                            ("heed-direct-smb-device-v1:" + machine).encode()
+                        ).hexdigest(),
+                        appPath=hashlib.sha256(
+                            ("heed-direct-smb-app-v1:" + app_dir).encode()
+                        ).hexdigest(),
+                        app=local_identity(os.fstat(app)),
+                        catalog=local_identity(os.fstat(fd)),
+                        guard=local_identity(os.fstat(guard)),
+                    )
+                    authority = job["origin"] == origin
+                finally:
+                    os.close(guard)
+            except (FileNotFoundError, SmbError):
+                pass
+            binding_matches = scope == scope_for(
+                binding, {k: scope[k] for k in ("operationId", "deviceId", "kind")}
+            )
+            pinned = bool(job["claim"] and job["claim"].get("metadata")) and all(
+                a["metadata"] or a["state"] == "planned" for a in job["allocations"].values()
+            )
+            recoverable = bool(authority and binding_matches and pinned)
+            release_only = (
+                job["phase"] in ("checkpointed", "releasing", "released")
+                or not job["admissions"]
+                and not job["effects"]
+            )
+            item = dict(
+                operationId=scope["operationId"],
+                deviceId=scope["deviceId"],
+                kind=scope["kind"],
+                recoverable=recoverable,
+                admissions=[
+                    dict(
+                        meetingId=p.split("/")[1],
+                        revisionId=p.split("/")[3],
+                        manifestHash=h,
+                    )
+                    for p, h in job["admissions"].items()
+                ],
+            )
+            if release_only:
+                item["releaseOnly"] = True
+            if not recoverable:
+                item["blockedReason"] = (
+                    "Original physical owner, exact binding, and durable object receipts are required."
+                )
+            result.append(item)
+        if len(json.dumps(result)) > 1_900_000:
+            raise SmbError("bounds-exceeded")
+        return result
+    finally:
+        os.close(fd)
+        if app is not None:
+            os.close(app)

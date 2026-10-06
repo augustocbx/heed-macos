@@ -8,14 +8,24 @@ from types import SimpleNamespace
 
 try:
     from transport import DirectTransport, SmbProtocolBackend, protected_connection_type
-    from protocol import SmbError, read_frame, validate_endpoint, validate_credentials, validate_rpc
+    from protocol import (
+        SmbError,
+        read_frame,
+        validate_endpoint,
+        validate_credentials,
+        validate_rpc,
+    )
     from identity import validate_identity
     from guardian import serve
 except ModuleNotFoundError:
     DirectTransport = None
 
 ENDPOINT = dict(
-    server="nas.local", port=445, share="meetings", folder="Heed/library", requireEncryption=False
+    server="nas.local",
+    port=445,
+    share="meetings",
+    folder="Heed/library",
+    requireEncryption=False,
 )
 CREDS = dict(username="reviewer", password="secret-never-log", domain="")
 IDENTITY = dict(
@@ -365,14 +375,25 @@ class TransportTests(unittest.TestCase):
             validate_rpc(missing, 1)
 
     def guardian_read(self, requests):
-        self.server.files["Heed/library/heed-library.json"] = json.dumps(
-            dict(format="heed-portable-library", schemaVersion=3, destinationId=DEST)
-        ).encode()
-        self.server.files["Heed/library/objects/abc"] = b"abc"
-        self.server.entries = ["heed-library.json"]
+        # Whole-operation read transactions now need a private physical owner
+        # and a namespace-capable server. The protocol assertions stay unchanged.
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from test_transaction import MemoryServer, ENDPOINT as endpoint, PHYSICAL
+
+        server = MemoryServer()
+        server.add("library/objects", directory=True)
+        server.add("library/objects/abc", b"abc")
+        identity = dict(
+            IDENTITY,
+            rootId="0000000000000002",
+            rootCreated="01db000000000001",
+            volumeCreated="01db000000000002",
+        )
         binding = dict(
-            endpoint=ENDPOINT,
-            identity=IDENTITY,
+            endpoint=endpoint,
+            identity=identity,
             destinationId=DEST,
             destinationVersion=3,
             readOnly=False,
@@ -382,20 +403,25 @@ class TransportTests(unittest.TestCase):
             connectionGeneration="33333333-3333-4333-8333-333333333333",
             credentialRef="44444444-4444-4444-8444-444444444444",
         )
-        startup = dict(
-            protocol=1,
-            action="transaction",
-            endpoint=ENDPOINT,
-            credentials=CREDS,
-            binding=binding,
-            context=dict(operationId=DEST, deviceId=DEST, kind="read"),
-            appDir="/private/tmp/task1",
-        )
-        data = json.dumps(startup).encode() + b"\n"
-        for request in requests:
-            data += request if isinstance(request, bytes) else json.dumps(request).encode() + b"\n"
-        output = io.BytesIO()
-        serve(io.BytesIO(data), output, backend_factory=lambda: self.server)
+        with tempfile.TemporaryDirectory() as app, patch(
+            "journal.physical_uuid", return_value=PHYSICAL
+        ):
+            startup = dict(
+                protocol=1,
+                action="transaction",
+                endpoint=endpoint,
+                credentials=CREDS,
+                binding=binding,
+                context=dict(operationId=DEST, deviceId=DEST, kind="read"),
+                appDir=str(Path(app).resolve()),
+            )
+            data = json.dumps(startup).encode() + b"\n"
+            for request in requests:
+                data += (
+                    request if isinstance(request, bytes) else json.dumps(request).encode() + b"\n"
+                )
+            output = io.BytesIO()
+            serve(io.BytesIO(data), output, backend_factory=lambda: server)
         return io.BytesIO(output.getvalue())
 
     def test_guardian_echoes_only_current_request_nonce_on_all_frames(self):
@@ -416,7 +442,7 @@ class TransportTests(unittest.TestCase):
             self.assertTrue(response["ok"])
         self.assertEqual(source.read(), b"")
         self.assertEqual(self.server.created, [])
-        source = self.guardian_read([dict(id=1, nonce="e" * 64, action="inventory")])
+        source = self.guardian_read([dict(id=1, nonce="e" * 64, action="remove-exact")])
         read_frame(source)
         self.assertEqual(
             read_frame(source),
@@ -432,7 +458,7 @@ class TransportTests(unittest.TestCase):
         )
         self.assertEqual(self.server.created, [])
 
-    def test_guardian_sanitizes_sdk_exception_and_transaction_effects_are_gated(self):
+    def test_guardian_sanitizes_sdk_exception_and_requires_original_app_directory(self):
         class Broken(HandleServer):
             def connect(self, *args):
                 raise RuntimeError("password secret-never-log server private-path")
@@ -442,7 +468,12 @@ class TransportTests(unittest.TestCase):
             io.BytesIO(
                 (
                     json.dumps(
-                        dict(protocol=1, action="probe", endpoint=ENDPOINT, credentials=CREDS)
+                        dict(
+                            protocol=1,
+                            action="probe",
+                            endpoint=ENDPOINT,
+                            credentials=CREDS,
+                        )
                     )
                     + "\n"
                 ).encode()
@@ -481,7 +512,13 @@ class TransportTests(unittest.TestCase):
                     json.dumps(startup)
                     + "\n"
                     + json.dumps(
-                        dict(id=1, action="write", path="objects/abc", bytes=0, sha256="0" * 64)
+                        dict(
+                            id=1,
+                            action="write",
+                            path="objects/abc",
+                            bytes=0,
+                            sha256="0" * 64,
+                        )
                     )
                     + "\n"
                 ).encode()
@@ -489,7 +526,7 @@ class TransportTests(unittest.TestCase):
             output,
             backend_factory=lambda: self.server,
         )
-        self.assertIn(b"unsupported-coordination", output.getvalue())
+        self.assertIn(b"transport-unavailable", output.getvalue())
         self.assertEqual(self.server.created, [])
 
 

@@ -1,0 +1,874 @@
+"""Owned temporary directories and a network-free handle server exercise recovery.
+
+This double tests client ordering and refusal; it cannot establish NAS enforcement.
+"""
+
+import copy
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import shutil
+import tempfile
+import unittest
+from types import SimpleNamespace
+from uuid import uuid4
+from unittest.mock import patch
+
+from protocol import SmbError
+from transport import DirectTransport, SmbProtocolBackend
+
+try:
+    from journal import Journal, pending_transactions
+    from transaction import Transaction
+except ImportError:
+    Journal = Transaction = None
+
+ENDPOINT = dict(
+    server="nas.local",
+    port=445,
+    share="test",
+    folder="library",
+    requireEncryption=False,
+)
+CREDS = dict(username="test", password="never-log", domain="")
+DEST = "22222222-2222-4222-8222-222222222222"
+DEVICE = "33333333-3333-4333-8333-333333333333"
+MEETING = "44444444-4444-4444-8444-444444444444"
+REVISION = "55555555-5555-4555-8555-555555555555"
+LIBRARY = "66666666-6666-4666-8666-666666666666"
+PHYSICAL = "77777777-7777-4777-8777-777777777777"
+PREFIX = f"meetings/{MEETING}/revisions/{REVISION}"
+MANIFEST = PREFIX + "/manifest.json"
+MARKER = f"commits/{DEVICE}/{REVISION}.json"
+
+
+def encoded(value):
+    return json.dumps(value, separators=(",", ":")).encode()
+
+
+def digest(value):
+    return hashlib.sha256(value).hexdigest()
+
+
+class MemoryServer:
+    """A shared namespace with handle-bound identities and explicit fault points."""
+
+    def __init__(self):
+        self.server_guid = "0123456789abcdef0123456789abcdef"
+        self.share_safe = self.enforced = True
+        self.read_only = False
+        self.nodes = {}
+        self.handles = []
+        self.events = []
+        self.fault = None
+        self.sequence = 0
+        self.add("", directory=True)
+        self.add("library", directory=True)
+        self.add(
+            "library/heed-library.json",
+            encoded(dict(format="heed-portable-library", schemaVersion=3, destinationId=DEST)),
+        )
+
+    def add(self, path, data=b"", directory=False):
+        self.sequence += 1
+        n = dict(
+            objectId=f"{self.sequence:016x}",
+            created="01db000000000001",
+            volumeSerial="00000001",
+            volumeCreated="01db000000000002",
+            directory=directory,
+            reparse=False,
+            deletePending=False,
+            links=1,
+            bytes=len(data),
+            data=data,
+        )
+        self.nodes[path] = n
+        return n
+
+    def connect(self, *args):
+        return dict(authenticated=True, dialect="3.1.1", signed=True, encrypted=False)
+
+    def root_access(self, path):
+        return dict(
+            readOnly=self.read_only,
+            metadata={k: v for k, v in self.nodes[path].items() if k != "data"},
+        )
+
+    def open(self, path, directory=False, access="read", exclusive=False, verification=False):
+        if exclusive:
+            if path in self.nodes:
+                raise SmbError("destination-exists")
+            node = self.add(path, directory=directory)
+            self.events.append(("create", path))
+        else:
+            if path not in self.nodes:
+                raise FileNotFoundError(path)
+            node = self.nodes[path]
+        if self.enforced:
+            for h in self.handles:
+                if (
+                    not h.closed
+                    and h.node is node
+                    and (access != "read" or h.access != "read" and not verification)
+                ):
+                    raise SmbError("destination-busy")
+        h = SimpleNamespace(path=path, node=node, access=access, directory=directory, closed=False)
+        self.handles.append(h)
+        return h
+
+    def metadata(self, h):
+        if h.closed:
+            raise AssertionError("closed handle used")
+        return {k: v for k, v in h.node.items() if k != "data"}
+
+    def enforce_sharing(self, h):
+        return self.enforced
+
+    def list(self, h, limit):
+        prefix = h.path + "/" if h.path else ""
+        return iter(
+            sorted(
+                p[len(prefix) :]
+                for p in self.nodes
+                if p.startswith(prefix) and p != h.path and "/" not in p[len(prefix) :]
+            )
+        )
+
+    def read(self, h, offset, size):
+        return h.node["data"][offset : offset + size]
+
+    def write(self, h, data, offset):
+        h.node["data"] = h.node["data"][:offset] + data + h.node["data"][offset + len(data) :]
+        h.node["bytes"] = len(h.node["data"])
+        return len(data)
+
+    def flush(self, h):
+        self.events.append(("flush", h.path))
+        if self.fault == "flush":
+            self.fault = None
+            raise SmbError()
+
+    def rename(self, h, target):
+        if target in self.nodes:
+            raise SmbError("destination-exists")
+        old = h.path
+        moves = [p for p in self.nodes if p == old or p.startswith(old + "/")]
+        for p in moves:
+            self.nodes[target + p[len(old) :]] = self.nodes.pop(p)
+        for opened in self.handles:
+            if opened.path == old or opened.path.startswith(old + "/"):
+                opened.path = target + opened.path[len(old) :]
+        self.events.append(("rename", old, target))
+        if self.fault == "rename" or self.fault == target:
+            self.fault = None
+            raise SmbError()
+
+    def close_handle(self, h):
+        h.closed = True
+        self.events.append(("close", h.path))
+        if self.fault == "close" or self.fault == ("close", h.path):
+            self.fault = None
+            raise SmbError()
+
+    def close(self):
+        for h in self.handles:
+            if not h.closed:
+                self.close_handle(h)
+
+
+class MemorySession:
+    """Each production transport owns only its session's opens on the shared server."""
+
+    def __init__(self, server):
+        self.server = server
+        self.owned = []
+
+    def __getattr__(self, name):
+        return getattr(self.server, name)
+
+    def open(self, *args, **kwargs):
+        h = self.server.open(*args, **kwargs)
+        self.owned.append(h)
+        return h
+
+    def close(self):
+        for h in reversed(self.owned):
+            if not h.closed:
+                self.server.close_handle(h)
+
+
+class TransactionTests(unittest.TestCase):
+    def setUp(self):
+        self.assertIsNotNone(Transaction, "original-owner transaction engine is not implemented")
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.app = str(Path(self.temp.name).resolve())
+        self.physical = patch("journal.physical_uuid", return_value=PHYSICAL)
+        self.physical.start()
+        self.addCleanup(self.physical.stop)
+        self.server = MemoryServer()
+        self.binding = dict(
+            id=str(uuid4()),
+            name="Synthetic",
+            endpoint=ENDPOINT,
+            identity=dict(
+                serverGuid=self.server.server_guid,
+                volumeSerial="00000001",
+                volumeCreated="01db000000000002",
+                rootId="0000000000000002",
+                rootCreated="01db000000000001",
+            ),
+            destinationId=DEST,
+            destinationVersion=3,
+            connectionGeneration=str(uuid4()),
+            credentialRef=str(uuid4()),
+            readOnly=False,
+            security="signed",
+        )
+        self.context = dict(operationId=str(uuid4()), deviceId=DEVICE, kind="publish")
+        self.transactions = []
+        self.addCleanup(lambda: [t.abort() for t in self.transactions])
+
+    def transaction(self, context=None, app=None):
+        tx = Transaction(
+            DirectTransport(ENDPOINT, CREDS, MemorySession(self.server)),
+            self.binding,
+            context or self.context,
+            app or self.app,
+        )
+        self.transactions.append(tx)
+        return tx
+
+    def bundle(self, audio=False):
+        payload = dict(
+            schemaVersion=1,
+            meetingId=MEETING,
+            title="Synthetic",
+            createdAt="2026-10-06T00:00:00Z",
+            duration=1,
+            language="en",
+            transcript="Public fixture.",
+            segments=[],
+            speakers=[],
+            tags=[],
+            aiNotes="",
+            summary="",
+            pinned=False,
+            transcriptFinalized=True,
+        )
+        media = b"synthetic audio"
+        if audio:
+            payload["audio"] = dict(
+                sha256=digest(media),
+                bytes=len(media),
+                format="wav",
+                mode="archived",
+                objectPath="objects/" + digest(media),
+            )
+        body = encoded(payload)
+        manifest = dict(
+            schemaVersion=1,
+            libraryId=LIBRARY,
+            meetingId=MEETING,
+            revisionId=REVISION,
+            parents=[],
+            artifacts=[dict(path="meeting.json", bytes=len(body), sha256=digest(body))],
+        )
+        marker = dict(
+            schemaVersion=1,
+            libraryId=LIBRARY,
+            meetingId=MEETING,
+            revisionId=REVISION,
+            deviceId=DEVICE,
+            manifestPath=MANIFEST,
+            manifestHash=digest(encoded(manifest)),
+        )
+        intent = dict(
+            version=1,
+            id=REVISION,
+            deviceId=DEVICE,
+            revision=dict(libraryId=LIBRARY, meetingId=MEETING, revisionId=REVISION),
+        )
+        if audio:
+            intent["audio"] = dict(
+                path=payload["audio"]["objectPath"],
+                bytes=len(media),
+                sha256=digest(media),
+            )
+        return body, encoded(manifest), marker, intent, media
+
+    def write(self, tx, path, data):
+        tx.write(path, io.BytesIO(data), len(data), digest(data))
+
+    def publish(self, tx, audio=True):
+        body, manifest, marker, intent, media = self.bundle(audio)
+        self.write(tx, MANIFEST, manifest)
+        tx.write_pending(intent)
+        if audio:
+            self.write(tx, intent["audio"]["path"], media)
+        self.write(tx, PREFIX + "/meeting.json", body)
+        self.write(tx, MARKER, encoded(marker))
+        return marker, intent
+
+    def test_complete_publication_confirm_checkpoint_and_whole_claim_release(self):
+        tx = self.transaction()
+        marker, intent = self.publish(tx)
+        self.assertEqual(tx.confirm(marker), "remote-confirmed")
+        tx.retire_pending(intent)
+        self.assertEqual(tx.inventory()["pending"], [])
+        tx.checkpoint()
+        tx.close()
+        self.assertNotIn("library/.heed-claim", self.server.nodes)
+        self.assertEqual(pending_transactions(self.binding, self.app), [])
+        canonical = [e[2] for e in self.server.events if e[0] == "rename"]
+        self.assertLess(
+            canonical.index("library/" + MANIFEST),
+            canonical.index("library/objects/" + digest(b"synthetic audio")),
+        )
+        self.assertLess(
+            canonical.index("library/" + PREFIX + "/meeting.json"),
+            canonical.index("library/" + MARKER),
+        )
+
+    def test_competing_owner_and_old_timestamp_never_take_over(self):
+        tx = self.transaction()
+        tx.abort()
+        other = dict(self.context, operationId=str(uuid4()))
+        with self.assertRaises(SmbError):
+            self.transaction(other)
+        self.assertIn("library/.heed-claim", self.server.nodes)
+        resumed = self.transaction()
+        resumed.checkpoint()
+        resumed.close()
+
+    def test_manifest_first_and_pending_audio_admission(self):
+        tx = self.transaction()
+        body, manifest, marker, intent, media = self.bundle(True)
+        for path, data in [
+            (PREFIX + "/meeting.json", body),
+            (intent["audio"]["path"], media),
+            (MARKER, encoded(marker)),
+        ]:
+            with self.assertRaises(SmbError):
+                self.write(tx, path, data)
+            self.assertNotIn("library/" + path, self.server.nodes)
+        self.write(tx, MANIFEST, manifest)
+        with self.assertRaises(SmbError):
+            self.write(tx, intent["audio"]["path"], media)
+
+    def test_unknown_equal_manifest_is_not_adopted_or_overwritten(self):
+        tx = self.transaction()
+        _, manifest, *_ = self.bundle()
+        self.server.add("library/meetings", directory=True)
+        self.server.add("library/meetings/" + MEETING, directory=True)
+        self.server.add("library/meetings/" + MEETING + "/revisions", directory=True)
+        self.server.add("library/" + PREFIX, directory=True)
+        unknown = self.server.add("library/" + MANIFEST, manifest)
+        with self.assertRaises(SmbError):
+            self.write(tx, MANIFEST, manifest)
+        self.assertIs(self.server.nodes["library/" + MANIFEST], unknown)
+
+    def test_marker_rejected_until_payload_and_audio_readback_match(self):
+        tx = self.transaction()
+        body, manifest, marker, intent, media = self.bundle(True)
+        self.write(tx, MANIFEST, manifest)
+        tx.write_pending(intent)
+        self.write(tx, PREFIX + "/meeting.json", body)
+        with self.assertRaises(SmbError):
+            self.write(tx, MARKER, encoded(marker))
+        self.assertNotIn("library/" + MARKER, self.server.nodes)
+        self.write(tx, intent["audio"]["path"], media)
+        self.server.nodes["library/" + intent["audio"]["path"]]["data"] = b"x" * len(media)
+        with self.assertRaises(SmbError):
+            self.write(tx, MARKER, encoded(marker))
+
+    def test_lost_rename_ack_retains_receipt_and_original_can_resume(self):
+        tx = self.transaction()
+        _, manifest, *_ = self.bundle()
+        self.server.fault = "library/" + MANIFEST
+        with self.assertRaises(SmbError):
+            self.write(tx, MANIFEST, manifest)
+        original = self.server.nodes["library/" + MANIFEST]
+        tx.abort()
+        resumed = self.transaction()
+        self.write(resumed, MANIFEST, manifest)
+        self.assertIs(self.server.nodes["library/" + MANIFEST], original)
+
+    def test_lost_flush_ack_never_exposes_partial_marker(self):
+        tx = self.transaction()
+        _, manifest, *_ = self.bundle()
+        self.server.fault = "flush"
+        with self.assertRaises(SmbError):
+            self.write(tx, MANIFEST, manifest)
+        self.assertNotIn("library/" + MANIFEST, self.server.nodes)
+        tx.abort()
+        self.assertTrue(pending_transactions(self.binding, self.app))
+
+    def test_copied_journal_and_guard_never_grant_ownership(self):
+        tx = self.transaction()
+        tx.abort()
+        with tempfile.TemporaryDirectory() as copied:
+            shutil.copytree(self.app, copied, dirs_exist_ok=True)
+            query = pending_transactions(self.binding, str(Path(copied).resolve()))
+            self.assertFalse(query[0]["recoverable"])
+            with self.assertRaises(SmbError):
+                self.transaction(app=str(Path(copied).resolve()))
+        self.assertIn("library/.heed-claim", self.server.nodes)
+
+    def test_wrong_physical_host_and_generation_preserve_job(self):
+        tx = self.transaction()
+        tx.abort()
+        with patch("journal.physical_uuid", return_value=str(uuid4())):
+            self.assertFalse(pending_transactions(self.binding, self.app)[0]["recoverable"])
+            with self.assertRaises(SmbError):
+                self.transaction()
+        changed = dict(self.binding, connectionGeneration=str(uuid4()))
+        self.assertFalse(pending_transactions(changed, self.app)[0]["recoverable"])
+
+    def test_lost_release_ack_only_reconciles_owned_archived_claim(self):
+        tx = self.transaction()
+        tx.checkpoint()
+        released = "library/.heed-released-" + self.context["operationId"]
+        self.server.fault = released
+        with self.assertRaises(SmbError):
+            tx.close()
+        tx.abort()
+        later = self.server.add("library/.heed-claim", directory=True)
+        resumed = self.transaction()
+        resumed.checkpoint()
+        resumed.close()
+        self.assertIs(self.server.nodes["library/.heed-claim"], later)
+        self.assertEqual(pending_transactions(self.binding, self.app), [])
+
+    def test_close_ack_failure_preserves_claim_and_checkpoint(self):
+        tx = self.transaction()
+        self.publish(tx)
+        tx.checkpoint()
+        self.server.fault = "close"
+        with self.assertRaises(SmbError):
+            tx.close()
+        self.assertIn("library/.heed-claim", self.server.nodes)
+        self.assertTrue(pending_transactions(self.binding, self.app))
+
+    def test_changed_ancestor_or_unsupported_sharing_has_no_publication_effect(self):
+        tx = self.transaction()
+        _, manifest, *_ = self.bundle()
+        self.server.nodes["library"]["objectId"] = "000000000000ffff"
+        with self.assertRaises(SmbError):
+            self.write(tx, MANIFEST, manifest)
+        self.assertNotIn("library/" + MANIFEST, self.server.nodes)
+        tx.abort()
+        self.server = MemoryServer()
+        self.server.enforced = False
+        with self.assertRaises(SmbError):
+            self.transaction(dict(self.context, operationId=str(uuid4())))
+
+    def test_incomplete_unknown_marker_never_enters_complete_inventory(self):
+        tx = self.transaction()
+        self.server.add("library/commits", directory=True)
+        self.server.add("library/commits/" + DEVICE, directory=True)
+        self.server.add("library/" + MARKER, b"{")
+        with self.assertRaises(SmbError):
+            tx.inventory()
+
+    def test_cancel_without_checkpoint_retains_original_claim_and_pending(self):
+        tx = self.transaction()
+        self.publish(tx)
+        tx.abort()
+        self.assertIn("library/.heed-claim", self.server.nodes)
+        self.assertTrue(pending_transactions(self.binding, self.app)[0]["recoverable"])
+
+    def test_stream_wrong_length_or_digest_never_publishes(self):
+        tx = self.transaction()
+        _, manifest, *_ = self.bundle()
+        with self.assertRaises(SmbError):
+            tx.write(MANIFEST, io.BytesIO(manifest[:-1]), len(manifest), digest(manifest))
+        self.assertNotIn("library/" + MANIFEST, self.server.nodes)
+
+    def test_pure_pending_query_has_no_creation_effects(self):
+        before = sorted(Path(self.app).rglob("*"))
+        self.assertEqual(pending_transactions(self.binding, self.app), [])
+        self.assertEqual(sorted(Path(self.app).rglob("*")), before)
+
+    def test_permanent_deletion_intent_refuses_manifest_before_transfer(self):
+        tx = self.transaction(dict(self.context, kind="delete"))
+        body, manifest_data, marker_value, _, _ = self.bundle()
+        record = dict(
+            version=1,
+            jobId=self.context["operationId"],
+            destinationId=DEST,
+            revisions=[
+                dict(
+                    libraryId=LIBRARY,
+                    meetingId=MEETING,
+                    revisionId=REVISION,
+                    manifestHash=digest(manifest_data),
+                    parents=[],
+                )
+            ],
+            artifacts=[
+                dict(
+                    path=MANIFEST,
+                    bytes=len(manifest_data),
+                    sha256=digest(manifest_data),
+                )
+            ],
+        )
+        tx.write_deletion(record)
+        tx.checkpoint()
+        tx.close()
+        self.context["operationId"] = str(uuid4())
+        publication = self.transaction()
+        with self.assertRaises(SmbError):
+            self.write(publication, MANIFEST, manifest_data)
+        self.assertNotIn("library/" + MANIFEST, self.server.nodes)
+
+    def test_missing_allocation_receipt_never_adopts_remote_stage(self):
+        tx = self.transaction()
+        _, manifest_data, *_ = self.bundle()
+        self.server.fault = "library/" + MANIFEST
+        with self.assertRaises(SmbError):
+            self.write(tx, MANIFEST, manifest_data)
+        tx.journal.data["allocations"][MANIFEST]["metadata"] = None
+        tx.journal.save()
+        tx.abort()
+        self.assertFalse(pending_transactions(self.binding, self.app)[0]["recoverable"])
+        resumed = self.transaction()
+        with self.assertRaises(SmbError):
+            self.write(resumed, MANIFEST, manifest_data)
+
+    def test_directory_rename_ack_loss_resumes_without_unknown_allocation(self):
+        tx = self.transaction()
+        _, manifest_data, *_ = self.bundle()
+        self.server.fault = "library/meetings"
+        with self.assertRaises(SmbError):
+            self.write(tx, MANIFEST, manifest_data)
+        tx.abort()
+        pending = pending_transactions(self.binding, self.app)
+        self.assertEqual(
+            pending[0]["admissions"],
+            [
+                dict(
+                    meetingId=MEETING,
+                    revisionId=REVISION,
+                    manifestHash=digest(manifest_data),
+                )
+            ],
+        )
+        self.assertTrue(pending[0]["recoverable"])
+        resumed = self.transaction()
+        self.write(resumed, MANIFEST, manifest_data)
+        resumed.checkpoint()
+        resumed.close()
+        self.assertEqual(pending_transactions(self.binding, self.app), [])
+
+    def test_pending_guard_replacement_is_not_original_authority(self):
+        tx = self.transaction()
+        tx.abort()
+        guards = list(Path(self.app).rglob("*.guard"))
+        self.assertEqual(len(guards), 1)
+        data = guards[0].read_bytes()
+        guards[0].unlink()
+        guards[0].write_bytes(data)
+        guards[0].chmod(0o600)
+        self.assertFalse(pending_transactions(self.binding, self.app)[0]["recoverable"])
+
+    def test_operation_handle_bound_refuses_before_unbounded_open(self):
+        tx = self.transaction()
+        with patch("transaction.MAX_HANDLES", len(tx.transport.pins) + len(tx.handles)):
+            with self.assertRaises(SmbError):
+                tx.open_handle("unknown")
+        self.assertNotIn("library/unknown", self.server.nodes)
+
+    def test_credential_free_pending_rpc_never_connects(self):
+        from guardian import serve
+
+        tx = self.transaction()
+        tx.abort()
+        startup = dict(protocol=1, action="pending", binding=self.binding, appDir=self.app)
+        output = io.BytesIO()
+        serve(
+            io.BytesIO(encoded(startup) + b"\n"),
+            output,
+            backend_factory=lambda: self.fail("pending query must not connect"),
+        )
+        response = json.loads(output.getvalue())
+        self.assertTrue(response["ok"])
+        self.assertTrue(response["value"][0]["recoverable"])
+        self.assertNotIn("serverGuid", output.getvalue().decode())
+        self.assertNotIn(PHYSICAL, output.getvalue().decode())
+
+    def test_guardian_publication_frames_echo_current_nonce_and_complete_readback(self):
+        from guardian import serve
+
+        body, manifest_data, marker_value, intent_value, media = self.bundle(False)
+        startup = dict(
+            protocol=1,
+            action="transaction",
+            endpoint=ENDPOINT,
+            credentials=CREDS,
+            binding=self.binding,
+            context=self.context,
+            appDir=self.app,
+        )
+        requests = [
+            ("inventory", {}),
+            (
+                "write",
+                dict(
+                    path=MANIFEST,
+                    bytes=len(manifest_data),
+                    sha256=digest(manifest_data),
+                ),
+            ),
+            ("write-pending", dict(value=intent_value)),
+            (
+                "write",
+                dict(path=PREFIX + "/meeting.json", bytes=len(body), sha256=digest(body)),
+            ),
+            (
+                "write",
+                dict(
+                    path=MARKER,
+                    bytes=len(encoded(marker_value)),
+                    sha256=digest(encoded(marker_value)),
+                ),
+            ),
+            ("confirm", dict(commit=marker_value)),
+            ("checkpoint", {}),
+            ("close", {}),
+        ]
+        wire = encoded(startup) + b"\n"
+        bodies = {2: manifest_data, 4: body, 5: encoded(marker_value)}
+        for index, (action, value) in enumerate(requests, 1):
+            wire += (
+                encoded(dict(id=index, nonce=f"{index:064x}", action=action, **value))
+                + b"\n"
+                + bodies.get(index, b"")
+            )
+        output = io.BytesIO()
+        serve(io.BytesIO(wire), output, backend_factory=lambda: self.server)
+        frames = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertTrue(frames[0].get("ready"), frames)
+        terminals = []
+        for frame in frames[1:]:
+            self.assertEqual(frame["nonce"], f"{frame['id']:064x}")
+            if "ok" in frame:
+                self.assertTrue(frame["ok"], frames)
+                terminals.append(frame)
+        self.assertEqual(len(terminals), 8)
+        self.assertEqual(terminals[5]["value"], "remote-confirmed")
+        self.assertNotIn("library/.heed-claim", self.server.nodes)
+
+    def test_readback_reopens_exact_owned_allocation_before_accepting_it(self):
+        tx = self.transaction()
+        _, manifest_data, *_ = self.bundle()
+        original_open = self.server.open
+        replaced = False
+
+        def replace_on_read(path, *args, **kwargs):
+            nonlocal replaced
+            if (
+                path == "library/" + MANIFEST
+                and path in self.server.nodes
+                and not kwargs.get("verification")
+                and kwargs.get("access", "read") == "read"
+                and not replaced
+            ):
+                replaced = True
+                self.server.add(path, manifest_data)
+            return original_open(path, *args, **kwargs)
+
+        self.server.open = replace_on_read
+        with self.assertRaises(SmbError):
+            self.write(tx, MANIFEST, manifest_data)
+        self.assertNotEqual(tx.journal.data["allocations"][MANIFEST]["state"], "published")
+        with self.assertRaises(SmbError):
+            tx.admission(MANIFEST)
+
+    def test_release_closes_descendants_before_claim_move(self):
+        tx = self.transaction()
+        self.publish(tx)
+        tx.checkpoint()
+        tx.close()
+        release = next(
+            i
+            for i, e in enumerate(self.server.events)
+            if e[0] == "rename" and e[1] == "library/.heed-claim"
+        )
+        for h in self.server.handles:
+            if h.path.startswith("library/") and not h.path.startswith("library/.heed-released-"):
+                closes = [i for i, e in enumerate(self.server.events) if e == ("close", h.path)]
+                self.assertTrue(closes)
+                self.assertLess(max(closes), release)
+
+    def test_claim_receipt_corruption_is_bounded_recovery_refusal(self):
+        tx = self.transaction()
+        tx.abort()
+        job_path = next(Path(self.app).rglob("*.json"))
+        job = json.loads(job_path.read_text())
+        job["claim"]["stage"] = "../foreign"
+        job_path.write_text(json.dumps(job))
+        with self.assertRaises(SmbError):
+            pending_transactions(self.binding, self.app)
+        with self.assertRaises(SmbError):
+            self.transaction()
+
+    def test_fresh_namespace_pin_bound_rejects_excess_without_open(self):
+        tx = self.transaction()
+        for i in range(8):
+            self.server.add("library/d" + str(i), directory=True)
+        with patch("transport.MAX_HANDLES", len(tx.transport.pins) + 2):
+            tx.transport.pin("d0", True)
+            tx.transport.pin("d1", True)
+            with self.assertRaises(SmbError):
+                tx.transport.pin("d2", True)
+
+    def test_competing_live_session_does_not_close_or_take_over_owner(self):
+        tx = self.transaction()
+        with self.assertRaises(SmbError):
+            self.transaction(dict(self.context, operationId=str(uuid4())))
+        self.assertFalse(tx.claim.closed)
+        marker_value, _ = self.publish(tx)
+        self.assertEqual(tx.confirm(marker_value), "remote-confirmed")
+        tx.checkpoint()
+        tx.close()
+
+    def test_lost_descendant_close_ack_retains_checkpoint_and_claim(self):
+        tx = self.transaction()
+        self.publish(tx)
+        tx.checkpoint()
+        self.server.fault = ("close", "library/" + MARKER)
+        with self.assertRaises(SmbError):
+            tx.close()
+        self.assertIn("library/.heed-claim", self.server.nodes)
+        self.assertEqual(tx.journal.data["phase"], "checkpointed")
+        tx.abort()
+        resumed = self.transaction()
+        resumed.close()
+        self.assertNotIn("library/.heed-claim", self.server.nodes)
+
+    def test_unsafe_target_identity_refuses_before_immutable_effect(self):
+        tx = self.transaction()
+        _, manifest_data, *_ = self.bundle()
+        for changes in (dict(reparse=True), dict(links=2), dict(objectId="0" * 16)):
+            with self.subTest(changes=changes):
+                node = self.server.add("library/meetings", directory=True)
+                node.update(changes)
+                with self.assertRaises(SmbError):
+                    self.write(tx, MANIFEST, manifest_data)
+                self.assertNotIn("library/" + MANIFEST, self.server.nodes)
+
+    def test_local_query_and_inventory_bounds_refuse_excess(self):
+        tx = self.transaction()
+        with patch("journal.MAX_ENTRIES", 0):
+            with self.assertRaises(SmbError):
+                pending_transactions(self.binding, self.app)
+        self.server.add("library/control", directory=True)
+        self.server.add("library/control/pending", directory=True)
+        self.server.add("library/control/pending/" + DEVICE, directory=True)
+        _, _, _, intent_value, _ = self.bundle()
+        self.server.add(
+            "library/control/pending/" + DEVICE + "/" + REVISION + ".json",
+            encoded(intent_value),
+        )
+        with patch("transaction.MAX_ENTRIES", 0):
+            with self.assertRaises(SmbError):
+                tx.inventory()
+
+    def test_confirmation_reopens_every_required_artifact_without_unpin_gap(self):
+        tx = self.transaction()
+        marker_value, intent_value = self.publish(tx)
+        paths = [
+            MANIFEST,
+            PREFIX + "/meeting.json",
+            MARKER,
+            intent_value["audio"]["path"],
+        ]
+        old = {
+            path: next(h for full, h, _ in tx.transport.pins if full == "library/" + path)
+            for path in paths
+        }
+        self.assertEqual(tx.confirm(marker_value), "remote-confirmed")
+        for path in paths:
+            self.assertTrue(old[path].closed)
+            current = next(h for full, h, _ in tx.transport.pins if full == "library/" + path)
+            self.assertIsNot(current, old[path])
+            self.assertFalse(current.closed)
+
+    def test_confirmation_requires_exact_marker_bytes(self):
+        tx = self.transaction()
+        marker_value, _ = self.publish(tx)
+        self.server.nodes["library/" + MARKER]["data"] = json.dumps(marker_value, indent=2).encode()
+        self.server.nodes["library/" + MARKER]["bytes"] = len(
+            self.server.nodes["library/" + MARKER]["data"]
+        )
+        with self.assertRaises(SmbError):
+            tx.confirm(marker_value)
+
+    def test_read_only_v3_transaction_refuses_before_claim_effects(self):
+        self.binding["readOnly"] = True
+        with self.assertRaises(SmbError):
+            self.transaction(dict(self.context, kind="read"))
+        self.assertFalse(any(e[0] in ("create", "rename") for e in self.server.events))
+        self.assertNotIn("library/.heed-claim", self.server.nodes)
+        self.binding["readOnly"] = False
+        self.server.read_only = True
+        with self.assertRaises(SmbError):
+            self.transaction(dict(self.context, kind="read"))
+        self.assertFalse(any(e[0] in ("create", "rename") for e in self.server.events))
+
+    def test_payload_requires_owned_pending_intent_after_manifest(self):
+        tx = self.transaction()
+        body, manifest_data, *_ = self.bundle()
+        self.write(tx, MANIFEST, manifest_data)
+        with self.assertRaises(SmbError):
+            self.write(tx, PREFIX + "/meeting.json", body)
+        self.assertNotIn("library/" + PREFIX + "/meeting.json", self.server.nodes)
+
+    def test_payload_audio_must_match_admitted_pending_intent(self):
+        tx = self.transaction()
+        body, manifest_data, _, intent_value, _ = self.bundle(True)
+        self.write(tx, MANIFEST, manifest_data)
+        wrong = copy.deepcopy(intent_value)
+        wrong["audio"]["sha256"] = "a" * 64
+        wrong["audio"]["path"] = "objects/" + "a" * 64
+        tx.write_pending(wrong)
+        with self.assertRaises(SmbError):
+            self.write(tx, PREFIX + "/meeting.json", body)
+        self.assertNotIn("library/" + PREFIX + "/meeting.json", self.server.nodes)
+
+
+class SdkRenameTests(unittest.TestCase):
+    def test_actual_sdk_rename_uses_zero_root_nonreplace_share_relative_target(self):
+        try:
+            from smbprotocol.open import SMB2SetInfoRequest
+            from smbprotocol.file_info import FileRenameInformation
+        except ImportError:
+            self.skipTest("pinned SDK unavailable")
+        self.assertTrue(
+            hasattr(SmbProtocolBackend, "rename"),
+            "exact handle rename is not implemented",
+        )
+        backend = SmbProtocolBackend()
+        sent = []
+        backend.session = SimpleNamespace(session_id=17)
+        backend.tree = SimpleNamespace(tree_connect_id=23)
+        response = SimpleNamespace()
+        backend.connection = SimpleNamespace(
+            send=lambda request, **kw: sent.append((request, kw)),
+            receive=lambda request, **kw: response,
+        )
+        backend.rename(SimpleNamespace(file_id=b"X" * 16), "library/commits/final.json")
+        request, routing = sent[0]
+        self.assertIsInstance(request, SMB2SetInfoRequest)
+        self.assertEqual(request["file_id"].get_value(), b"X" * 16)
+        info = FileRenameInformation()
+        info.unpack(request["buffer"].get_value())
+        self.assertFalse(info["replace_if_exists"].get_value())
+        self.assertEqual(info["root_directory"].get_value(), 0)
+        self.assertEqual(info["file_name"].get_value(), "library\\commits\\final.json")
+        self.assertEqual(routing, dict(sid=17, tid=23))
