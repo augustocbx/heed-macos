@@ -1,6 +1,6 @@
 import { tr, useLocale } from "@/lib/i18n.ts";
 import { useEffect, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
+import { Dialog } from "@/components/layout/Dialog.tsx";
 import type { CatalogModel, PullProgress } from "@heed/shared";
 import { useModelsStore } from "@/stores/models.ts";
 import { useUIStore } from "@/stores/ui.ts";
@@ -35,15 +35,18 @@ function fmtMb(mb: number) {
 export function ModelPicker({ open, onClose }: Props) {
 	useLocale();
 	const data = useModelsStore((s) => s.data);
+	const loadError = useModelsStore((s) => s.error);
 	const load = useModelsStore((s) => s.load);
 	const select = useModelsStore((s) => s.select);
 	const showToast = useUIStore((s) => s.showToast);
 
 	const [pullingId, setPullingId] = useState<string | null>(null);
 	const [pullProgress, setPullProgress] = useState<PullProgress | null>(null);
+	const [actionError, setActionError] = useState<string | null>(null);
+	const reportError = (message: string) => { setActionError(message); showToast(message); };
 
 	useEffect(() => {
-		if (open) load();
+		if (open) { setActionError(null); void load(); }
 	}, [open, load]);
 
 	const grouped = useMemo(() => {
@@ -60,24 +63,26 @@ export function ModelPicker({ open, onClose }: Props) {
 	if (!open) return null;
 
 	const handleSelectInstalled = async (m: CatalogModel) => {
+		setActionError(null);
 		try {
 			await select(m.id);
 			showToast(tr("Switched to {model}", undefined, {model:m.name}));
 			onClose();
 		} catch (e) {
-			showToast(tr("Switch failed: {message}", undefined, {message:tr((e as Error).message)}));
+			reportError(tr("Switch failed: {message}", undefined, {message:tr((e as Error).message)}));
 		}
 	};
 
 	const handleDownload = (m: CatalogModel, e: React.MouseEvent) => {
 		e.stopPropagation();
 		if (pullingId) return; // one pull at a time
+		setActionError(null);
 		setPullingId(m.id);
 		setPullProgress({ status: "starting" });
 		modelsApi.pullStream(m.id, async (evt) => {
 			setPullProgress(evt);
 			if (evt.error) {
-				showToast(tr("Pull failed: {message}", undefined, {message:tr(evt.error || "")}));
+				reportError(tr("Pull failed: {message}", undefined, {message:tr(evt.error || "")}));
 				setPullingId(null);
 				setPullProgress(null);
 				return;
@@ -87,7 +92,7 @@ export function ModelPicker({ open, onClose }: Props) {
 					await select(m.id);
 					showToast(tr("Downloaded and switched to {model}", undefined, {model:m.name}));
 				} catch (err) {
-					showToast(tr("Switch failed: {message}", undefined, {message:tr((err as Error).message)}));
+					reportError(tr("Switch failed: {message}", undefined, {message:tr((err as Error).message)}));
 				}
 				setPullingId(null);
 				setPullProgress(null);
@@ -108,7 +113,6 @@ export function ModelPicker({ open, onClose }: Props) {
 			<div
 				key={m.id}
 				className={`${styles.card} ${isCurrent ? styles.cardCurrent : ""} ${cardClickable ? styles.cardClickable : ""}`}
-				onClick={() => cardClickable && handleSelectInstalled(m)}
 			>
 				<div className={styles.cardHead}>
 					<span className={styles.name}>{m.name}</span>
@@ -132,6 +136,8 @@ export function ModelPicker({ open, onClose }: Props) {
 				</div>
 				{m.description && <div className={styles.desc}>{m.description}</div>}
 
+				{cardClickable && <button className={styles.downloadBtn} aria-label={tr("Use model: {model}", undefined, {model: m.name})} onClick={() => handleSelectInstalled(m)}>{tr("Use this model")}</button>}
+
 				{isPulling ? (
 					<div className={styles.pullBar}>
 						<div className={styles.pullBarFill} style={{ width: `${pct}%` }} />
@@ -152,44 +158,46 @@ export function ModelPicker({ open, onClose }: Props) {
 		);
 	};
 
-	return createPortal(
-		<div className={styles.backdrop} onClick={onClose}>
-			<div className={styles.modal} onClick={(e) => e.stopPropagation()}>
-				<div className={styles.head}>
-					<div>
-						<h2 className={styles.title}>{tr("Pick your AI model")}</h2>
-						<p className={styles.subtitle}>
-							{data?.gpu_name
-								? tr("{gpu} · {total} {memory} · {free} free · tier {tier}", undefined, {gpu:data.gpu_name,total:fmtMb(data.total_vram_mb),memory:memoryWord(data.gpu_name),free:fmtMb(data.free_vram_mb),tier:data.tier})
-								: tr("Detecting hardware...")}
-						</p>
-					</div>
-					<button className={styles.closeBtn} onClick={onClose}>×</button>
+	return (
+		<Dialog label={tr("Pick your AI model")} onClose={onClose} className={styles.modal}>
+			<div className={styles.head}>
+				<div>
+					<h2 className={styles.title}>{tr("Pick your AI model")}</h2>
+					<p className={styles.subtitle}>
+						{data?.gpu_name
+							? tr("{gpu} · {total} {memory} · {free} free · tier {tier}", undefined, {gpu:data.gpu_name,total:fmtMb(data.total_vram_mb),memory:memoryWord(data.gpu_name),free:fmtMb(data.free_vram_mb),tier:data.tier})
+							: tr("Detecting hardware...")}
+					</p>
 				</div>
-
-				{!data && <div className={styles.loading}>{tr("Loading catalog...")}</div>}
-
-				{data && grouped.gpu.length > 0 && (
-					<>
-						<div className={styles.section}>{tr("Recommended for your GPU")}</div>
-						<div className={styles.grid}>{grouped.gpu.map(renderModel)}</div>
-					</>
-				)}
-
-				{data && grouped.cpu.length > 0 && (
-					<>
-						<div className={styles.section}>
-							{tr("CPU only on your hardware")}<span className={styles.sectionHint}>
-								{data.pyannote_reserve_mb > 0
-									? tr("(slower, but won't crash diarization — keeps {memory} VRAM free for speaker diarization)", undefined, {memory:fmtMb(data.pyannote_reserve_mb)})
-									: `(slower — these models are larger than your ${data.gpu_name || tr("hardware")} runs comfortably)`}
-							</span>
-						</div>
-						<div className={styles.grid}>{grouped.cpu.map(renderModel)}</div>
-					</>
-				)}
+				<button className={styles.closeBtn} onClick={onClose} aria-label={tr("Close")}>×</button>
 			</div>
-		</div>,
-		document.body,
+
+			{actionError && <p role="alert" className={styles.error}>{actionError}</p>}
+			{loadError && <div className={styles.error}>
+				<p role="alert">{tr("Could not load models")}: {loadError}</p>
+				<button className={styles.downloadBtn} onClick={() => void load()}>{tr("Retry loading")}</button>
+			</div>}
+			{!data && !loadError && <div className={styles.loading}>{tr("Loading catalog...")}</div>}
+
+			{data && grouped.gpu.length > 0 && (
+				<>
+					<div className={styles.section}>{tr("Recommended for your GPU")}</div>
+					<div className={styles.grid}>{grouped.gpu.map(renderModel)}</div>
+				</>
+			)}
+
+			{data && grouped.cpu.length > 0 && (
+				<>
+					<div className={styles.section}>
+						{tr("CPU only on your hardware")}<span className={styles.sectionHint}>
+							{data.pyannote_reserve_mb > 0
+								? tr("(slower, but won't crash diarization — keeps {memory} VRAM free for speaker diarization)", undefined, {memory:fmtMb(data.pyannote_reserve_mb)})
+								: `(slower — these models are larger than your ${data.gpu_name || tr("hardware")} runs comfortably)`}
+						</span>
+					</div>
+					<div className={styles.grid}>{grouped.cpu.map(renderModel)}</div>
+				</>
+			)}
+		</Dialog>
 	);
 }

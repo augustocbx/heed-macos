@@ -1,34 +1,5 @@
-.backdrop {
-	position: fixed;
-	inset: 0;
-	z-index: 300;
-}
-
-.popover {
-	position: absolute;
-	top: calc(100% + 10px);
-	right: 0;
-	width: 320px;
-	padding: 14px;
-	border-radius: 12px;
-	background: var(--white);
-	border: 1px solid var(--border-light);
-	box-shadow: 0 20px 44px rgba(15, 23, 42, 0.18);
-	z-index: 320;
-}
-
-.popover::before {
-	content: "";
-	position: absolute;
-	top: -7px;
-	right: 20px;
-	width: 10px;
-	height: 10px;
-	background: var(--white);
-	border-top: 1px solid var(--border-light);
-	border-left: 1px solid var(--border-light);
-	transform: rotate(45deg);
-}
+.popover { width: min(24rem, calc(100% - 2rem)); }
+.error { color: #b91c1c; margin-bottom: 0.75rem; font-size: 0.8125rem; }
 
 .head {
 	display: flex;
@@ -39,7 +10,7 @@
 
 .title {
 	font-family: var(--mono);
-	font-size: 10px;
+	font-size: 0.75rem;
 	font-weight: 700;
 	letter-spacing: 0.45px;
 	text-transform: uppercase;
@@ -49,7 +20,7 @@
 .close {
 	border: none;
 	background: transparent;
-	font-size: 16px;
+	font-size: 1.25rem;
 	line-height: 1;
 	color: var(--text-3);
 	cursor: pointer;
@@ -62,7 +33,7 @@
 
 .body {
 	font-family: var(--mono);
-	font-size: 11px;
+	font-size: 0.8125rem;
 	line-height: 1.5;
 	color: var(--text-2);
 	margin: 0 0 10px;
@@ -76,7 +47,7 @@
 
 .btnPrimary {
 	font-family: var(--mono);
-	font-size: 11px;
+	font-size: 0.8125rem;
 	font-weight: 600;
 	padding: 7px 12px;
 	border-radius: 8px;
@@ -108,16 +79,17 @@
 
 .cmdText {
 	font-family: var(--mono);
-	font-size: 10px;
+	font-size: 0.75rem;
 	color: #e2e8f0;
 	flex: 1;
+	min-width: 0;
 	overflow-x: auto;
 	white-space: nowrap;
 }
 
 .cmdCopy {
 	font-family: var(--mono);
-	font-size: 10px;
+	font-size: 0.75rem;
 	font-weight: 600;
 	border: 1px solid rgba(255, 255, 255, 0.2);
 	background: transparent;
@@ -143,7 +115,7 @@
 
 .streamLine {
 	font-family: var(--mono);
-	font-size: 9px;
+	font-size: 0.75rem;
 	line-height: 1.5;
 	color: #94a3b8;
 	white-space: pre-wrap;
