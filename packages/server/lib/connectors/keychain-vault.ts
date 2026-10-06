@@ -1,11 +1,12 @@
 import {randomUUID} from 'node:crypto';
 import {join} from 'node:path';
+import {track} from '../process';
 export interface SecretVault {put(value:unknown,reference?:string):Promise<string>;get<T=unknown>(reference:string):Promise<T|null>;remove(reference:string):Promise<void>}
 export interface VaultOptions {helperPath?:string;run?:(command:string[],stdin:string)=>Promise<{code:number;stdout:string}>}
 const REFERENCE=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const defaultHelper=join(import.meta.dir,'../../../desktop/native-keychain/.build/heed-keychain');
 interface VaultProcess {stdin:{write(value:string):unknown;end():unknown};stdout:ReadableStream<Uint8Array>;exited:Promise<number>;kill(signal?:'SIGKILL'):void}
-export async function runNativeVault(command:string[],stdin:string,launch:(command:string[])=>VaultProcess=(command)=>Bun.spawn(command,{stdin:'pipe',stdout:'pipe',stderr:'ignore'})){
+export async function runNativeVault(command:string[],stdin:string,launch:(command:string[])=>VaultProcess=(command)=>track(Bun.spawn(command,{stdin:'pipe',stdout:'pipe',stderr:'ignore'}))){
  const child=launch(command);const timer=setTimeout(()=>child.kill('SIGKILL'),15000);
  try {child.stdin.write(stdin);child.stdin.end();const stdout=await new Response(child.stdout).text();return {code:await child.exited,stdout};}catch(error){child.kill('SIGKILL');await child.exited.catch(()=>{});throw error;}finally{clearTimeout(timer);}
 }

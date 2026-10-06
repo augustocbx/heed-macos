@@ -26,3 +26,8 @@ test('native pipe failure reaps its isolated helper before rejecting the vault r
  try{await expect(running).rejects.toThrow();expect(()=>process.kill(child!.pid,0)).toThrow();}
  finally{child?.kill('SIGKILL');await child?.exited;}
 });
+test('server shutdown reaps a pending protected credential helper',async()=>{
+ const {mkdtempSync,existsSync,readFileSync,writeFileSync,rmSync}=await import('node:fs');const {join}=await import('node:path');const {tmpdir}=await import('node:os');const root=mkdtempSync(join(tmpdir(),'heed-vault-shutdown-')),pidPath=join(root,'helper.pid'),runnerPath=join(root,'runner.ts');let helperPid:number|undefined;let runner:Bun.Subprocess|undefined;
+ try{const helperCode=`require('node:fs').writeFileSync(${JSON.stringify(pidPath)},String(process.pid));setInterval(()=>{},1000);`;writeFileSync(runnerPath,`import {runNativeVault} from ${JSON.stringify(join(import.meta.dir,'keychain-vault.ts'))};import {installShutdownHooks} from ${JSON.stringify(join(import.meta.dir,'../process.ts'))};installShutdownHooks();void runNativeVault([process.execPath,'-e',${JSON.stringify(helperCode)}],'{}').catch(()=>{});`);runner=Bun.spawn([process.execPath,runnerPath],{stdout:'ignore',stderr:'ignore'});const deadline=Date.now()+3000;while(!existsSync(pidPath)&&Date.now()<deadline)await Bun.sleep(10);expect(existsSync(pidPath)).toBe(true);helperPid=Number(readFileSync(pidPath,'utf8'));runner.kill('SIGTERM');await runner.exited;expect(()=>process.kill(helperPid!,0)).toThrow();}
+ finally{runner?.kill('SIGKILL');await runner?.exited.catch(()=>{});if(helperPid)try{process.kill(helperPid,'SIGKILL');}catch{}rmSync(root,{recursive:true,force:true});}
+});
