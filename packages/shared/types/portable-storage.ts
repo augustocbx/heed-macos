@@ -13,5 +13,5 @@ export interface PortableCommit {
  schemaVersion:1;libraryId:string;meetingId:string;revisionId:string;deviceId:string;manifestPath:string;manifestHash:string;
 }
 export type PublicationState='local-saved'|'pending'|'uploading'|'provider-confirmed'|'verified'|'conflict'|'unavailable';
-export interface LibraryPreview {libraryId:string;meetingId:string;revisionId:string;title:string;createdAt:string;bytes:number;local:boolean;state:PublicationState;audio:boolean;error?:string}
+export interface LibraryPreview {libraryId:string;meetingId:string;revisionId:string;title:string;createdAt:string;bytes:number;local:boolean;deleted?:boolean;state:PublicationState;audio:boolean;error?:string}
 export interface LibrarySnapshot {configured:boolean;localMeetings?:Array<{id:string;title:string}>;providerName?:string;previews:LibraryPreview[];imported:number;skipped:number;pending:number;complete:boolean;error?:string}
