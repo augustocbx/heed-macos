@@ -167,3 +167,5 @@
  color: var(--text-3);
  margin: 8px 0 14px;
 }
+
+.textTranscript{white-space:pre-wrap;line-height:1.8;max-height:65vh;overflow:auto}.textTranscript p[aria-current="true"]{background:rgba(59,130,246,.12);border-left:3px solid #3b82f6;padding-left:12px}

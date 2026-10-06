@@ -28,3 +28,9 @@ describe('synchronized transcript',()=>{
   prompt.mockRestore();
  });
 });
+
+it('citation focus highlights text evidence even when audio has expired',()=>{
+ render(<SpeakerView {...props} focusedSegmentIndex={2}/>);
+ expect(screen.getByText('Last segment')).toHaveAttribute('aria-current','true');
+ expect(screen.getByText('First segment')).not.toHaveAttribute('aria-current','true');
+});

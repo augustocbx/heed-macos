@@ -1,3 +1,4 @@
+import { CHAT_TRANSLATIONS } from "./translations-chat";
 /** Interface language is independent of transcription language. Missing translations use English. */
 import { useLocaleStore } from "@/stores/locale.ts";
 import { normalizeLocale, storedLocale, type Locale } from "./locale.ts";
@@ -12,7 +13,7 @@ export function useLocale() {
  const locale=useLocaleStore(s=>s.locale);
  return {locale,tr:(text:string,vars?:Record<string,string|number>)=>tr(text,locale,vars)};
 }
-const TRANSLATIONS={...SHELL_TRANSLATIONS,...CONTENT_TRANSLATIONS,...NOTES_TRANSLATIONS,...TASKS_TRANSLATIONS};
+const TRANSLATIONS={...SHELL_TRANSLATIONS,...CONTENT_TRANSLATIONS,...NOTES_TRANSLATIONS,...TASKS_TRANSLATIONS,...CHAT_TRANSLATIONS};
 export function tr(text:string,locale:Locale=useLocaleStore.getState().locale,vars?:Record<string,string|number>):string {
  const chosen=normalizeLocale(locale);
  const key=text.trim();
