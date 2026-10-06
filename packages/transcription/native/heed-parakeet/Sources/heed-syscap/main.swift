@@ -60,8 +60,9 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
     func startMicrophone(attempt: Int) throws {
-        let e = AVAudioEngine(), input = e.inputNode
-        let format = input.outputFormat(forBus: 0)
+        let e = engine ?? AVAudioEngine(), input = e.inputNode
+        // After a hardware transition, the graph output may retain its old format.
+        let format = input.inputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { throw NSError(domain: "heed.capture", code: 1, userInfo: [NSLocalizedDescriptionKey: "microphone permission denied or no usable input device"]) }
         let converter = try MicrophoneConverter(source: format), clock = ResampledClock(); engine = e
         microphoneConverter = converter; microphoneClock = clock
@@ -70,7 +71,8 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
         configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: e, queue: .main) { _ in
             guard !self.stopRequested else { return }
             let actual = e.inputNode.outputFormat(forBus: 0)
-            let runtime = self.microphoneReadiness.configurationChanged(attempt: attempt, details: ["attempt": attempt, "engine_running": e.isRunning, "actual_rate": actual.sampleRate, "actual_channels": actual.channelCount, "host_time": hostNow()])
+            let hardware = e.inputNode.inputFormat(forBus: 0)
+            let runtime = self.microphoneReadiness.configurationChanged(attempt: attempt, details: ["attempt": attempt, "engine_running": e.isRunning, "format_matches": actual.isEqual(format) && hardware.isEqual(format), "actual_rate": actual.sampleRate, "actual_channels": actual.channelCount, "hardware_rate": hardware.sampleRate, "hardware_channels": hardware.channelCount, "host_time": hostNow()])
             if runtime { fail("microphone device configuration changed during recording; start a new recording") }
         }
         input.installTap(onBus: 0, bufferSize: AVAudioFrameCount(format.sampleRate / 10), format: format) { buffer, time in
@@ -83,6 +85,7 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
                 defer { self.microphoneSlots.signal() }
                 do {
                     guard self.microphoneReadiness.isCurrent(attempt) else { return }
+                    guard owned.format.isEqual(format) else { fail("microphone buffer format changed; start a new recording"); return }
                     if clock.hasDiscontinuity(at: timestamp) {
                         let tail = try converter.flush()
                         self.accept(tail, source: "mic", at: clock.placement(frames: tail.count), recordSource: false)
@@ -98,9 +101,9 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         e.prepare(); try e.start()
     }
-    func tearDownMicrophone() {
+    func tearDownMicrophone(keepEngine: Bool = false) {
         if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver); self.configurationObserver = nil }
-        if let engine { engine.stop(); engine.inputNode.removeTap(onBus: 0); self.engine = nil }
+        if let engine { engine.stop(); engine.inputNode.removeTap(onBus: 0); if !keepEngine { self.engine = nil } }
     }
     func stabilizeMicrophone() async throws {
         var lastError: Error?
@@ -112,16 +115,17 @@ final class Capturer: NSObject, SCStreamOutput, SCStreamDelegate {
                     try await Task.sleep(nanoseconds: 50_000_000)
                     let state = microphoneReadiness.snapshot()
                     if state.invalidated || stopRequested { break }
-                    if let first = state.first, let end = state.lastEnd, engine?.isRunning == true,
-                       end - first >= 0.5, hostNow() - end < 0.2, state.outputFrames >= 8000,
-                       microphoneReadiness.markReady(attempt: attempt) {
+                    if engine?.isRunning == true,
+                       microphoneReadiness.markReady(attempt: attempt, snapshot: state, now: hostNow()) {
                         sourceFormat["startup_configuration_changes"] = microphoneReadiness.diagnostics()
                         sourceFormat["startup_mic_frames"] = state.outputFrames
                         return
                     }
                 }
             } catch { lastError = error }
-            tearDownMicrophone()
+            // Retain default-device I/O while rebuilding the tap/converter for its settled format.
+            // Releasing it here can restart Bluetooth profile negotiation on every attempt.
+            tearDownMicrophone(keepEngine: true)
             try await Task.sleep(nanoseconds: 250_000_000)
         }
         throw lastError ?? NSError(domain: "heed.capture", code: 3, userInfo: [NSLocalizedDescriptionKey: "microphone did not deliver stable audio after three startup attempts: \(microphoneReadiness.diagnostics())"])

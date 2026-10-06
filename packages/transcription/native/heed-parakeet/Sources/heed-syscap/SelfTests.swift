@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 
 func runSelfTests() throws {
+    runMicrophoneReadinessTests()
     let stereo = TimestampMixer(channels: 2, capacity: 640)
     precondition(stereo.insert([1, 2], channel: 0, startFrame: 0))
     precondition(stereo.insert([3, 4], channel: 0, startFrame: 4))
@@ -79,4 +80,43 @@ func runSelfTests() throws {
         let crossings = zip(output, output.dropFirst()).filter { $0 <= 0 && $1 > 0 }.count
         precondition(abs(crossings - 440) <= 2, "resampling must preserve tone pitch")
     }
+}
+
+func runMicrophoneReadinessTests() {
+    let readiness = MicrophoneReadiness()
+    let attempt = readiness.begin()
+    readiness.note(attempt: attempt, time: 1, duration: 0.5, outputFrames: 8000)
+    let beforeChange = readiness.snapshot()
+    let matchingChange: [String: Any] = ["engine_running": true, "format_matches": true, "host_time": 2.0]
+    precondition(!readiness.configurationChanged(attempt: attempt, details: matchingChange))
+    precondition(!readiness.snapshot().invalidated, "a running engine with the installed format must be allowed to settle")
+    precondition(readiness.snapshot().outputFrames == 0, "a startup change must discard previous stability evidence")
+    readiness.note(attempt: attempt, time: 1.9, duration: 0.1, outputFrames: 1600)
+    precondition(readiness.snapshot().outputFrames == 0, "queued pre-change audio must not qualify a new stability window")
+    readiness.note(attempt: attempt, time: 2.1, duration: 0.1, outputFrames: 1600)
+    precondition(!readiness.markReady(attempt: attempt, snapshot: beforeChange, now: 2.2), "a stale qualifying snapshot must not mark a reset window ready")
+    readiness.note(attempt: attempt, time: 2.2, duration: 0.4, outputFrames: 6400)
+    precondition(!readiness.markReady(attempt: attempt, snapshot: beforeChange, now: 2.6), "a configuration change between snapshot and commit must restart qualification")
+    precondition(!readiness.markReady(attempt: attempt, snapshot: readiness.snapshot(), now: 3), "stale audio must not qualify startup")
+    precondition(readiness.markReady(attempt: attempt, snapshot: readiness.snapshot(), now: 2.6), "fresh stable audio must recover without recreating the engine")
+    precondition(readiness.configurationChanged(attempt: attempt, details: matchingChange), "configuration changes during recording must still fail")
+    precondition(readiness.snapshot().invalidated)
+
+    for details: [String: Any] in [
+        ["engine_running": false, "format_matches": true, "host_time": 2.0],
+        ["engine_running": true, "format_matches": false, "host_time": 2.0],
+    ] {
+        let failed = readiness.begin()
+        precondition(!readiness.configurationChanged(attempt: failed, details: details))
+        precondition(readiness.snapshot().invalidated, "a stopped engine or incompatible format must require a new attempt")
+        _ = readiness.configurationChanged(attempt: failed, details: matchingChange)
+        readiness.note(attempt: failed, time: 3, duration: 0.5, outputFrames: 8000)
+        precondition(!readiness.markReady(attempt: failed, snapshot: readiness.snapshot(), now: 3.5), "later matching events must not resurrect an invalidated attempt")
+    }
+    let latest = readiness.begin()
+    _ = readiness.configurationChanged(attempt: attempt, details: matchingChange)
+    readiness.note(attempt: attempt, time: 3, duration: 0.5, outputFrames: 8000)
+    precondition(!readiness.snapshot().invalidated && readiness.snapshot().outputFrames == 0, "old attempts must not affect current readiness")
+    readiness.note(attempt: latest, time: 4, duration: 0.5, outputFrames: 8000)
+    precondition(readiness.markReady(attempt: latest, snapshot: readiness.snapshot(), now: 4.5))
 }
