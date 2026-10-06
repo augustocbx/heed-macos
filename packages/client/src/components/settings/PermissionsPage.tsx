@@ -1,5 +1,3 @@
-import {OneDriveSettings} from "./OneDriveSettings";
-import {ICloudFolderSettings} from "./ICloudFolderSettings";
 import { useLocale } from "@/lib/i18n.ts";
 import { UI_LOCALES, type Locale } from "@/lib/locale.ts";
 import { useLocaleStore } from "@/stores/locale.ts";
@@ -9,8 +7,7 @@ import styles from './PermissionsPage.module.css';
 import {StorageLibrarySettings} from "./StorageLibrarySettings";
 import { AutomaticNotesSettings } from '@/components/ai-notes/AutomaticNotesSettings';
 import {StorageSettings} from './StorageSettings';
-import {GoogleDriveSettings} from './GoogleDriveSettings';
-import { SmbSettings } from './SmbSettings';
+import {RemoteStorageSettings} from './RemoteStorageSettings';
 
 import { MeetingDetectionSettings } from "./MeetingDetectionSettings";
 
@@ -71,13 +68,10 @@ export function PermissionsPage() {
    {localeError && <p role="alert">{tr("Could not save interface language. Check that Heed is running and try again.")}</p>}
   </article>
   <AutomaticNotesSettings />
-  <SmbSettings onProviderChanged={()=>setLibrarySelection(value=>value+1)}/>
-  <GoogleDriveSettings onProviderChanged={()=>setLibrarySelection(value=>value+1)}/>
+  <RemoteStorageSettings onProviderChanged={()=>setLibrarySelection(value=>value+1)}/>
   <MeetingDetectionSettings />
   <StorageSettings />
   <StorageLibrarySettings key={librarySelection}/>
-  <OneDriveSettings onProviderChanged={()=>setLibrarySelection(value=>value+1)}/>
-  <ICloudFolderSettings onProviderChanged={()=>setLibrarySelection(value=>value+1)}/>
   <div className={`${styles.summary} ${ready ? styles.ready : styles.attention}`} role="status"><strong>{tr(title)}</strong><p>{tr(!connected ? 'Open the Heed app from the menu bar icon to check and authorize access.' : ready ? 'The required permissions are authorized.' : 'Complete the authorizations below before starting a meeting.')}</p><button onClick={() => void refresh()}>{tr('Check again')}</button></div>
   {(actionError || snapshot?.error) && <p className={styles.error} role="alert">{tr(actionError || snapshot?.error || "")}</p>}
   {notice && <p className={styles.notice} role="status">{tr(notice)}</p>}
