@@ -50,3 +50,38 @@ bun scripts/check-synchronization-quota.ts \
 ```
 
 Visible native menu propagation, physical capture, actual ASR, both-device installation and real provider round trips remain pending. Browser/API observations do not satisfy those separate clauses.
+
+## Reviewed direct provider and deletion source
+
+Source commits `bc7e8c5` and `ab9f2be` passed independent source review, including a scoped correction for retained private journal replacement copies. The direct provider requires explicit v3 coordination and a verified native pending cache, binds deletion previews to stable object/ancestor observations, and publishes an original-owned immutable deletion barrier before handle-bound disposition. SET_INFO success alone is insufficient: CLOSE and canonical absence must be verified. Ambiguous outcomes retain the original job; shared audio garbage collection remains disabled.
+
+The specified direct/mounted/recovery tests passed **125 tests / 560 assertions**. The latest complete pinned-SDK native suite passed **125 tests with zero skips**; the quota fix's covering provider suite passed **10 tests / 42 assertions**. Aggregate admission charges the journal, all matching retained copies and the proposed copy against the 8,000,000-byte operation reservation before allocation. Unknown copies remain evidence and may cause an explicit bounded capacity refusal.
+
+These are source/fixture gates. Production connection controls and their interface are still being integrated. Actual authenticated NAS interoperability, competing hosts, publication/readback/deletion and independent round trips remain pending.
+
+## iCloud state reporting and deterministic recovery
+
+Source commits `acf0c58` and `fb123b1` passed independent review of allowlisted account/bookmark/access/hydration issues and durable recovery. Failed native control/write helpers use a bounded stderr envelope; streamed artifact bytes never become error protocol. An early helper rejection during a nonempty write now preserves the known issue instead of replacing it with EPIPE. Cancellation and source errors retain their identities.
+
+Focused recovery/connection/native-lifecycle tests passed **43 tests / 287 assertions**; the early-rejection fix passed **12 tests / 30 assertions**. Interface tests passed **39 tests**, including recovery guidance in all four locales. Native compilation and synthetic self-tests passed. Deterministic unavailable/changed accounts, stale/denied bookmarks, missing folders and delayed payloads preserved private bindings/jobs/source WAV/revision identity; partial payloads stayed outside the authoritative session store. Job count and retry bounds were exercised.
+
+No actual Apple account, picker, installed bookmark or two-Mac replication was changed or observed. Real account transitions, sleep/wake, offline recovery and placeholder timing remain separate acceptance gates.
+
+## Integrated source checks and heartbeat fixture
+
+The integrated server source passed **666 tests / 3,890 assertions / 97 files** in 73.07 seconds, covering direct integration, iCloud recovery, quota cleanup and the initial offline QA fixture. This run preceded the final native aggregate-copy and offline-oracle corrections; their covering suites passed separately. Final whole-branch validation remains pending. Pinned server TypeScript still reports 78 known baseline diagnostics; this is not a global typing success claim.
+
+The mounted heartbeat test's global timer spy also shortened native startup to 500 ms. An explicit 1,250 ms cold-start case reproduced that false failure. Commit `9b3cadc` scopes shortened timers to the inventory RPC after native readiness; normal/cold cases passed, still proving heartbeat progress cannot extend the independent absolute RPC deadline. Production timeouts were unchanged, and the source correction passed independent review.
+
+## Actual offline local-model observations
+
+The [public offline acceptance harness](offline-synchronization-ai.md) uses production imports, meeting/label chat and structured local generation. Its synthetic source is disabled before store reconstruction and every generation. Public English/Portuguese fixtures include corrected text, manual names, labels, notes and provenance; this is not real provider replication or audio-transfer evidence.
+
+| Installed model | English/Portuguese observations | Offline provider calls | Owned cleanup |
+| --- | --- | --- | --- |
+| `gemma4:e4b` | Meeting decision and missing-fact checks passed; both label budget-correction answers omitted the required fact | 0 | Chats stopped; fixture removed |
+| `qwen2.5vl:7b` | Missing-fact checks passed; both decision and correction answers omitted the required facts | 0 | Chats stopped; fixture removed |
+
+Reports retain exact source commit and working-source hashes. Report SHA-256 values are `84ffae59ce4d47a085d4909dd58fbfc5e4d5609aa560b90875659c75408226bd` and `f176f3e2ed87904be7e5be87bae2437f8636e6ba7a35e6c1e18799561542a48f`, respectively. Raw public reports remain outside Git. These observations retain actual model gaps instead of upgrading them to accepted criteria; they do not establish general model accuracy.
+
+Independent review reproduced a false-positive token-only correction oracle. Commit `a3fbc7e` now requires a known affirmative fixture assertion and exact correction excerpt; unrecognized paraphrases require review. English/Portuguese contradiction/negation/wrong-value regressions and the comparator/offline suite passed **nine tests / 71 assertions**; selected QA TypeScript checks passed. Existing actual correction gaps remain unchanged. The 15 original active criteria remain unchecked until their remaining clauses have complete evidence.

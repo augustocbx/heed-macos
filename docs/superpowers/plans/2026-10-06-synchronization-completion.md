@@ -98,11 +98,11 @@ Separate modules may be refined when SDK constraints require it; record concrete
 - Extend `DeletionCapabilities.destinationVersion` to `1|2|3`. `revisionMetadata` and `exclusion` plus presence of `withTransaction` explicitly admit direct v3 coordination; numeric comparisons alone never admit new versions.
 - Guardian `remove-exact` consumes `{jobId,artifact:ArtifactIdentity}` and returns `'removed'|'already-removed'` only for verified exact deletion/absence owned by the original operation.
 
-- [ ] Write provider/core tests rejecting uncoordinated v3, legacy direct writes, wrong binding/generation, stale deletion preview and incomplete artifacts; preserve mounted/iCloud v2 tests. Write guardian deletion tests for changed target/parent, multiple links, unknown same-content file, absent/failed permanent fence, delete-pending success without absence, lost SET_INFO/CLOSE reply and denied competing write/delete.
-- [ ] Run `bun test packages/server/lib/smb-direct-provider.test.ts packages/server/lib/portable-library.test.ts packages/server/lib/remote-deletion.test.ts` and the Python transaction suite; observe intended new failures.
-- [ ] Implement existing-provider adapters and explicit admission gates. Open without delete-on-close, retain exact read/delete handle with enforced sharing, validate current identity/hash/authority, verify permanent fence, journal intent, perform handle-bound disposition/quarantine, close and verify absence before counting. Retain ambiguous jobs; shared audio GC stays false.
-- [ ] Re-run specified tests and existing mounted provider/transaction/recovery suites; expected zero failures.
-- [ ] Commit as `feat: integrate direct SMB coordination and exact metadata deletion`.
+- [x] Write provider/core tests rejecting uncoordinated v3, legacy direct writes, wrong binding/generation, stale deletion preview and incomplete artifacts; preserve mounted/iCloud v2 tests. Write guardian deletion tests for changed target/parent, multiple links, unknown same-content file, absent/failed permanent fence, delete-pending success without absence, lost SET_INFO/CLOSE reply and denied competing write/delete.
+- [x] Run `bun test packages/server/lib/smb-direct-provider.test.ts packages/server/lib/portable-library.test.ts packages/server/lib/remote-deletion.test.ts` and the Python transaction suite; observe intended new failures.
+- [x] Implement existing-provider adapters and explicit admission gates. Open without delete-on-close, retain exact read/delete handle with enforced sharing, validate current identity/hash/authority, verify permanent fence, journal intent, perform handle-bound disposition/quarantine, close and verify absence before counting. Retain ambiguous jobs; shared audio GC stays false.
+- [x] Re-run specified tests and existing mounted provider/transaction/recovery suites; expected zero failures.
+- [x] Commit as `feat: integrate direct SMB coordination and exact metadata deletion`.
 
 ### Task 4: Protected connections, bounded retries and HTTP controls
 
@@ -176,8 +176,8 @@ Separate modules may be refined when SDK constraints require it; record concrete
 - `check-synchronization-integrity.ts` takes a per-device locally resolved provider binding and an owned disposable child receipt; executes A-to-B-to-A and divergent edits without copying private bindings.
 - `check-synchronization-offline-ai.ts` consumes committed imported fixtures, disables provider, restarts isolated stores, runs production meeting/label chat with available local models and validates strict current-revision citations, exact quotations, exclusion/missing facts and zero offline provider calls.
 
-- [ ] Write comparator and offline-isolation regression tests. Extend iCloud state/restart tests for disabled/signed-out/changed account, stale/denied bookmark, missing folder and delayed placeholders; bound job/staging growth and preserve private pending paths.
-- [ ] Run focused portable/chat/iCloud suites; observe intended new failures. Improve sanitized typed state reporting only for reproduced ambiguous states.
+- [x] Write comparator and offline-isolation regression tests. Extend iCloud state/restart tests for disabled/signed-out/changed account, stale/denied bookmark, missing folder and delayed placeholders; bound job/staging growth and preserve private pending paths.
+- [x] Run focused portable/chat/iCloud suites; observe intended new failures. Improve sanitized typed state reporting only for reproduced ambiguous states.
 - [ ] Implement reusable opt-in harnesses using production stores/providers/chat validators; correct iCloud v2 documentation to canonical-manifest-first and marker-last. Use actual installed models with English/PT fixtures, then independent Macs for real provider round trips and concurrency.
 - [ ] Record sleep/wake, offline/restart/account/unavailable-provider faults as actual or deterministic evidence explicitly. Never count manual seeding or same-host stores as real replication.
 - [ ] Re-run focused suites and applicable real harnesses; expected passing results or explicit observed capability/acceptance gaps retained in the ledger.
@@ -192,7 +192,7 @@ Separate modules may be refined when SDK constraints require it; record concrete
 - [ ] Obtain independent source review of identity, ancestor pinning, claim release and deletion before effects on a real disposable server folder.
 - [ ] Execute real authenticated SMB create/nonreplace/namespace-sharing enforcement, competing-client and target/ancestor replacement tests, lost-response recovery and complete publication/read-back/deletion. Unsupported enforcement gates write/delete and retains acceptance pending.
 - [ ] Execute real SMB/iCloud A-to-B-to-A metadata/audio and divergent revision tests, partial visibility, interrupted/offline/sleep/restart scenarios and actual model answers.
-- [ ] Validate packaged runtime on available M1/M4, fresh/upgrade/reinstall custom quota and visible menu/capture finalization without altering personal meeting data. Record unavailable macOS 14 actual runtime separately.
+- [ ] Validate packaged runtime on available M1/M4, fresh/upgrade/reinstall custom quota and visible menu/capture finalization within the owner's authorization to replace disposable Heed data. Preserve unrelated data and applications. Record macOS 14 runtime execution separately from real server/device interoperability.
 - [ ] Update the 15-row evidence table with exact source/installed commit, language/locale/device/model and criterion-by-criterion results. No credentials, raw transport/account logs or personal recordings in Git.
 - [ ] Commit only sanitized evidence as `docs: record synchronization acceptance and remaining external gates`.
 
