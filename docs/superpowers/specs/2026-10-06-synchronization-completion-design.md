@@ -1,0 +1,100 @@
+# Synchronization completion design
+
+## Intent, scope and source
+
+Implement and validate every active requirement in [the synchronization TODO](../../qa/synchronization-todo.md) in one follow-up PR. The owner selected direct public SMB3 with credentials protected by macOS Keychain, confirmed both devices/provider resources are available, and removed excluded account integrations from the backlog. The active acceptance set is 15 original criteria in #18/#25/#26/#27/#30. Historical criteria in closed not-planned issues are not part of this delivery.
+
+Base: `880a0bf6f17128e5bff57854cc4a7337e338d29d`; its integrated main CI passed. See [the investigation and exact criterion mapping](../../qa/synchronization-completion-investigation.md). English project content, English/PT meeting fixtures, and English/PT-BR/French/German interface translations remain required. Both available devices run macOS 27.0.1; macOS 14 runtime compatibility must be separately established.
+
+This is the written design for review. Direct-SMB product implementation has not started. A separate confirmed installer-simulator fixture defect can be corrected without changing the production protocol or installer safety gates.
+
+## Selected architecture
+
+Add a direct SMB3 adapter behind the existing local-first portable-library contract. Preserve mounted legacy import and existing destination formats. A direct connection is explicit; it does not extract or reuse Finder credentials, silently switch an existing connection, or overwrite an old destination header.
+
+Use the public MIT-licensed `smbprotocol` client. The investigated release is [v1.17.0](https://github.com/jborean93/smbprotocol/releases/tag/v1.17.0), published July 7, 2026. Use the public low-level structures/handles, not convenience path operations with implicit DFS/connection caching. The package requires Python >=3.10; this delivery targets the installer's explicitly selected Python 3.12. Build a dedicated private `runtime/smb` virtual environment inside each staged release from that verified base interpreter. Ship the complete hash-locked arm64/macOS-14-compatible transitive wheel set under `packages/server/native/smb-direct/wheels`, with a wheel manifest and interpreter/ABI requirements. Install with `--no-index --require-hashes` from that payload before activating the release; preserve the prior runtime during rollback. Launch only its validated `runtime/smb/bin/python`, never `/usr/bin/python3` or an arbitrary ASR environment. An absent compatible base interpreter produces an explicit prerequisite refusal; offline installation never falls back to a download or source build. The release builder validates wheel tags/hashes and the packaged runtime self-test on M1/M4; macOS 14 runtime compatibility has a separate actual gate. See [pinned upstream requirements](https://github.com/jborean93/smbprotocol/blob/v1.17.0/pyproject.toml). Native Keychain access reuses `createKeychainVault` and its opaque-reference protocol.
+
+The common catalog, quota, search, chat and revision schema remain authoritative. The adapter implements `LibraryProvider` and `RemoteTransaction`; application state never calls a raw SMB operation to bypass those contracts. Recording/final transcription retain priority over optional transfers.
+
+## Connection, private state and interface
+
+Offer a distinct direct-SMB connection option. Input includes an explicitly chosen server/share/library-relative folder, optional domain, account name and user-entered password. Validate hostname/port and every relative component; reject traversal, credential-bearing URLs, ambiguous encodings and unreviewed redirection/DFS targets. Default port is 445. A local test server uses a separately selected allowed QA port.
+
+The browser sends credentials only in the explicit connection request. Persist the secret in this device's unsynchronized Keychain; store only an opaque UUID reference in private connection state. Never return the password, save it in browser storage, export it, place it in process arguments/environment, or include it in diagnostics. A helper receives secrets through stdin and emits only bounded sanitized protocol results. Disable raw library logging and discard unsanitized child diagnostics.
+
+Private binding includes the selected endpoint/share/subdirectory, destination UUID, negotiated server GUID and exact root object identity, private credential reference and connection generation. Query filesystem identity and a supported nonzero stable object identity separately from SMB2 CREATE `FileId`, which identifies a session open and is not a general persistent recovery receipt. Pin root and every selected ancestor/target parent against replacement for the operation. Revalidate identities after reconnect and at operation boundaries; unsupported, changed, reused or ambiguous identity refuses effects and preserves the original job. See [file identity](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/2d3333fe-fc98-4a6f-98a2-4bb805aff407). Portable meeting artifacts contain none of these connection details.
+
+Connection preview reports authentication, dialect, signing/encryption, read/write support and destination identity separately. Require authenticated SMB3 with verified signing or authenticated encryption protecting actual traffic; anonymous/guest, unknown security or silently downgraded sessions are refused. Encryption can supply integrity while the SDK sets `signing_required=false`; do not classify that session solely from this Boolean. Validate the pinned SDK's actual session/packet protection: [session implementation](https://github.com/jborean93/smbprotocol/blob/v1.17.0/src/smbprotocol/session.py). Display encryption independently and honor an explicitly configured encryption requirement. A read-only library can support committed import only when its protocol allows safe reads; it never appears publication-capable.
+
+Use a durable private transition journal for credential/configuration/provider-preference changes. If activation fails, restore the previous selection/binding and retire the newly created opaque credential reference. An unresolved rollback blocks synchronization while preserving local media. Disconnect stops future jobs and retires this connection's Keychain reference; failure to remove a credential retains a bounded cleanup obligation. It never removes shared history or local transcripts.
+
+All reviewed controls carry the exact connection ID/generation. A stale tab receives a conflict rather than operating on a replacement destination. Rename/disable/reconnect are separate operations and leave recording settings unchanged. Extend all four locale dictionaries for new states and inputs.
+
+## Destination version and compatibility
+
+Use `schemaVersion: 3` in the three-field `heed-portable-library` header for new direct-SMB destinations. The direct adapter rejects v1/v2 write/deletion access; compatibility with those destructive paths requires a separate reviewed design. Mounted legacy access remains unchanged. Portable meeting/transcript schema remains unchanged. New initialization requires an empty reviewed folder and user confirmation. Preserve existing v1/v2 headers; no in-place upgrade or automatic migration occurs. Older clients must reject the new coordination version rather than perform uncoordinated writes.
+
+Update shared destination-version/capability types explicitly. Core transaction admission and deletion gates depend on supported capabilities, not a blanket numeric `>= 2` check. Legacy and iCloud adapters keep their existing supported versions. Existing APFS/synthetic v2 tests and mounted read-only import remain valid.
+
+## Publication, exclusion and durable owner recovery
+
+The Python guardian owns one authenticated server session and the whole operation. Use server-side exclusive create and non-replacing handle rename. Retain read/delete handles with sharing that allows required reads but denies competing write/delete on selected ancestors/root/target parents. Reject DFS/reparse paths and shares advertising forced shared-delete or restricted exclusive-open behavior, or any failed enforcement probe. Network rename uses `RootDirectory=0` and a validated share-relative target with `ReplaceIfExists=false`; do not assume descriptor-relative destination rename. Pin the complete destination parent namespace through that operation. See [network rename contract](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/52aa0b70-8094-4971-862d-79793f41e6a8). Do not replace the existing exclusive operation with an overwrite-capable rename. Reject reparse/symlink/multi-link/unsupported identity cases before effects.
+
+Create owned temporary artifacts exclusively, record their server object identities in the original private journal before canonical effects, and retain private physical-origin/app-directory guard authority. Equal content, copied receipts, a new process generation or a stale timestamp never grants ownership of an unknown remote allocation.
+
+Acquire an exclusive server claim for the complete inventory/admission/publication/deletion operation. A conflicting or unresolved claim produces a retryable/bounded recovery state; there is no TTL expiry or takeover. Durable checkpoints precede claim release. Release closes all completed descendant handles in an explicit verified order while retaining the exact claim/root authority, then moves the exact owned whole claim through a non-replacing server operation. Journal releasing intent before the rename and verify its exact outcome afterward. A lost acknowledgment retains the original recovery phase; never touch a later claim. No path-based check-and-unlink release is permitted.
+
+Admit the canonical manifest under the same exclusion protocol before payload/media transfer. Validate permanent deletion barriers and pending intent, then write immutable payload/media and publish the complete commit marker last. Incomplete allocations and markers never enter complete discovery or local AI sources. Identity collisions preserve unknown content and require a fresh revision or verified original-owner recovery.
+
+Before acknowledgment, reopen and read all required remote artifacts, validate lengths/hashes and verify the exact commit marker. Report share read-back verification; do not claim untested power-loss durability. Flush requests, server-reported status and a readable local cache are separate observations. Bound object/list sizes, queued revisions and retained recovery state, using the existing 10,000-revision and quota protections.
+
+Cancellation stops the owned helper/session within bounded deadlines, preserves its exact pending job and prevents new optional work until cleanup completes. Restart/reconnect revalidates destination and server identities before resuming an original job. Credentials may be replaced only through the reviewed transition; an account failure never becomes a successful publication acknowledgment.
+
+## Exact confirmed metadata deletion
+
+Reuse the core stale-bound preview/confirmation, canonical fences, protected revision/object policy and durable deletion jobs. Shared audio garbage collection stays disabled. Imported local transcripts and retained private source media remain protected.
+
+Open each selected target with read/delete access and server-enforced sharing that denies competing write/delete/namespace replacement. Do not set delete-on-close when opening: first validate destination/claim authority, intended object identity, length and hash. Only then request handle-bound deletion or exact non-replacing quarantine through that validated handle. Reject a changed target without effects. Unknown content is never removed because its pathname or bytes match an older observation.
+
+Under the complete claim, write and verify the permanent fence before destructive effects, and journal exact authority/identity before SET_INFO. FileDispositionInformation sets deletion pending; success is not proof of removal. Close the exact handle, verify canonical absence or exact quarantine state, then count removal and checkpoint. Ambiguous SET_INFO/CLOSE outcomes preserve the original job and pending source. See [deletion semantics](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/12c3dd1c-14f6-4229-9d29-75fb2cb392f6). Every destructive effect has a durable private receipt before release. Recovery resumes only for the original physical owner and exact destination/operation. If a server cannot enforce the complete required namespace/handle policy, advertise deletion unsupported and keep the original acceptance pending; never substitute a racy hash/stat/unlink path. Real NAS namespace-replacement and competing-client tests are mandatory before declaring capability.
+
+## Quota and installer acceptance
+
+Keep the production installer's refusal of unsupported legacy checkouts. Correct the simulator's supported fixture to contain current safe service configuration/runtime/guard files, and add an explicit unsupported-legacy refusal control proving no application, data, bridge, configuration or service effects. Then execute the complete simulator through installation, custom 3 GB preservation, upgrade, rollback, reinstall and uninstall.
+
+Exercise quota-pressure finalization with synthetic PCM through actual FFmpeg, controlled final transcription, one completed durable session, valid WAV, released allocations and `used + reserved <= limit`. Initial rejection and retained-audio failure controls remain. Actual physical recording finalization on both devices is a separate acceptance run.
+
+Use two production interface pages to change quota in one and observe the authoritative persisted value in the other and desktop API. Verify visible native menu propagation independently. Repeat the supported interface locales; API equality alone is not native-menu acceptance. Physical fresh/upgrade/reinstall must preserve a valid custom value without affecting personal meeting data.
+
+## Offline AI and two-device portable integrity
+
+Create public English/PT fixtures with controlled labels, manual speaker names, corrected transcript text, saved notes and language/model provenance. Import through the production provider with quota reservation and complete local commit. Disable the provider, restart the isolated stores and answer meeting-scoped and broad-to-narrow label-scoped questions using each installed local model and production strict response/citation validators.
+
+Require current-revision citation IDs and exact quoted source text, preserved label exclusion, correct missing-fact behavior and zero provider requests after the offline transition. Searchable sources without actual model answers do not complete this criterion.
+
+For SMB and iCloud, perform A-to-B-to-A publication/import in uniquely owned disposable libraries. Compare every required payload field, ancestry, complete commit visibility and exact audio hash. Test concurrent divergent edits without replacing a shared latest pointer. Manual seeding, two stores on one host and adapters using synthetic transports are distinct evidence; they cannot stand in for independent real replication.
+
+## iCloud acceptance
+
+Retain the explicitly chosen folder/bookmark/account architecture and conservative `local-only` acknowledgment. Resolve each device's binding locally without logging bookmark/account data; validate the root and create only a reviewed unique synthetic child. Never copy a private binding between devices.
+
+Exercise signed-out/disabled/changed account, unavailable folder, stale/denied bookmark, cloud-only placeholders, delayed replication, concurrent edits, restart, sleep/wake and offline recovery. Validate bounded queue/staging growth and preservation of private pending media. Update publication documentation to describe v2 canonical manifest admission before media and marker-last visibility. Typed sanitized error improvements are justified only by reproduced ambiguous states; do not weaken access/integrity rejection.
+
+## Verification and evidence gates
+
+Each automated or actual retake records exact source/installed commit, device/macOS/model, content language, locale, synthetic fixture IDs, observed results and limitations. Keep private meetings, credentials and raw account/transport logs out of Git. Use the 15-row investigation table to account for every original criterion.
+
+Required automated coverage includes credential rollback/removal faults, secret-free diagnostics, invalid endpoints/paths, wrong server/root identity, unknown coordination version, read-only denial, exclusive-create/rename collisions, partial admission/markers, target/ancestor namespace replacement, copied/foreign recovery, cancellation/restart, bounded histories, two-catalog divergence, quota pressure and offline citation isolation. Run applicable server/interface/Python/native checks and fresh exact-head CI; obtain independent source review.
+
+Actual two-device/device-account acceptance is recorded independently. Mark a criterion only when every clause is evidenced. Close an issue only when its complete acceptance set passes; preserve all not-planned closures. macOS 14 compilation/dependency checks and runtime interoperability have separate results.
+
+Before merge handoff: inspect all staged/unstaged/untracked/outgoing work, commit and push every repository change, verify fetched remote HEAD equality, stop only this worktree's services, safely remove the clean worktree from outside it, and verify absence. Preserve the dirty primary checkout and unrelated worktrees/services.
+
+## Implementation order
+
+1. Correct and retest the confirmed installer simulator fixture; update active scope and traceability.
+2. After written-design review, write the detailed direct-SMB implementation plan with exact module interfaces and failure tests.
+3. Implement protected direct connection state, packaged dependency and bounded guardian transport.
+4. Implement new-version publication, verified read-back, exact deletion and original-owner recovery; independently review the safety boundary before real disposable tests.
+5. Implement reusable quota/offline-AI/portable comparison acceptance automation; execute available local and actual two-device provider scenarios.
+6. Record all 15 original criteria honestly, run consolidated tests/CI and produce the single reviewable implementation PR.
