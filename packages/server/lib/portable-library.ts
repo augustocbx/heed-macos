@@ -132,5 +132,5 @@ export class PortableLibrary {
    renameSync(file,path);const dir=openSync(dirname(path),'r');try{fsyncSync(dir);}finally{closeSync(dir);}return apply();
   }finally{rmSync(staging,{recursive:true,force:true});this.options.quota.release(id);}
  },signal);}
- protectedPaths():string[]{return Object.values(this.state.entries).filter(e=>e.preview.state!=='verified').flatMap(e=>{try{const audio=this.payload(e).audio;return audio?[join(this.options.root,'media',`${audio.sha256}.wav`),...(e.audioSource?[e.audioSource]:[])]:[];}catch{return [];}});}
+ protectedPaths(revisionIds?:string[]):string[]{const requested=new Set(revisionIds);return Object.values(this.state.entries).filter(e=>e.preview.state!=='verified'||requested.has(e.manifest.revisionId)).flatMap(e=>{try{const audio=this.payload(e).audio;return audio?[join(this.options.root,'media',`${audio.sha256}.wav`),...(e.audioSource?[e.audioSource]:[])]:[];}catch{return [];}});}
 }

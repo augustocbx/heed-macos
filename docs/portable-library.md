@@ -21,6 +21,8 @@ Publish optional audio objects first, then transcript, then manifest, then immut
 
 Queuing a local meeting streams the current local WAV to compute its size and hash, then records an audio reference with the portable revision. Its source path stays in the private catalog and remains protected until publication is verified. Cached audio is also verified with bounded streaming reads before playback; neither operation buffers the entire recording.
 
+Destination registries track their own publication acknowledgments. They can pass additional revision IDs to `protectedPaths` so a copy verified on one destination remains protected while another destination still needs it; existing pending/conflict protections remain included.
+
 ## Revisions and recovery
 
 Library/meeting identity, not local legacy paths, defines reconciliation. Duplicate UUIDs across different libraries receive different device aliases. Exact revision retries are idempotent. Descendants can advance a head when local content has not changed; ancestors do not replace descendants. Divergent branches and unsynchronized local corrections remain conflicts. Explicitly selecting a conflict preserves the current local correction as an immutable revision, then creates a merge revision whose parents include the current head and preserved conflict candidates. Previously committed content remains recoverable in the private catalog.
