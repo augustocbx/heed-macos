@@ -310,14 +310,15 @@ check "Heed $V2 was not restarted" test "$(running_version)" = "$V2"
     "http://127.0.0.1:$HEED_API_PORT/api/recording/maintenance" >/dev/null
 
 step "Refusal: another application owns a Heed port"
+SIM_STOP_ROOT="$(cd "$SIM_HOME/.heed/runtime/current" && pwd -P)" || die "resolve the current service root before the port conflict"
 "$SIM_SHIMS/launchctl" bootout "gui/$(id -u)/local.heed.menubar"
-/usr/bin/python3 "$HEED_REPO_ROOT/scripts/release/heed_release.py" stop-services --root "$SIM_HOME/.heed/runtime" \
+/usr/bin/python3 "$HEED_REPO_ROOT/scripts/release/heed_release.py" stop-services --root "$SIM_STOP_ROOT" \
     --ports "$HEED_API_PORT" "$HEED_UI_PORT" "$HEED_TRANSCRIPTION_PORT" || die "stop services before the port conflict"
 (cd "$SIM" && exec /usr/bin/python3 -m http.server "$HEED_API_PORT" --bind 127.0.0.1 >/dev/null 2>&1) & echo $! > "$SIM/foreign.pid"
 sleep 1
 if bash "$SIM_RELEASES/v$V2/install.sh" --skip-model-warmup --no-permission-prompt > "$SIM/install-6.log" 2>&1; then die "installed over another application"; fi
 check "installer does not stop the other application" kill -0 "$(cat "$SIM/foreign.pid")"
-check "installer explains the port conflict" grep -q "Port $HEED_API_PORT is used by another application" "$SIM/install-6.log"
+check "installer explains the unverified listener identity" grep -Fq "Heed returned incomplete or unsupported recording status or listener identity" "$SIM/install-6.log"
 check "installer does not claim a meeting is active" bash -c "! grep -q 'Heed is recording' '$SIM/install-6.log'"
 kill "$(cat "$SIM/foreign.pid")"; rm -f "$SIM/foreign.pid"; sleep 1
 "$SIM_SHIMS/launchctl" bootstrap "gui/$(id -u)" "$SIM_HOME/Library/LaunchAgents/local.heed.menubar.plist"
