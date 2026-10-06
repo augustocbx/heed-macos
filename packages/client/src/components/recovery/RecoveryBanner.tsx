@@ -1,3 +1,4 @@
+import { applySpeakerNames, reconcileSpeakerNames } from "@/lib/speakerNames";
 import { tr, useLocale } from "@/lib/i18n.ts";
 import { useEffect, useState } from "react";
 import { recoveryApi, type OrphanedRecording } from "@/api/recovery.ts";
@@ -25,9 +26,13 @@ export function RecoveryBanner() {
 	const showToast = useUIStore((s) => s.showToast);
 	const reloadSessions = useSessionsStore((s) => s.load);
 
-	useEffect(() => {
-		recoveryApi.list().then((d) => setOrphans(d.recordings)).catch(() => {});
-	}, []);
+ useEffect(() => {
+  let disposed=false;
+  const refresh=()=>{void recoveryApi.list().then(data=>{if(!disposed)setOrphans(data.recordings);}).catch(()=>{});};
+  const released=()=>{setDismissed(false);refresh();};
+  refresh();window.addEventListener("heed:recovery-refresh",released);
+  return()=>{disposed=true;window.removeEventListener("heed:recovery-refresh",released);};
+ }, []);
 
 	if (dismissed || orphans.length === 0) return null;
 
@@ -45,12 +50,14 @@ export function RecoveryBanner() {
     || !["en", "pt"].includes(result.metadata?.language)) {
     throw new Error(tr("Recovery ended without a final transcript. The audio remains available."));
    }
+   const names=reconcileSpeakerNames(rec.segments || [],result.segments,rec.speakerNames || {});
+   const restored=applySpeakerNames(result.segments,result.speakers || [],result.embeddings || {},names);
    await sessionsApi.create({
+    ...(rec.recoveryMeetingId ? {id:rec.recoveryMeetingId} : {}),
     title: `Recovered ${fmtDate(rec.created)}`, createdAt: rec.created,
     duration: result.duration ?? rec.duration_estimate_s, language: result.metadata.language,
     transcriptionModel: result.metadata.model, transcriptFinalized: true,
-    transcript: result.text, speakers: result.speakers || [], segments: result.segments,
-    embeddings: result.embeddings || {},
+    transcript: result.text,...restored,
     files: { wav: rec.path, srt: result.files?.srt || "", txt: result.files?.txt || "" },
     aiNotes: "", summary: "", tags: [], pinned: false,
    });

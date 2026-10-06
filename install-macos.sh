@@ -31,18 +31,13 @@ if ! command -v bun >/dev/null 2>&1; then
     rm -f "$HEED_BUN_INSTALLER"
     trap - EXIT
 fi
-# Do not update services while a meeting is being recorded or saved.
-/usr/bin/python3 - <<'PYCHECK'
-import json, urllib.request, urllib.error, sys
-try:
-    with urllib.request.urlopen('http://localhost:5001/api/desktop/control/status', timeout=5) as response:
-        state = json.load(response)
-except urllib.error.URLError as error:
-    if isinstance(error.reason, ConnectionRefusedError): state = {}
-    else: sys.exit('Could not check the Heed status; stop its services before updating.')
-if any(state.get(key) for key in ['recording', 'processing', 'pending', 'starting']):
-    sys.exit('Recording or processing is in progress. Wait for the session to be saved before updating.')
-PYCHECK
+# Reserve the lifecycle before updating services; capture cannot start between checks.
+if [ "${HEED_LIFECYCLE_GUARD_HELD:-}" != 1 ]; then
+    export HEED_LIFECYCLE_GUARD_TOKEN="$(/usr/bin/uuidgen)"
+    /usr/bin/python3 "$HEED_INSTALL_ROOT/packages/desktop/guard-lifecycle.py" acquire
+    export HEED_LIFECYCLE_GUARD_HELD=1
+    trap '/usr/bin/python3 "$HEED_INSTALL_ROOT/packages/desktop/guard-lifecycle.py" release || true' EXIT
+fi
 cd "$HEED_INSTALL_ROOT"
 HEED_PYTHON="$(brew --prefix python@3.14)/bin/python3.14"
 if [ ! -x .venv/bin/python3 ]; then "$HEED_PYTHON" -m venv .venv; fi
@@ -63,7 +58,7 @@ try:
 except urllib.error.URLError as error:
     if isinstance(error.reason, ConnectionRefusedError): state={}
     else: sys.exit('Could not check the Heed status before restarting.')
-if any(state.get(key) for key in ['recording','processing','pending','starting']): sys.exit('A meeting started during installation. Wait for it to finish and run this installer again.')
+if any(state.get(key) for key in ['recording','processing','pending','starting']): sys.exit('An active meeting prevents restarting Heed services.')
 root=os.path.realpath(os.environ['HEED_INSTALL_ROOT'])
 for port in [5001,5170,5002]:
     output=subprocess.run(['/usr/sbin/lsof','-t','-nP',f'-iTCP:{port}','-sTCP:LISTEN'],capture_output=True,text=True).stdout
@@ -76,5 +71,5 @@ for port in [5001,5170,5002]:
 time.sleep(2)
 PYRESTART
 bash packages/desktop/install-menubar.sh
-printf '\nHeed is installed. Open http://localhost:5170 and keep the interface open.\n'
+printf '\nHeed is installed. Open http://localhost:5170 to view meetings; menu recordings also work with every tab closed.\n'
 printf 'Allow system audio capture and microphone access in System Settings.\n'

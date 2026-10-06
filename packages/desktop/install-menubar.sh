@@ -10,6 +10,12 @@ if [ "${1:-}" = "--build-only" ]; then
     printf 'Build verified: %s\n' "$HEED_BUILD/Heed"
     exit 0
 fi
+if [ "${HEED_LIFECYCLE_GUARD_HELD:-}" != 1 ]; then
+    export HEED_LIFECYCLE_GUARD_TOKEN="$(/usr/bin/uuidgen)"
+    /usr/bin/python3 "$HEED_DESKTOP/guard-lifecycle.py" acquire
+    export HEED_LIFECYCLE_GUARD_HELD=1
+    trap '/usr/bin/python3 "$HEED_DESKTOP/guard-lifecycle.py" release || true' EXIT
+fi
 HEED_APP="$HOME/Applications/Heed.app"
 HEED_AGENT="$HOME/Library/LaunchAgents/local.heed.menubar.plist"
 # The app may also have been opened from Finder. Stopping only the

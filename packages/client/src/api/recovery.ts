@@ -1,3 +1,4 @@
+import type { Segment } from "@heed/shared";
 import { apiClient } from "./client.ts";
 
 export interface OrphanedRecording {
@@ -7,6 +8,9 @@ export interface OrphanedRecording {
 	created: string;
 	duration_estimate_s: number;
 	is_dual: boolean;
+ recoveryMeetingId?:string;
+ speakerNames?:Record<string,string>;
+ segments?:Segment[];
 }
 
 export const recoveryApi = {

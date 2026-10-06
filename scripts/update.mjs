@@ -9,8 +9,9 @@
  * Usage: bun run update
  */
 
-import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execSync, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 
 const C = {
 	reset: "\x1b[0m",
@@ -68,6 +69,16 @@ if (log) {
 		console.log(`  ${C.dim}${line}${C.reset}`);
 	});
 	console.log("");
+}
+
+// Block new captures before replacing code or dependencies in a running checkout.
+const lifecycleGuard = fileURLToPath(new URL("../packages/desktop/guard-lifecycle.py", import.meta.url));
+if (process.env.HEED_LIFECYCLE_GUARD_HELD !== "1") {
+ process.env.HEED_LIFECYCLE_GUARD_TOKEN = randomUUID();
+ const guard = spawnSync("python3", [lifecycleGuard, "acquire"], {encoding:"utf8"});
+ if (guard.status !== 0) { err(guard.stderr?.trim() || "Could not acquire the Heed recording guard."); process.exit(1); }
+ process.env.HEED_LIFECYCLE_GUARD_HELD = "1";
+ process.on("exit", () => { spawnSync("python3", [lifecycleGuard, "release"], {stdio:"ignore"}); });
 }
 
 // 5. Pull

@@ -1,68 +1,27 @@
-import { tr, useLocale } from "@/lib/i18n.ts";
-import { useEffect, useRef } from 'react';
-import { useRecordingStore } from '@/stores/recording.ts';
-import { useHealthStore } from '@/stores/health.ts';
-import { useUIStore } from '@/stores/ui.ts';
-import { executeDesktopCommand, type DesktopCommand } from '@/lib/desktop-command.ts';
+import { useEffect } from "react";
+import { useRecordingStore } from "@/stores/recording";
+import { useHealthStore } from "@/stores/health";
+import { applyRecordingSnapshot } from "@/lib/recordingSnapshot";
 
-/** The menu delegates to this lifecycle so transcript/session persistence stays identical. */
-export function useDesktopControl(controls:{start:(language?:string)=>Promise<boolean>;stop:(language?:string)=>Promise<boolean>}, setLanguage:(language:string)=>void) {
- const latest = useRef({controls,setLanguage});
- latest.current = {controls,setLanguage};
- useEffect(() => {
-  const client = crypto.randomUUID();
-  let cancelled = false;
-  let busy = false;
-  let executing:string|null = null;
-  async function post(path:string, body:unknown) {
-   const response = await fetch(`/api/desktop/control/${path}`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-   const data = await response.json();
-   if (!response.ok) throw new Error(data.error || tr("Desktop control failed"));
-   return data;
-  }
-  async function poll() {
-   if (cancelled || busy) return;
-   busy = true;
-   try {
-    const state = useRecordingStore.getState();
-    const {command,status} = await post('poll', {client,recording:state.recording,processing:state.processing || !!executing,commandId:executing,seconds:state.seconds,ready:useHealthStore.getState().health.whisper});
-    // Native capture is authoritative across reloads and multiple interface tabs.
-    if (!executing && !cancelled) {
-     const local = useRecordingStore.getState();
-     if (status.recording && !local.recording) local.startRecording();
-     // An idle controller's old duration must not repopulate an empty recording screen.
-     const seconds = status.recording || local.recording
-      ? Math.max(0, Number(status.seconds) || 0)
-      : local.processing || local.segments.length > 0 || !!local.transcript ? local.seconds : 0;
-     useRecordingStore.setState({recording:status.recording === true, seconds});
-    }
-    if (command && !cancelled && !executing) {
-     const cmd = command as DesktopCommand & {id:string};
-     executing = cmd.id;
-     void (async () => {
-     let error:string|null = null;
-     try {
-      // A new tab can stop/recover capture if the recording tab was closed.
-      if (cmd.action === 'stop' && status.recording && !useRecordingStore.getState().recording) {
-       useRecordingStore.getState().startRecording();
-       useRecordingStore.setState({seconds:status.seconds});
-      }
-      latest.current.setLanguage(cmd.language);
-      useUIStore.getState().setPage('record');
-      await executeDesktopCommand(cmd, {recording:status.recording,processing:status.processing,ready:useHealthStore.getState().health.whisper}, latest.current.controls);
-     } catch (e) {
-      error = (e as Error).message;
-      useUIStore.getState().showToast(error);
-     }
-     try { await post('complete', {client,id:cmd.id,error}); } catch { /* the server lease recovers a lost acknowledgment */ }
-     finally {executing=null;}
-     })();
-    }
-   } catch { /* retry when the local service is available */ }
-   finally { busy = false; }
-  }
-  const timer = window.setInterval(poll,1000);
-  void poll();
-  return () => {cancelled=true;window.clearInterval(timer);};
- }, []);
+/** Browser clients observe capture; menu commands execute entirely in the backend. */
+export function useDesktopControl(_controls:{start:(language?:string)=>Promise<boolean>;stop:(language?:string)=>Promise<boolean>},_setLanguage:(language:string)=>void) {
+  useEffect(()=>{
+    const client=crypto.randomUUID();let disposed=false;let busy=false;
+    const poll=async()=>{
+      if(disposed || busy)return;busy=true;
+      try {
+        const response=await fetch("/api/desktop/control/poll",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({client,ready:useHealthStore.getState().health.whisper})});
+        if(!response.ok)return;
+        const {status}=await response.json();if(disposed || !status)return;
+        if(status.snapshot){applyRecordingSnapshot(status.snapshot);return;}
+        // Compatibility while an installed backend is being updated.
+        const local=useRecordingStore.getState();if(status.recording&&!local.recording)local.startRecording();
+        const seconds=status.recording||local.recording?Math.max(0,Number(status.seconds)||0):local.seconds && (local.processing || local.segments.length || local.transcript)?local.seconds:0;
+        useRecordingStore.setState({recording:status.recording===true,seconds});
+      }catch { /* Retry after backend reconnect; never issue capture commands from polling. */ }
+      finally{busy=false;}
+    };
+    const timer=window.setInterval(()=>void poll(),1000);void poll();
+    return()=>{disposed=true;window.clearInterval(timer);};
+  },[]);
 }

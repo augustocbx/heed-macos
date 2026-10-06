@@ -2,8 +2,15 @@ import { tr, useLocale } from "@/lib/i18n.ts";
 import { reconcileSpeakerNames } from "@/lib/speakerNames.ts";
 import { create } from "zustand";
 import type { Segment, TranscribeResult } from "@heed/shared";
+import type { CoordinatorState } from "@heed/shared";
 
 interface RecordingState {
+ coordinatorMeetingId: string | null;
+ coordinatorRevision: number;
+ dismissedMeetingId: string | null;
+ coordinatorState: CoordinatorState;
+ coordinatorError: string | null;
+ coordinatorPath: string | null;
 	speakerNames: Record<string, string>;
  finalSavePending: boolean;
 	renameSpeaker: (original: string, name: string) => void;
@@ -45,7 +52,13 @@ interface RecordingState {
 	reset: () => void;
 }
 
-export const useRecordingStore = create<RecordingState>((set) => ({
+export const useRecordingStore = create<RecordingState>((set, get) => ({
+ coordinatorMeetingId: null,
+ coordinatorRevision: -1,
+ dismissedMeetingId: null,
+ coordinatorState:"idle",
+ coordinatorError:null,
+ coordinatorPath:null,
 	speakerNames: {},
  finalSavePending: false,
 	renameSpeaker: (original, name) => set((s) => s.finalSavePending ? {} : ({ speakerNames: { ...s.speakerNames, [original]: name } })),
@@ -152,6 +165,12 @@ export const useRecordingStore = create<RecordingState>((set) => ({
 
 	reset: () =>
 		set({
+   dismissedMeetingId:get().coordinatorMeetingId,
+   coordinatorMeetingId:null,
+   coordinatorRevision:-1,
+   coordinatorState:"idle",
+   coordinatorError:null,
+   coordinatorPath:null,
 			recording: false,
 			processing: false,
 			seconds: 0,

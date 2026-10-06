@@ -1,4 +1,6 @@
 export const SHELL_TRANSLATIONS: Record<string, {"pt-BR":string;fr:string;de:string}> = Object.fromEntries([
+ ["Recording could not be completed. Retained audio is available for recovery.","A gravação não pôde ser concluída. O áudio foi preservado para recuperação.","L’enregistrement n’a pas pu être terminé. L’audio est conservé pour récupération.","Die Aufnahme konnte nicht abgeschlossen werden. Das Audio bleibt zur Wiederherstellung erhalten."],
+ ["Retry finalization","Tentar finalizar novamente","Réessayer la finalisation","Abschluss erneut versuchen"],
  ["Record","Gravar","Enregistrer","Aufnehmen"],
  ["Meetings","Reuniões","Réunions","Besprechungen"],
  ["Settings","Configurações","Paramètres","Einstellungen"],
@@ -88,4 +90,7 @@ export const SHELL_TRANSLATIONS: Record<string, {"pt-BR":string;fr:string;de:str
  ["Pyannote auto tuning","Ajuste automático do Pyannote","Réglage automatique Pyannote","Automatische Pyannote-Abstimmung"],
  ["Detecting hardware and choosing the best engine.","Detectando o hardware e escolhendo o melhor motor.","Détection du matériel et choix du meilleur moteur.","Hardware wird erkannt und die beste Engine ausgewählt."],
  ["Tuning based on available hardware.","Ajuste baseado no hardware disponível.","Réglage selon le matériel disponible.","Abstimmung auf die verfügbare Hardware."],
+ ["Keep audio and leave recovery","Manter áudio e sair da recuperação","Conserver l’audio et quitter la récupération","Audio behalten und Wiederherstellung verlassen"],
+ ["The audio stays available in Recovery.","O áudio continua disponível em Recuperação.","L’audio reste disponible dans Récupération.","Das Audio bleibt unter Wiederherstellung verfügbar."],
+ ["Could not leave recovery. The audio is still retained.","Não foi possível sair da recuperação. O áudio continua preservado.","Impossible de quitter la récupération. L’audio est toujours conservé.","Die Wiederherstellung konnte nicht verlassen werden. Das Audio bleibt erhalten."],
 ].map(([en,pt,fr,de])=>[en,{"pt-BR":pt,fr,de}]));
