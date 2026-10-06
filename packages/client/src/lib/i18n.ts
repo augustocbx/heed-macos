@@ -15,7 +15,8 @@ export function useLocale() {
  const locale=useLocaleStore(s=>s.locale);
  return {locale,tr:(text:string,vars?:Record<string,string|number>)=>tr(text,locale,vars)};
 }
-const TRANSLATIONS={...SHELL_TRANSLATIONS,...CONTENT_TRANSLATIONS,...NOTES_TRANSLATIONS,...TASKS_TRANSLATIONS,...CHAT_TRANSLATIONS,...DETECTION_TRANSLATIONS,...LIBRARY_CHAT_TRANSLATIONS};
+import {STORAGE_TRANSLATIONS} from "./translations-storage";
+const TRANSLATIONS={...SHELL_TRANSLATIONS,...CONTENT_TRANSLATIONS,...NOTES_TRANSLATIONS,...TASKS_TRANSLATIONS,...CHAT_TRANSLATIONS,...DETECTION_TRANSLATIONS,...LIBRARY_CHAT_TRANSLATIONS,...STORAGE_TRANSLATIONS};
 export function tr(text:string,locale:Locale=useLocaleStore.getState().locale,vars?:Record<string,string|number>):string {
  const chosen=normalizeLocale(locale);
  const key=text.trim();

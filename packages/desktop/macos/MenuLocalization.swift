@@ -5,6 +5,7 @@ struct MenuLocalization {
     static func normalize(_ locale: String?) -> String { locales.contains(locale ?? "") ? locale! : "en" }
     private static let translations: [String: [String: String]] = [
         "pt-BR": [
+            "Local meeting storage": "Armazenamento local de reuniões",
             "Meeting detection could not save its state. Automation is disabled; stop the recording manually and reconfigure detection after fixing storage.": "Não foi possível salvar o estado da detecção. A automação está desativada; pare a gravação manualmente e reconfigure a detecção após corrigir o armazenamento.",
             "Meeting detection settings could not be read. Reconfigure detection before using it.": "Não foi possível ler as configurações da detecção. Reconfigure a detecção antes de usá-la.",
             "Waiting for reconnect — %@s": "Aguardando reconexão — %@s",
@@ -61,6 +62,7 @@ struct MenuLocalization {
             "A recording command is already pending": "Já há um comando de gravação pendente"
         ],
         "fr": [
+            "Local meeting storage": "Stockage local des réunions",
             "Meeting detection could not save its state. Automation is disabled; stop the recording manually and reconfigure detection after fixing storage.": "Impossible d’enregistrer l’état de détection. L’automatisation est désactivée ; arrêtez manuellement l’enregistrement et reconfigurez la détection après avoir corrigé le stockage.",
             "Meeting detection settings could not be read. Reconfigure detection before using it.": "Impossible de lire les paramètres de détection. Reconfigurez la détection avant de l’utiliser.",
             "Waiting for reconnect — %@s": "En attente de reconnexion — %@s",
@@ -117,6 +119,7 @@ struct MenuLocalization {
             "A recording command is already pending": "Une commande d’enregistrement est déjà en attente"
         ],
         "de": [
+            "Local meeting storage": "Lokaler Besprechungsspeicher",
             "Meeting detection could not save its state. Automation is disabled; stop the recording manually and reconfigure detection after fixing storage.": "Der Erkennungsstatus konnte nicht gespeichert werden. Die Automatisierung ist deaktiviert; beenden Sie die Aufnahme manuell und konfigurieren Sie die Erkennung nach Beheben des Speicherproblems erneut.",
             "Meeting detection settings could not be read. Reconfigure detection before using it.": "Die Erkennungseinstellungen konnten nicht gelesen werden. Konfigurieren Sie die Erkennung vor der Nutzung erneut.",
             "Waiting for reconnect — %@s": "Warten auf Wiederverbindung — %@s",

@@ -155,7 +155,8 @@ def _aec_clean(mic_path, ref_path):
             nf = rtc.AudioFrame(near[i:i+FR].tobytes(), 16000, 1, FR)
             apm.process_stream(nf)
             near[i:i+FR] = _np.frombuffer(bytes(nf.data), dtype=_np.int16)
-        tmp = _tf.mktemp(suffix=".wav")
+        from managed_work import temporary_audio
+        tmp = temporary_audio(mic_path)
         with _wave.open(tmp, "w") as wf:
             wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(16000)
             wf.writeframes(near.tobytes())
@@ -1894,7 +1895,7 @@ def _ffmpeg_channel(wav_path, ch, out_path):
     subprocess.run(
         ["ffmpeg", "-y", "-v", "error", "-i", wav_path,
          "-filter_complex", f"[0:a]pan=mono|c0=c{ch},aresample=16000[a]",
-         "-map", "[a]", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", out_path],
+         "-map", "[a]", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-rf64", "auto", out_path],
         check=True,
     )
 
@@ -1923,7 +1924,7 @@ OWNER_ECHO_COS = 0.65
 
 
 def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
-                       final_model="parakeet-v3", manual=False):
+                       final_model="parakeet-v3", manual=False, work_directory=None):
     """Full-audio final pipeline with native Parakeet or an explicitly selected Whisper model.
     Preserve ASR timestamps, diarize the system channel (remote speakers), and for speaker playback
     acoustically strip the mic's echo by keeping only the mic voice that does NOT match any system
@@ -1933,7 +1934,7 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
     Returns {"turns":[{start,end,speaker,text}], "speakers":[...], "embeddings":{...}, "auto_named":{...}}.
     """
     import engines
-    import tempfile
+    from managed_work import temporary_audio, validate_processing_wave
     from meeting_language import detect_meeting_language
     from manual_transcription import MODELS, transcribe_complete
     if final_model not in ("parakeet-v3", *MODELS):
@@ -1942,6 +1943,8 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
         raise ValueError("Unsupported final transcription language")
     if not isinstance(manual, bool):
         raise ValueError("Manual transcription flag must be a boolean")
+    if work_directory:
+        validate_processing_wave(wav_path)
     if manual and language != "auto":
         detection = {"language": language, "source": "manual", "samples": 0}
     else:
@@ -1968,7 +1971,7 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
     tmp = []
     try:
         if not is_dual:
-            mono = tempfile.mktemp(suffix=".wav"); tmp.append(mono)
+            mono = temporary_audio(wav_path, work_directory); tmp.append(mono)
             _ffmpeg_channel(wav_path, 0, mono)
             d = _diar(mono)
             turns = [{**s, "speaker": _dominant_diar_speaker(s, d["segments"]) or "Speaker 1", "channel": "mic"}
@@ -1977,8 +1980,8 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
             return {**metadata, "turns": turns, "speakers": d.get("speakers", []),
                     "embeddings": d.get("embeddings", {}), "auto_named": d.get("auto_named", {})}
 
-        mic = tempfile.mktemp(suffix=".wav"); tmp.append(mic); _ffmpeg_channel(wav_path, 0, mic)
-        sysw = tempfile.mktemp(suffix=".wav"); tmp.append(sysw); _ffmpeg_channel(wav_path, 1, sysw)
+        mic = temporary_audio(wav_path, work_directory); tmp.append(mic); _ffmpeg_channel(wav_path, 0, mic)
+        sysw = temporary_audio(wav_path, work_directory); tmp.append(sysw); _ffmpeg_channel(wav_path, 1, sysw)
 
         # Acoustically cancel the system out of the mic (no-headphones echo), then transcribe both.
         mic_clean = _aec_clean(mic, sysw)
@@ -2300,10 +2303,15 @@ def process_full(wav_path, language="auto", do_diarize=False, min_speakers=None,
 #   Old: 20 + 5 = 25s.  New: max(20, 5) = 20s.  Saves ~5s.
 #   On bigger recordings: pyannote scales to 15-25s, savings grow to 10-20s.
 
-def split_stereo(wav_path):
+def split_stereo(wav_path, work_directory=None):
     """Split a stereo WAV into two mono WAVs in ONE ffmpeg call (reads input once).
     Returns (mic_path, sys_path, mic_has_audio, sys_has_audio)."""
+    if work_directory:
+        from managed_work import validate_processing_wave
+        validate_processing_wave(wav_path)
     base = wav_path.rsplit(".", 1)[0]
+    if work_directory:
+        base = os.path.join(work_directory, os.path.basename(base))
     mic_path = f"{base}-mic.wav"
     sys_path = f"{base}-sys.wav"
     # Single ffmpeg call: split + volumedetect on both channels simultaneously.
@@ -2315,8 +2323,8 @@ def split_stereo(wav_path):
             "-filter_complex",
             "[0:a]pan=mono|c0=c0,volumedetect[micout];"
             "[0:a]pan=mono|c0=c1,volumedetect[sysout]",
-            "-map", "[micout]", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", mic_path,
-            "-map", "[sysout]", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", sys_path,
+            "-map", "[micout]", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-rf64", "auto", mic_path,
+            "-map", "[sysout]", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-rf64", "auto", sys_path,
         ],
         capture_output=True, text=True,
     )
@@ -2634,6 +2642,7 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("mic_name"),
                     body.get("final_model", "parakeet-v3"),
                     body.get("manual", False),
+                    body.get("work_directory"),
                 )
             except Exception as e:
                 self._json({"error": str(e)[:200], "turns": [], "finalized": False}, 200)
@@ -2666,7 +2675,7 @@ class Handler(BaseHTTPRequestHandler):
                 is_dual = body.get("dual_channel", False)
 
                 if is_dual:
-                    self._stream_dual(sse, wav_path, language, body.get("min_speakers"), body.get("max_speakers"))
+                    self._stream_dual(sse, wav_path, language, body.get("min_speakers"), body.get("max_speakers"), body.get("work_directory"))
                 else:
                     # Non-dual: process_full and emit result at end
                     result = process_full(wav_path, language, body.get("diarize", False), body.get("min_speakers"), body.get("max_speakers"))
@@ -2711,10 +2720,10 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._json({"error": "not found"}, 404)
 
-    def _stream_dual(self, sse, wav_path, language, min_speakers, max_speakers):
+    def _stream_dual(self, sse, wav_path, language, min_speakers, max_speakers, work_directory=None):
         """Stream dual-channel processing with progressive segment emission."""
         _ensure_whisper()  # file-upload path: load Whisper on demand (parakeet boot skipped it)
-        mic_path, sys_path, mic_has, sys_has = split_stereo(wav_path)
+        mic_path, sys_path, mic_has, sys_has = split_stereo(wav_path, work_directory)
 
         # Launch pyannote on GPU immediately (parallel with whisper)
         pyannote_future = None

@@ -49,6 +49,7 @@ swift build --package-path packages/transcription/native/heed-parakeet -c releas
 swift build --package-path packages/transcription/native/heed-parakeet -c release --product heed-syscap
 packages/transcription/native/heed-parakeet/.build/release/heed-syscap --self-test
 bun run build
+bun scripts/init-managed-quota.ts
 bun run doctor
 # Restart only services from this checkout after confirming that they are still idle.
 HEED_INSTALL_ROOT="$HEED_INSTALL_ROOT" /usr/bin/python3 - <<'PYRESTART'

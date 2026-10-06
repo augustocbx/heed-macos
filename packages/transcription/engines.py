@@ -143,8 +143,8 @@ def parakeet_available():
 
 def _wav_duration(path):
     try:
-        with wave.open(path) as w:
-            return w.getnframes() / float(w.getframerate() or 16000)
+        from managed_work import wave_metadata
+        return wave_metadata(path)["duration"]
     except Exception:
         return 0.0
 

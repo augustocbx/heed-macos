@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync,writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Session, NotesJob, TranscribeResult } from "../../shared/types";
 
+function syntheticWav(){const wav=Buffer.alloc(44);wav.write("RIFF",0);wav.writeUInt32LE(36,4);wav.write("WAVEfmt ",8);wav.writeUInt32LE(16,16);wav.writeUInt16LE(1,20);wav.writeUInt16LE(1,22);wav.writeUInt32LE(16000,24);wav.writeUInt32LE(32000,28);wav.writeUInt16LE(2,32);wav.writeUInt16LE(16,34);wav.write("data",36);return wav;}
 let directory: string;
 let app: ReturnType<typeof Bun.spawn>;
 let transport: ReturnType<typeof Bun.serve>;
@@ -33,7 +34,7 @@ const currentJob = (session:Session):NotesJob|undefined => Object.values(session
 const get = async (id:string) => (await list()).find(session => session.id === id)!;
 
 async function startApp() {
- app = Bun.spawn([process.execPath,resolve(import.meta.dir,"../server.ts")],{cwd:resolve(import.meta.dir,"../../.."),env:{...process.env,PORT:base.split(":").at(-1)!,HEED_APP_DIR:directory,OLLAMA_HOST:`http://127.0.0.1:${transport.port}`,HEED_TRANSCRIPTION_URL:`http://127.0.0.1:${transport.port}`},stdout:"ignore",stderr:"pipe"});
+ app = Bun.spawn([process.execPath,resolve(import.meta.dir,"../server.ts")],{cwd:resolve(import.meta.dir,"../../.."),env:{...process.env,PORT:base.split(":").at(-1)!,HEED_APP_DIR:directory,HEED_RECORDINGS_DIR:join(directory,"media"),OLLAMA_HOST:`http://127.0.0.1:${transport.port}`,HEED_TRANSCRIPTION_URL:`http://127.0.0.1:${transport.port}`},stdout:"ignore",stderr:"pipe"});
  await until(async () => { try {return (await fetch(`${base}/api/notes/settings`)).status;} catch {return 0;} },status=>status===200);
 }
 
@@ -45,6 +46,8 @@ async function restartApp() {
 
 beforeAll(async () => {
  directory = mkdtempSync(join(tmpdir(),"heed-auto-http-"));
+ mkdirSync(join(directory,"media"));
+ writeFileSync(join(directory,"media","capture.wav"),syntheticWav());
  // Only the external ASR and LLM transports are synthetic; server routes and storage are real.
  transport = Bun.serve({hostname:"127.0.0.1",port:0,async fetch(request) {
   const path = new URL(request.url).pathname;
@@ -86,7 +89,7 @@ test("HTTP settings default off, validate installed models, and block external o
 });
 
 test("final speaker commit creates one durable job, using the final Portuguese input", async () => {
- const first = await jsonRequest("/api/sessions",{files:{wav:join(directory,"capture.wav")},transcriptFinalized:false,language:"pt",transcript:"Bom dia",speakers:["Speaker 1"],segments:[{speaker:"Speaker 1",channel:"sys",text:"Bom dia",start:0,end:2}]});
+ const first = await jsonRequest("/api/sessions",{files:{wav:join(directory,"media","capture.wav")},transcriptFinalized:false,language:"pt",transcript:"Bom dia",speakers:["Speaker 1"],segments:[{speaker:"Speaker 1",channel:"sys",text:"Bom dia",start:0,end:2}]});
  expect(currentJob(first.body)).toBeUndefined();
  const final = await jsonRequest(`/api/sessions?id=${first.body.id}`,{transcriptFinalized:true,speakers:["Ana"],segments:[{speaker:"Ana",channel:"sys",text:"Bom dia",start:0,end:2}]},"PATCH");
  expect(Object.values(final.body.notesJobs)).toHaveLength(1);
@@ -103,7 +106,7 @@ test("recording transcription preempts and unloads notes, then resumes after its
  const initial = await jsonRequest("/api/sessions",{id:"preempt",transcriptFinalized:true,language:"en",transcript:"Keep this meeting",speakers:["Ana"],segments:[]});
  await until(()=>get(initial.body.id),session=>currentJob(session)?.status === "running" && currentJob(session)!.generatedCharacters > 0);
  const started = generationStarts;
- const processing = fetch(`${base}/api/transcribe`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:join(directory,"capture.wav"),recording_finalize:true})}).then(response=>response.text());
+ const processing = fetch(`${base}/api/transcribe`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:join(directory,"media","capture.wav"),recording_finalize:true})}).then(response=>response.text());
  await until(async()=>!!finishTranscription,Boolean);
  expect(releases).toBeGreaterThan(0);
  await Bun.sleep(1100);
@@ -177,7 +180,8 @@ test("multiple tag assignments survive process restarts, retranscription, speake
  finishTranscription = undefined;
  try {
   expect((await jsonRequest("/api/notes/settings", { enabled: true, model: "fixture:1b", templateId: "general", language: "meeting" }, "PATCH")).status).toBe(200);
-  const recording = join(directory, "tagged-retranscription.wav");
+  const recording = join(directory,"media", "tagged-retranscription.wav");
+  writeFileSync(recording,syntheticWav());
   const created = await jsonRequest("/api/sessions", {
    id: "tagged-retranscription", transcript: "Old synthetic transcript", transcriptFinalized: false,
    files: { wav: recording }, speakers: ["Speaker 1"], tags: ["Planning", "Release"],
