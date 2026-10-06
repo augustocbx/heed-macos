@@ -1,4 +1,5 @@
 import {configuredServicePorts} from './lib/service-ports';
+import {ServiceDiagnostics} from './lib/service-diagnostics';
 import {isTranscriptionHealth} from '../shared/lib/service-identity';
 import {createGoogleDriveController} from './lib/connectors/google-drive-runtime';
 import {CLOUD_CONNECTIONS_ENABLED,CLOUD_CONNECTIONS_PENDING_NOTICE} from '@heed/shared';
@@ -84,8 +85,10 @@ function pruneAudio() {
  const current=managedQuota.snapshot();return {...current,bytes:current.usedBytes,removed:[],overLimit:current.usedBytes+current.reservedBytes>current.limitBytes};
 }
 
-const PORT = configuredServicePorts().api;
+const SERVICE_PORTS = configuredServicePorts();
+const PORT = SERVICE_PORTS.api;
 const API_IDENTITY = {service:"heed-api",protocolVersion:1,checkoutRoot:realpathSync(resolve(import.meta.dir,"../..")),pid:process.pid};
+const serviceDiagnostics=new ServiceDiagnostics({root:API_IDENTITY.checkoutRoot,ports:SERVICE_PORTS,env:process.env});
 
 const STATIC_ROOT = join(import.meta.dir, "..", "client", "dist");
 // Recordings stored in the project root
@@ -2214,7 +2217,8 @@ function handleDiscardOrphaned(url: URL): Response {
 }
 
 // --- Health check ---
-async function handleHealth(): Promise<Response> {
+async function handleHealth(refresh=false): Promise<Response> {
+ const diagnostics=serviceDiagnostics.get(refresh);
 	let ollamaOk = false;
 	let txServer: any = { ready: false };
 	try {
@@ -2225,7 +2229,10 @@ async function handleHealth(): Promise<Response> {
 		const res = await fetch(`${TRANSCRIPTION_SERVER}/health`, { signal: AbortSignal.timeout(3000) });
 		const health = await res.json(); txServer = res.ok && isTranscriptionHealth(health) ? health : {ready:false};
 	} catch {}
+ const services=await diagnostics;
+ if(services.find(service=>service.service==='transcription')?.state!=='ready')txServer={ready:false};
 	return Response.json({
+  services,
 		ollama: ollamaOk,
 		whisper: txServer.whisper || false,
 		pyannote: txServer.pyannote || false,
@@ -2470,6 +2477,7 @@ const server = Bun.serve({
 		const url = new URL(req.url);
 		const method = req.method;
   if(url.pathname === "/.well-known/heed-service")return desktopRequestAllowed(req)?Response.json(API_IDENTITY,{headers:{"Cache-Control":"no-store"}}):new Response(null,{status:403});
+  if(url.pathname === "/.well-known/heed-services")return desktopRequestAllowed(req)&&method==='GET'?Response.json(await serviceDiagnostics.get(url.searchParams.get('refresh')==='1'),{headers:{'Cache-Control':'no-store'}}):new Response(null,{status:403});
   const chatResponse=await chatApiResponse(req,chatService,()=>listLocalChatModels(OLLAMA_HOST),desktopRequestAllowed(req));
   if(chatResponse)return chatResponse;
   const libraryChatResult=await libraryChatResponse(req,libraryChatService,desktopRequestAllowed(req));
@@ -2534,7 +2542,7 @@ const server = Bun.serve({
 		if (method === "POST" && url.pathname === "/api/sysrecord/stop") { httpServer.timeout(req, 0); return handleSysRecordStop(req); }
 		if (method === "GET" && url.pathname === "/api/sysrecord/levels") return desktopRequestAllowed(req) ? handleSysLevelsSSE() : new Response(null,{status:403});
 		if (method === "GET" && url.pathname === "/api/sysrecord/live") return desktopRequestAllowed(req) ? handleLiveTranscribe() : new Response(null,{status:403});
-		if (method === "GET" && url.pathname === "/api/health") return handleHealth();
+		if (method === "GET" && url.pathname === "/api/health") return handleHealth(url.searchParams.get('refresh')==='1');
 		if (method === "GET" && url.pathname === "/api/recovery/list") return handleListOrphaned();
 		if (method === "DELETE" && url.pathname === "/api/recovery/discard") return handleDiscardOrphaned(url);
 

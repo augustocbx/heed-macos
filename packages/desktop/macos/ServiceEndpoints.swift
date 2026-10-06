@@ -14,6 +14,7 @@ private struct HeedServiceIdentity: Decodable {
     let checkoutRoot: String
     let pid: Int
 }
+private struct SavedServicePorts:Decodable {let version:Int;let api:Int;let ui:Int;let transcription:Int}
 
 enum ServiceEndpointError: Error, LocalizedError {
     case invalidConfiguration
@@ -84,6 +85,7 @@ struct ServiceEndpoints {
     }
 
     static func load(environment: [String: String] = ProcessInfo.processInfo.environment) throws -> ServiceEndpoints {
+        let environment = try savedEnvironment(environment)
         if let resource = Bundle.main.url(forResource: "service-ports", withExtension: "json"),
            let rootResource = Bundle.main.url(forResource: "heed-root", withExtension: "txt") {
             let root = try String(contentsOf: rootResource, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -94,6 +96,28 @@ struct ServiceEndpoints {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
         return try resolve(configData: Data(contentsOf: root.appendingPathComponent("config/service-ports.json")), checkoutRoot: root.path, environment: environment)
+    }
+
+    static func savedEnvironment(_ base:[String:String]) throws->[String:String] {
+        let directory=base["HEED_APP_DIR"] ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".heed-app").path
+        let descriptor=open(directory+"/service-ports.json",O_RDONLY|O_NOFOLLOW|O_NONBLOCK)
+        if descriptor < 0 {if errno == ENOENT{return base};throw ServiceEndpointError.invalidConfiguration}
+        defer{close(descriptor)}
+        var info=stat()
+        guard fstat(descriptor,&info) == 0,info.st_mode & S_IFMT == S_IFREG,info.st_size <= 4096 else{throw ServiceEndpointError.invalidConfiguration}
+        var bytes=[UInt8](repeating:0,count:4097)
+        let count=read(descriptor,&bytes,bytes.count)
+        guard count>=0 && count<=4096 else{throw ServiceEndpointError.invalidConfiguration}
+        let data=Data(bytes.prefix(count))
+        guard let raw=try? JSONSerialization.jsonObject(with:data) as? [String:Any],Set(raw.keys) == ["version","api","ui","transcription"],
+              let saved=try? JSONDecoder().decode(SavedServicePorts.self,from:data),saved.version == 1 else{throw ServiceEndpointError.invalidConfiguration}
+        let values=[saved.api,saved.ui,saved.transcription]
+        guard Set(values).count == 3,values.allSatisfy({(1...65535).contains($0) && !((3000...3999).contains($0)||(5000...5999).contains($0)||(7000...7999).contains($0)||(8000...8999).contains($0))}) else{throw ServiceEndpointError.invalidConfiguration}
+        var result=base
+        if result["HEED_API_PORT"] == nil && result["PORT"] == nil{result["HEED_API_PORT"]=String(saved.api)}
+        if result["HEED_UI_PORT"] == nil{result["HEED_UI_PORT"]=String(saved.ui)}
+        if result["HEED_TRANSCRIPTION_PORT"] == nil{result["HEED_TRANSCRIPTION_PORT"]=String(saved.transcription)}
+        return result
     }
 
     func apiURL(_ path: String) -> URL { URL(string: apiOrigin + path)! }
@@ -141,6 +165,22 @@ struct ServiceEndpoints {
 }
 
 func serviceEndpointsSelfTests() throws {
+    let savedDirectory=FileManager.default.temporaryDirectory.appendingPathComponent("heed-saved-ports-"+UUID().uuidString)
+    try FileManager.default.createDirectory(at:savedDirectory,withIntermediateDirectories:true)
+    defer{try? FileManager.default.removeItem(at:savedDirectory)}
+    let savedPath=savedDirectory.appendingPathComponent("service-ports.json")
+    try Data("{\"version\":1,\"api\":48103,\"ui\":48104,\"transcription\":48105}".utf8).write(to:savedPath)
+    let saved=try ServiceEndpoints.savedEnvironment(["HEED_APP_DIR":savedDirectory.path,"HEED_UI_PORT":"48109"])
+    precondition(saved["HEED_API_PORT"] == "48103" && saved["HEED_UI_PORT"] == "48109" && saved["HEED_TRANSCRIPTION_PORT"] == "48105")
+    let legacy=try ServiceEndpoints.savedEnvironment(["HEED_APP_DIR":savedDirectory.path,"PORT":"48108"])
+    precondition(legacy["HEED_API_PORT"] == nil && legacy["PORT"] == "48108")
+    for body in ["{\"version\":true,\"api\":48103,\"ui\":48104,\"transcription\":48105}","{\"version\":1,\"api\":\"48103\",\"ui\":48104,\"transcription\":48105}",String(repeating:"x",count:4097)] {
+        try Data(body.utf8).write(to:savedPath)
+        precondition((try? ServiceEndpoints.savedEnvironment(["HEED_APP_DIR":savedDirectory.path])) == nil)
+    }
+    try FileManager.default.removeItem(at:savedPath)
+    try FileManager.default.createSymbolicLink(at:savedPath,withDestinationURL:URL(fileURLWithPath:"/etc/hosts"))
+    precondition((try? ServiceEndpoints.savedEnvironment(["HEED_APP_DIR":savedDirectory.path])) == nil)
     let config = Data("{\"api\":48100,\"ui\":48101,\"transcription\":48102,\"forbiddenRanges\":[[3000,3999],[5000,5999],[7000,7999],[8000,8999]]}".utf8)
     let endpoints = try ServiceEndpoints.resolve(configData: config, checkoutRoot: "/synthetic/heed", environment: [:])
     precondition(endpoints.apiURL("/api/desktop/control/status").absoluteString == "http://127.0.0.1:48100/api/desktop/control/status")

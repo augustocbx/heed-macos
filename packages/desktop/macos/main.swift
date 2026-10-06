@@ -55,8 +55,14 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private var localizedItems: [(NSMenuItem, String)] = []
     private var localeItems: [NSMenuItem] = []
     private func text(_ key: String) -> String { MenuLocalization.text(key, locale: locale) }
-    private let endpoints = try? ServiceEndpoints.load()
+    private var endpoints = try? ServiceEndpoints.load()
+    private let diagnostics = NativeServiceDiagnostics()
+    private var serviceNotices: [ServiceNoticeInfo] = []
+    private let noticeMenu = NSMenuItem(title:"Service status…",action:#selector(showServiceStatus),keyEquivalent:"")
+    private let retryMenu = NSMenuItem(title:"Retry service startup",action:#selector(retryServices),keyEquivalent:"")
+    private var booting = false
     private var state: ControlStatus?
+    private var freshProtectedStatus = false
     private var sending = false
     private var polling = false
     private var timer: Timer?
@@ -89,6 +95,8 @@ final class MenuController: NSObject, NSApplicationDelegate {
         menu.autoenablesItems = false
         statusMenu.isEnabled = false
         menu.addItem(statusMenu)
+        noticeMenu.target=self;menu.addItem(noticeMenu)
+        retryMenu.target=self;menu.addItem(retryMenu)
         storageMenu.isEnabled = false;menu.addItem(storageMenu)
         menu.addItem(NSMenuItem.separator())
         for entry in [startMenu, stopMenu] { entry.target = self; entry.isEnabled = false; menu.addItem(entry) }
@@ -122,6 +130,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         let language = NSMenuItem(title: "Interface language", action: nil, keyEquivalent: "")
         language.submenu = languageMenu; menu.insertItem(language, at: 6)
         localizedItems.append((language, "Interface language"))
+        localizedItems.append((retryMenu,"Retry service startup"))
         localizedItems.append((accessibilityMenu, "Authorize Accessibility"))
         for (app, entry) in detectionMenus { localizedItems.append((entry, app == "zoom" ? "Automatically record Zoom meetings" : app == "teams" ? "Automatically record Teams meetings" : "Automatically record Google Meet meetings")) }
         item.menu = menu
@@ -131,17 +140,35 @@ final class MenuController: NSObject, NSApplicationDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.poll() }
     }
     private func bootServices() {
-        guard let endpoints = endpoints, let script = Bundle.main.path(forResource: "start-services", ofType: "sh") else { return }
+        guard !booting,let endpoints = endpoints, let script = Bundle.main.path(forResource: "start-services", ofType: "sh") else { return }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = [script]
         process.environment = endpoints.launchEnvironment(base: ProcessInfo.processInfo.environment)
-        try? process.run()
+        process.terminationHandler = { [weak self] _ in DispatchQueue.main.async{self?.booting=false;self?.refreshServiceNotices(force:true)} }
+        do{try process.run();booting=true}catch{booting=false;refreshServiceNotices(force:true)}
+    }
+    private func refreshServiceNotices(force:Bool=false) {
+        guard let endpoints=endpoints else{return}
+        diagnostics.check(endpoints:endpoints,refresh:force){[weak self] notices in DispatchQueue.main.async{guard let self=self else{return};self.serviceNotices=notices;self.updateMenu()}}
+    }
+    @objc private func showServiceStatus() {
+        let alert=NSAlert();alert.messageText=text("Service status…")
+        let unavailable=serviceNotices.filter{$0.state != "ready"}
+        alert.informativeText=serviceNotices.count != 3 ? text("Not checked") : unavailable.isEmpty ? text("Services responded.") : unavailable.map{$0.message(locale:locale)}.joined(separator:"\n")+"\n\n"+(unavailable.contains{$0.state == "conflict"} ? ServiceNoticeInfo.recovery(locale:locale) : text("Retry Heed startup after checking the service and its configured port."))
+        alert.addButton(withTitle:text("Check again"));alert.addButton(withTitle:text("Close"))
+        if alert.runModal() == .alertFirstButtonReturn{refreshServiceNotices(force:true);poll()}
+    }
+    @objc private func retryServices() {
+        guard !booting,!sending,state?.canQuit != false else{return}
+        endpoints=try? ServiceEndpoints.load();serviceNotices=[];bootServices();refreshServiceNotices(force:true);poll()
     }
     private func poll() {
         guard !polling else { return }
+        refreshServiceNotices()
         guard let endpoints = endpoints else { self.state = nil; self.statusMenu.title = self.text("Service unavailable — open the interface"); self.updateMenu(); return }
         polling = true
+        freshProtectedStatus=false
         let request = URLRequest(url: endpoints.apiURL("/api/desktop/control/status"))
         endpoints.perform(session: session, request: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
@@ -150,10 +177,12 @@ final class MenuController: NSObject, NSApplicationDelegate {
                 if let data = data, (response as? HTTPURLResponse)?.statusCode == 200,
                    let state = try? JSONDecoder().decode(ControlStatus.self, from: data) {
                     self.state = state
+                    self.freshProtectedStatus=true
                     self.locale = MenuLocalization.normalize(state.uiLocale)
                     self.statusMenu.title = state.error.map { MenuLocalization.message($0, locale: self.locale) } ?? (state.recording ? "\(self.text("Recording")) • \(state.seconds / 60):\(String(format: "%02d", state.seconds % 60))" : state.processing ? self.text("Processing meeting…") : state.pending ? self.text("Waiting for the interface…") : state.ready ? self.text("Ready to record") : self.text("Preparing services…"))
                 } else {
                     self.state = nil
+                    self.freshProtectedStatus=false
                     self.statusMenu.title = self.text("Service unavailable — open the interface")
                 }
                 self.updateMenu()
@@ -165,6 +194,12 @@ final class MenuController: NSObject, NSApplicationDelegate {
         }
     }
     private func updateMenu() {
+        let unavailable=serviceNotices.filter{$0.state != "ready"}
+        let notice=unavailable.first{$0.state == "conflict"} ?? unavailable.first
+        noticeMenu.title=notice?.message(locale:locale) ?? text("Service status…")
+        noticeMenu.isEnabled=true
+        retryMenu.isEnabled = !booting && !sending && state?.canQuit != false
+        if let notice=notice,state?.recording != true && state?.processing != true && state?.pending != true {statusMenu.title=notice.message(locale:locale)}
         if let storage = state?.storage {
             let number = NumberFormatter();number.locale = Locale(identifier: locale);number.maximumFractionDigits = 3
             let used = number.string(from: NSNumber(value: Double(storage.usedBytes) / 1_000_000_000)) ?? "?"
@@ -179,7 +214,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
             entry.state = state?.meetingDetection?.enabled[app] == true ? .on : .off
             entry.isEnabled = state?.meetingDetection != nil
         }
-        startMenu.isEnabled = !sending && (state?.canStart ?? false) && captureAuthorized
+        startMenu.isEnabled = !sending && (state?.canStart ?? false) && captureAuthorized && ServiceNoticeInfo.permitsVerifiedStart(unavailable,freshController:freshProtectedStatus)
         stopMenu.isEnabled = !sending && (state?.canStop ?? false)
         let recording = state?.recording ?? false
         item.button?.image = recordingStatusImage(recording, locale: locale)
@@ -392,7 +427,23 @@ final class MenuController: NSObject, NSApplicationDelegate {
     @objc private func quitApp() { NSApplication.shared.terminate(nil) }
 }
 
+if CommandLine.arguments.contains("--service-diagnostics") {
+    if let endpoints=try? ServiceEndpoints.load() {
+        var done=false
+        NativeServiceDiagnostics().check(endpoints:endpoints,refresh:true){notices in
+            DispatchQueue.main.async {
+                if let data=try? JSONEncoder().encode(notices){FileHandle.standardOutput.write(data)}
+                done=true
+            }
+        }
+        let deadline=Date().addingTimeInterval(8)
+        while !done && Date()<deadline{RunLoop.current.run(until:Date().addingTimeInterval(0.01))}
+        exit(done ? 0 : 1)
+    }
+    exit(1)
+}
 if CommandLine.arguments.contains("--self-test") {
+    try serviceNoticeSelfTests()
     func status(_ recording: Bool = false, _ processing: Bool = false, _ ready: Bool = true, _ pending: Bool = false) -> ControlStatus {
         ControlStatus(recording: recording, processing: processing, seconds: 0, ready: ready, clientConnected: true, error: nil, pending: pending, starting: false, meetingId: recording ? "fixture" : nil)
     }

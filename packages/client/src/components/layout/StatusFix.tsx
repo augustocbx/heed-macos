@@ -4,6 +4,8 @@ import type { SetupCheckResult, InstallProgress } from "@heed/shared";
 import { setupApi } from "@/api/setup.ts";
 import { useUIStore } from "@/stores/ui.ts";
 import styles from "./StatusFix.module.css";
+import {useHealthStore} from '@/stores/health';
+import {ServiceNotice,ServiceDiagnosisUnavailable} from './ServiceNotices';
 
 export type FixTarget = "ollama" | "engine" | "diar";
 
@@ -128,11 +130,15 @@ function CommandFix({ body, command }: { body: string; command: string }) {
 
 export function StatusFix({ target, setup, onClose, onFixed }: Props) {
 	useLocale();
+ const serviceNotice=useHealthStore(state=>state.health.services?.find(item=>item.service==='transcription'&&item.state!=='ready'));
+ const diagnosticsUnavailable=useHealthStore(state=>state.diagnosticsUnavailable);
 	let title = "";
 	let content: ReactNode = null;
 	if (target === "ollama") {
 		title = tr("AI notes engine");
 		content = <OllamaFix target={target} setup={setup} onClose={onClose} onFixed={onFixed} />;
+ } else if(diagnosticsUnavailable){title=tr(target==='engine'?'Transcription engine':'Speaker diarization');content=<ServiceDiagnosisUnavailable/>;
+ } else if(serviceNotice){title=tr(target==='engine'?'Transcription engine':'Speaker diarization');content=<ServiceNotice notice={serviceNotice}/>;
 	} else if (target === "engine") {
 		title = tr("Transcription engine");
 		content = (

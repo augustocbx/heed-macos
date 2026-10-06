@@ -4,6 +4,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import signal
 import socket
 import subprocess
@@ -17,6 +18,10 @@ NAMES={'api':'heed-api','ui':'heed-ui','transcription':'heed-transcription'}
 LEGACY={'api':5001,'ui':5170,'transcription':5002}
 class NoRedirect(urllib.request.HTTPRedirectHandler):
  def redirect_request(self,req,fp,code,msg,headers,newurl):return None
+def separately_managed_transcription(url,configured_port):
+ parsed=urllib.parse.urlsplit(url)
+ port=parsed.port or (443 if parsed.scheme=='https' else 80)
+ return parsed.scheme!='http' or parsed.hostname not in ('127.0.0.1','localhost') or port!=configured_port
 def read_identity(base,service,root,timeout=2):
  try:
   opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
@@ -36,13 +41,36 @@ def occupied(port):
   sock.settimeout(.2)
   return sock.connect_ex(('127.0.0.1',port))==0
 
+def python_arguments(root,cwd,command,entry):
+ try:args=shlex.split(command)
+ except ValueError:return None
+ if not args:return None
+ executable=pathlib.Path(args.pop(0)).name
+ if executable!='Python' and not re.fullmatch(r'python(?:3(?:\.\d+)?)?',executable):return None
+ if args and args[0]=='-u':args.pop(0)
+ if not args or os.path.realpath(os.path.join(cwd,args.pop(0)))!=os.path.join(os.path.realpath(root),entry):return None
+ return args
+
 def owned_process(root,service,cwd,command):
  root=os.path.realpath(root);cwd=os.path.realpath(cwd)
  if cwd not in (root,os.path.join(root,'packages','client'),os.path.join(root,'packages','server'),os.path.join(root,'packages','transcription')):return False
- if service=='api':return bool(re.search(r'(?:^|\s)(?:\S*/)?bun\s+(?:run\s+)?(?:packages/server/server\.ts|server\.ts|dev:server)(?:\s|$)',command))
- if service=='transcription':return bool(re.search(r'(?:^|\s)(?:\S*/)?python(?:3(?:\.\d+)?)?\s+(?:-u\s+)?(?:'+re.escape(root)+r'/)?packages/transcription/transcription_server\.py(?:\s|$)',command))
+ if service=='api':
+  if cwd not in (root,os.path.join(root,'packages','server')):return False
+  try:args=shlex.split(command)
+  except ValueError:return False
+  if not args or pathlib.Path(args.pop(0)).name!='bun':return False
+  flags=0
+  if args and args[0] in ('--watch','--hot'):args.pop(0);flags+=1
+  if args and args[0]=='run':args.pop(0)
+  if args and args[0] in ('--watch','--hot'):args.pop(0);flags+=1
+  if flags>1 or len(args)!=1:return False
+  target=args[0]
+  if target=='dev:server':return cwd==root
+  return os.path.realpath(os.path.join(cwd,target))==os.path.join(root,'packages','server','server.ts')
+ if service=='transcription':
+  return cwd in (root,os.path.join(root,'packages','transcription')) and python_arguments(root,cwd,command,'packages/transcription/transcription_server.py')==[]
  return cwd==os.path.join(root,'packages','client') and bool(re.search(r'(?:^|[ /])vite(?:/bin/vite\.js)?(?:\s|$)',command))
-def process_records(port):
+def process_records(port,timeout=None):
  if sys.platform!='darwin':
   # Linux desktop support: correlate listening socket inodes with process fds.
   inodes=set()
@@ -60,14 +88,14 @@ def process_records(port):
     records.append({'pid':int(process.name),'cwd':os.readlink(process/'cwd'),'command':(process/'cmdline').read_bytes().replace(b'\0',b' ').decode().strip()})
    except (OSError,UnicodeError):continue
   return records
- output=subprocess.run(['/usr/sbin/lsof','-t','-nP',f'-iTCP:{port}','-sTCP:LISTEN'],capture_output=True,text=True).stdout
+ output=subprocess.run(['/usr/sbin/lsof','-t','-nP',f'-iTCP:{port}','-sTCP:LISTEN'],capture_output=True,text=True,timeout=timeout).stdout
  records=[]
  for value in set(output.split()):
   if not value.isdigit():continue
   pid=int(value)
-  cwd=subprocess.run(['/usr/sbin/lsof','-a','-p',str(pid),'-d','cwd','-Fn'],capture_output=True,text=True).stdout
+  cwd=subprocess.run(['/usr/sbin/lsof','-a','-p',str(pid),'-d','cwd','-Fn'],capture_output=True,text=True,timeout=timeout).stdout
   paths=[line[1:] for line in cwd.splitlines() if line.startswith('n')]
-  command=subprocess.run(['ps','-p',str(pid),'-o','command='],capture_output=True,text=True).stdout.strip()
+  command=subprocess.run(['ps','-ww','-p',str(pid),'-o','command='],capture_output=True,text=True,timeout=timeout).stdout.strip()
   records.append({'pid':pid,'cwd':paths[0] if paths else '', 'command':command})
  return records
 def status(port):
@@ -105,7 +133,7 @@ def restart(root,ports):
  plan=restart_plan(root,ports,records,status,previous)
  # All ownership and busy checks complete before the first termination.
  for pid in plan:
-  current=subprocess.run(['ps','-p',str(pid),'-o','command='],capture_output=True,text=True).stdout.strip()
+  current=subprocess.run(['ps','-ww','-p',str(pid),'-o','command='],capture_output=True,text=True).stdout.strip()
   matches=[(service,entry) for service,port in {**ports}.items() for entry in records.get(port,[]) if entry['pid']==pid]
   matches.extend((service,entry) for profile in [LEGACY,previous or {}] for service,port in profile.items() for entry in records.get(port,[]) if entry['pid']==pid)
   if not matches or not any(current==entry['command'] and owned_process(root,service,entry['cwd'],current) for service,entry in matches):raise RuntimeError('Heed process ownership changed before restart. No unrelated process was stopped.')
@@ -119,7 +147,7 @@ def restart(root,ports):
 def owned_group_members(group):
  # The bootstrap created this session with start_new_session=True. Live members
  # keep its kernel session/group identity; exclude zombies, which cannot listen.
- result=subprocess.run(['ps','-axo','pid=,pgid=,uid=,stat='],capture_output=True,text=True)
+ result=subprocess.run(['ps','-axo','pid=,pgid=,uid=,stat='],capture_output=True,text=True,timeout=2)
  if result.returncode!=0:raise RuntimeError('Could not verify newly started service ownership for rollback.')
  members=[]
  for row in result.stdout.splitlines():
@@ -139,14 +167,52 @@ def signal_owned_group(group,kind):
  except PermissionError:
   if not owned_group_members(group):return False
   raise
+def rollback_children(children):
+ unverified=set()
+ failures=False
+ def attempt(group,kind):
+  nonlocal failures
+  try:signal_owned_group(group,kind)
+  except (OSError,RuntimeError,subprocess.TimeoutExpired):unverified.add(group);failures=True
+ for child in children:attempt(child.pid,signal.SIGTERM)
+ deadline=time.monotonic()+5
+ for child in children:
+  if child.pid in unverified:continue
+  try:child.wait(timeout=max(0,deadline-time.monotonic()))
+  except subprocess.TimeoutExpired:pass
+ remaining={child.pid for child in children if child.pid not in unverified}
+ while remaining and time.monotonic()<deadline:
+  for group in list(remaining):
+   try:
+    if not owned_group_members(group):remaining.remove(group)
+   except (OSError,RuntimeError,subprocess.TimeoutExpired):
+    unverified.add(group);remaining.remove(group);failures=True
+  if remaining:time.sleep(.05)
+ for group in remaining:attempt(group,signal.SIGKILL)
+ deadline=time.monotonic()+5
+ for child in children:
+  if child.pid in unverified:continue
+  try:child.wait(timeout=max(0,deadline-time.monotonic()))
+  except subprocess.TimeoutExpired:failures=True
+ if failures:raise RuntimeError('New service cleanup could not be verified completely. Unverified processes were preserved; inspect startup before retrying.')
 def start(root,ports,log_dir,services=('api','ui','transcription')):
+ from service_diagnostics import record_startup
+ selected={name:ports[name] for name in services}
+ record_startup(root,selected,'starting')
+ try:
+  _start(root,ports,log_dir,services)
+  record_startup(root,selected,'ready')
+ except BaseException:
+  record_startup(root,selected,'failed')
+  raise
+def _start(root,ports,log_dir,services=('api','ui','transcription')):
  ports={name:ports[name] for name in services}
  log_dir.mkdir(parents=True,exist_ok=True)
  ready={}
  external=os.environ.get('HEED_TRANSCRIPTION_URL')
  external_url=transcription_url() if external else None
  parsed=urllib.parse.urlsplit(external_url) if external_url else None
- separately_managed=parsed is not None and (parsed.scheme!='http' or parsed.hostname=='::1' or parsed.port!=ports.get('transcription'))
+ separately_managed=parsed is not None and separately_managed_transcription(external_url,ports.get('transcription'))
  if 'transcription' in ports and separately_managed:
   if not read_identity(external_url,'heed-transcription',None):raise RuntimeError('The explicitly configured transcription service has no valid Heed identity. Start that separately managed sidecar before Heed.')
   ready['transcription']=True
@@ -182,20 +248,7 @@ def start(root,ports,log_dir,services=('api','ui','transcription')):
  except BaseException:
   # Every newly launched service owns a fresh session. Wrappers may exit before
   # their Vite/Bun descendants, so cleanup must retain the owned group identity.
-  for child in children:
-   signal_owned_group(child.pid,signal.SIGTERM)
-  for child in children:
-   try:child.wait(timeout=5)
-   except subprocess.TimeoutExpired:pass
-  deadline=time.monotonic()+5
-  remaining={child.pid for child in children}
-  while remaining and time.monotonic()<deadline:
-   for group in list(remaining):
-    if not owned_group_members(group):remaining.remove(group)
-   if remaining:time.sleep(.05)
-  for group in remaining:
-   signal_owned_group(group,signal.SIGKILL)
-  for child in children:child.wait()
+  rollback_children(children)
   raise
 if __name__=='__main__':
  parser=argparse.ArgumentParser();parser.add_argument('action',choices=['start','restart']);parser.add_argument('--root',default=str(ROOT));parser.add_argument('--log-dir',default=str(pathlib.Path.home()/'Library/Logs/Heed'));args=parser.parse_args()
