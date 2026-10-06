@@ -16,6 +16,7 @@ struct ControlStatus: Decodable {
     let starting: Bool?
     var uiLocale: String? = nil
     var permissionRequest: PermissionRequest? = nil
+    var meetingDetection: MeetingDetectionState? = nil
     var meetingId: String? = nil
     var state: String? = nil
     var maintenance: Bool? = nil
@@ -55,7 +56,12 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private var polling = false
     private var timer: Timer?
     private var slackDetector = SlackHuddleDetector()
-    private var slackPolicy = SlackRecordingPolicy()
+    private lazy var detectionClient = MeetingDetectionClient(session: session)
+    private let zoomDetector = AccessibleMeetingDetector(bundleIdentifiers: ["us.zoom.xos"])
+    private let teamsDetector = AccessibleMeetingDetector(bundleIdentifiers: ["com.microsoft.teams2", "com.microsoft.teams"])
+    private var detectionMenus: [String: NSMenuItem] = [:]
+    private var detectionStates: [String: NSMenuItem] = [:]
+    private let accessibilityMenu = NSMenuItem(title: "Authorize Accessibility", action: #selector(authorizeAccessibility), keyEquivalent: "")
     private let slackAutoMenu = NSMenuItem(title: "Automatically record Slack meetings", action: #selector(toggleSlackAuto), keyEquivalent: "")
     private let slackStateMenu = NSMenuItem(title: "Slack: waiting for the next meeting", action: nil, keyEquivalent: "")
     private var lastSlackObservation: String?
@@ -86,6 +92,13 @@ final class MenuController: NSObject, NSApplicationDelegate {
         slackAutoMenu.target = self; menu.addItem(slackAutoMenu)
         slackStateMenu.isEnabled = false; menu.addItem(slackStateMenu)
         slackAccessMenu.target = self; menu.addItem(slackAccessMenu)
+        for app in ["zoom", "teams", "meet"] {
+            let key = app == "zoom" ? "Automatically record Zoom meetings" : app == "teams" ? "Automatically record Teams meetings" : "Automatically record Google Meet meetings"
+            let toggle = NSMenuItem(title: key, action: #selector(toggleMeetingAuto(_:)), keyEquivalent: "")
+            toggle.target = self; toggle.representedObject = app; menu.addItem(toggle); detectionMenus[app] = toggle
+            let status = NSMenuItem(title: "", action: nil, keyEquivalent: ""); status.isEnabled = false; menu.addItem(status); detectionStates[app] = status
+        }
+        accessibilityMenu.target = self; menu.addItem(accessibilityMenu)
         menu.addItem(NSMenuItem.separator())
         let quit = NSMenuItem(title: "Quit menu app", action: #selector(quitApp), keyEquivalent: "")
         quit.target = self; menu.addItem(quit)
@@ -102,9 +115,10 @@ final class MenuController: NSObject, NSApplicationDelegate {
         let language = NSMenuItem(title: "Interface language", action: nil, keyEquivalent: "")
         language.submenu = languageMenu; menu.insertItem(language, at: 6)
         localizedItems.append((language, "Interface language"))
+        localizedItems.append((accessibilityMenu, "Authorize Accessibility"))
+        for (app, entry) in detectionMenus { localizedItems.append((entry, app == "zoom" ? "Automatically record Zoom meetings" : app == "teams" ? "Automatically record Teams meetings" : "Automatically record Google Meet meetings")) }
         item.menu = menu
         if let folder = slackLogAccess.restore() { slackDetector.setAuthorizedLogRoot(folder) }
-        _ = slackDetector.poll(slackRunning: NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.tinyspeck.slackmacgap" })
         updateMenu(); bootServices(); poll()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.poll() }
     }
@@ -134,7 +148,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
                 }
                 self.updateMenu()
                 if let request = self.state?.permissionRequest { self.executePermissionRequest(request) }
-                self.checkSlackMeeting()
+                self.checkMeetings()
                 self.reportPermissions()
             }
         }.resume()
@@ -143,6 +157,11 @@ final class MenuController: NSObject, NSApplicationDelegate {
         for (entry, key) in localizedItems { entry.title = text(key) }
         for entry in localeItems { entry.state = (entry.representedObject as? String) == locale ? .on : .off }
         slackAutoMenu.state = slackAutoEnabled ? .on : .off
+        slackAutoMenu.isEnabled = state?.meetingDetection != nil
+        for (app, entry) in detectionMenus {
+            entry.state = state?.meetingDetection?.enabled[app] == true ? .on : .off
+            entry.isEnabled = state?.meetingDetection != nil
+        }
         startMenu.isEnabled = !sending && (state?.canStart ?? false) && captureAuthorized
         stopMenu.isEnabled = !sending && (state?.canStop ?? false)
         let recording = state?.recording ?? false
@@ -151,27 +170,40 @@ final class MenuController: NSObject, NSApplicationDelegate {
         item.button?.toolTip = "Heed — \(statusMenu.title)"
     }
     private var slackAutoEnabled: Bool {
-        UserDefaults.standard.object(forKey: "HeedSlackAutoRecord") == nil || UserDefaults.standard.bool(forKey: "HeedSlackAutoRecord")
+        if !UserDefaults.standard.bool(forKey: "HeedDetectionSettingsMigrated"), UserDefaults.standard.object(forKey: "HeedSlackAutoRecord") != nil { return UserDefaults.standard.bool(forKey: "HeedSlackAutoRecord") }
+        return state?.meetingDetection?.enabled["slack"] ?? false
     }
-    private func checkSlackMeeting() {
-        slackPolicy.enabled = slackAutoEnabled
-        let status = state.map { SlackRecordingPolicy.Status(recording: $0.recording, processing: $0.processing,
-            pending: $0.pending || sending || permissionCommandID != nil, starting: $0.starting == true,
-            ready: $0.ready && captureAuthorized, clientConnected: $0.clientConnected) }
+    private func checkMeetings() {
+        guard let detection = state?.meetingDetection else { return }
+        if !UserDefaults.standard.bool(forKey: "HeedDetectionSettingsMigrated"), UserDefaults.standard.object(forKey: "HeedSlackAutoRecord") != nil {
+            detectionClient.configure(app: "slack", enabled: UserDefaults.standard.bool(forKey: "HeedSlackAutoRecord")) { accepted in
+                if accepted { UserDefaults.standard.set(true, forKey: "HeedDetectionSettingsMigrated") }
+            }
+        } else { UserDefaults.standard.set(true, forKey: "HeedDetectionSettingsMigrated") }
         let slackRunning = NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.tinyspeck.slackmacgap" }
-        let signal = slackDetector.poll(slackRunning: slackRunning)
-        let observation = !slackAutoEnabled ? "disabled" : !slackRunning ? "closed" : signal == nil ? "unavailable" : signal == true ? "meeting detected" : "waiting for the next meeting"
+        var slackSignal: Bool? = nil
+        if slackAutoEnabled {
+            slackSignal = slackDetector.poll(slackRunning: slackRunning)
+            if slackRunning && !slackDetector.hasObservedState { slackSignal = nil }
+        }
+        let slackCapability = !slackAutoEnabled ? "degraded" : slackSignal != nil ? "ready" : slackDetector.canReadLogs ? "degraded" : "permission-required"
+        detectionClient.report(app: "slack", signal: slackSignal, capability: slackCapability)
+        let observation = !slackAutoEnabled ? "disabled" : !slackRunning ? "closed" : slackSignal == nil ? "unavailable" : slackSignal == true ? "meeting detected" : "waiting for the next meeting"
         slackStateMenu.title = "Slack: \(text(observation))"
         if lastSlackObservation != observation { logSlack(observation); lastSlackObservation = observation }
-        let effects = slackPolicy.evaluate(signal: signal, status: status, now: ProcessInfo.processInfo.systemUptime)
-        if slackAutoEnabled && slackRunning && signal == nil && !promptedForSlackAccess { authorizeSlackLogs() }
-        for effect in effects {
-            switch effect {
-            case .openInterface: openInterface()
-            case .start(let callID): command("start", slackCallID: callID)
-            case .stop(let callID): command("stop", slackCallID: callID)
-            }
+        if slackAutoEnabled && slackRunning && !slackDetector.canReadLogs && !promptedForSlackAccess { authorizeSlackLogs() }
+        for (app, detector) in [("zoom", zoomDetector), ("teams", teamsDetector)] {
+            let enabled = detection.enabled[app] == true
+            let result = enabled ? detector.poll() : (nil, "degraded")
+            detectionClient.report(app: app, signal: result.0, capability: result.1)
         }
+        for (app, entry) in detectionStates {
+            let sources = detection.sources.filter { $0.app == app }
+            let key = detection.enabled[app] != true ? "disabled" : sources.contains(where: { $0.suppressed }) ? "Paused for this call" : sources.contains(where: { $0.capability == "permission-required" }) ? "Accessibility permission needed" : sources.contains(where: { $0.capability != "ready" }) ? "Detection unavailable — use manual recording" : sources.contains(where: { $0.state == "active" }) ? "meeting detected" : sources.isEmpty ? "Not checked" : "waiting for the next meeting"
+            entry.title = "\(app == "meet" ? "Google Meet" : app == "teams" ? "Teams" : "Zoom"): \(text(key))"
+        }
+        if let seconds = detection.reconnectSeconds, seconds > 0 { statusMenu.title = MenuLocalization.format("Waiting for reconnect — %@s", locale: locale, value: String(seconds)) }
+        if let error = detection.error { statusMenu.title = MenuLocalization.message(error, locale: locale) }
     }
     private var microphonePermission: String {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -187,7 +219,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         guard !reportingPermissions || commandID != nil else { return }
         reportingPermissions = true
         var payload: [String: Any] = ["permissions": ["microphone": microphonePermission,
-            "screenCapture": CGPreflightScreenCaptureAccess(), "slackLogs": slackDetector.canReadLogs,
+            "screenCapture": CGPreflightScreenCaptureAccess(), "slackLogs": slackAutoEnabled ? slackDetector.canReadLogs as Any : NSNull(),
             "slackAutoRecord": slackAutoEnabled]]
         if let commandID = commandID { payload["commandId"] = commandID }
         if let error = error { payload["error"] = error }
@@ -218,6 +250,8 @@ final class MenuController: NSObject, NSApplicationDelegate {
             openPrivacyPane("Privacy_ScreenCapture"); finish(nil)
         case "slackLogs":
             requestSlackLogFolder(completion: finish)
+        case "accessibility":
+            authorizeAccessibility(); finish(nil)
         default: finish(text("Unknown authorization request."))
         }
     }
@@ -236,7 +270,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
             _ = try? handle.seekToEnd(); try? handle.write(contentsOf: line)
         } else { try? line.write(to: file, options: .atomic) }
     }
-    private func command(_ action: String, slackCallID: Int? = nil) {
+    private func command(_ action: String) {
         guard !sending else { return }
         sending = true; updateMenu()
         var request = URLRequest(url: URL(string: "http://127.0.0.1:5001/api/desktop/control/commands")!)
@@ -251,14 +285,6 @@ final class MenuController: NSObject, NSApplicationDelegate {
                 guard let self = self else { return }
                 self.sending = false
                 let accepted = (response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } ?? false
-                if let callID = slackCallID {
-                    if action == "start" {
-                        self.slackPolicy.commandCompleted(callID: callID, accepted: accepted, now: ProcessInfo.processInfo.systemUptime)
-                    } else {
-                        self.slackPolicy.stopCommandCompleted(callID: callID, accepted: accepted, now: ProcessInfo.processInfo.systemUptime)
-                    }
-                    self.logSlack(accepted ? "automatic \(action) accepted" : "automatic \(action) request failed")
-                }
                 if accepted {
                     self.poll()
                 } else {
@@ -288,7 +314,21 @@ final class MenuController: NSObject, NSApplicationDelegate {
     @objc private func stopRecording() { command("stop") }
     @objc private func openInterface() { bootServices(); NSWorkspace.shared.open(URL(string: "http://localhost:5170")!) }
     @objc private func openSettings() { bootServices(); NSWorkspace.shared.open(URL(string: "http://localhost:5170/#settings")!) }
-    @objc private func toggleSlackAuto() { UserDefaults.standard.set(!slackAutoEnabled, forKey: "HeedSlackAutoRecord"); updateMenu() }
+    @objc private func toggleSlackAuto() { configureDetection(app: "slack", enabled: !slackAutoEnabled) }
+    @objc private func toggleMeetingAuto(_ sender: NSMenuItem) {
+        guard let app = sender.representedObject as? String else { return }
+        configureDetection(app: app, enabled: state?.meetingDetection?.enabled[app] != true)
+    }
+    private func configureDetection(app: String, enabled: Bool) {
+        detectionClient.configure(app: app, enabled: enabled) { [weak self] accepted in
+            guard let self = self else { return }
+            if accepted {
+                if app == "slack" { UserDefaults.standard.set(enabled, forKey: "HeedSlackAutoRecord") }
+                self.poll()
+            } else { self.statusMenu.title = self.text("Could not save meeting detection settings.") }
+        }
+    }
+    @objc private func authorizeAccessibility() { AccessibleMeetingDetector.requestAccess(); openPrivacyPane("Privacy_Accessibility") }
     @objc private func authorizeSlackLogs() { requestSlackLogFolder(completion: nil) }
     private func requestSlackLogFolder(completion: ((String?) -> Void)?) {
         guard !requestingSlackAccess else { completion?(text("The Slack log authorization dialog is already open.")); return }
@@ -357,6 +397,8 @@ if CommandLine.arguments.contains("--self-test") {
     try slackRecordingPolicySelfTest()
     try slackHuddleDetectorSelfTests()
     try slackLogAccessSelfTests()
+    try accessibleMeetingDetectorSelfTests()
+    try meetingDetectionClientSelfTests()
     print("Heed menubar self-tests passed")
 } else {
     let lockURL = FileManager.default.homeDirectoryForCurrentUser

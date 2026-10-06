@@ -1,0 +1,11 @@
+{
+  "extensionName": {
+    "message": "Detecção do Meet no Heed"
+  },
+  "extensionDescription": {
+    "message": "Detecta controles explícitos de chamada no Google Meet e informa o estado ao serviço local do Heed."
+  },
+  "actionTitle": {
+    "message": "Detecção do Meet: abra as configurações do Heed para verificar o estado"
+  }
+}

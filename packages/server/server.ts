@@ -2,6 +2,8 @@ import { MeetingTasksService } from "./lib/meeting-tasks.ts";
 import { tasksResponse } from "./lib/tasks-http.ts";
 import { generateTaskSuggestions } from "./lib/task-generation.ts";
 import { MeetingChatService, CHAT_SYSTEM, chatApiResponse } from "./lib/meeting-chat.ts";
+import { MeetingDetectionController } from "./lib/meeting-detection.ts";
+import { meetingDetectionRoute } from "./lib/meeting-detection-http.ts";
 import { AutomaticNotesService, notesHash, renderNotesTranscript } from "./lib/automatic-notes.ts";
 import { automaticNotesSettings, validateNotesSettings } from "./lib/notes-settings.ts";
 import { generateLocalNotes, listLocalNotesModels, generateLocalStructured, listLocalChatModels } from "./lib/ollama-notes.ts";
@@ -1213,6 +1215,7 @@ async function handleSysRecordStart(req: Request): Promise<Response> {
  try {
   const body = await req.json();
   const state = hydratedRecordingSnapshot(await recordingCoordinator.start(controlRequestId(body), body.mode ?? "both"));
+  if (state.state === "recording") meetingDetection.manualOverride();
   return Response.json({...state, snapshot:state, recording:state.state === "recording", path:state.path, language:"en"});
  } catch (error) { return recordingControlError(error); }
 }
@@ -1950,7 +1953,10 @@ async function handleSysRecordStop(req: Request): Promise<Response> {
  if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
  try {
   const body = await req.json();
+  const previous = recordingCoordinator.snapshot();
+  const manualStop = previous.meetingId === body.meetingId && ["starting","recording"].includes(previous.state);
   const state = hydratedRecordingSnapshot(await recordingCoordinator.stop(controlRequestId(body),body.meetingId));
+  if (manualStop) meetingDetection.manualOverride();
   const session = state.session;
   return Response.json({...state, snapshot:state, finalized:state.state === "completed", path:session?.files?.wav || state.path,
    duration:session?.duration, language:session?.language, model:session?.transcriptionModel, liveModel:session?.liveModel,
@@ -1993,116 +1999,15 @@ async function finalizeCapture(path: string): Promise<FinalCapture> {
  return {path,duration:result.duration,language:result.metadata.language,model:result.metadata.model,liveModel:recordingLiveModel || recordingCoordinator.snapshot().liveModel,turns:result.segments,embeddings:result.embeddings};
 }
 
-// --- Meeting auto-detector ---
-// Watches PipeWire clients for meeting apps (zoom, meet, teams, discord, etc.)
-// Streams notifications via SSE to the frontend.
-const MEETING_APPS = [
-	{ pattern: /zoom/i, name: "Zoom" },
-	{ pattern: /meet|chrome.*meet/i, name: "Google Meet" },
-	{ pattern: /teams|MSTeams/i, name: "Microsoft Teams" },
-	{ pattern: /discord/i, name: "Discord" },
-	{ pattern: /webex/i, name: "Webex" },
-	{ pattern: /skype/i, name: "Skype" },
-	{ pattern: /jitsi/i, name: "Jitsi" },
-	{ pattern: /slack.*call/i, name: "Slack Call" },
-];
-
-function detectMeetingApps(): { app: string; raw: string }[] {
-	try {
-		const result = Bun.spawnSync(["pactl", "list", "clients"]);
-		const output = new TextDecoder().decode(result.stdout);
-		const clients = output.split("Client #").slice(1);
-
-		const detected: { app: string; raw: string }[] = [];
-		for (const client of clients) {
-			const nameMatch = client.match(/application\.name\s*=\s*"([^"]+)"/);
-			const procMatch = client.match(/application\.process\.binary\s*=\s*"([^"]+)"/);
-			const name = nameMatch?.[1] || "";
-			const proc = procMatch?.[1] || "";
-			const combined = `${name} ${proc}`;
-
-			for (const app of MEETING_APPS) {
-				if (app.pattern.test(combined)) {
-					detected.push({ app: app.name, raw: name });
-					break;
-				}
-			}
-		}
-		return detected;
-	} catch {
-		return [];
-	}
-}
-
-function handleDetectorStream(): Response {
-	const encoder = new TextEncoder();
-	let lastApps = new Set<string>();
-
-	const stream = new ReadableStream({
-		start(controller) {
-			let closed = false;
-			const send = (data: unknown) => {
-				if (closed) return;
-				try {
-					controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-				} catch {
-					closed = true;
-				}
-			};
-
-			const tick = () => {
-				if (closed) return;
-				const detected = detectMeetingApps();
-				const currentApps = new Set(detected.map((d) => d.app));
-
-				// New apps detected
-				for (const d of detected) {
-					if (!lastApps.has(d.app)) {
-						send({ event: "meeting_started", app: d.app });
-					}
-				}
-				// Apps that ended
-				for (const app of lastApps) {
-					if (!currentApps.has(app)) {
-						send({ event: "meeting_ended", app });
-					}
-				}
-				lastApps = currentApps;
-			};
-
-			// Initial tick
-			tick();
-			const iv = setInterval(tick, 3000);
-
-			// Heartbeat to keep connection alive
-			const heartbeat = setInterval(() => {
-				if (closed) return;
-				try {
-					controller.enqueue(encoder.encode(`: ping\n\n`));
-				} catch {
-					closed = true;
-				}
-			}, 15000);
-
-			// Cleanup on cancel
-			(controller as any)._cleanup = () => {
-				closed = true;
-				clearInterval(iv);
-				clearInterval(heartbeat);
-			};
-		},
-		cancel() {
-			// noop — handled by closed flag
-		},
-	});
-
-	return new Response(stream, {
-		headers: {
-			"Content-Type": "text/event-stream",
-			"Cache-Control": "no-cache",
-			Connection: "keep-alive",
-		},
-	});
+// Compatibility stream reports authoritative capabilities; app/process presence is not a call.
+function handleDetectorStream(req: Request): Response {
+ if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
+ return sseResponse(async (sink, signal) => {
+  const send = () => sink.data({event:"status",detection:meetingDetection.status()});
+  send(); const timer = setInterval(send,2000);
+  try { await new Promise<void>(resolve => signal.addEventListener("abort",()=>resolve(),{once:true})); }
+  finally { clearInterval(timer); }
+ }, {heartbeatMs:15000});
 }
 
 // --- Auto-recovery for orphaned recordings ---
@@ -2243,7 +2148,7 @@ function desktopRecordingStatus() {
  return {...state, snapshot:state, seconds:Math.floor(state.seconds), recording:!!recorderProc && recorderProc.exitCode === null,
   processing:["stopping","finalizing"].includes(state.state) || recordingFinalizationRunning,
   starting:state.state === "starting", pending:false, clientConnected:true, ready:!state.maintenance,
-  language:recordingLanguage,uiLocale:configuredUiLocale(loadConfig()),storage:{limitBytes:AUDIO_LIMIT_BYTES,bytes:pruneAudio().bytes},quotaStopped:!!quotaStopResult};
+  meetingDetection:meetingDetection.status(),language:recordingLanguage,uiLocale:configuredUiLocale(loadConfig()),storage:{limitBytes:AUDIO_LIMIT_BYTES,bytes:pruneAudio().bytes},quotaStopped:!!quotaStopResult};
 }
 async function handleRecordingControl(req: Request, pathname: string): Promise<Response> {
  if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
@@ -2281,7 +2186,10 @@ async function handleDesktopControl(req: Request, pathname: string): Promise<Res
   if (pathname.endsWith("/commands")) {
    if (!["start","stop"].includes(body.action)) return Response.json({error:"Choose start or stop"},{status:400});
    const id = controlRequestId(body);
+   const previous = recordingCoordinator.snapshot();
+   const manualStop = body.action === "stop" && previous.meetingId === body.meetingId && ["starting","recording"].includes(previous.state);
    const state = body.action === "start" ? await recordingCoordinator.start(id,body.mode ?? "both") : await recordingCoordinator.stop(id,body.meetingId);
+   if (manualStop || (body.action === "start" && state.state === "recording")) meetingDetection.manualOverride();
    return Response.json({ok:true,id,status:desktopRecordingStatus(),snapshot:hydratedRecordingSnapshot(state)});
   }
   if (pathname.endsWith("/poll")) return Response.json({command:null,status:desktopRecordingStatus()});
@@ -2315,7 +2223,7 @@ async function handleDesktopPermissions(req: Request, pathname: string): Promise
  }
  if (pathname !== "/api/desktop/permissions") return Response.json({error:"Unknown permissions endpoint."}, {status:404});
  const action = permissionAction(body);
- if (!action) return Response.json({error:"Choose microphone, screenCapture, or slackLogs."}, {status:400});
+ if (!action) return Response.json({error:"Choose microphone, screenCapture, slackLogs, or accessibility."}, {status:400});
  try { return Response.json({ok:true,id:desktopPermissions.enqueue(action)}); }
  catch (error) { return Response.json({error:(error as Error).message}, {status:409}); }
 }
@@ -2407,6 +2315,33 @@ const recordingCoordinator = new RecordingCoordinator({
 const retained = recordingCoordinator.snapshot();
 if (retained.path && retained.state !== "completed") retainedProcessing.set(retained.path,Infinity);
 
+let detectionModelReady = false;
+const meetingDetection = new MeetingDetectionController({
+ recording:recordingCoordinator, journalPath:join(APP_DIR,"meeting-detection.json"),
+ isReady:() => {
+  const permissions = desktopPermissions.status();
+  return detectionModelReady && !transcriptionRequests && !recordingFinalizationRunning && permissions.controllerConnected
+   && permissions.permissions?.microphone === "authorized" && permissions.permissions.screenCapture === true;
+ },
+});
+recordingCoordinator.subscribe(() => meetingDetection.recordingChanged());
+let detectionTickBusy = false;
+const detectionTimer = setInterval(async () => {
+ if (detectionTickBusy) return;
+ detectionTickBusy = true;
+ try {
+  const detection = meetingDetection.status();
+  const needsModel = detection.sources.some(source => detection.enabled[source.app] && source.state === "active");
+  if (needsModel) {
+   try { const response = await fetch(`${TRANSCRIPTION_SERVER}/health`,{signal:AbortSignal.timeout(1500)}); const health = await response.json(); detectionModelReady = response.ok && health.whisper === true; }
+   catch { detectionModelReady = false; }
+  } else detectionModelReady = false;
+  await meetingDetection.tick();
+ } catch (error) { console.error("Meeting detection controller failed:",error); }
+ finally { detectionTickBusy = false; }
+},1000);
+detectionTimer.unref();
+
 const server = Bun.serve({
 	hostname: "127.0.0.1",
 	port: PORT,
@@ -2461,9 +2396,10 @@ const server = Bun.serve({
 		if (method === "POST" && url.pathname === "/api/setup/start-ollama") return handleStartOllama();
 		if (url.pathname === "/api/desktop/permissions" || url.pathname.startsWith("/api/desktop/permissions/")) return handleDesktopPermissions(req, url.pathname);
 		if (url.pathname.startsWith("/api/recording/")) { httpServer.timeout(req,0); return handleRecordingControl(req,url.pathname); }
+		if (url.pathname.startsWith("/api/meeting-detection/")) return meetingDetectionRoute(req,meetingDetection,PORT);
 		if (url.pathname.startsWith("/api/desktop/control/")) { httpServer.timeout(req,0); return handleDesktopControl(req, url.pathname); }
 		if (method === "POST" && url.pathname === "/api/desktop/float") return handleDesktopFloat();
-		if (method === "GET" && url.pathname === "/api/meeting-detector") return handleDetectorStream();
+		if (method === "GET" && url.pathname === "/api/meeting-detector") return handleDetectorStream(req);
 		// /api/download and /api/recording removed — unused legacy endpoints
 		if (method === "POST" && url.pathname === "/api/sysrecord/start") return handleSysRecordStart(req);
 		if (method === "POST" && url.pathname === "/api/sysrecord/stop") { httpServer.timeout(req, 0); return handleSysRecordStop(req); }

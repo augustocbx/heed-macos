@@ -6,6 +6,7 @@ import { SHELL_TRANSLATIONS } from "./translations-shell.ts";
 import { TASKS_TRANSLATIONS } from "./translations-tasks.ts";
 import { NOTES_TRANSLATIONS } from "./translations-notes.ts";
 import { CONTENT_TRANSLATIONS } from "./translations-content.ts";
+import { DETECTION_TRANSLATIONS } from "./translations-detection";
 export type { Locale } from "./locale.ts";
 export function detectLocale(): Locale {return storedLocale();}
 export function setLocale(locale: Locale): void {useLocaleStore.getState().sync(locale);}
@@ -13,7 +14,7 @@ export function useLocale() {
  const locale=useLocaleStore(s=>s.locale);
  return {locale,tr:(text:string,vars?:Record<string,string|number>)=>tr(text,locale,vars)};
 }
-const TRANSLATIONS={...SHELL_TRANSLATIONS,...CONTENT_TRANSLATIONS,...NOTES_TRANSLATIONS,...TASKS_TRANSLATIONS,...CHAT_TRANSLATIONS};
+const TRANSLATIONS={...SHELL_TRANSLATIONS,...CONTENT_TRANSLATIONS,...NOTES_TRANSLATIONS,...TASKS_TRANSLATIONS,...CHAT_TRANSLATIONS,...DETECTION_TRANSLATIONS};
 export function tr(text:string,locale:Locale=useLocaleStore.getState().locale,vars?:Record<string,string|number>):string {
  const chosen=normalizeLocale(locale);
  const key=text.trim();

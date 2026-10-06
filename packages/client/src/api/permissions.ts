@@ -7,7 +7,7 @@ export interface PermissionSnapshot {
  error: string | null;
  pending: boolean;
 }
-export type PermissionAction = 'microphone' | 'screenCapture' | 'slackLogs';
+export type PermissionAction = 'microphone' | 'screenCapture' | 'slackLogs' | 'accessibility';
 export const permissionsApi = {
  status: () => apiClient.get<PermissionSnapshot>('/api/desktop/permissions'),
  authorize: (action: PermissionAction) => apiClient.post<{ ok: true; id: string }>('/api/desktop/permissions', { action }),

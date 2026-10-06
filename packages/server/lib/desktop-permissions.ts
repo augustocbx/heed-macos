@@ -1,4 +1,4 @@
-export type PermissionAction = 'microphone' | 'screenCapture' | 'slackLogs';
+export type PermissionAction = 'microphone' | 'screenCapture' | 'slackLogs' | 'accessibility';
 export type MicrophonePermission = 'authorized' | 'denied' | 'restricted' | 'notDetermined' | 'unknown';
 export interface DesktopPermissionSnapshot {
  microphone: MicrophonePermission;
@@ -30,7 +30,7 @@ function object(value: unknown): value is Record<string, unknown> {
  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 export function permissionAction(body: unknown): PermissionAction | null {
- if (!object(body) || !['microphone', 'screenCapture', 'slackLogs'].includes(String(body.action))) return null;
+ if (!object(body) || !['microphone', 'screenCapture', 'slackLogs', 'accessibility'].includes(String(body.action))) return null;
  return typeof body.action === 'string' ? body.action as PermissionAction : null;
 }
 export function permissionReport(body: unknown): PermissionReport | null {
