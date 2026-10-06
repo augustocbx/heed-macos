@@ -3,7 +3,7 @@ import { chromium } from "playwright";
 import { mkdir, writeFile, mkdtemp, rm } from "node:fs/promises";
 import assert from "node:assert/strict";
 
-const base = process.env.HEED_HEADER_QA_URL || "http://127.0.0.1:5175";
+const base = process.env.HEED_HEADER_QA_URL || "http://127.0.0.1:48175";
 const output = process.env.HEED_HEADER_QA_OUTPUT || "/tmp/heed-header-qa";
 const before = process.env.HEED_HEADER_QA_PHASE === "before";
 await mkdir(output, { recursive: true });
@@ -40,6 +40,11 @@ async function routeApi(route) {
 	if (path === "/api/models/select") selectedModel = JSON.parse(request.postData()).id;
 	if (path === "/api/setup/start-ollama") healthy = true;
 	const responses = {
+		"/.well-known/heed-services": [
+			{ service: "api", port: 48100, state: "ready" },
+			{ service: "ui", port: 48175, state: "ready" },
+			{ service: "transcription", port: 48102, state: "ready" },
+		],
 		"/api/health": health(), "/api/models": catalog(), "/api/setup/check": setup,
 		"/api/ui-locale": { locale }, "/api/sessions": [], "/api/speakers": [],
 		"/api/tasks": { tasks: [], candidates: [], revision: "fixture" },
@@ -56,7 +61,7 @@ async function routeApi(route) {
 	await route.fulfill({ status: Object.hasOwn(responses, path) ? 200 : 503,
 		contentType: "application/json", body: JSON.stringify(responses[path] || { error: "Synthetic QA: unavailable" }) });
 }
-await page.route(url => url.pathname.startsWith("/api/"), routeApi);
+await page.route(url => (url.pathname.startsWith("/api/") || url.pathname === "/.well-known/heed-services"), routeApi);
 await page.addInitScript(() => {
 	localStorage.setItem("heed-tour-done", "1");
 	localStorage.setItem("heed-locale", "en");
@@ -261,7 +266,7 @@ try {
 			const zoomContext = await chromium.launchPersistentContext(profile, { channel: "chrome", headless: true, viewport: { width: 1280, height: 900 } });
 			try {
 				page = await zoomContext.newPage();
-				await page.route(url => url.pathname.startsWith("/api/"), routeApi);
+				await page.route(url => (url.pathname.startsWith("/api/") || url.pathname === "/.well-known/heed-services"), routeApi);
 				await page.route(url => url.searchParams.has("header-qa"), headerDocument);
 				for (locale of Object.keys(labels)) {
 					await mountHeader();
@@ -285,7 +290,7 @@ try {
 		}
 		}
 		page = await context.newPage();
-		await page.route(url => url.pathname.startsWith("/api/"), routeApi);
+		await page.route(url => (url.pathname.startsWith("/api/") || url.pathname === "/.well-known/heed-services"), routeApi);
 		await page.route(url => url.searchParams.has("header-qa"), headerDocument);
 		for (locale of Object.keys(labels)) {
 			await mountHeader();

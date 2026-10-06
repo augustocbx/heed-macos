@@ -48,22 +48,10 @@ cleanup() {
 }
 trap cleanup EXIT
 cd "$HEED_ROOT"
-listening() { /usr/sbin/lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
-if ! listening 11434 && ! /usr/bin/pgrep -f 'ollama serve' >/dev/null; then
+# Ollama remains on its established port; never terminate another listener.
+if ! /usr/sbin/lsof -nP -iTCP:11434 -sTCP:LISTEN >/dev/null 2>&1 && ! /usr/bin/pgrep -f 'ollama serve' >/dev/null; then
     nohup ollama serve >>"$HEED_LOG/ollama.log" 2>&1 </dev/null &
 fi
-if ! listening 5001 && ! listening 5170 && ! listening 5002 && ! /usr/bin/pgrep -f '[/]doctor.py' >/dev/null && ! /usr/bin/pgrep -f 'bun run dev$' >/dev/null; then
-    nohup bun run dev >>"$HEED_LOG/services.log" 2>&1 </dev/null &
-else
-    if ! listening 5001 && ! /usr/bin/pgrep -f '^bun run dev:server$' >/dev/null; then
-        nohup bun run dev:server >>"$HEED_LOG/server.log" 2>&1 </dev/null &
-    fi
-    if ! listening 5170 && ! /usr/bin/pgrep -f '^bun run dev:client$' >/dev/null; then
-        nohup bun run dev:client >>"$HEED_LOG/client.log" 2>&1 </dev/null &
-    fi
-    # Installer doctor warms/downloads models; never race its model work.
-    while /usr/bin/pgrep -f '[/]doctor.py' >/dev/null; do sleep 5; done
-    if ! listening 5002 && ! /usr/bin/pgrep -f '[/]transcription_server.py' >/dev/null; then
-        nohup bun run dev:python >>"$HEED_LOG/python.log" 2>&1 </dev/null &
-    fi
-fi
+# Identity and ownership checks live in the tested Python helper. A listening
+# port alone never establishes that API, interface or transcription is Heed.
+/usr/bin/python3 "$HEED_ROOT/scripts/service_runtime.py" start --root "$HEED_ROOT" --log-dir "$HEED_LOG"

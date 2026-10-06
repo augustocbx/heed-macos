@@ -40,12 +40,12 @@
 	],
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/isjunrod/heed",
+		"url": "https://github.com/augustocbx/heed-macos",
 		"directory": "packages/cli"
 	},
-	"homepage": "https://github.com/isjunrod/heed#readme",
+	"homepage": "https://github.com/augustocbx/heed-macos#readme",
 	"bugs": {
-		"url": "https://github.com/isjunrod/heed/issues"
+		"url": "https://github.com/augustocbx/heed-macos/issues"
 	},
 	"funding": {
 		"type": "github",

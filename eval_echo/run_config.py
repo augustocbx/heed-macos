@@ -7,6 +7,10 @@ Usage:  python3 run_config.py <label> [dedup]
   dedup    if present, also apply Layer-3 text dedup and report the dedup'd score
 
 The audio config (gate threshold, AEC mode) is whatever the running server is set to (via env)."""
+import sys as _service_sys
+from pathlib import Path as _ServicePath
+_service_sys.path.insert(0,str(_ServicePath(__file__).resolve().parents[1]/"scripts"))
+from service_config import transcription_url
 import json, os, sys, urllib.request
 import soundfile as sf
 from score import score
@@ -19,7 +23,7 @@ CH = int(0.7 * SR)
 
 
 def post(p, b):
-    r = urllib.request.Request("http://127.0.0.1:5002" + p,
+    r = urllib.request.Request(transcription_url() + p,
         data=json.dumps(b).encode(), headers={"Content-Type": "application/json"})
     return json.load(urllib.request.urlopen(r, timeout=120))
 

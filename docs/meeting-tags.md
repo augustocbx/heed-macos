@@ -44,7 +44,7 @@ bun scripts/check-tag-persistence.ts \
   --output /tmp/heed-tag-evidence
 ```
 
-`--transcription-url` and `--ollama-url` optionally select existing local services (defaults: `http://127.0.0.1:5002` and `http://127.0.0.1:11434`). URLs must be local origins. `--output` creates a unique evidence subdirectory containing the synthetic WAV, report, and isolated server log; without it, temporary files are removed and the result is printed only.
+`--transcription-url` and `--ollama-url` optionally select existing local services (defaults: `http://127.0.0.1:48102` and `http://127.0.0.1:11434`). URLs must be local origins. `--output` creates a unique evidence subdirectory containing the synthetic WAV, report, and isolated server log; without it, temporary files are removed and the result is printed only.
 
 The CLI copies production server/shared TypeScript sources and package metadata unchanged into a temporary runtime, verifies their SHA-256 hashes, and starts the production `packages/server/server.ts` on an available loopback port with an isolated `HEED_APP_DIR`. The copy also isolates the production server's relative recordings directory and retention sweep. It creates a provisional synthetic meeting with several Unicode tags, refreshes it through the API, restarts the server, and calls `/api/transcribe` with `recording_finalize: true` and `final_model: "parakeet-v3"` using the real installed ASR. It saves the returned final transcription fields without writing tags, edits speaker names, enables automatic notes only in the temporary library, and waits for the real installed Ollama worker. A final restart verifies tags, their assignment revision, transcript, speakers, segments, notes, provenance, jobs, and audio metadata remain intact.
 

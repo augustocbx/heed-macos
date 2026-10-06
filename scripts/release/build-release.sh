@@ -57,7 +57,8 @@ rm -rf .github docs eval_diar eval_echo KILLER_IDEAS.md REFACTOR.md REFACTOR_REP
     AGENTS.md CONTRIBUTING.md .dependency-cruiser.cjs recordings dist
 # Generated transcript of the bundled public-domain benchmark clip; never read at runtime.
 rm -f packages/transcription/assets/bench_sample.wav.srt
-find scripts -mindepth 1 -maxdepth 1 ! -name init-managed-quota.ts ! -name release -exec rm -rf {} +
+find scripts -mindepth 1 -maxdepth 1 ! -name init-managed-quota.ts ! -name release \
+    ! -name service_config.py ! -name service_runtime.py ! -name service_diagnostics.py -exec rm -rf {} +
 find scripts/release -name '*_test.py' -delete
 
 printf '> Installing build dependencies\n'

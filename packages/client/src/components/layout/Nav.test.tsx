@@ -11,7 +11,7 @@ import { useUIStore } from "@/stores/ui";
 import { useLocaleStore } from "@/stores/locale";
 import { Nav } from "./Nav";
 
-vi.mock("@/api/health", () => ({ healthApi: { check: vi.fn() } }));
+vi.mock("@/api/health", () => ({ healthApi: { check: vi.fn(), diagnostics: vi.fn() } }));
 vi.mock("@/api/models", () => ({ modelsApi: { list: vi.fn(), select: vi.fn(), pullStream: vi.fn() } }));
 vi.mock("@/api/setup", () => ({ setupApi: { check: vi.fn(), startOllama: vi.fn(), installOllama: vi.fn() } }));
 vi.mock("@/api/desktop", () => ({ desktopApi: { float: vi.fn() } }));
@@ -36,14 +36,16 @@ beforeEach(() => {
 	useLocaleStore.getState().sync("en");
 	useUIStore.setState({ currentPage: "record" });
 	useModelsStore.setState({ data: null, pickerOpen: false, error: null, loading: false });
+	vi.mocked(healthApi.diagnostics).mockResolvedValue([
+		{ service: "api", port: 48100, state: "ready" },
+		{ service: "ui", port: 48101, state: "ready" },
+		{ service: "transcription", port: 48102, state: "ready" },
+	]);
 	vi.mocked(healthApi.check).mockResolvedValue({ ollama: true, whisper: true, pyannote: true });
 	vi.mocked(modelsApi.list).mockResolvedValue(catalog);
 	vi.mocked(modelsApi.select).mockResolvedValue({ ok: true, model: "qwen" });
 	vi.mocked(setupApi.check).mockResolvedValue(setup);
 	vi.mocked(desktopApi.float).mockResolvedValue({ ok: true });
-	// JSDOM does not implement native modal dialogs. Browser QA verifies their real focus behavior.
-	HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
-	HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); };
 });
 
 describe("header navigation", () => {

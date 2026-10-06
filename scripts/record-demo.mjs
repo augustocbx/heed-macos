@@ -16,12 +16,12 @@
  */
 
 import { chromium } from "playwright";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
 const WIDTH = 1920;
 const HEIGHT = 1550;
-const BASE = "http://localhost:5170";
+const BASE = execFileSync("python3",[new URL("./service_config.py",import.meta.url).pathname,"ui","--url"],{encoding:"utf8"}).trim();
 
 const SPEAKERS = [
   { name: "Me", color: "#2563EB" },

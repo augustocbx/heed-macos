@@ -6,6 +6,11 @@ import struct
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[3]/"scripts"))
+from service_config import service_config,ROOT
+from service_runtime import read_identity
+API_URL=f"http://127.0.0.1:{service_config()['api']}"
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -55,7 +60,8 @@ def main():
         try:
             message = read_exact(sys.stdin.buffer, size)
             value = validate(json.loads(message))
-            request = urllib.request.Request("http://127.0.0.1:5001/api/meeting-detection/report", data=json.dumps(value).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
+            if not read_identity(API_URL,'heed-api',str(ROOT)):raise ValueError('Heed API identity unavailable')
+            request = urllib.request.Request(API_URL+"/api/meeting-detection/report", data=json.dumps(value).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
             # No proxy, redirects, or arbitrary destinations; do not forward page URLs.
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
             with opener.open(request, timeout=3) as response:

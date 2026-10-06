@@ -3,6 +3,8 @@
 set -euo pipefail
 HEED_INSTALL_ROOT="$(cd "$(dirname "$0")" && pwd)"
 export PATH="$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+# Validate all configured service ports before any installation side effect.
+/usr/bin/python3 "$HEED_INSTALL_ROOT/scripts/service_config.py" api >/dev/null
 if [ "$(uname -s)" != Darwin ] || [ "$(uname -m)" != arm64 ]; then
     printf 'This installer requires macOS on Apple Silicon.\n' >&2; exit 1
 fi
@@ -52,25 +54,8 @@ bun run build
 bun scripts/init-managed-quota.ts
 bun run doctor
 # Restart only services from this checkout after confirming that they are still idle.
-HEED_INSTALL_ROOT="$HEED_INSTALL_ROOT" /usr/bin/python3 - <<'PYRESTART'
-import json, os, signal, subprocess, urllib.request, urllib.error, sys, time
-try:
-    with urllib.request.urlopen('http://localhost:5001/api/desktop/control/status', timeout=5) as response: state=json.load(response)
-except urllib.error.URLError as error:
-    if isinstance(error.reason, ConnectionRefusedError): state={}
-    else: sys.exit('Could not check the Heed status before restarting.')
-if any(state.get(key) for key in ['recording','processing','pending','starting']): sys.exit('An active meeting prevents restarting Heed services.')
-root=os.path.realpath(os.environ['HEED_INSTALL_ROOT'])
-for port in [5001,5170,5002]:
-    output=subprocess.run(['/usr/sbin/lsof','-t','-nP',f'-iTCP:{port}','-sTCP:LISTEN'],capture_output=True,text=True).stdout
-    for pid in set(output.split()):
-        cwd=subprocess.run(['/usr/sbin/lsof','-a','-p',pid,'-d','cwd','-Fn'],capture_output=True,text=True).stdout
-        paths=[line[1:] for line in cwd.splitlines() if line.startswith('n')]
-        if not paths or os.path.commonpath([root,os.path.realpath(paths[0])])!=root:
-            sys.exit(f'Port {port} belongs to another project. Its process was not stopped.')
-        os.kill(int(pid),signal.SIGTERM)
-time.sleep(2)
-PYRESTART
+/usr/bin/python3 "$HEED_INSTALL_ROOT/scripts/service_runtime.py" restart --root "$HEED_INSTALL_ROOT"
 bash packages/desktop/install-menubar.sh
-printf '\nHeed is installed. Open http://localhost:5170 to view meetings; menu recordings also work with every tab closed.\n'
+HEED_INTERFACE_URL="$(/usr/bin/python3 "$HEED_INSTALL_ROOT/scripts/service_config.py" ui --url)"
+printf '\nHeed is installed. Open %s to view meetings; menu recordings also work with every tab closed.\n' "$HEED_INTERFACE_URL"
 printf 'Allow system audio capture and microphone access in System Settings.\n'

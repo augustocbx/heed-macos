@@ -9,7 +9,7 @@ import {TaskFields} from './TaskFields';
 import {TaskSources} from './TaskSources';
 import {TaskCard} from './TaskCard';
 import styles from './Tasks.module.css';
-interface Props {session?:Session;onSeek?:(seconds:number)=>void;onShowTranscript?:()=>void;}
+interface Props {session?:Session;onSeek?:(seconds:number)=>void;onShowTranscript?:(source?:TaskEvidence)=>void;}
 const failedMessage:Record<string,string>={
  'model-missing':'Choose an installed local model to generate task suggestions.',
  'local-only':'Task suggestions require a local model.',
@@ -40,11 +40,21 @@ export function TasksPanel({session,onSeek,onShowTranscript}:Props){
  const saveTask=(task:TaskView,patch:TaskPatch)=>mutate(async()=>{await tasksApi.update(task.id,task.revision,patch);await loadAfterMutation();},true);
  const loadAfterMutation=async()=>{const result=await tasksApi.list(session?.id);setSnapshot(result);};
  const openSource=async(task:TaskView,evidence?:TaskEvidence)=>{
-  if(session?.id===task.sessionId){onShowTranscript?.();if(evidence?.start!==null&&evidence?.start!==undefined&&task.audioAvailable&&onSeek)onSeek(evidence.start);return;}
+  if(session?.id===task.sessionId){
+   const currentSource=task.sourceState==='available'&&session.transcriptRevision===task.sourceRevision&&(!evidence||evidence.sourceRevision===task.sourceRevision);
+   onShowTranscript?.(currentSource?evidence:undefined);
+   if(!currentSource&&evidence)useUIStore.getState().showToast('The transcript changed. Refresh before asking or retrying.');
+   if(currentSource&&evidence?.start!==null&&evidence?.start!==undefined&&task.audioAvailable&&onSeek)onSeek(evidence.start);
+   return;
+  }
   await mutate(async()=>{
    const meeting=(await sessionsApi.list()).find(s=>s.id===task.sessionId);if(!meeting)throw new Error('Source meeting deleted');
    useSessionsStore.getState().accept(meeting);useSessionsStore.getState().view(meeting);
-   useUIStore.setState({currentPage:'sessions',taskSourceSeek:task.sourceState==='available'&&task.audioAvailable&&evidence?.start!==null&&evidence?.start!==undefined?{sessionId:task.sessionId,seconds:evidence.start}:null});
+   const currentSource=task.sourceState==='available'&&meeting.transcriptRevision===task.sourceRevision&&(!evidence||evidence.sourceRevision===task.sourceRevision);
+   useUIStore.setState({currentPage:'sessions',
+    chatSourceFocus:currentSource&&evidence?{...evidence,id:`${task.sessionId}:${task.sourceRevision}:${evidence.segmentIndex}:0`,sessionId:task.sessionId,segmentIndex:meeting.segments?.length?evidence.segmentIndex:null,paragraphIndex:null}:null,
+    taskSourceSeek:currentSource&&meeting.files?.wav&&task.audioAvailable&&evidence?.start!==null&&evidence?.start!==undefined?{sessionId:task.sessionId,seconds:evidence.start,sourceRevision:task.sourceRevision}:null});
+   if(!currentSource&&evidence)useUIStore.getState().showToast('The transcript changed. Refresh before asking or retrying.');
   });
  };
  const review=snapshot.review;const currentReview=review?.status==='ready'&&session?.transcriptFinalized&&(!session.transcriptRevision||session.transcriptRevision===review.sourceRevision);
@@ -66,7 +76,7 @@ export function TasksPanel({session,onSeek,onShowTranscript}:Props){
      <label className={styles.row}><input type="checkbox" aria-label={tr('Select suggestion {title}',{title:suggestion.title})} checked={selected.has(suggestion.id)} disabled={busy} onChange={event=>setSelected(previous=>{const next=new Set(previous);if(event.target.checked)next.add(suggestion.id);else next.delete(suggestion.id);return next;})}/><strong>{tr(suggestion.kind==='explicit'?'Explicit commitment':'Inferred suggestion — review carefully')}</strong></label>
      <TaskFields value={draft} onChange={value=>setDrafts(previous=>({...previous,[suggestion.id]:value}))} disabled={busy}/>
      {suggestion.dateReview&&<p><strong>{tr('Date needs review')}:</strong> <span>{suggestion.dateReview}</span></p>}
-     <TaskSources evidence={suggestion.evidence} onSource={onShowTranscript||onSeek?source=>{onShowTranscript?.();if(onSeek&&source.start!==null)onSeek(source.start);}:undefined}/>
+     <TaskSources evidence={suggestion.evidence} onSource={onShowTranscript||onSeek?source=>{onShowTranscript?.(source);if(onSeek&&source.start!==null)onSeek(source.start);}:undefined}/>
      <button type="button" disabled={busy} onClick={()=>void mutate(async()=>{setSnapshot(await tasksApi.dismiss(session.id,review!.sourceRevision,[suggestion.id]));setSelected(previous=>{const next=new Set(previous);next.delete(suggestion.id);return next;});})}>{tr('Dismiss suggestion')}</button>
     </article>;
    })}

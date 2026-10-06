@@ -1,8 +1,23 @@
-import type {PortableCommit,ProviderCapabilities} from '@heed/shared';
+import type {PortableCommit,ProviderCapabilities,DeletionCapabilities,RemoteInventory,DeletionRecord,PublicationIntent,ArtifactIdentity,RevisionDeletionFence} from '@heed/shared';
+export interface RemoteTransaction {
+ /** Authorize release only after the caller's durable job/catalog checkpoint. */
+ checkpoint():Promise<void>;
+ inventory(signal?:AbortSignal):Promise<RemoteInventory>;
+ writeDeletion(record:DeletionRecord,signal?:AbortSignal):Promise<void>;
+ writeFence(fence:RevisionDeletionFence,signal?:AbortSignal):Promise<void>;
+ writePending(intent:PublicationIntent,signal?:AbortSignal):Promise<void>;
+ retirePending(intent:PublicationIntent,signal?:AbortSignal):Promise<void>;
+ removeExact(jobId:string,artifact:ArtifactIdentity,signal?:AbortSignal):Promise<'removed'|'already-removed'>;
+}
+export interface TransactionContext {operationId:string;deviceId:string;kind:'read'|'publish'|'delete'}
+export interface PendingRemoteTransaction {operationId:string;deviceId:string;kind:TransactionContext['kind'];recoverable:boolean;releaseOnly?:boolean;blockedReason?:string;admissions:Array<{meetingId:string;revisionId:string;manifestHash:string}>}
 /** Adapters own authentication locally; this contract never accepts or exports credentials. */
 export interface LibraryProvider {
  id:string;name:string;readOnly?:boolean;capabilities?:ProviderCapabilities;
  transport:'authenticated-network'|'os-managed-folder';
+ deletionCapabilities?:DeletionCapabilities;
+ pendingTransactions?():PendingRemoteTransaction[];
+ withTransaction?<T>(context:TransactionContext,run:(transaction:RemoteTransaction)=>Promise<T>,signal?:AbortSignal):Promise<T>;
  list(cursor:string|null,limit:number,signal?:AbortSignal):Promise<{commits:PortableCommit[];next:string|null;complete:boolean}>;
  /** Advance a staged provider checkpoint only after complete validated catalog persistence. */
  acknowledgeDiscovery?(signal?:AbortSignal):Promise<void>;

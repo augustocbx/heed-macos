@@ -27,6 +27,9 @@ export function Nav() {
 	const setPage = useUIStore((s) => s.setPage);
 	const showToast = useUIStore((s) => s.showToast);
 	const health = useHealthStore((s) => s.health);
+	const diagnosticsUnavailable = useHealthStore((s) => s.diagnosticsUnavailable);
+	const apiUnknown = diagnosticsUnavailable || health.services?.find((item) => item.service === "api")?.state === "unavailable";
+	const transcriptionUnknown = apiUnknown || health.services?.find((item) => item.service === "transcription")?.state === "unavailable";
 	const checkHealth = useHealthStore((s) => s.check);
 	const modelsData = useModelsStore((s) => s.data);
 	const modelsLoading = useModelsStore((s) => s.loading);
@@ -91,15 +94,15 @@ export function Nav() {
 	const engine = health.languages?.engine;
 	const engineLabel = !whisperInfo ? tr("detecting") : engine === "parakeet" ? "Parakeet v3"
 		: engine === "mlx" ? `MLX ${whisperInfo.final_model}` : `Whisper ${whisperInfo.final_model}`;
-	const diarLabel = pyannoteInfo?.model?.toLowerCase().includes("fluidaudio") ? "FluidAudio" : "pyannote";
+	const diarLabel = !pyannoteInfo ? tr("detecting") : pyannoteInfo.model?.toLowerCase().includes("fluidaudio") ? "FluidAudio" : "pyannote";
 	const needsAttention = healthLoaded && (!health.ollama || !health.whisper || !health.pyannote || !!modelsError);
 	const summary = needsAttention ? tr("Needs attention") : !healthLoaded || modelsLoading ? tr("Checking…")
 		: !modelsData?.current?.id ? tr("Choose a model") : tr("Ready");
-	const readiness = (ready: boolean) => !healthLoaded ? tr("Checking…") : ready ? tr("Ready") : tr("Unavailable");
-	const status = (ready: boolean) => (
-		<span className={`${styles.readiness} ${healthLoaded && !ready ? styles.unavailable : ""}`}>
-			<span className={`${styles.dot} ${!healthLoaded ? "" : ready ? styles.dotOk : styles.dotErr}`} aria-hidden="true" />
-			{readiness(ready)}
+	const readiness = (ready: boolean, unknown: boolean) => !healthLoaded ? tr("Checking…") : unknown ? tr("Not checked") : ready ? tr("Ready") : tr("Unavailable");
+	const status = (ready: boolean, unknown = false) => (
+		<span className={`${styles.readiness} ${healthLoaded && !ready && !unknown ? styles.unavailable : ""}`}>
+			<span className={`${styles.dot} ${!healthLoaded || unknown ? "" : ready ? styles.dotOk : styles.dotErr}`} aria-hidden="true" />
+			{readiness(ready, unknown)}
 		</span>
 	);
 	const fixButton = (target: FixTarget, title: string, ready: boolean) => healthLoaded && !ready && (
@@ -152,7 +155,7 @@ export function Nav() {
 					{toolError && <p role="alert" className={styles.unavailable}>{toolError}</p>}
 					{modelsError && <p role="alert" className={styles.unavailable}>{tr("Could not load models")}: {modelsError}</p>}
 					<section className={styles.section} aria-label={tr("AI notes engine")}>
-						<div className={styles.sectionHead}><h3>{tr("AI notes engine")}</h3>{status(health.ollama)}</div>
+						<div className={styles.sectionHead}><h3>{tr("AI notes engine")}</h3>{status(health.ollama, apiUnknown)}</div>
 						<p><strong>Ollama</strong> · {tr("Local LLM that writes the meeting notes from the transcript.")}</p>
 						<p><strong>{tr("Model:")}</strong> {modelName}</p>
 						<div className={styles.badges}>
@@ -163,9 +166,9 @@ export function Nav() {
 						{fixButton("ollama", "AI notes engine", health.ollama)}
 					</section>
 					<section className={styles.section} aria-label={tr("Transcription engine")}>
-						<div className={styles.sectionHead}><h3>{tr("Transcription engine")}</h3>{status(health.whisper)}</div>
+						<div className={styles.sectionHead}><h3>{tr("Transcription engine")}</h3>{status(health.whisper, transcriptionUnknown)}</div>
 						<p><strong>{engineLabel}</strong></p>
-						{engine === "parakeet" ? <>
+						{!whisperInfo ? <p>{tr("No verified transcription profile.")}</p> : engine === "parakeet" ? <>
 							<p><strong>{tr("Model:")}</strong> parakeet-tdt-v3</p>
 							<p><strong>{tr("Runs on:")}</strong> Apple Neural Engine</p>
 							<p><strong>{tr("Languages:")}</strong> {tr("28 European")}</p>
@@ -179,9 +182,9 @@ export function Nav() {
 						{fixButton("engine", "Transcription engine", health.whisper)}
 					</section>
 					<section className={styles.section} aria-label={tr("Speaker diarization")}>
-						<div className={styles.sectionHead}><h3>{tr("Speaker diarization")}</h3>{status(health.pyannote)}</div>
+						<div className={styles.sectionHead}><h3>{tr("Speaker diarization")}</h3>{status(health.pyannote, transcriptionUnknown)}</div>
 						<p><strong>{diarLabel}</strong> · {tr("who said what")}</p>
-						{diarLabel === "FluidAudio" ? <>
+						{!pyannoteInfo ? <p>{tr("No verified diarization profile.")}</p> : diarLabel === "FluidAudio" ? <>
 							<p><strong>{tr("Model:")}</strong> FluidAudio CoreML</p>
 							<p><strong>{tr("Runs on:")}</strong> Apple Neural Engine</p>
 							<p><strong>{tr("Token:")}</strong> {tr("none needed")}</p>

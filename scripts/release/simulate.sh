@@ -39,7 +39,10 @@ free_port() { ! /usr/sbin/lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
 for SIM_BASE in 48900 48910 48920 48930; do
     if free_port "$SIM_BASE" && free_port $((SIM_BASE + 1)) && free_port $((SIM_BASE + 2)); then break; fi
 done
-export HEED_API_PORT="$SIM_BASE" HEED_UI_PORT=$((SIM_BASE + 1)) HEED_TRANSCRIPTION_PORT=$((SIM_BASE + 2))
+export HEED_API_PORT="$SIM_BASE" PORT="$SIM_BASE" HEED_UI_PORT=$((SIM_BASE + 1)) HEED_TRANSCRIPTION_PORT=$((SIM_BASE + 2))
+# A caller's private paths/client overrides must never escape this disposable HOME.
+export HEED_APP_DIR="$SIM_HOME/.heed-app" HEED_HOME="$SIM_HOME/.heed"
+unset HEED_SERVICE_CONFIG_ROOT HEED_TRANSCRIPTION_URL HEED_RECORDINGS_DIR VITE_API_BASE HEED_LIFECYCLE_GUARD_HELD HEED_LIFECYCLE_GUARD_TOKEN
 
 cleanup() {
     "$SIM_SHIMS/launchctl" bootout "gui/$(id -u)/local.heed.menubar" >/dev/null 2>&1 || true
@@ -252,7 +255,7 @@ check "installer explains the port conflict" grep -q "Port $HEED_API_PORT is use
 check "installer does not claim a meeting is active" bash -c "! grep -q 'Heed is recording' '$SIM/install-6.log'"
 kill "$(cat "$SIM/foreign.pid")"; rm -f "$SIM/foreign.pid"; sleep 1
 "$SIM_SHIMS/launchctl" bootstrap "gui/$(id -u)" "$SIM_HOME/Library/LaunchAgents/local.heed.menubar.plist"
-/usr/bin/python3 "$HEED_REPO_ROOT/scripts/release/heed_release.py" wait-ready --version "$V2" --timeout 300 >/dev/null || die "restart $V2"
+/usr/bin/python3 "$HEED_REPO_ROOT/scripts/release/heed_release.py" wait-ready --root "$(cd "$SIM_HOME/.heed/runtime/current" && pwd -P)" --version "$V2" --timeout 300 >/dev/null || die "restart $V2"
 ok "Heed $V2 restarts after the conflict"
 
 step "Uninstall --keep-data"

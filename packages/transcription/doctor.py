@@ -11,6 +11,10 @@ Usage:  python doctor.py
 import os
 import sys
 import subprocess
+from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[2]/"scripts"))
+from service_config import service_config
+service_config()
 
 import capability
 import policy
@@ -94,4 +98,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    from worker_lifecycle import worker_entrypoint
+    with worker_entrypoint():
+        main()

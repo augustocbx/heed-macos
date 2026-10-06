@@ -1,6 +1,6 @@
 # Responsive header validation — issue #75
 
-Validated on October 6, 2026, against baseline `965831b` and the issue branch. Screenshots and API responses use synthetic fixtures; no personal meetings, credentials or recordings appear in this evidence.
+Validated on October 6, 2026, against baseline `965831b` and the issue branch, then repeated after integration with main `e61421a`. Screenshots and API responses use synthetic fixtures; no personal meetings, credentials or recordings appear in this evidence.
 
 ## Result
 
@@ -12,20 +12,22 @@ System details keeps Float, model selection, full model names, CPU/NEW badges, e
 
 | Check | Result |
 | --- | --- |
-| Client suite | 265 tests passed in 54 files, including 14 header integration tests |
+| Client suite | 307 tests passed in 59 files, including 14 header integration tests |
 | Production build | Passed; existing bundle-size warning remains |
-| Server library suite | 494 tests passed in 77 files |
+| Server library suite | 584 tests passed in 88 files |
 | Browser layout matrix | 288 combinations passed: four locales × three model-name cases × three health states × eight widths |
 | Browser zoom | 24 checks passed: four locales × 125%/150%/200% actual Chrome host zoom × 640/1280 physical viewport pixels |
 | Enlarged text | 24 checks passed: four locales × six widths with 200% root font size |
 | Keyboard and behavior | All five full-app destinations, Settings content, Pages Escape/focus return, nested model picker and all QuickFix targets, explicit model selection, Float request and Start Ollama request passed |
 | Mutation isolation | Layout/disclosure checks sent no mutation requests; only explicitly activated selection, Float and repair sent their corresponding requests. Existing read-only control polls and chat-context POSTs are handled separately. No recording or meeting/task mutation requests were sent. |
-| Independent review | Error feedback inside the active dialog was added and verified; no unresolved actionable findings |
+| Independent review | Error feedback inside the active dialog was added and verified; no unresolved actionable findings; conflict resolution independently reviewed |
 | Lint | Could not run: the existing ESLint 10 command has no `eslint.config.*` in the baseline repository. No lint configuration changes are included. |
 
 CSS widths: 320, 390, 640, 768, 1024, 1280, 1440 and 1920px. Locales: English, Brazilian Portuguese, French and German. Model cases: normal name, long unbroken name and no selected model. Health cases: loading, healthy and unavailable. Browser zoom checks verify both the resulting CSS viewport width and device pixel ratio, using disposable Chrome profiles. The separate enlarged-text check caught and prevents the mobile menu wrapping into clipped columns.
 
 The exhaustive matrix mounts the actual Nav and App layout with synthetic main content. Full-app checks navigate the existing pages at 390 and 1280px. HTTP responses are intercepted; model inference, physical recording and native window launching are not exercised by this header QA.
+
+The main integration preserves service diagnostics, neutral unknown status, verified engine profiles and service-specific troubleshooting. The 21 focused header/service-notice tests pass. The initial full-app browser attempt encountered a stale Vite dependency cache (HTTP 504); restarting Vite with `--force` resolved it and the complete check passed.
 
 ## Reproduce
 
@@ -33,7 +35,7 @@ Install the repository's locked dependencies and use installed Google Chrome. St
 
 ```sh
 bun install --frozen-lockfile
-bun run --cwd packages/client dev --host 127.0.0.1 --port 5175 --strictPort
+HEED_UI_PORT=48175 bun run --cwd packages/client dev --host 127.0.0.1 --port 48175 --strictPort --force
 ```
 
 In another terminal:

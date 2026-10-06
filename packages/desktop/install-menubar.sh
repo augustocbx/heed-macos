@@ -2,6 +2,16 @@
 set -euo pipefail
 HEED_DESKTOP="$(cd "$(dirname "$0")" && pwd)"
 HEED_PROJECT_ROOT="$(cd "$HEED_DESKTOP/../.." && pwd)"
+HEED_VALIDATED_PORTS="$(/usr/bin/python3 - "$HEED_PROJECT_ROOT" <<'PYPORTS'
+import sys
+sys.path.insert(0, sys.argv[1] + '/scripts')
+from service_config import service_config
+ports = service_config()
+print(ports['api'], ports['ui'], ports['transcription'])
+PYPORTS
+)"
+read -r HEED_API_PORT HEED_UI_PORT HEED_TRANSCRIPTION_PORT <<< "$HEED_VALIDATED_PORTS"
+export HEED_API_PORT HEED_UI_PORT HEED_TRANSCRIPTION_PORT
 HEED_BUILD="${TMPDIR:-/tmp}/heed-menubar-build"
 # Release payloads ship these binaries prebuilt from the tagged commit; checkouts compile them.
 HEED_PREBUILT="$HEED_DESKTOP/macos/.build/Heed"
@@ -87,6 +97,15 @@ if [ -f "$HEED_PROJECT_ROOT/release.json" ]; then
 else
     rm -f "$HEED_APP/Contents/Resources/release.json"
 fi
+/usr/bin/python3 - "$HEED_PROJECT_ROOT/config/service-ports.json" "$HEED_APP/Contents/Resources/service-ports.json" <<'PYRESOURCE'
+import json, os, sys
+with open(sys.argv[1]) as source:
+    ports = json.load(source)
+ports.update(api=int(os.environ['HEED_API_PORT']), ui=int(os.environ['HEED_UI_PORT']), transcription=int(os.environ['HEED_TRANSCRIPTION_PORT']))
+with open(sys.argv[2], 'w') as destination:
+    json.dump(ports, destination)
+    destination.write('\n')
+PYRESOURCE
 cat > "$HEED_APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -108,7 +127,12 @@ mkdir -p "$HOME/Library/LaunchAgents"
 HEED_APP_EXEC="$HEED_APP/Contents/MacOS/Heed" /usr/bin/python3 - "$HEED_AGENT" <<'PY'
 import os, plistlib, sys
 with open(sys.argv[1], 'wb') as file:
-    plistlib.dump({'Label': 'local.heed.menubar', 'ProgramArguments': [os.environ['HEED_APP_EXEC']], 'RunAtLoad': True}, file)
+    environment = {key: os.environ[key] for key in ['HEED_API_PORT', 'HEED_UI_PORT', 'HEED_TRANSCRIPTION_PORT']}
+    for key in ['HEED_APP_DIR', 'HEED_RECORDINGS_DIR', 'HEED_TRANSCRIPTION_URL']:
+        if key in os.environ:
+            environment[key] = os.environ[key]
+    plistlib.dump({'Label': 'local.heed.menubar', 'ProgramArguments': [os.environ['HEED_APP_EXEC']], 'RunAtLoad': True, 'EnvironmentVariables': environment}, file)
 PY
+/usr/bin/python3 "$HEED_PROJECT_ROOT/scripts/service_config.py" api --save > /dev/null
 launchctl bootstrap "gui/$(id -u)" "$HEED_AGENT"
 printf 'Installed and launched: %s\n' "$HEED_APP"

@@ -16,7 +16,7 @@ test("real HTTP detection controls enforce origin, scope, sequencing and ownersh
  const report = {app:"slack", detectorId:"native:slack", sequence:1, callId:"call", state:"active", capability:"ready"};
  try {
   expect((await post("/report", report, "https://evil.example")).status).toBe(403);
-  expect((await post("/settings", {zoom:true}, "http://localhost:5170")).status).toBe(200);
+  expect((await post("/settings", {zoom:true}, "http://localhost:48101")).status).toBe(200);
   expect((await post("/settings", {private: true})).status).toBe(400);
   expect((await post("/report", {...report, title:"private content"})).status).toBe(400);
   expect((await post("/report", report)).status).toBe(200);

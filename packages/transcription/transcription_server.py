@@ -2,7 +2,7 @@
 """
 heed transcription + diarization server
 Keeps models loaded in memory for instant processing.
-Runs as an HTTP server on port 5002.
+Runs on the validated loopback transcription port (default 48102).
 
 Endpoints:
   POST /transcribe  {wav_path, language, srt_output}  → {text, srt_path, segments}
@@ -36,7 +36,11 @@ warnings.filterwarnings("ignore")
 # HF_HUB_OFFLINE is set AFTER model loading in load_models() so that
 # first-time downloads (auto-picked whisper models) can reach HuggingFace.
 
-PORT = int(os.environ.get("HEED_TRANSCRIPTION_PORT", "5002"))
+import pathlib
+sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[2]/"scripts"))
+from service_config import service_config
+PORT = service_config()["transcription"]
+SERVICE_IDENTITY = {"service":"heed-transcription","protocolVersion":1,"checkoutRoot":str(pathlib.Path(__file__).resolve().parents[2]),"pid":os.getpid()}
 
 
 def _heed_release():
@@ -2400,7 +2404,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             self._json({
-                "service": "heed-transcription",
+                **SERVICE_IDENTITY,
                 "version": HEED_VERSION,
                 "commit": HEED_COMMIT,
                 "ready": all(models_ready.values()),
@@ -2892,15 +2896,26 @@ def _load_models_guarded():
         traceback.print_exc()
 
 
-if __name__ == "__main__":
+def main():
+    # Bind before model work: an occupied port must not start a second model loader.
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    except OSError as error:
+        sys.exit(f"Heed transcription port {PORT} is unavailable. Preserve the other application and choose an allowed HEED_TRANSCRIPTION_PORT: {error}")
     # Load models in background
     loader = threading.Thread(target=_load_models_guarded, daemon=True)
     loader.start()
 
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"[heed] Transcription server on :{PORT}", flush=True)
 
     try:
         server.serve_forever()
-    except KeyboardInterrupt:
-        server.shutdown()
+    finally:
+        # Request threads are daemons; never wait for their hung inference locks here.
+        server.server_close()
+
+
+if __name__ == "__main__":
+    from worker_lifecycle import worker_entrypoint
+    with worker_entrypoint():
+        main()

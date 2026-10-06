@@ -18,8 +18,8 @@ import platform
 import os
 import json
 import wave
-import subprocess
 import threading
+from native_worker import NativeWorker, NATIVE_LIVE_TIMEOUT_SECONDS, NATIVE_STARTUP_TIMEOUT_SECONDS, offline_timeout
 
 
 class _Seg:
@@ -163,46 +163,22 @@ class ParakeetEngine:
         if diar_cu:
             env["HEED_DIAR_CU"] = diar_cu
         self.role = role
-        self.proc = subprocess.Popen(
-            [_SIDECAR_BIN], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=True, bufsize=1, env=env,
-        )
-        self.lock = threading.Lock()
-        self.proc.stdout.readline()  # consume the {"ready":...} line
+        self.worker = NativeWorker([_SIDECAR_BIN], env=env)
+        self.proc = self.worker.proc
 
-    def _request(self, obj, timeout_lines=200):
-        with self.lock:
-            self.proc.stdin.write(json.dumps(obj) + "\n")
-            self.proc.stdin.flush()
-            # CoreML/ANE can print noisy "E5RT ..." lines to STDOUT during model load/inference,
-            # polluting the JSON protocol. Be robust: skip non-JSON lines and parse from the first
-            # "{" on a line (the E5RT text has no brace and gets prepended to the response line).
-            for _ in range(timeout_lines):
-                line = self.proc.stdout.readline()
-                if not line:
-                    return {"ok": False, "error": "sidecar closed"}
-                i = line.find("{")
-                if i < 0:
-                    continue
-                try:
-                    return json.loads(line[i:])
-                except Exception:
-                    continue
-            return {"ok": False, "error": "bad sidecar response"}
+    @property
+    def alive(self):
+        return self.worker.alive
+
+    def _request(self, obj):
+        timeout = NATIVE_LIVE_TIMEOUT_SECONDS
+        if obj.get("cmd") in ("transcribe", "transcribe-ts", "diarize"):
+            timeout = offline_timeout(_wav_duration(obj.get("wav", "")))
+        return self.worker.request(obj, timeout=timeout)
 
     def close(self):
-        """Release this worker's CoreML models after a completed offline pass."""
-        with self.lock:
-            if self.proc.poll() is None:
-                self.proc.terminate()
-                try:
-                    self.proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.proc.kill()
-                    self.proc.wait(timeout=5)
-            for pipe in (self.proc.stdin, self.proc.stdout):
-                if pipe:
-                    pipe.close()
+        """Cancel and reap this exclusively owned worker without waiting for its request lock."""
+        self.worker.close()
 
     def transcribe(self, wav_path, language=None, **opts):
         lang = language if language else "auto"
@@ -216,8 +192,7 @@ class ParakeetEngine:
         {"text": str, "tokens": [{"t","s","e"}, ...]}. Uses the multilingual manager in the sidecar,
         which — unlike the fast English one-shot — exposes Parakeet TDT tokenTimings."""
         lang = language if language else "auto"
-        # A long file can emit noisy E5RT lines before the (single) JSON response; give it headroom.
-        r = self._request({"cmd": "transcribe-ts", "wav": wav_path, "language": lang}, timeout_lines=2000)
+        r = self._request({"cmd": "transcribe-ts", "wav": wav_path, "language": lang})
         if not r.get("ok"):
             raise RuntimeError(r.get("error") or "Final native transcription failed")
         return {"text": r.get("text", ""), "tokens": r.get("tokens", [])}
@@ -304,20 +279,34 @@ def get_parakeet():
     """Lazy ASR sidecar (transcription/streaming, on the ANE). Diarization goes to get_parakeet_diar()
     so the two run on separate processes + compute units and never block each other."""
     global _parakeet_singleton
-    with _parakeet_lock:
+    if not _parakeet_lock.acquire(timeout=NATIVE_STARTUP_TIMEOUT_SECONDS):
+        raise TimeoutError("Native ASR initialization lock deadline exceeded")
+    try:
+        if _parakeet_singleton is not None and not _parakeet_singleton.alive:
+            _parakeet_singleton.close()
+            _parakeet_singleton = None
         if _parakeet_singleton is None:
             _parakeet_singleton = ParakeetEngine(role="asr")
         return _parakeet_singleton
+    finally:
+        _parakeet_lock.release()
 
 
 def get_parakeet_diar():
     """Lazy DIARIZATION sidecar — a SECOND process pinned to GPU/Metal (HEED_DIAR_CU=gpu) so the
     diarizer runs in parallel with ASR on the ANE. Used for live /diar/live AND post-stop /diarize."""
     global _parakeet_diar_singleton
-    with _parakeet_lock:
+    if not _parakeet_lock.acquire(timeout=NATIVE_STARTUP_TIMEOUT_SECONDS):
+        raise TimeoutError("Native diarization initialization lock deadline exceeded")
+    try:
+        if _parakeet_diar_singleton is not None and not _parakeet_diar_singleton.alive:
+            _parakeet_diar_singleton.close()
+            _parakeet_diar_singleton = None
         if _parakeet_diar_singleton is None:
             _parakeet_diar_singleton = ParakeetEngine(role="diar", diar_cu="gpu")
         return _parakeet_diar_singleton
+    finally:
+        _parakeet_lock.release()
 
 
 def _engine_override():

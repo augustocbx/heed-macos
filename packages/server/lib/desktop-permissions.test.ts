@@ -54,14 +54,14 @@ test('validators reject incomplete fields and invalid types', () => {
  expect(permissionAction({action:'slackLogs'})).toBe('slackLogs');
 });
 test('blocks remote hosts, external origins, and different ports', () => {
- const request = (host:string,origin?:string) => new Request(`http://${host}:5001/api/desktop/permissions`,{headers:origin?{origin}:{}});
- expect(desktopRequestAllowed(request('localhost'),5001)).toBe(true);
- expect(desktopRequestAllowed(request('127.0.0.1','http://localhost:5170'),5001)).toBe(true);
- expect(desktopRequestAllowed(request('[::1]','http://[::1]:5001'),5001)).toBe(true);
- for (const origin of ['https://evil.example','null','http://localhost:1234','ftp://localhost:5170']) {
-  expect(desktopRequestAllowed(request('localhost',origin),5001)).toBe(false);
+ const request = (host:string,origin?:string) => new Request(`http://${host}:48100/api/desktop/permissions`,{headers:origin?{origin}:{}});
+ expect(desktopRequestAllowed(request('localhost'),48100)).toBe(true);
+ expect(desktopRequestAllowed(request('127.0.0.1','http://localhost:48101'),48100)).toBe(true);
+ expect(desktopRequestAllowed(request('[::1]','http://[::1]:48100'),48100)).toBe(true);
+ for (const origin of ['https://evil.example','null','http://localhost:1234','ftp://localhost:48101']) {
+  expect(desktopRequestAllowed(request('localhost',origin),48100)).toBe(false);
  }
- expect(desktopRequestAllowed(request('192.168.50.219'),5001)).toBe(false);
+ expect(desktopRequestAllowed(request('192.168.50.219'),48100)).toBe(false);
 });
 test('permission queue is independent of recording', () => {
  const permissions = new DesktopPermissions();
