@@ -7,6 +7,11 @@ if [ -f "$HEED_RESOURCE_DIR/heed-root.txt" ]; then
 else
     HEED_ROOT="$(cd "$HEED_RESOURCE_DIR/../../.." && pwd)"
 fi
+# Release installs keep recordings outside the versioned runtime so upgrades never move them.
+if [ -f "$HEED_RESOURCE_DIR/heed-recordings-dir.txt" ]; then
+    IFS= read -r HEED_RECORDINGS_DIR < "$HEED_RESOURCE_DIR/heed-recordings-dir.txt"
+    export HEED_RECORDINGS_DIR
+fi
 if [ ! -f "$HEED_ROOT/package.json" ]; then
     printf 'Heed checkout not found: %s\n' "$HEED_ROOT" >&2
     exit 1

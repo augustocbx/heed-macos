@@ -60,6 +60,20 @@ test("all lifecycle and legacy capture controls reject nonlocal origins", async 
  ] as const) expect((await request(path, body, "https://outside.example")).status).toBe(403);
 });
 
+test("version endpoint identifies this Heed build", async () => {
+ const version = await request("/api/version");
+ expect(version.status).toBe(200);
+ expect(version.body).toMatchObject({ app: "heed", component: "api", version: readFileSync(resolve(import.meta.dir, "../../../VERSION"), "utf8").trim() });
+});
+
+test("maintenance blocks manual transcription so installers never replace services mid-job", async () => {
+ expect((await request("/api/recording/maintenance", { acquire: true, owner:"transcribe-fixture" })).body.maintenance).toBe(true);
+ const blocked = await request("/api/transcribe", { input: "missing.wav" });
+ expect(blocked.status).toBe(409);
+ expect(blocked.body.error).toContain("being updated");
+ expect((await request("/api/recording/maintenance", { acquire: false, owner:"transcribe-fixture" })).body.maintenance).toBe(false);
+});
+
 test("maintenance atomically blocks capture until explicitly released", async () => {
  expect((await request("/api/recording/maintenance", { acquire: true, owner:"http-fixture" })).body.maintenance).toBe(true);
  const start = await request("/api/sysrecord/start", { requestId: "blocked-start", mode: "mic" });

@@ -9,7 +9,7 @@ export default defineConfig({
 	server: {
 		// 5170 (not 5000): macOS AirPlay Receiver squats on :5000, so a fresh Mac whose browser resolves
 		// localhost to IPv4 would hit AirPlay instead of heed. 5170 is free and Vite-adjacent (default 5173).
-		port: 5170,
+		port: Number(process.env.HEED_UI_PORT) || 5170,
 		strictPort: true,
 		proxy: {
 			"/api": {
