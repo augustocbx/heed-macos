@@ -5,15 +5,34 @@ import pathlib
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 import heed_release
+
+environment = None
+temporary_home = None
+
+
+def setUpModule():
+    global environment, temporary_home
+    temporary_home = tempfile.TemporaryDirectory()
+    environment = patch.dict(os.environ, {'HOME': temporary_home.name, 'HEED_APP_DIR': temporary_home.name + '/app',
+                                         'PATH': os.environ.get('PATH', '')}, clear=True)
+    environment.start()
+
+
+def tearDownModule():
+    environment.stop()
+    temporary_home.cleanup()
 
 
 class Server:
     """Serves fixed JSON (or text) per path on a free loopback port."""
 
-    def __init__(self, routes):
-        handler_routes = routes
+    def __init__(self, routes, service="heed-api"):
+        handler_routes = {**routes, "/.well-known/heed-service":
+                          ({"service": service, "protocolVersion": 1,
+                            "checkoutRoot": str(pathlib.Path(__file__).resolve().parents[2]), "pid": os.getpid()}, "application/json")}
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
@@ -28,7 +47,15 @@ class Server:
             def log_message(self, *args):
                 pass
 
-        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        # Keep even synthetic HTTP fixtures outside the user-reserved port ranges.
+        for port in range(49152, 65536):
+            try:
+                self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+                break
+            except OSError:
+                continue
+        else:
+            raise RuntimeError("No safe fixture port is available")
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
@@ -55,13 +82,19 @@ class IdentityTest(unittest.TestCase):
         self.assertEqual(heed_release.identity_problem("api", None, None, "1.2.0"), "not responding")
 
     def test_wait_ready_checks_every_service(self):
-        server = Server({"/api/version": api(), "/health": ({"service": "heed-transcription", "version": "1.2.0", "commit": "abc"}, "application/json")})
+        server = Server({"/api/version": api()})
+        ui = Server({"/api/version": api()}, "heed-ui")
+        transcription = Server({"/health": ({"service": "heed-transcription", "protocolVersion": 1,
+                                             "checkoutRoot": str(pathlib.Path(__file__).resolve().parents[2]), "pid": os.getpid(),
+                                             "ready": True, "whisper": True, "pyannote": True,
+                                             "version": "1.2.0", "commit": "abc"}, "application/json")})
         try:
-            port = str(server.port)
             self.assertEqual(heed_release.main(["wait-ready", "--version", "1.2.0", "--commit", "abc", "--timeout", "1",
-                                                "--api-port", port, "--ui-port", port, "--transcription-port", port]), 0)
+                                                "--api-port", str(server.port), "--ui-port", str(ui.port), "--transcription-port", str(transcription.port)]), 0)
         finally:
             server.close()
+            ui.close()
+            transcription.close()
 
     def test_wait_ready_fails_fast_on_a_foreign_application(self):
         server = Server({"/api/version": ("<html>Other app</html>", "text/html"), "/health": ("<html></html>", "text/html")})
@@ -83,8 +116,9 @@ class BusyTest(unittest.TestCase):
             server.close()
 
     def test_busy_states_refuse(self):
-        self.assertEqual(self.status({"recording": False, "processing": False, "pending": False, "starting": False}), 0)
-        self.assertEqual(self.status({"recording": False, "processing": True}), 1)
+        idle = {key: False for key in heed_release.BUSY_KEYS}
+        self.assertEqual(self.status(idle), 0)
+        self.assertEqual(self.status({**idle, "processing": True}), 1)
         self.assertEqual(self.status("not json"), 2)
         self.assertEqual(self.status({"status": "ok"}), 2)
 

@@ -14,10 +14,6 @@
 set -euo pipefail
 HEED_RELEASE_VERSION="development"
 HEED_HOME="${HEED_HOME:-$HOME/.heed}"
-HEED_API_PORT="${HEED_API_PORT:-5001}"
-HEED_UI_PORT="${HEED_UI_PORT:-5170}"
-HEED_TRANSCRIPTION_PORT="${HEED_TRANSCRIPTION_PORT:-5002}"
-export HEED_API_PORT HEED_UI_PORT HEED_TRANSCRIPTION_PORT
 # Canonical HEED_HOME; never /, the home folder, one of its ancestors, or a system folder.
 HEED_HOME="$(/usr/bin/python3 - "$HEED_HOME" "$HOME" <<'PYHOME'
 import os, sys
@@ -48,8 +44,8 @@ trap 'rm -rf "$HEED_TEMP"' EXIT
 # The helper is copied out first because the uninstaller removes the folder it lives in.
 HEED_HELPER="$HEED_TEMP/heed_release.py"
 HEED_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
-for HEED_CANDIDATE in "$HEED_SELF_DIR/heed_release.py" "$HEED_SELF_DIR/scripts/release/heed_release.py" \
-    "$HEED_HOME/bin/heed_release.py" "$HEED_HOME/runtime/current/scripts/release/heed_release.py"; do
+for HEED_CANDIDATE in "$HEED_HOME/runtime/current/scripts/release/heed_release.py" \
+    "$HEED_SELF_DIR/heed_release.py" "$HEED_SELF_DIR/scripts/release/heed_release.py" "$HEED_HOME/bin/heed_release.py"; do
     if [ -f "$HEED_CANDIDATE" ]; then cp "$HEED_CANDIDATE" "$HEED_HELPER"; break; fi
 done
 if [ ! -f "$HEED_HELPER" ]; then
@@ -69,6 +65,22 @@ if [ -f "$HEED_APP/Contents/Resources/heed-root.txt" ]; then IFS= read -r HEED_A
 HEED_LEGACY_ROOT="$( [ -f "$HEED_STATE" ] && helper state "$HEED_STATE" --get legacyRoot || true)"
 [ -n "$HEED_APP_ROOT" ] && HEED_ROOTS+=("$HEED_APP_ROOT")
 [ -n "$HEED_LEGACY_ROOT" ] && HEED_ROOTS+=("$HEED_LEGACY_ROOT")
+# Resolve the same bounded private settings as the services, before any stopping or removal.
+HEED_CONFIG_CANDIDATES=(--candidate "$HEED_HOME/runtime/current" --candidate "$HEED_APP_ROOT" --candidate "$HEED_SELF_DIR")
+if [ "$(basename "$HEED_SELF_DIR")" = release ] && [ "$(basename "$(dirname "$HEED_SELF_DIR")")" = scripts ]; then
+    HEED_CONFIG_CANDIDATES+=(--candidate "$HEED_SELF_DIR/../..")
+fi
+HEED_SERVICE_CONFIG_ROOT="$(helper config-root "${HEED_CONFIG_CANDIDATES[@]}")" || {
+    printf 'Preserve the installation and migrate its checkout with the latest install-macos.sh before uninstalling. Nothing was removed.\n' >&2
+    exit 1
+}
+export HEED_SERVICE_CONFIG_ROOT
+HEED_VALIDATED_PORTS="$(helper ports)" || { printf 'Invalid Heed service ports. Nothing was removed.\n' >&2; exit 1; }
+HEED_PREVIOUS_PORTS="$(helper ports --saved)" || { printf 'Invalid saved Heed service ports. Nothing was removed.\n' >&2; exit 1; }
+HEED_PREVIOUS_PORT_ARGS=()
+if [ -n "$HEED_PREVIOUS_PORTS" ]; then read -r -a HEED_PREVIOUS_PORT_ARGS <<< "$HEED_PREVIOUS_PORTS"; fi
+read -r HEED_API_PORT HEED_UI_PORT HEED_TRANSCRIPTION_PORT <<< "$HEED_VALIDATED_PORTS"
+export HEED_API_PORT HEED_UI_PORT HEED_TRANSCRIPTION_PORT
 HEED_RECORDINGS="$( [ -f "$HEED_STATE" ] && helper state "$HEED_STATE" --get recordingsDir || true)"
 if [ -z "$HEED_RECORDINGS" ] && [ -n "$HEED_APP_ROOT" ] && [ -d "$HEED_APP_ROOT/recordings" ]; then HEED_RECORDINGS="$HEED_APP_ROOT/recordings"; fi
 if [ -f "$HEED_APP/Contents/Resources/heed-recordings-dir.txt" ] && [ -z "$HEED_RECORDINGS" ]; then
@@ -126,7 +138,7 @@ fi
 
 # --- Stop Heed safely --------------------------------------------------------------------------
 HEED_BUSY_STATUS=0
-helper busy || HEED_BUSY_STATUS=$?
+helper busy --root "${HEED_APP_ROOT:-$HEED_SERVICE_CONFIG_ROOT}" || HEED_BUSY_STATUS=$?
 case "$HEED_BUSY_STATUS" in
     0) ;;
     2) printf 'Nothing was removed.\n' >&2; exit 1 ;;
@@ -151,7 +163,7 @@ time.sleep(1)
 PYSTOP
 HEED_ROOT_ARGS=()
 for HEED_ROOT in "${HEED_ROOTS[@]}"; do HEED_ROOT_ARGS+=(--root "$HEED_ROOT"); done
-helper stop-services "${HEED_ROOT_ARGS[@]}" --ports "$HEED_API_PORT" "$HEED_UI_PORT" "$HEED_TRANSCRIPTION_PORT" \
+helper stop-services "${HEED_ROOT_ARGS[@]}" --ports "$HEED_API_PORT" "$HEED_UI_PORT" "$HEED_TRANSCRIPTION_PORT" ${HEED_PREVIOUS_PORT_ARGS[@]+"${HEED_PREVIOUS_PORT_ARGS[@]}"} \
     || { printf 'Heed services could not be stopped safely. Nothing was removed.\n' >&2; exit 1; }
 
 # --- Remove -------------------------------------------------------------------------------------
