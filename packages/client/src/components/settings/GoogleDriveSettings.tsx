@@ -1,6 +1,12 @@
 import {useEffect,useRef,useState} from 'react';import type {GoogleDriveSnapshot,GoogleAccessMode,DriveFolderPreview,GoogleDriveCapacity} from '@heed/shared';
 import {googleDriveApi} from '@/api/google-drive';import {useLocale} from '@/lib/i18n';import styles from './PermissionsPage.module.css';
+import {CLOUD_CONNECTIONS_ENABLED,CLOUD_CONNECTIONS_PENDING_NOTICE} from '@heed/shared';
 export function GoogleDriveSettings({onProviderChanged}:{onProviderChanged?:()=>void}={}){
+ const {tr}=useLocale();
+ if(!CLOUD_CONNECTIONS_ENABLED.googleDrive)return <article className={styles.card} aria-labelledby="google-drive-title"><h2 id="google-drive-title">{tr('Google Drive')}</h2><p role="status">{tr(CLOUD_CONNECTIONS_PENDING_NOTICE)}</p></article>;
+ return <EnabledGoogleDriveSettings onProviderChanged={onProviderChanged}/>;
+}
+function EnabledGoogleDriveSettings({onProviderChanged}:{onProviderChanged?:()=>void}){
  const {tr}=useLocale();const [snapshot,setSnapshot]=useState<GoogleDriveSnapshot|null>(null),[clientId,setClientId]=useState(''),[mode,setMode]=useState<GoogleAccessMode>('app-files'),[consent,setConsent]=useState(false),[folderId,setFolderId]=useState(''),[name,setName]=useState('Heed Library'),[folders,setFolders]=useState<DriveFolderPreview[]>([]),[capacity,setCapacity]=useState<GoogleDriveCapacity|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const sequence=useRef(0),mutation=useRef(false),initialized=useRef(false);
  useEffect(()=>{let active=true;const refresh=async()=>{if(mutation.current)return;const seq=++sequence.current;try{const value=await googleDriveApi.snapshot();if(active&&sequence.current===seq){setSnapshot(value);if(!initialized.current){initialized.current=true;setClientId(value.clientId||'');setMode(value.accessMode||'app-files');setFolderId(value.folder?.id||'');}}}catch{if(active&&sequence.current===seq&&!mutation.current)setError('Google Drive is unavailable. Local transcripts are preserved.');}};void refresh();const timer=setInterval(()=>void refresh(),2000);return()=>{active=false;++sequence.current;clearInterval(timer);};},[]);

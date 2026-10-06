@@ -3,7 +3,13 @@ import type {OneDriveConnectionSnapshot,OneDriveLibraryChoice} from '@heed/share
 import {oneDriveApi,oneDriveExpectation} from '@/api/onedrive';
 import {useLocale} from '@/lib/i18n';
 import styles from './PermissionsPage.module.css';
+import {CLOUD_CONNECTIONS_ENABLED,CLOUD_CONNECTIONS_PENDING_NOTICE} from '@heed/shared';
 export function OneDriveSettings({onProviderChanged}:{onProviderChanged?:()=>void}={}){
+ const {tr}=useLocale();
+ if(!CLOUD_CONNECTIONS_ENABLED.oneDrive)return <article className={styles.card} aria-labelledby="onedrive-title"><h2 id="onedrive-title">Microsoft OneDrive</h2><p role="status">{tr(CLOUD_CONNECTIONS_PENDING_NOTICE)}</p></article>;
+ return <EnabledOneDriveSettings onProviderChanged={onProviderChanged}/>;
+}
+function EnabledOneDriveSettings({onProviderChanged}:{onProviderChanged?:()=>void}){
  const {tr}=useLocale();
  const [snapshot,setSnapshot]=useState<OneDriveConnectionSnapshot|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[choices,setChoices]=useState<OneDriveLibraryChoice[]>([]),[folder,setFolder]=useState(''),[name,setName]=useState(''),[upload,setUpload]=useState(false),[clientId,setClientId]=useState(''),[tenant,setTenant]=useState('common');
  const generation=useRef<string|undefined>(undefined);
