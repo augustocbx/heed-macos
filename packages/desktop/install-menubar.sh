@@ -13,15 +13,35 @@ PYPORTS
 read -r HEED_API_PORT HEED_UI_PORT HEED_TRANSCRIPTION_PORT <<< "$HEED_VALIDATED_PORTS"
 export HEED_API_PORT HEED_UI_PORT HEED_TRANSCRIPTION_PORT
 HEED_BUILD="${TMPDIR:-/tmp}/heed-menubar-build"
+# Release payloads ship these binaries prebuilt from the tagged commit; checkouts compile them.
+HEED_PREBUILT="$HEED_DESKTOP/macos/.build/Heed"
+# The menu app starts services from this path; release installs pass their stable "current" link.
+HEED_MENU_ROOT="${HEED_MENU_ROOT:-$HEED_PROJECT_ROOT}"
+HEED_VERSION="$(/usr/bin/python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1]))["version"])
+except Exception: print(open(sys.argv[2]).read().strip())' "$HEED_PROJECT_ROOT/release.json" "$HEED_PROJECT_ROOT/VERSION")"
+if ! [[ "$HEED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+    printf 'Invalid Heed version: %s\n' "$HEED_VERSION" >&2; exit 1
+fi
 mkdir -p "$HEED_BUILD"
 if [ "${1:-}" = "--build-only" ]; then
     HEED_KEYCHAIN_BUILD_DIR="$HEED_BUILD/keychain" bash "$HEED_DESKTOP/native-keychain/build.sh" --build-only
     HEED_ICLOUD_OUTPUT="$HEED_BUILD/heed-icloud" bash "$HEED_DESKTOP/icloud-folder/build.sh"
+elif [ "${1:-}" = "--prebuilt" ]; then
+    for HEED_BINARY in "$HEED_PREBUILT" "$HEED_DESKTOP/native-keychain/.build/heed-keychain" "$HEED_DESKTOP/icloud-folder/.build/heed-icloud"; do
+        if [ ! -x "$HEED_BINARY" ]; then printf 'Prebuilt binary missing: %s\n' "$HEED_BINARY" >&2; exit 1; fi
+    done
+    "$HEED_DESKTOP/native-keychain/.build/heed-keychain" --self-test >/dev/null
+    "$HEED_DESKTOP/icloud-folder/.build/heed-icloud" --self-test >/dev/null
 else
     bash "$HEED_DESKTOP/native-keychain/build.sh"
     bash "$HEED_DESKTOP/icloud-folder/build.sh"
 fi
-swiftc -O -target arm64-apple-macosx14.0 "$HEED_DESKTOP"/macos/*.swift -o "$HEED_BUILD/Heed" -framework AppKit
+if [ "${1:-}" = "--prebuilt" ]; then
+    cp "$HEED_PREBUILT" "$HEED_BUILD/Heed"
+else
+    swiftc -O -target arm64-apple-macosx14.0 "$HEED_DESKTOP"/macos/*.swift -o "$HEED_BUILD/Heed" -framework AppKit
+fi
 "$HEED_BUILD/Heed" --self-test
 if [ "${1:-}" = "--build-only" ]; then
     printf 'Build verified: %s\n' "$HEED_BUILD/Heed"
@@ -66,7 +86,17 @@ mv -f "$HEED_APP/Contents/MacOS/Heed.new" "$HEED_APP/Contents/MacOS/Heed"
 cp "$HEED_DESKTOP/native-keychain/.build/heed-keychain" "$HEED_APP/Contents/Resources/heed-keychain"
 cp "$HEED_DESKTOP/icloud-folder/.build/heed-icloud" "$HEED_APP/Contents/Resources/heed-icloud"
 cp "$HEED_DESKTOP/macos/start-services.sh" "$HEED_APP/Contents/Resources/start-services.sh"
-printf '%s\n' "$HEED_PROJECT_ROOT" > "$HEED_APP/Contents/Resources/heed-root.txt"
+printf '%s\n' "$HEED_MENU_ROOT" > "$HEED_APP/Contents/Resources/heed-root.txt"
+if [ -n "${HEED_RECORDINGS_DIR:-}" ]; then
+    printf '%s\n' "$HEED_RECORDINGS_DIR" > "$HEED_APP/Contents/Resources/heed-recordings-dir.txt"
+else
+    rm -f "$HEED_APP/Contents/Resources/heed-recordings-dir.txt"
+fi
+if [ -f "$HEED_PROJECT_ROOT/release.json" ]; then
+    cp "$HEED_PROJECT_ROOT/release.json" "$HEED_APP/Contents/Resources/release.json"
+else
+    rm -f "$HEED_APP/Contents/Resources/release.json"
+fi
 /usr/bin/python3 - "$HEED_PROJECT_ROOT/config/service-ports.json" "$HEED_APP/Contents/Resources/service-ports.json" <<'PYRESOURCE'
 import json, os, sys
 with open(sys.argv[1]) as source:
@@ -76,7 +106,7 @@ with open(sys.argv[2], 'w') as destination:
     json.dump(ports, destination)
     destination.write('\n')
 PYRESOURCE
-cat > "$HEED_APP/Contents/Info.plist" <<'PLIST'
+cat > "$HEED_APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -84,7 +114,8 @@ cat > "$HEED_APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleName</key><string>Heed</string>
 <key>CFBundleExecutable</key><string>Heed</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleShortVersionString</key><string>$HEED_VERSION</string>
+<key>CFBundleVersion</key><string>$HEED_VERSION</string>
 <key>LSUIElement</key><true/>
 <key>NSMicrophoneUsageDescription</key><string>Heed uses the microphone to record your voice during meetings.</string>
 <key>NSAppDataUsageDescription</key><string>Heed reads only meeting states from local Slack logs to start recording automatically.</string>

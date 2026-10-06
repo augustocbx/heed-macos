@@ -10,24 +10,19 @@ Install [Homebrew](https://brew.sh) and Apple's Command Line Tools first. If the
 xcode-select --install
 ```
 
-Clone the repository and run the installer from the checkout:
+Install or update to the latest release:
 
 ```sh
-git clone https://github.com/augustocbx/heed-macos.git
-cd heed-macos
-bash install-macos.sh
+curl -fsSL https://github.com/augustocbx/heed-macos/releases/latest/download/install.sh | bash
 ```
 
-The installer installs FFmpeg, Python, Node.js, and Ollama through Homebrew, Bun when needed, Python dependencies, Swift transcription and capture executables, the interface, and the menu app. The first health check can download transcription models and take several minutes. Optional AI notes models are not downloaded automatically. Do not run the installer with `sudo`.
+Pick another version on the [Releases page](https://github.com/augustocbx/heed-macos/releases); [docs/releases.md](docs/releases.md) explains specific versions, upgrades, permissions, uninstalling (`bash ~/.heed/bin/uninstall.sh`) and the signing limitations. Do not run the installer with `sudo`.
 
-To update, stop recording and wait for processing and saving to finish, then run:
+The installer installs FFmpeg, Python, Node.js, and Ollama through Homebrew, Bun when needed, Python dependencies, and the menu app with its prebuilt Swift transcription and capture executables. The first health check can download transcription models and take several minutes. Optional AI notes models are not downloaded automatically. At the end it tests the Microphone and Screen & System Audio Recording permissions and asks macOS to show their prompts.
 
-```sh
-git pull --ff-only
-bash install-macos.sh
-```
+Stop recording and wait for processing and saving to finish before updating. Recordings, meetings in `~/.heed-app/`, speaker names, settings and connections are preserved. Do not copy these folders between machines to install the app. The installer refuses to restart active recordings or processing, and restores the previous version if the new one does not start.
 
-Recordings in `recordings/` and settings in `~/.heed-app/` are preserved. Do not copy these folders between machines to install the app. The installer refuses to restart active recordings or processing. If you move the checkout, run the installer again to update the project path used by the menu app.
+To develop from a checkout instead, clone the repository and run `bash install-macos.sh`; update it with `git pull --ff-only` and the same command. If you move the checkout, run the installer again to update the project path used by the menu app.
 
 ## Use
 
@@ -37,11 +32,11 @@ The app is installed at `~/Applications/Heed.app` and starts at login through th
 
 If an authorization picker appears, select the exact Slack **logs** folder and click **Allow log access**. **Allow Slack log access…** in the menu lets you repeat this. Authorization is read-only and limited to that folder; Full Disk Access is not required. Check for **Slack: waiting for the next meeting**, then join a new meeting to test. Authorize each Mac separately.
 
-In **System Settings → Privacy & Security**, allow **Screen & System Audio Recording** and **Microphone** for the component requested by macOS. If no prompt appears, check these settings manually. The capture executable is `packages/transcription/native/heed-parakeet/.build/release/heed-syscap`. Permissions must be granted separately on each Mac. System audio capture works with headphones.
+In **System Settings → Privacy & Security**, allow **Screen & System Audio Recording** and **Microphone** for the component requested by macOS. If no prompt appears, check these settings manually. The capture executable is `packages/transcription/native/heed-parakeet/.build/release/heed-syscap` inside `~/.heed/runtime/current` (or inside the checkout for checkout installations). Permissions must be granted separately on each Mac. System audio capture works with headphones.
 
 Use **Settings** in the interface or **Settings and permissions…** in the menu to check this Mac's permissions and open their System Settings sections. The page also reports when the native app is disconnected. After an update, you may need to turn Heed's recording permission off and on again even when it appears enabled, then accept the restart requested by macOS.
 
-Audio is stored locally in `recordings/`. The retention quota is **2,000,000,000 bytes per machine**. Oldest audio is removed first; transcripts are preserved. Space is reserved for temporary processing copies, so one continuous recording has an output limit of approximately **990 MB**. Reaching that limit stops and saves it. Models and dependencies are outside this quota. Each installation uses the same retention and bilingual transcription features, with independent local files.
+Audio is stored locally in `~/.heed/recordings` (or `recordings/` in a checkout installation). The retention quota is **2,000,000,000 bytes per machine**. Oldest audio is removed first; transcripts are preserved. Space is reserved for temporary processing copies, so one continuous recording has an output limit of approximately **990 MB**. Reaching that limit stops and saves it. Models and dependencies are outside this quota. Each installation uses the same retention and bilingual transcription features, with independent local files.
 
 The interface uses port **5170**, API **5001**, transcription **5002**, and Ollama **11434**, all on the local machine. Logs are stored in `~/Library/Logs/Heed/`. Check installation and models with:
 

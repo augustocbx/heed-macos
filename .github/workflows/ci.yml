@@ -36,7 +36,9 @@ jobs:
       - name: Build interface
         run: bun run build
       - name: Check installers
-        run: bash -n install-macos.sh packages/desktop/install-menubar.sh packages/desktop/macos/start-services.sh packages/desktop/native-keychain/build.sh packages/desktop/icloud-folder/build.sh
+        run: bash -n install-macos.sh packages/desktop/install-menubar.sh packages/desktop/macos/start-services.sh packages/desktop/native-keychain/build.sh packages/desktop/icloud-folder/build.sh scripts/release/build-release.sh scripts/release/install.sh scripts/release/uninstall.sh scripts/release/simulate.sh
+      - name: Release installer helper tests
+        run: cd scripts/release && /usr/bin/python3 -m unittest heed_release_test
       - name: Validate native capture without physical devices
         run: |
           swiftc -O -target "$(uname -m)-apple-macos14.0" packages/transcription/native/heed-parakeet/Sources/heed-syscap/*.swift -o "$RUNNER_TEMP/heed-syscap-check"

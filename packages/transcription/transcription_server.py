@@ -42,6 +42,25 @@ from service_config import service_config
 PORT = service_config()["transcription"]
 SERVICE_IDENTITY = {"service":"heed-transcription","protocolVersion":1,"checkoutRoot":str(pathlib.Path(__file__).resolve().parents[2]),"pid":os.getpid()}
 
+
+def _heed_release():
+    """Release payloads carry release.json; checkouts report VERSION. Installers match this identity."""
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    try:
+        with open(os.path.join(root, "release.json")) as f:
+            data = json.load(f)
+        return str(data["version"]), data.get("commit")
+    except (OSError, ValueError, KeyError):
+        pass
+    try:
+        with open(os.path.join(root, "VERSION")) as f:
+            return f.read().strip() or None, None
+    except OSError:
+        return None, None
+
+
+HEED_VERSION, HEED_COMMIT = _heed_release()
+
 # Stable-by-default profile to prioritize transcript quality/reliability.
 # Set HEED_TRANSCRIPTION_PROFILE=adaptive to re-enable aggressive auto-tuning.
 TRANSCRIPTION_PROFILE = (os.environ.get("HEED_TRANSCRIPTION_PROFILE", "stable") or "stable").strip().lower()
@@ -2386,6 +2405,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self._json({
                 **SERVICE_IDENTITY,
+                "version": HEED_VERSION,
+                "commit": HEED_COMMIT,
                 "ready": all(models_ready.values()),
                 "warm": models_warm,
                 **models_ready,

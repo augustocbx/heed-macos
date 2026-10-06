@@ -32,20 +32,29 @@ Contributions through forks and pull requests are welcome. Only @augustocbx can 
 
 ## Installation
 
-Requirements: **Apple Silicon**, **macOS 14 or later**, [Homebrew](https://brew.sh), and Apple's Command Line Tools. The installer also installs Node.js for the Vite interface. A minimum RAM requirement has not been validated across all Macs.
+Requirements: **Apple Silicon**, **macOS 14 or later**, [Homebrew](https://brew.sh), and Apple's Command Line Tools (`xcode-select --install`). A minimum RAM requirement has not been validated across all Macs.
 
-Install Command Line Tools if needed, then clone and install:
+Install the latest release:
 
 ```sh
-xcode-select --install
+curl -fsSL https://github.com/augustocbx/heed-macos/releases/latest/download/install.sh | bash
+```
+
+Every version is available on the [Releases page](https://github.com/augustocbx/heed-macos/releases) with its archive, installer and checksums. See [Releases, installation and removal](docs/releases.md) for specific versions, what is installed, permissions, upgrades, uninstalling and signing limitations. Remove Heed with `bash ~/.heed/bin/uninstall.sh`.
+
+The installer prepares Bun, Node.js, FFmpeg, Python and its environment, dependencies, the interface, and the menu app; the Swift executables are prebuilt in the release. **Bun 1.4.2** is the version used for validation; the installer downloads Bun if it is missing. Initial preparation downloads the local FluidAudio/Parakeet models. The measured model set takes approximately **1.7 GB of additional disk space**, outside the audio quota. Installation and the initial download require an internet connection.
+
+Ollama is also installed for AI notes. Its models are optional and are not downloaded automatically; transcription does not require a notes model. Do not run the installer with `sudo`.
+
+### Install from a checkout (development)
+
+```sh
 git clone https://github.com/augustocbx/heed-macos.git
 cd heed-macos
 bash install-macos.sh
 ```
 
-The installer prepares Bun, Node.js, FFmpeg, Python and its `.venv`, dependencies, Swift executables, the interface, and the menu app. **Bun 1.4.2** is the version used for validation; the installer downloads Bun if it is missing. Initial preparation downloads the local FluidAudio/Parakeet models. The measured model set takes approximately **1.7 GB of additional disk space**, outside the audio quota. Installation and the initial download require an internet connection.
-
-Ollama is also installed for AI notes. Its models are optional and are not downloaded automatically; transcription does not require a notes model. Do not run this installer with `sudo`.
+This builds the Swift executables locally and runs Heed from the checkout.
 
 ## Permissions and use
 
@@ -150,14 +159,16 @@ The menu and interface send idempotent commands to the local API. A backend coor
 
 ## Updates
 
-Stop recording and wait for the meeting to finish saving before updating **each Mac**:
+Stop recording and wait for the meeting to finish saving before updating **each Mac**, then run the installer of the new release (the same command as the installation). The installer checks for active capture, commands, or processing and refuses to restart in that state. It prepares the new version beside the running one, preserves recordings, meetings, speaker names, settings and connections, and restores the previous version if the new one does not start.
+
+For a checkout installation:
 
 ```sh
 git pull --ff-only
 bash install-macos.sh
 ```
 
-The installer checks for active capture, commands, or processing and refuses to restart in that state. It preserves local files and reinstalls the app. If you move the checkout, run it again to update the project path used by the menu app.
+If you move the checkout, run it again to update the project path used by the menu app.
 
 ## Meeting tags
 
