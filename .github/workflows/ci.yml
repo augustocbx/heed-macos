@@ -52,4 +52,7 @@ jobs:
           HEED_ICLOUD_OUTPUT="$RUNNER_TEMP/heed-icloud-check" bash packages/desktop/icloud-folder/build.sh
           "$RUNNER_TEMP/heed-icloud-check" --self-test
       - name: Build menu app
-        run: bash packages/desktop/install-menubar.sh --build-only
+        run: |
+          bash packages/desktop/install-menubar.sh --build-only
+          swiftc -O -target "$(uname -m)-apple-macos14.0" packages/desktop/macos/*.swift -o "$RUNNER_TEMP/heed-packaged-menu-check" -framework AppKit
+          (cd "$RUNNER_TEMP" && ./heed-packaged-menu-check --self-test)
