@@ -131,11 +131,11 @@ Separate modules may be refined when SDK constraints require it; record concrete
 - Builder verifies payload and performs a temporary offline install/self-test; staged installer verifies before activation. Rollback/uninstall preserve or retire only the relevant release runtime.
 - Add a dedicated standard `macos-14` arm64 CI job with explicit Python 3.12, offline payload install, detached self-test and actual SDK-boundary Python tests (zero skips). Record its actual OS/architecture; do not use paid larger-runner labels. This establishes minimum-OS runtime execution separately from real NAS interoperability.
 
-- [ ] Write tests for missing/extra/corrupt/incompatible wheels, wrong Python version/architecture, offline pip failure, substituted runtime, failed self-test and old-release preservation. A detached runtime must pass imports, contract/structure self-test and sanitized error handling with the original checkout absent.
-- [ ] Run `python3.12 -m unittest discover -s packages/server/native/smb-direct -p 'test_runtime.py'`; observe intended failures.
-- [ ] Download public pinned wheels during development, verify primary package metadata/license and hashes, commit complete locked payload, implement offline runtime setup and integrate build/install/simulator. An absent compatible 3.12 prerequisite refuses explicitly before activation.
-- [ ] Re-run runtime tests, `bash -n scripts/release/{build-release,install,simulate}.sh`, release helper tests and a detached self-test; expected zero failures. macOS 14 runtime remains a separate actual acceptance gate.
-- [ ] Commit as `build: package a verified offline Python runtime for direct SMB`.
+- [x] Write tests for missing/extra/corrupt/incompatible wheels, wrong Python version/architecture, offline pip failure, substituted runtime, failed self-test and old-release preservation. A detached runtime must pass imports, contract/structure self-test and sanitized error handling with the original checkout absent.
+- [x] Run `python3.12 -m unittest discover -s packages/server/native/smb-direct -p 'test_runtime.py'`; observe intended failures.
+- [x] Download public pinned wheels during development, verify primary package metadata/license and hashes, commit complete locked payload, implement offline runtime setup and integrate build/install/simulator. An absent compatible 3.12 prerequisite refuses explicitly before activation.
+- [x] Re-run runtime tests, `bash -n scripts/release/{build-release,install,simulate}.sh`, release helper tests and a detached self-test; expected zero failures. macOS 14 runtime remains a separate actual acceptance gate.
+- [x] Commit as `build: package a verified offline Python runtime for direct SMB`.
 
 ### Task 6: Four-locale direct connection interface
 
