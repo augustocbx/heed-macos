@@ -14,6 +14,16 @@ A deadline after any request byte was written, EOF, or a real transport I/O fail
 
 No code deletes or rewrites the source WAV. Finalization failure remains a durable recording-coordinator failure with the original audio path available for recovery. Startup ignores noise and unrelated JSON until explicit ready:true within the same deadline. Successful native protocol responses, noise-prefixed JSON, and timestamp output remain compatible. This does not add an HTTP-to-worker cancellation protocol or claim to diagnose the user's actual private recording.
 
+## Entrypoint shutdown ownership
+
+Detached native process groups must also be retired when their Python owner exits. The transcription server and doctor explicitly enter the worker lifecycle before background model loading; importing a library installs no process-wide handlers. SIGTERM/SIGINT mark stopping and raise SystemExit. Main-thread provisioning and close defer that exception until their ownership/lock scopes unwind, without changing a child's inherited signal mask or using preexec_fn.
+
+A registry provisions and records the direct child before any model-readiness wait. Its gate covers Popen and registration only, never native startup or inference. Shutdown rejects new provisioning, waits for in-flight registration to settle within a shared three-second budget, and closes all verified owned workers concurrently within that remaining budget. Incomplete provisioning or retirement reports failure, never successful cleanup. Both finally and a registered atexit callback retire workers; neither needs a request or factory lock. Native startup/request waits observe the stopping flag.
+
+Closing protocol pipes does not retire process ownership. A failed wait/reap remains registered and subsequent shutdown still reports failure until an ownership-verified retry reaps the child. A completed reap may retry registry retirement without signaling its former process group.
+
+An actual synthetic parent SIGTERM on the first patch reproduced a surviving detached child. Startup/response shutdown, the Popen-return-before-registration race (main and background threads), shutdown during close, graceful child SIGTERM, normal/atexit exit, parallel retirement, and rejected late provisioning are regression tests. Raw SIGKILL, host crashes, and uninterruptible OS provisioning cannot be solved by Python shutdown hooks; no guardian or takeover protocol is introduced or claimed.
+
 ## Validation boundary
 
 Use synthetic stdio processes and an ephemeral loopback HTTP fixture only. No installed service, physical capture, model download, private recording, or heavy full suite is needed. Physical capture stop ordering and failed-state/audio preservation are exercised through the real RecordingCoordinator with a bounded HTTP fixture; installation and real model acceptance remain separate gates.

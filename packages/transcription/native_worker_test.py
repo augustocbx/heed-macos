@@ -1,4 +1,5 @@
 import os
+import signal
 import sys
 import tempfile
 from pathlib import Path
@@ -189,13 +190,21 @@ class NativeWorkerTests(unittest.TestCase):
         self.assertIsNotNone(worker.proc.returncode)
 
     def test_externally_reaped_leader_refuses_stale_group_signals(self):
-        worker = self.worker('import time;print("{\\\"ready\\\":true}");time.sleep(30)')
-        worker.proc.kill()
-        worker.proc.wait(timeout=1)
-        with patch('native_worker.os.killpg') as send:
-            with self.assertRaisesRegex(RuntimeError, 'ownership'):
-                worker.close()
-            send.assert_not_called()
+        from worker_lifecycle import WorkerRegistry
+        owned = WorkerRegistry()
+        with patch('native_worker.registry', owned):
+            worker = NativeWorker([sys.executable, '-u', '-c',
+                                   'import time;print("{\\\"ready\\\":true}");time.sleep(30)'],
+                                  startup_timeout=.3, shutdown_timeout=.1)
+            worker.proc.kill()
+            worker.proc.wait(timeout=1)
+            with patch('native_worker.os.killpg') as send:
+                for _ in range(2):
+                    with self.assertRaisesRegex(RuntimeError, 'ownership'):
+                        worker.close()
+                with self.assertRaises(RuntimeError):
+                    owned.shutdown(timeout=.5)
+                send.assert_not_called()
 
 
     @unittest.skipUnless(sys.platform == 'darwin', 'Darwin ABI fallback')
@@ -243,6 +252,12 @@ class NativeWorkerTests(unittest.TestCase):
             worker.request({'invalid': object()}, timeout=.3)
         self.assertTrue(worker.alive)
         self.assertEqual(worker.request({'cmd': 'next'}, timeout=.3), {'ok': True})
+
+
+    def test_default_sigterm_child_exits_gracefully_without_inherited_blocked_mask(self):
+        worker = self.worker('import time;print("{\\\"ready\\\":true}");time.sleep(30)')
+        worker.close()
+        self.assertEqual(worker.proc.returncode, -signal.SIGTERM)
 
 
 

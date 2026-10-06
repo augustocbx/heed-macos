@@ -98,4 +98,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    from worker_lifecycle import worker_entrypoint
+    with worker_entrypoint():
+        main()

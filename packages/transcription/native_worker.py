@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 from process_ownership import child_exited_without_reaping
+from worker_lifecycle import registry, defer_termination
 
 NATIVE_STARTUP_TIMEOUT_SECONDS = 300
 NATIVE_LIVE_TIMEOUT_SECONDS = 120
@@ -41,20 +42,24 @@ class NativeWorker:
         self.lock = threading.Lock()
         self._close_lock = threading.Lock()
         self._closed = threading.Event()
+        self._reaped = False
         self._buffer = bytearray()
-        self.proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL, bufsize=0, env=env,
-                                     start_new_session=True)
-        for pipe in (self.proc.stdin, self.proc.stdout):
-            os.set_blocking(pipe.fileno(), False)
+        self.proc = None
         try:
+            registry.provision(self, lambda: subprocess.Popen(
+                command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, bufsize=0, env=env,
+                start_new_session=True), timeout=startup_timeout)
+            for pipe in (self.proc.stdin, self.proc.stdout):
+                os.set_blocking(pipe.fileno(), False)
             deadline = time.monotonic() + startup_timeout
             while self._response(deadline).get('ready') is not True:
                 # Model initialization can emit noise or unrelated JSON telemetry.
                 # Only explicit protocol readiness admits requests; no line resets time.
                 pass
-        except Exception:
-            self.close()
+        except BaseException:
+            if self.proc is not None:
+                self.close()
             raise
 
     @property
@@ -67,8 +72,8 @@ class NativeWorker:
             return False
 
     def _check(self, deadline):
-        if self._closed.is_set():
-            raise RuntimeError('Native worker closed')
+        if self._closed.is_set() or registry.stopping:
+            raise RuntimeError('Native worker closed or entrypoint stopping')
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError('Native worker deadline exceeded')
@@ -164,19 +169,26 @@ class NativeWorker:
                 raise
 
     def close(self):
-        # Never take the request lock: a request may be blocked on this process's pipes.
-        self._closed.set()
-        with self._close_lock:
-            if self.proc.stdin.closed and self.proc.stdout.closed:
-                return
-            try:
-                self._signal_group(signal.SIGTERM)
-                # Give descendants grace even if the leader exits first. Do not reap it.
-                until = time.monotonic() + self._shutdown_timeout
-                while time.monotonic() < until:
-                    time.sleep(min(.02, max(0, until - time.monotonic())))
-                self._signal_group(signal.SIGKILL)
-                self.proc.wait(timeout=self._shutdown_timeout)
-            finally:
-                for pipe in (self.proc.stdin, self.proc.stdout):
-                    pipe.close()
+        with defer_termination():
+            # Never take the request lock: a request may be blocked on this process's pipes.
+            self._closed.set()
+            with self._close_lock:
+                if self._reaped:
+                    registry.forget(self)
+                    return
+                try:
+                    self._signal_group(signal.SIGTERM)
+                    # Give descendants grace even if the leader exits first. Do not reap it.
+                    until = time.monotonic() + self._shutdown_timeout
+                    while time.monotonic() < until:
+                        time.sleep(min(.02, max(0, until - time.monotonic())))
+                    self._signal_group(signal.SIGKILL)
+                    self.proc.wait(timeout=self._shutdown_timeout)
+                    self._reaped = True
+                finally:
+                    for pipe in (self.proc.stdin, self.proc.stdout):
+                        pipe.close()
+                # Failed waits remain registered. Closing protocol pipes is not
+                # proof of process retirement; a retry must retain ownership and
+                # verify reap before it can remove the cleanup obligation.
+                registry.forget(self)
