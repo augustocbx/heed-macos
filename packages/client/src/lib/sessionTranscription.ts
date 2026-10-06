@@ -19,13 +19,16 @@ export async function retranscribeSession(
  const result = completed as TranscribeResult | null;
  if (!result?.success || !Array.isArray(result.segments) || !result.text?.trim()
   || !['en','pt'].includes(result.metadata?.language)) throw new Error(tr("No complete English or Portuguese transcript was returned. The existing transcript was kept."));
- const names = Object.fromEntries((session.speakers || []).filter(speaker =>
-  session.segments.some(segment=>segment.speaker===speaker && segment.auto===false)
+ const names = Object.fromEntries((session.speakers || []).filter(speaker => {
+  if (['Microphone (unattributed)','System (unattributed)'].includes(speaker)
+   && session.segments.some(segment=>segment.speaker===speaker && segment.attribution==='fallback')) return false;
+  return session.segments.some(segment=>segment.speaker===speaker && segment.auto===false)
   || (!/^(Speaker\s*\d+|Unknown|You|Me)$/i.test(speaker)
-   && session.segments.some(segment=>segment.speaker===speaker && segment.auto!==true))).map(speaker=>[speaker,speaker]));
+   && session.segments.some(segment=>segment.speaker===speaker && segment.auto!==true));
+ }).map(speaker=>[speaker,speaker]));
  const mapped = applySpeakerNames(result.segments,result.speakers,result.embeddings || {},
   reconcileSpeakerNames(session.segments,result.segments,names));
- await save(session.id,{transcript:result.text,language:result.metadata.language,transcriptFinalized:true,
-  transcriptionModel:result.metadata.model || model,
+ await save(session.id,{expectedTranscriptRevision:session.transcriptRevision,transcript:result.text,language:result.metadata.language,transcriptFinalized:true,
+  transcriptionModel:result.metadata.model || model, transcriptionDiagnostics:result.transcriptionDiagnostics,
   ...(Number.isFinite(result.duration) && (result.duration || 0)>0 ? {duration:result.duration} : {}),...mapped});
 }

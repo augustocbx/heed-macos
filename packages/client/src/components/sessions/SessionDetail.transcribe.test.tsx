@@ -7,10 +7,11 @@ import { useTemplatesStore } from '@/stores/templates';
 import { useModelsStore } from '@/stores/models';
 import { useRecordingStore } from '@/stores/recording';
 
-const session = {id:'s1',title:'Meeting',createdAt:'2026-10-05T12:00:00Z',duration:20,language:'en',transcript:'Old text',
+const session = {transcriptRevision:'source-before',id:'s1',title:'Meeting',createdAt:'2026-10-05T12:00:00Z',duration:20,language:'en',transcript:'Old text',
  speakers:['Ana'],segments:[{speaker:'Ana',start:0,end:10,text:'Old text',channel:'sys',auto:false}],
  embeddings:{Ana:[1]},files:{wav:'/recordings/meeting.wav'},aiNotes:'Original notes',summary:'Summary',tags:[],pinned:false,liveModel:'base'} as Session;
-const result = {success:true,text:'Bom dia',files:{wav:'/tmp/new.wav',srt:'',txt:''},metadata:{language:'pt',model:'small'},
+const diagnostics: NonNullable<Session['transcriptionDiagnostics']> = {version:1,aecApplied:false,channels:{mic:{rawRms:.03,rawPeak:2000,cleanedRms:.03,asrSegments:1,diarizationSegments:0,usableEmbeddings:0,retainedSegments:1,discardedSegments:0,discardReasons:{},fallbackSegments:1,diarizationFailed:true}},warnings:['microphone-attribution-fallback']};
+const result = {transcriptionDiagnostics:diagnostics,success:true,text:'Bom dia',files:{wav:'/tmp/new.wav',srt:'',txt:''},metadata:{language:'pt',model:'small'},
  speakers:['Speaker 4'],segments:[{speaker:'Speaker 4',start:0,end:10,text:'Bom dia',channel:'sys'}],embeddings:{'Speaker 4':[2]},wordCount:2};
 beforeEach(()=>{
  useSessionsStore.setState({sessions:[session],viewing:session});
@@ -37,7 +38,7 @@ test('manual transcription sends model and language, saves only final result, an
  expect(form.get('recording_finalize')).toBe('true');
  const saved=useSessionsStore.getState().viewing!;
  expect(saved.speakers).toEqual(['Ana']);expect(saved.embeddings).toEqual({Ana:[2]});expect(saved.files).toEqual(session.files);
- expect(saved.duration).toBe(20);expect(saved.language).toBe('pt');expect(saved.liveModel).toBe('base');expect(saved.transcriptionModel).toBe('small');
+ expect(saved.transcriptionDiagnostics).toEqual(diagnostics);expect(saved.duration).toBe(20);expect(saved.language).toBe('pt');expect(saved.liveModel).toBe('base');expect(saved.transcriptionModel).toBe('small');
 });
 
 test('failed transcription leaves the existing session intact and displays the error',async()=>{
@@ -73,4 +74,42 @@ test('a completed transcript does not replace the session when saving fails',asy
  fireEvent.click(screen.getByRole('button',{name:'Transcribe'}));fireEvent.click(screen.getByRole('button',{name:'Start transcription'}));
  expect(await screen.findByRole('alert')).toHaveTextContent('Could not save transcript');
  expect(useSessionsStore.getState().viewing).toEqual(session);
+});
+
+ test('saved transcription warnings explain uncertain attribution without exposing diagnostics',()=>{
+ render(<SessionDetail session={{...session,transcriptionDiagnostics:structuredClone(diagnostics)}} onBack={vi.fn()}/>);
+ expect(screen.getByText('Some microphone speech has uncertain speaker labels. Review the transcript and speaker names.')).toBeInTheDocument();
+ expect(screen.queryByText('diarizationFailed')).not.toBeInTheDocument();
+ });
+
+test('a late retranscription result cannot overwrite newer transcript and manual speaker edits',async()=>{
+ const newer={...session,transcript:'Newer manual text',transcriptRevision:'source-after',speakers:['Renamed speaker']};
+ let submitted:any;
+ vi.stubGlobal('fetch',vi.fn(async(url:string,init:RequestInit)=>{
+  if(url.includes('/api/transcribe')){
+   useSessionsStore.setState({sessions:[newer],viewing:newer});
+   return new Response(`event: result\ndata: ${JSON.stringify(result)}\n\n`);
+  }
+  submitted=JSON.parse(init.body as string);
+  return submitted.expectedTranscriptRevision===session.transcriptRevision
+   ? new Response(JSON.stringify({error:'Transcript changed; reload before saving notes'}),{status:409})
+   : Response.json({...newer,...submitted});
+ }));
+ render(<SessionDetail session={session} onBack={vi.fn()}/>);
+ fireEvent.click(screen.getByRole('button',{name:'Transcribe'}));fireEvent.click(screen.getByRole('button',{name:'Start transcription'}));
+ expect(await screen.findByRole('alert')).toHaveTextContent('Transcript changed');
+ expect(submitted.expectedTranscriptRevision).toBe('source-before');
+ expect(useSessionsStore.getState().viewing).toEqual(newer);
+});
+
+test('generated fallback labels do not replace newly available speaker attribution',async()=>{
+ const uncertain={...session,speakers:['System (unattributed)'],segments:[{...session.segments[0]!,speaker:'System (unattributed)',attribution:'fallback' as const,auto:false}]};
+ useSessionsStore.setState({sessions:[uncertain],viewing:uncertain});
+ vi.stubGlobal('fetch',vi.fn(async(url:string,init:RequestInit)=>url.includes('/api/transcribe')
+  ? new Response(`event: result\ndata: ${JSON.stringify(result)}\n\n`)
+  : Response.json({...uncertain,...JSON.parse(init.body as string)})));
+ render(<SessionDetail session={uncertain} onBack={vi.fn()}/>);
+ fireEvent.click(screen.getByRole('button',{name:'Transcribe'}));fireEvent.click(screen.getByRole('button',{name:'Start transcription'}));
+ await waitFor(()=>expect(useSessionsStore.getState().viewing?.transcript).toBe('Bom dia'));
+ expect(useSessionsStore.getState().viewing?.speakers).toEqual(['Speaker 4']);
 });

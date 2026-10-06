@@ -6,6 +6,7 @@ import type { AutomaticNotesSettings, NotesJob } from "../../shared/types/notes"
 import type { Template } from "../../shared/types/template";
 import type { SessionTags } from "./session-tags";
 import { atomicWriteJson } from "./atomic-json";
+import { sanitizeTranscriptionDiagnostics } from "./final-recording";
 
 export interface NotesGenerationInput {
  session: Session;
@@ -75,7 +76,9 @@ export class AutomaticNotesService {
   if (input.files?.wav) { const existingRecording = this.list().find(session => session.files?.wav === input.files!.wav); if (existingRecording) return existingRecording; }
   const id = input.id || (input.files?.wav ? `recording-${notesHash(input.files.wav).slice(0, 32)}` : `session-${randomUUID()}`);
   const existing = this.get(id); if (existing) return existing;
+  const transcriptionDiagnostics=sanitizeTranscriptionDiagnostics(input.transcriptionDiagnostics);
   const session: Session = { id, title: input.title || "Untitled meeting", createdAt: input.createdAt || this.timestamp(), duration: input.duration || 0, language: input.language || "en", transcript: input.transcript || "", speakers: input.speakers || [], segments: input.segments || [], aiNotes: input.aiNotes || "", summary: input.summary || "", tags: input.tags || [], pinned: !!input.pinned, files: input.files, embeddings: input.embeddings, transcriptionModel: input.transcriptionModel, liveModel: input.liveModel, transcriptFinalized: input.transcriptFinalized === true };
+  if(transcriptionDiagnostics) session.transcriptionDiagnostics=transcriptionDiagnostics;
   session.transcriptRevision = sourceRevision(session);
   if (session.aiNotes) session.notesMetadata = { origin: "manual", stale: false, sourceRevision: session.transcriptRevision };
   if (session.transcriptFinalized && this.options.getSettings().enabled) this.enqueue(session);
@@ -89,6 +92,9 @@ export class AutomaticNotesService {
   if (patch.expectedNotes !== undefined && patch.expectedNotes !== existing.aiNotes) throw new Error("Notes changed; reload before saving notes");
   const { id: _id, createdAt: _created, transcriptRevision: _revision, notesJobs: _jobs, notesMetadata: _metadata, expectedTranscriptRevision: _expectedRevision, expectedNotes: _expectedNotes, ...mutable } = patch as GuardedSessionPatch & { id?: string; createdAt?: string };
   const session = { ...existing, ...mutable };
+  const transcriptionDiagnostics=sanitizeTranscriptionDiagnostics(session.transcriptionDiagnostics);
+  if(transcriptionDiagnostics) session.transcriptionDiagnostics=transcriptionDiagnostics;
+  else delete session.transcriptionDiagnostics;
   session.transcriptRevision = sourceRevision(session);
   const revised = session.transcriptRevision !== existing.transcriptRevision;
   const manual = Object.hasOwn(mutable, "aiNotes");

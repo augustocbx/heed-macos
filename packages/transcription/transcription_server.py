@@ -1679,8 +1679,7 @@ def learn_owner_voice(mic_path, sys_path, owner="Junior"):
 # never lose a speaker; the user merges with one click). Tune via eval_diar sweep on real audio.
 AGGLO_THRESHOLD = 0.55       # assign a segment to a cluster only if cosine >= this, else new cluster
 PHANTOM_MERGE_COS = 0.62     # 2nd pass: collapse clusters whose centroids are this close (same voice split)
-SEED_MIN_DUR = 1.0           # only segments >= this may SEED a new cluster (short embeddings are noisy)
-CLUSTER_MIN_DUR = 2.5        # 3rd pass: absorb clusters totalling less than this into their nearest voice
+SEED_MIN_DUR = 1.0           # untagged short embeddings need an overlap anchor
 
 
 def _assign_by_overlap(seg, clusters, segments):
@@ -1701,14 +1700,14 @@ def cluster_segments(segments, threshold=AGGLO_THRESHOLD, merge_cos=PHANTOM_MERG
       labels[i]  -> cluster id for segments[i]
       clusters   -> {cid: {"emb": centroid, "dur": seconds, "idxs": [segment indices]}}
     Robust to noisy per-segment embeddings (same voice ranges 0.14-1.0 cosine): only long segments
-    seed clusters, short ones join their best match, and tiny leftover clusters are absorbed — so we
-    separate the speakers FluidAudio merged WITHOUT exploding into junk singletons.
+    seed clusters; channel-tagged short voices may remain distinct rather than inheriting an unrelated
+    identity. Duration alone never justifies merging speakers.
     """
     labels = [None] * len(segments)
     clusters = {}
     next_id = 0
-    # Phase A — assign; longest segments first (reliable anchors). A short segment may JOIN its best
-    # cluster but never SEED one (its embedding is too noisy to trust as a new voice).
+    # Phase A — assign; longest segments first. Channel-tagged short voices may seed a distinct
+    # identity; forcing them into an unrelated cluster would erase brief local contributions.
     order = sorted((i for i, s in enumerate(segments) if s.get("emb")),
                    key=lambda i: (segments[i]["end"] - segments[i]["start"]), reverse=True)
     for i in order:
@@ -1726,7 +1725,7 @@ def cluster_segments(segments, threshold=AGGLO_THRESHOLD, merge_cos=PHANTOM_MERG
             c["dur"] += dur
             c["idxs"].append(i)
             labels[i] = best_cid
-        elif dur >= SEED_MIN_DUR:
+        elif dur >= SEED_MIN_DUR or s.get("ch") in ("mic", "sys"):
             clusters[next_id] = {"emb": list(emb), "dur": dur, "idxs": [i]}
             labels[i] = next_id
             next_id += 1
@@ -1757,33 +1756,12 @@ def cluster_segments(segments, threshold=AGGLO_THRESHOLD, merge_cos=PHANTOM_MERG
     # Phase B — consolidate near-identical clusters (same voice split by assignment order).
     _consolidate(merge_cos)
 
-    # Phase C — absorb tiny clusters (noise / a couple of bad segments) into their nearest voice by
-    # centroid cosine, UNCONDITIONALLY (they're too small to be a real distinct speaker). Kills singletons.
-    for cid in [c for c in clusters if clusters[c]["dur"] < CLUSTER_MIN_DUR]:
-        if len(clusters) <= 1 or cid not in clusters:
-            continue
-        best_to, best_c = None, -1.0
-        for other in clusters:
-            if other == cid:
-                continue
-            cc = cosine_similarity(clusters[cid]["emb"], clusters[other]["emb"])
-            if cc > best_c:
-                best_c, best_to = cc, other
-        if best_to is not None:
-            A, B = clusters[best_to], clusters[cid]
-            A["emb"] = _emb_avg([A["emb"], B["emb"]], [A["dur"], B["dur"]])
-            A["dur"] += B["dur"]
-            A["idxs"].extend(B["idxs"])
-            for j in B["idxs"]:
-                labels[j] = best_to
-            del clusters[cid]
-
     # Post-hoc — segments not yet assigned (no emb, or short with no good cluster): by time overlap.
     for i, s in enumerate(segments):
         if labels[i] is not None:
             continue
         cid = _assign_by_overlap(s, clusters, segments)
-        labels[i] = cid if cid is not None else (next(iter(clusters)) if clusters else 0)
+        labels[i] = cid
     return labels, clusters
 
 
@@ -1831,6 +1809,8 @@ def _diarize_parakeet(wav_path, srt_path=None, recognize_only=False):
     embeddings, which we match against ~/.heed-app/voices.json (backend-tagged)."""
     import engines
     diar = engines.get_parakeet_diar().diarize(wav_path)  # {"segments":[...], "embeddings":{sid:[...]}}
+    if diar.get("failed"):
+        return {"segments": [], "speakers": [], "embeddings": {}, "auto_named": {}, "failed": True}
     raw_embeddings = diar.get("embeddings", {})       # keyed by RAW FluidAudio speaker id
     # Drop phantom speakers, then map remaining ids -> contiguous "Speaker 1/2/...".
     raw_segments = _filter_spurious_speakers([
@@ -1924,34 +1904,38 @@ def _ffmpeg_channel(wav_path, ch, out_path):
 
 
 def _dominant_diar_speaker(seg, diar_segs):
-    """Speaker whose diarization overlaps `seg` most; if none overlaps, snap to the nearest in time."""
+    """Speaker whose diarization overlaps `seg` most; no overlap leaves attribution uncertain."""
     best, best_ov = None, 0.0
     for d in diar_segs:
         ov = min(seg["end"], d["end"]) - max(seg["start"], d["start"])
         if ov > best_ov:
             best_ov, best = ov, d["speaker"]
-    if best:
-        return best
-    nearest, nd = None, 1e9
-    mid = (seg["start"] + seg["end"]) / 2.0
-    for d in diar_segs:
-        dist = 0.0 if d["start"] <= mid <= d["end"] else min(abs(mid - d["start"]), abs(mid - d["end"]))
-        if dist < nd:
-            nd, nearest = dist, d["speaker"]
-    return nearest
+    return best
 
 
-# A mic voice whose cosine to any SYSTEM voice is >= this is the remote leaking through the speakers
-# (echo), not the owner. The owner's voice never loops back to the system channel, so it stays below.
-OWNER_ECHO_COS = 0.65
+def _valid_final_embedding(embedding):
+    import math
+    try:
+        return bool(embedding) and all(math.isfinite(float(x)) for x in embedding) and any(float(x) != 0 for x in embedding)
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def _final_channel_diagnostics(raw_path, cleaned_path, asr_segments, diarization, usable_embeddings):
+    raw_rms, raw_peak = _wav_rms_peak(raw_path)
+    cleaned_rms, _ = _wav_rms_peak(cleaned_path)
+    return {"rawRms": raw_rms, "rawPeak": raw_peak, "cleanedRms": cleaned_rms,
+            "asrSegments": len(asr_segments), "diarizationSegments": len(diarization.get("segments", [])),
+            "usableEmbeddings": usable_embeddings, "retainedSegments": 0, "discardedSegments": 0,
+            "discardReasons": {}, "fallbackSegments": 0, "diarizationFailed": bool(diarization.get("failed"))}
 
 
 def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
                        final_model="parakeet-v3", manual=False, work_directory=None):
     """Full-audio final pipeline with native Parakeet or an explicitly selected Whisper model.
     Preserve ASR timestamps, diarize the system channel (remote speakers), and for speaker playback
-    acoustically strip the mic's echo by keeping only the mic voice that does NOT match any system
-    voice (the owner). Names known voices. Returns coherent, time-stamped, attributed turns.
+    acoustically reduce echo and remove microphone duplicates only with matching text and timing.
+    Preserve uncertain recognized speech with explicit attribution fallback. Names known voices. Returns coherent, time-stamped, attributed turns.
 
     Single source of truth: the /finalize endpoint and scripts/postmortem.py both call this.
     Returns {"turns":[{start,end,speaker,text}], "speakers":[...], "embeddings":{...}, "auto_named":{...}}.
@@ -1960,6 +1944,7 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
     from managed_work import temporary_audio, validate_processing_wave
     from meeting_language import detect_meeting_language
     from manual_transcription import MODELS, transcribe_complete
+    from final_echo import is_microphone_echo
     if final_model not in ("parakeet-v3", *MODELS):
         raise ValueError("Unsupported final transcription model")
     if language not in ("auto", "en", "pt"):
@@ -1996,12 +1981,27 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
         if not is_dual:
             mono = temporary_audio(wav_path, work_directory); tmp.append(mono)
             _ffmpeg_channel(wav_path, 0, mono)
-            d = _diar(mono)
-            turns = [{**s, "speaker": _dominant_diar_speaker(s, d["segments"]) or "Speaker 1", "channel": "mic"}
-                     for s in segs_for(mono)]
+            try:
+                d = _diar(mono)
+            except Exception:
+                d = {"segments": [], "failed": True}
+            recognized = segs_for(mono)
+            stats = _final_channel_diagnostics(mono, mono, recognized, d,
+                                               sum(_valid_final_embedding(s.get("emb") or d.get("embeddings", {}).get(s.get("speaker"))) for s in d.get("segments", [])))
+            turns = []
+            for s in recognized:
+                speaker = _dominant_diar_speaker(s, d.get("segments", []))
+                if not _valid_final_embedding(d.get("embeddings", {}).get(speaker)):
+                    speaker = None
+                turns.append({**s, "speaker": speaker or "Microphone (unattributed)", "channel": "mic",
+                              **({"attribution": "fallback"} if not speaker else {})})
+                stats["fallbackSegments"] += int(not speaker)
+            stats["retainedSegments"] = len(turns)
+            diagnostics = {"version": 1, "aecApplied": False, "channels": {"mic": stats},
+                           "warnings": ["microphone-attribution-fallback"] if stats["fallbackSegments"] else []}
             turns.sort(key=lambda x: x["start"])
-            return {**metadata, "turns": turns, "speakers": d.get("speakers", []),
-                    "embeddings": d.get("embeddings", {}), "auto_named": d.get("auto_named", {})}
+            return {**metadata, "turns": turns, "speakers": sorted({t["speaker"] for t in turns}),
+                    "embeddings": d.get("embeddings", {}), "auto_named": d.get("auto_named", {}), "diagnostics": diagnostics}
 
         mic = temporary_audio(wav_path, work_directory); tmp.append(mic); _ffmpeg_channel(wav_path, 0, mic)
         sysw = temporary_audio(wav_path, work_directory); tmp.append(sysw); _ffmpeg_channel(wav_path, 1, sysw)
@@ -2014,17 +2014,21 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
         mic_segs = segs_for(mic_clean)
 
         # --- Voice-clustering backbone: diarize BOTH channels per-segment, pool, cluster by cosine. ---
-        # This finds the TRUE distinct voices (FluidAudio merged them per-channel; the %-filter deleted
-        # minorities). Echo folds in for free: the presenter's mic-echo (cos ~0.86 to their sys voice)
-        # clusters WITH their system cluster, so it never becomes a phantom speaker.
-        sys_raw = engines.get_parakeet_diar().diarize(sysw)
-        mic_raw = engines.get_parakeet_diar().diarize(mic_clean)
+        # A shared voice cluster is attribution evidence, not sufficient evidence to delete text.
+        def safe_diar(path):
+            try:
+                return engines.get_parakeet_diar().diarize(path)
+            except Exception:
+                # Valid ASR remains recoverable; do not publish private worker error payloads.
+                return {"segments": [], "failed": True}
+        sys_raw = safe_diar(sysw)
+        mic_raw = safe_diar(mic_clean)
         pool = []
         for s in sys_raw.get("segments", []):
-            if s.get("emb"):
+            if _valid_final_embedding(s.get("emb")):
                 pool.append({"start": float(s["start"]), "end": float(s["end"]), "emb": s["emb"], "ch": "sys"})
         for s in mic_raw.get("segments", []):
-            if s.get("emb"):
+            if _valid_final_embedding(s.get("emb")):
                 pool.append({"start": float(s["start"]), "end": float(s["end"]), "emb": s["emb"], "ch": "mic"})
 
         labels, clusters = cluster_segments(pool)
@@ -2043,13 +2047,11 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
             m, _sc = match_voice(c["emb"], backend)
             matched_name[cid] = m
 
-        # Per-cluster channel presence: a cluster with real SYSTEM duration is a remote/presenter voice
-        # (its mic segments are echo). A mic-only cluster is someone whose voice is only on the mic
-        # (the owner, or a person in the room) — keep their mic text.
+        # Channel presence helps name pure microphone voices. Mixed clusters remain uncertain
+        # for retained local speech and must never act as a cluster-wide discard rule.
         cl_ch = {cid: {"mic": 0.0, "sys": 0.0} for cid in clusters}
         for seg in pool:
             cl_ch[seg["cid"]][seg["ch"]] += seg["end"] - seg["start"]
-        sys_based = {cid for cid in clusters if cl_ch[cid]["sys"] >= 1.0}
 
         # Preserve names recognized live by voice, never by cluster numbering.
         from voice_identity import reconcile_names
@@ -2080,23 +2082,34 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
                 ov = min(seg["end"], d["end"]) - max(seg["start"], d["start"])
                 if ov > bo:
                     bo, best = ov, d["cid"]
-            if best is None and diar_by_ch[ch]:
-                mid = (seg["start"] + seg["end"]) / 2.0
-                best = min(diar_by_ch[ch],
-                           key=lambda d: 0.0 if d["start"] <= mid <= d["end"] else min(abs(mid - d["start"]), abs(mid - d["end"])))["cid"]
             return best
 
+        diagnostics = {"version": 1, "aecApplied": mic_clean != mic, "channels": {}, "warnings": []}
+        for ch, path, cleaned, asr_segments, raw in [("mic", mic, mic_clean, mic_segs, mic_raw),
+                                                    ("sys", sysw, sysw, sys_segs, sys_raw)]:
+            diagnostics["channels"][ch] = _final_channel_diagnostics(path, cleaned, asr_segments, raw,
+                                                                    len(diar_by_ch[ch]))
         turns = []
-        for s in sys_segs:
-            cid = cluster_for(s, "sys")
-            if cid is None:
-                continue
-            turns.append({"start": s["start"], "end": s["end"], "text": s["text"], "speaker": cluster_label[cid], "channel": "sys"})
-        for s in mic_segs:
-            cid = cluster_for(s, "mic")
-            if cid is None or cid in sys_based:   # sys_based mic text = echo of a remote voice -> drop
-                continue
-            turns.append({"start": s["start"], "end": s["end"], "text": s["text"], "speaker": cluster_label[cid], "channel": "mic"})
+        for ch, segments in [("sys", sys_segs), ("mic", mic_segs)]:
+            stats = diagnostics["channels"][ch]
+            for s in segments:
+                if ch == "mic" and is_microphone_echo(s, sys_segs):
+                    stats["discardedSegments"] += 1
+                    stats["discardReasons"]["echo-text-and-time"] = stats["discardReasons"].get("echo-text-and-time", 0) + 1
+                    continue
+                cid = cluster_for(s, ch)
+                uncertain = cid is None or (ch == "mic" and cl_ch[cid]["sys"] > 0)
+                turn = {"start": s["start"], "end": s["end"], "text": s["text"], "channel": ch,
+                        "speaker": ("Microphone (unattributed)" if ch == "mic" else "System (unattributed)") if uncertain else cluster_label[cid]}
+                if uncertain:
+                    turn["attribution"] = "fallback"
+                    stats["fallbackSegments"] += 1
+                turns.append(turn)
+                stats["retainedSegments"] += 1
+            if stats["fallbackSegments"]:
+                diagnostics["warnings"].append("microphone-attribution-fallback" if ch == "mic" else "system-attribution-fallback")
+        if mic_segs and not diagnostics["channels"]["mic"]["retainedSegments"]:
+            diagnostics["warnings"].append("microphone-all-asr-filtered")
         turns.sort(key=lambda x: x["start"])
 
         # Do NOT auto-average recognized voiceprints here: a post-stop cluster can silently contain a
@@ -2108,7 +2121,7 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
         auto_named = {cluster_label[cid]: {"name": matched_name[cid], "score": 1.0}
                       for cid in clusters if matched_name[cid]}
         return {**metadata, "turns": turns, "speakers": sorted({t["speaker"] for t in turns}),
-                "embeddings": embeddings, "auto_named": auto_named}
+                "embeddings": embeddings, "auto_named": auto_named, "diagnostics": diagnostics}
     finally:
         if asr is not None:
             asr.close()

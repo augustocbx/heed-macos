@@ -5,13 +5,15 @@ import { tmpdir } from "node:os";
 import { AutomaticNotesService, notesHash } from "./automatic-notes";
 import type { AutomaticNotesSettings } from "../../shared/types/notes";
 import type { Session } from "../../shared/types/session";
+import type { TranscriptionDiagnostics } from "../../shared/types/speaker";
+import { SessionTags } from "./session-tags";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
-function fixture(overrides: Partial<ConstructorParameters<typeof AutomaticNotesService>[0]> = {}) {
+function fixture(overrides: Partial<ConstructorParameters<typeof AutomaticNotesService>[0]> = {}, useTagStore = false) {
  const sessionsDir = mkdtempSync(join(tmpdir(), "heed-notes-test-")); dirs.push(sessionsDir);
  const settings: AutomaticNotesSettings = { enabled: true, templateId: "meeting", model: "local:latest", language: "meeting" };
- const service = new AutomaticNotesService({ sessionsDir, getSettings: () => settings, loadTemplate: id => id === "meeting" ? { id, name: "Meeting", description: "", prompt: "Report only supported decisions." } : undefined, generate: async () => "## Decisions\nShip the agreed feature.", isBusy: () => false, ...overrides });
+ const service = new AutomaticNotesService({ sessionsDir, sessionStore: useTagStore ? new SessionTags(sessionsDir) : undefined, getSettings: () => settings, loadTemplate: id => id === "meeting" ? { id, name: "Meeting", description: "", prompt: "Report only supported decisions." } : undefined, generate: async () => "## Decisions\nShip the agreed feature.", isBusy: () => false, ...overrides });
  return { service, settings, sessionsDir };
 }
 function meeting(extra: Partial<Session> = {}): Partial<Session> {
@@ -19,6 +21,57 @@ function meeting(extra: Partial<Session> = {}): Partial<Session> {
 }
 function job(session: Session) { return Object.values(session.notesJobs || {})[0]!; }
 function deferred() { let resolve!: (value: string) => void; const promise = new Promise<string>(r => { resolve = r; }); return { promise, resolve }; }
+
+function transcriptionDiagnostics(): TranscriptionDiagnostics {
+ return {version:1,channels:{mic:{rawRms:0.03,rawPeak:2000,cleanedRms:0.02,asrSegments:2,diarizationSegments:0,usableEmbeddings:0,retainedSegments:2,discardedSegments:0,discardReasons:{},fallbackSegments:2,diarizationFailed:true}},aecApplied:true,warnings:["microphone-attribution-fallback"]};
+}
+function privateDiagnostics() {
+ const diagnostics=transcriptionDiagnostics();
+ return {...diagnostics,workerError:"private worker path",channels:{mic:{...diagnostics.channels.mic!,embedding:[1,2],text:"private speech"}}};
+}
+for (const useTagStore of [false,true]) {
+ const storage=useTagStore ? "tag-aware storage" : "session storage";
+ test(`final diagnostics survive actual create/read roundtrip through ${storage} without private payloads`,()=>{
+  const {service,sessionsDir}=fixture({},useTagStore);
+  const saved=service.create(meeting({transcriptionDiagnostics:privateDiagnostics(),tags:["Work"],aiNotes:"Manual notes"}));
+  const diagnostic=transcriptionDiagnostics();
+  expect(saved.transcriptionDiagnostics).toEqual(diagnostic);
+  expect(service.get(saved.id)!.transcriptionDiagnostics).toEqual(diagnostic);
+  const durable=JSON.parse(readFileSync(join(sessionsDir,`${saved.id}.json`),"utf8"));
+  expect(durable.transcriptionDiagnostics).toEqual(diagnostic);
+  expect(JSON.stringify(durable.transcriptionDiagnostics)).not.toContain("private");
+  expect(durable).toMatchObject({tags:["Work"],aiNotes:"Manual notes",speakers:["Ana"]});
+ });
+ test(`guarded retranscription diagnostics persist through ${storage} and unrelated edits preserve them`,()=>{
+  const {service,sessionsDir}=fixture({},useTagStore);
+  const initial=service.create(meeting({tags:["Work"],aiNotes:"Manual notes"}));
+  const revised=service.patch(initial.id,{transcript:"Updated full-audio transcript",transcriptionDiagnostics:privateDiagnostics(),expectedTranscriptRevision:initial.transcriptRevision});
+  const diagnostic=transcriptionDiagnostics();
+  expect(revised.transcriptionDiagnostics).toEqual(diagnostic);
+  expect(revised.transcriptRevision).not.toBe(initial.transcriptRevision);
+  const before=readFileSync(join(sessionsDir,`${initial.id}.json`),"utf8");
+  expect(() => service.patch(initial.id,{transcript:"Stale result",transcriptionDiagnostics:privateDiagnostics(),expectedTranscriptRevision:initial.transcriptRevision})).toThrow("Transcript changed");
+  expect(readFileSync(join(sessionsDir,`${initial.id}.json`),"utf8")).toBe(before);
+  const renamed=service.patch(initial.id,{title:"Renamed meeting"});
+  expect(renamed.transcriptionDiagnostics).toEqual(diagnostic);
+  expect(renamed.transcriptRevision).toBe(revised.transcriptRevision);
+  expect(renamed).toMatchObject({tags:["Work"],aiNotes:"Manual notes",speakers:["Ana"]});
+  const durable=JSON.parse(readFileSync(join(sessionsDir,`${initial.id}.json`),"utf8"));
+  expect(durable.transcriptionDiagnostics).toEqual(diagnostic);
+  expect(JSON.stringify(durable.transcriptionDiagnostics)).not.toContain("private");
+ });
+ test(`older sessions and malformed diagnostics remain compatible through ${storage}`,()=>{
+  const {service}=fixture({},useTagStore);
+  const initial=service.create(meeting());
+  expect(initial).not.toHaveProperty("transcriptionDiagnostics");
+  const invalid=JSON.parse('{"version":2,"workerError":"private path"}');
+  const created=service.create(meeting({files:{wav:"invalid.wav"},transcriptionDiagnostics:invalid}));
+  expect(service.get(created.id)).not.toHaveProperty("transcriptionDiagnostics");
+  const patched=service.patch(initial.id,{transcriptionDiagnostics:invalid,expectedTranscriptRevision:initial.transcriptRevision});
+  expect(patched).not.toHaveProperty("transcriptionDiagnostics");
+  expect(service.get(initial.id)).not.toHaveProperty("transcriptionDiagnostics");
+ });
+}
 
 test("enqueues only enabled saved final transcripts and never backfills legacy records", () => {
  const { service, settings, sessionsDir } = fixture();

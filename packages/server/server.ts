@@ -2120,7 +2120,8 @@ async function finalizeCapture(path: string): Promise<FinalCapture> {
   result.duration = measured;
  }
  recordingLanguage = result.metadata.language;
- return {path,duration:result.duration,language:result.metadata.language,model:result.metadata.model,liveModel:recordingLiveModel || recordingCoordinator.snapshot().liveModel,turns:result.segments,embeddings:result.embeddings};
+ return {path,duration:result.duration,language:result.metadata.language,model:result.metadata.model,liveModel:recordingLiveModel || recordingCoordinator.snapshot().liveModel,turns:result.segments,embeddings:result.embeddings,
+  ...(result.transcriptionDiagnostics ? {transcriptionDiagnostics:result.transcriptionDiagnostics} : {})};
 }
 
 // Compatibility stream reports authoritative capabilities; app/process presence is not a call.
