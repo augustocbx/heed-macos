@@ -1,3 +1,5 @@
+import contextlib
+import io
 import http.server
 import json
 import os
@@ -8,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import heed_release
+import service_runtime
 
 environment = None
 temporary_home = None
@@ -57,11 +60,15 @@ class Server:
         else:
             raise RuntimeError("No safe fixture port is available")
         self.port = self.httpd.server_address[1]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
 
     def close(self):
         self.httpd.shutdown()
         self.httpd.server_close()
+        self.thread.join(timeout=3)
+        if self.thread.is_alive() or service_runtime.occupied(self.port):
+            raise RuntimeError("Synthetic lifecycle fixture did not drain")
 
 
 def api(version="1.2.0", commit="abc"):
@@ -111,9 +118,22 @@ class BusyTest(unittest.TestCase):
     def status(self, body):
         server = Server({"/api/desktop/control/status": (body, "application/json")})
         try:
-            return heed_release.main(["busy", "--api-port", str(server.port)])
+            root = str(pathlib.Path(__file__).resolve().parents[2])
+            records = [{'pid':os.getpid(), 'cwd':root, 'command':'bun run packages/server/server.ts'}]
+            with patch.object(service_runtime, 'process_records', return_value=records):
+                return heed_release.main(["busy", "--api-port", str(server.port)])
         finally:
             server.close()
+
+    def test_oversized_completed_session_preserves_idle_and_every_busy_flag(self):
+        idle = {key: False for key in heed_release.BUSY_KEYS}
+        private = "SYNTHETIC_PRIVATE_SENTINEL" * 4000
+        for flag in [None, *heed_release.BUSY_KEYS]:
+            with self.subTest(flag=flag), contextlib.redirect_stderr(io.StringIO()) as diagnostics:
+                body = {"session": {"transcript": private}, "snapshot": {"session": {"transcript": private}}, **idle}
+                if flag: body[flag] = True
+                self.assertEqual(self.status(body), 1 if flag else 0)
+                self.assertNotIn("SYNTHETIC_PRIVATE_SENTINEL", diagnostics.getvalue())
 
     def test_busy_states_refuse(self):
         idle = {key: False for key in heed_release.BUSY_KEYS}

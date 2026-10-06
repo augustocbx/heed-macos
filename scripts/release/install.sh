@@ -82,7 +82,7 @@ cleanup() {
     if [ "$status" != 0 ] && [ "$HEED_COMMITTED" = 0 ]; then
         # The running version was never stopped: give it back its recording ability first.
         if [ "$HEED_GUARD_HELD" = 1 ] && [ "$HEED_SWITCHED" = 0 ] && [ -f "$HEED_GUARD_SCRIPT" ]; then
-            /usr/bin/python3 "$HEED_GUARD_SCRIPT" release >/dev/null 2>&1 || true
+            /usr/bin/python3 "$HEED_GUARD_SCRIPT" release --expected-root "$HEED_GUARD_ROOT" --base-url "$HEED_GUARD_URL" >/dev/null 2>&1 || true
         fi
         if [ "$HEED_SWITCHED" = 1 ]; then rollback; fi
         if [ "$HEED_KEEP_STAGE" = 1 ]; then rm -rf "$HEED_TEMP"; return; fi
@@ -271,12 +271,14 @@ case "$HEED_BUSY_STATUS" in
     2) fail 'Could not verify complete recording status from the expected Heed build. Check the service diagnostic above; migrate an unsupported checkout with the latest install-macos.sh first. Nothing was replaced.' ;;
     *) fail 'Heed is recording, saving or transcribing. Wait until it finishes, then run the installer again.' ;;
 esac
-# The guard imports runtime helpers and verifies its own checkout root. Keep its tree intact.
+# The guard imports the new payload reader; the target retains its independently expected old root.
 HEED_GUARD_SCRIPT="$HEED_STAGE/packages/desktop/guard-lifecycle.py"
-if [ -n "$HEED_PREVIOUS_DIR" ]; then HEED_GUARD_SCRIPT="$HEED_PREVIOUS_DIR/packages/desktop/guard-lifecycle.py"
-elif [ -n "$HEED_LEGACY_ROOT" ]; then HEED_GUARD_SCRIPT="$HEED_LEGACY_ROOT/packages/desktop/guard-lifecycle.py"; fi
+HEED_GUARD_ROOT="${HEED_PREVIOUS_DIR:-${HEED_LEGACY_ROOT:-$HEED_STAGE}}"
+HEED_GUARD_PORT="$HEED_API_PORT"
+if [ -n "${HEED_PREVIOUS_PORTS:-}" ]; then read -r HEED_GUARD_PORT _ _ <<< "$HEED_PREVIOUS_PORTS"; fi
+HEED_GUARD_URL="http://127.0.0.1:$HEED_GUARD_PORT"
 export HEED_LIFECYCLE_GUARD_TOKEN="$(/usr/bin/uuidgen)"
-/usr/bin/python3 "$HEED_GUARD_SCRIPT" acquire \
+/usr/bin/python3 "$HEED_GUARD_SCRIPT" acquire --expected-root "$HEED_GUARD_ROOT" --base-url "$HEED_GUARD_URL" \
     || fail 'Heed is recording, saving or transcribing. Wait until it finishes, then run the installer again.'
 HEED_GUARD_HELD=1
 export HEED_LIFECYCLE_GUARD_HELD=1
@@ -294,7 +296,7 @@ done < <(/usr/bin/python3 "$HEED_HELPER" native-hosts)
 
 stop_heed() {
     launchctl bootout "gui/$(id -u)/local.heed.menubar" 2>/dev/null || true
-    /usr/bin/python3 "$HEED_HELPER" stop-services --root "$HEED_RUNTIME" ${HEED_LEGACY_ROOT:+--root "$HEED_LEGACY_ROOT"} \
+    /usr/bin/python3 "$HEED_HELPER" stop-services --root "$HEED_STAGE" ${HEED_PREVIOUS_DIR:+--root "$HEED_PREVIOUS_DIR"} ${HEED_LEGACY_ROOT:+--root "$HEED_LEGACY_ROOT"} \
         --ports "$HEED_API_PORT" "$HEED_UI_PORT" "$HEED_TRANSCRIPTION_PORT" ${HEED_PREVIOUS_PORT_ARGS[@]+"${HEED_PREVIOUS_PORT_ARGS[@]}"}
 }
 switch_current() { # target directory or empty
@@ -354,7 +356,7 @@ rollback() {
                 /usr/bin/python3 "$HEED_HELPER" wait-api --root "$restored_root" --timeout 20 > /dev/null \
                 && HEED_API_PORT="${old_api:-$HEED_API_PORT}" PORT="${old_api:-$HEED_API_PORT}" \
                    HEED_UI_PORT="${old_ui:-$HEED_UI_PORT}" HEED_TRANSCRIPTION_PORT="${old_transcription:-$HEED_TRANSCRIPTION_PORT}" \
-                   /usr/bin/python3 "$HEED_GUARD_SCRIPT" release > /dev/null || restore_failed=1
+                   /usr/bin/python3 "$HEED_GUARD_SCRIPT" release --expected-root "$restored_root" --base-url "http://127.0.0.1:${old_api:-$HEED_API_PORT}" > /dev/null || restore_failed=1
         else
             restore_failed=1
         fi
@@ -392,6 +394,7 @@ state --set "version=$HEED_VERSION" --set "path=$HEED_STAGE" --set "recordingsDi
 mkdir -p "$HEED_HOME/bin"
 cp "$HEED_CURRENT/uninstall.sh" "$HEED_HOME/bin/uninstall.sh"
 cp "$HEED_HELPER" "$HEED_HOME/bin/heed_release.py"
+cp "$HEED_CURRENT/scripts/lifecycle_metadata.py" "$HEED_HOME/bin/lifecycle_metadata.py"
 chmod 755 "$HEED_HOME/bin/uninstall.sh"
 # Keep the new and the previous version for manual rollback; remove older ones.
 for HEED_OLD in "$HEED_VERSIONS"/*; do

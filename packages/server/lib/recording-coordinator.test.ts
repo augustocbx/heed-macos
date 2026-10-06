@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +23,23 @@ function setup(overrides: Partial<RecordingAdapter> = {}) {
   return {coordinator:new RecordingCoordinator({manifestPath,adapter}),adapter,manifestPath,capture,saved};
 }
 describe("backend recording lifecycle", () => {
+  test("lifecycle metadata reads authoritative scalars without cloning the meeting snapshot",async()=>{
+    const {coordinator}=setup();
+    const fullSnapshot=spyOn(coordinator,"snapshot");
+    const check=(state:"idle"|"recording"|"completed",maintenance:boolean)=>{
+      fullSnapshot.mockClear();
+      expect(coordinator.lifecycleState()).toEqual({state,maintenance});
+      expect(fullSnapshot).not.toHaveBeenCalled();
+    };
+    try {
+      check("idle",false);
+      const active=await coordinator.start("metadata-start","both");check("recording",false);
+      await coordinator.stop("metadata-stop",active.meetingId!);check("completed",false);
+      coordinator.setMaintenance(true,"metadata-owner");check("completed",true);
+      const copy=coordinator.lifecycleState();copy.maintenance=false;check("completed",true);
+      coordinator.setMaintenance(false,"metadata-owner");check("completed",false);
+    } finally {fullSnapshot.mockRestore();}
+  });
   test("preview model provenance survives restart and recovery",async()=>{
     const base=setup({start:async (_m,_id,attach)=>{attach(base.capture.path);return {path:base.capture.path,liveModel:"preview-v3"};}});
     const active=await base.coordinator.start("start","both");

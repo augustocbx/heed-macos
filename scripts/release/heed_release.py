@@ -233,18 +233,17 @@ BUSY_KEYS = ["recording", "processing", "pending", "starting", "audioWork"]
 
 def command_busy(args):
     """Exit 0 when Heed is idle or not running, 1 when audio work is active, 2 when the state is unknown."""
-    status, data, _ = fetch_json("http://127.0.0.1:%d/api/desktop/control/status" % args.api_port)
-    if status is None:
-        if listener_pids(args.api_port):
-            print("The configured API listener did not return recording status. Nothing was stopped.", file=sys.stderr)
-            return 2
-        return 0
-    if service_identity("http://127.0.0.1:%d" % args.api_port, "heed-api", args.root) is None:
-        print("Port %d is used by another application or an unsupported service. It was not stopped; verify the configured port before retrying."
-              % args.api_port, file=sys.stderr)
-        return 2
-    if status != 200 or not isinstance(data, dict) or not all(type(data.get(key)) is bool for key in BUSY_KEYS):
-        print("Heed returned incomplete or unsupported recording status. Migrate its checkout with the latest install-macos.sh first. Its services and data were not changed.", file=sys.stderr)
+    service_configuration()
+    from service_runtime import verified_api_identity, occupied
+    from lifecycle_metadata import read_status
+    try:
+        if not listener_pids(args.api_port):
+            if occupied(args.api_port): raise ValueError('Listener ownership is uncertain')
+            return 0
+        identity = verified_api_identity("http://127.0.0.1:%d" % args.api_port, args.root)
+        data = read_status("http://127.0.0.1:%d" % args.api_port, identity)
+    except (ValueError, OSError, RuntimeError, subprocess.TimeoutExpired):
+        print("Heed returned incomplete or unsupported recording status or listener identity. Its services and data were not changed.", file=sys.stderr)
         return 2
     active = [key for key in BUSY_KEYS if data.get(key)]
     if active:
@@ -350,7 +349,7 @@ def process_cwd(pid):
     return paths[0] if paths else None
 
 
-def owned_listener(pid, roots):
+def owned_listener(pid, roots, port=None):
     cwd = process_cwd(pid)
     if not cwd or not under(cwd, roots):
         return False
@@ -358,28 +357,36 @@ def owned_listener(pid, roots):
                              capture_output=True, text=True).stdout.strip()
     service_configuration()
     from service_runtime import owned_process
-    # The approved runtime root may contain multiple immutable version folders.
-    # Match the actual checkout and exact service entrypoint, not merely its cwd.
-    directory = pathlib.Path(os.path.realpath(cwd))
-    for candidate in [directory, directory.parent, directory.parent.parent]:
-        if under(str(candidate), roots) and any(owned_process(str(candidate), service, cwd, command)
-                                               for service in ['api', 'ui', 'transcription']):
+    # Only exact independently selected service roots confer stop authority.
+    # A checkout's nested worktrees are separate installations, even at known ports.
+    for root in roots:
+        for service in ['api', 'ui', 'transcription']:
+            if not owned_process(root, service, cwd, command): continue
+            if service == 'api' and port is not None:
+                from service_runtime import verified_api_identity
+                from lifecycle_metadata import read_status
+                try:
+                    base = 'http://127.0.0.1:%d' % port
+                    identity = verified_api_identity(base, root)
+                    state = read_status(base, identity)
+                    if identity['pid'] != pid or any(state[key] for key in BUSY_KEYS): return False
+                except (ValueError, OSError, RuntimeError, subprocess.TimeoutExpired): return False
             return True
     return False
 
 
 def command_stop_services(args):
     roots = [root for root in args.root if root]
-    owned = []
+    owned = {}
     for port in args.ports:
         for pid in listener_pids(port):
-            if not owned_listener(pid, roots):
-                print("Port %d belongs to another application (PID %d). It was not stopped; free the port and run the installer again."
+            if not owned_listener(pid, roots, port):
+                print("Could not verify idle ownership for port %d (PID %d). It was not stopped; finish active work and verify the expected service root before retrying."
                       % (port, pid), file=sys.stderr)
                 return 2
-            owned.append(pid)
-    for pid in set(owned):
-        if not owned_listener(pid, roots):
+            owned[pid] = port
+    for pid, port in owned.items():
+        if not owned_listener(pid, roots, port):
             print("The listener's ownership changed. No signal was sent to PID %d." % pid, file=sys.stderr)
             return 2
         try:

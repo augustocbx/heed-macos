@@ -46,7 +46,13 @@ HEED_HELPER="$HEED_TEMP/heed_release.py"
 HEED_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 for HEED_CANDIDATE in "$HEED_HOME/runtime/current/scripts/release/heed_release.py" \
     "$HEED_SELF_DIR/heed_release.py" "$HEED_SELF_DIR/scripts/release/heed_release.py" "$HEED_HOME/bin/heed_release.py"; do
-    if [ -f "$HEED_CANDIDATE" ]; then cp "$HEED_CANDIDATE" "$HEED_HELPER"; break; fi
+    if [ -f "$HEED_CANDIDATE" ]; then
+        cp "$HEED_CANDIDATE" "$HEED_HELPER"
+        for HEED_MODULE in "$(dirname "$HEED_CANDIDATE")/lifecycle_metadata.py" "$(dirname "$HEED_CANDIDATE")/../lifecycle_metadata.py"; do
+            if [ -f "$HEED_MODULE" ]; then cp "$HEED_MODULE" "$HEED_TEMP/lifecycle_metadata.py"; break; fi
+        done
+        break
+    fi
 done
 if [ ! -f "$HEED_HELPER" ]; then
     curl --fail --location --silent --show-error \
@@ -59,7 +65,7 @@ HEED_APP="$HOME/Applications/Heed.app"
 HEED_AGENT="$HOME/Library/LaunchAgents/local.heed.menubar.plist"
 
 # --- What belongs to Heed ---------------------------------------------------------------------
-HEED_ROOTS=("$HEED_HOME/runtime")
+HEED_ROOTS=("$HEED_HOME/runtime/current")
 HEED_APP_ROOT=""
 if [ -f "$HEED_APP/Contents/Resources/heed-root.txt" ]; then IFS= read -r HEED_APP_ROOT < "$HEED_APP/Contents/Resources/heed-root.txt" || true; fi
 HEED_LEGACY_ROOT="$( [ -f "$HEED_STATE" ] && helper state "$HEED_STATE" --get legacyRoot || true)"

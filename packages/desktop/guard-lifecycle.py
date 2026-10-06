@@ -1,76 +1,62 @@
 #!/usr/bin/env python3
-"""Acquire/release the backend lifecycle guard before changing installed services."""
+"""Acquire/release maintenance only on an independently verified local runtime."""
 import argparse
-import json
 import os
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/"scripts"))
 from service_config import service_config,saved_service_ports,local_service_url,ROOT
-from service_runtime import process_records,owned_process,read_identity,control_targets,LEGACY,status,occupied
+from service_runtime import process_records,control_targets,LEGACY,occupied,verified_api_identity
+from lifecycle_metadata import BUSY_KEYS, IDENTITY_KEYS, read_status, request, valid_identity
 
 
-def guard(action, base_url, owner, legacy_owned=False):
+def guard(action, base_url, owner, expected_root=None):
     if not owner or not owner.strip() or len(owner) > 128:
         raise ValueError("A maintenance owner token is required.")
-    if not legacy_owned:
-        base_url=local_service_url(base_url,"Lifecycle API")
-        identity=read_identity(base_url,'heed-api',str(ROOT))
-        if identity is None:
-            from urllib.parse import urlsplit
-            if occupied(urlsplit(base_url).port):raise ValueError('The configured API listener has no matching Heed identity. No control request was sent.')
-            return
-    else:
-        # Only main's positive process-ownership match can enter legacy migration.
-        state=status(LEGACY['api'])
-        if not all(type(state.get(key)) is bool for key in ['recording','processing','pending','starting']):raise ValueError('The owned legacy backend did not return valid recording status.')
-
-    request = urllib.request.Request(
-        base_url + "/api/recording/maintenance",
-        data=json.dumps({"acquire": action == "acquire", "owner": owner}).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=5) as response:
-            state = json.load(response)
-        if state.get("maintenance") is not (action == "acquire"):
-            raise ValueError("The backend did not acknowledge the maintenance guard.")
-    except urllib.error.HTTPError as error:
-        if error.code != 404:
-            raise ValueError("An active meeting or another maintenance owner prevents installing or updating Heed.") from error
-        # Older releases have no atomic guard. Preserve their existing busy-state check.
-        with urllib.request.urlopen(base_url + "/api/desktop/control/status", timeout=5) as response:
-            state = json.load(response)
-        if not all(isinstance(state.get(key), bool) for key in ["recording", "processing", "pending"]):
-            raise ValueError("The legacy backend did not return a valid recording status.")
-        if action == "acquire" and any(state.get(key) for key in ["recording", "processing", "pending", "starting"]):
-            raise ValueError("Finish the active meeting before installing or updating Heed.")
-    except urllib.error.URLError as error:
-        # A server that is not running cannot own capture/finalization.
-        if not isinstance(error.reason, ConnectionRefusedError):
-            raise ValueError("Could not check the Heed lifecycle. No services were changed.") from error
+    root = str(ROOT) if expected_root is None else expected_root
+    if not os.path.isabs(root): raise ValueError('An absolute expected runtime root is required.')
+    parsed = urlsplit(base_url)
+    # Former API port is migration-only; it still requires exact process identity.
+    if not (parsed.scheme == 'http' and parsed.hostname in ('127.0.0.1','localhost') and parsed.port == LEGACY['api'] and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment and parsed.path in ('','/')):
+        base_url = local_service_url(base_url, "Lifecycle API")
+    port = urlsplit(base_url).port
+    records = process_records(port,timeout=2)
+    if not records and not occupied(port): return
+    identity = verified_api_identity(base_url, root)
+    state = read_status(base_url, identity)
+    if action == 'acquire' and any(state[key] for key in BUSY_KEYS):
+        raise ValueError('An active meeting prevents installing or updating Heed.')
+    # Recheck the independently expected PID/root immediately before mutation.
+    if verified_api_identity(base_url, root) != identity:
+        raise ValueError('The Heed listener changed. No control request was sent.')
+    code, state = request(base_url, '/api/recording/maintenance',
+                          {'acquire':action == 'acquire','owner':owner,'projection':'lifecycle'})
+    if state and any(key in state for key in IDENTITY_KEYS):
+        if not valid_identity(state,root,identity['pid']) or not all(type(state.get(key)) is bool for key in BUSY_KEYS) or (action == 'acquire' and any(state[key] for key in BUSY_KEYS)):
+            raise ValueError('The backend returned an invalid compact maintenance acknowledgement.')
+    if code != 200 or not state or state.get('maintenance') is not (action == 'acquire'):
+        # No non-atomic success fallback: a backend without maintenance must be
+        # upgraded through a supported path before service replacement.
+        raise ValueError('An active meeting, another maintenance owner or unsupported guard prevents installing or updating Heed.')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["acquire", "release"])
-    parser.add_argument("--base-url")
-    parser.add_argument("--owner", default=os.environ.get("HEED_LIFECYCLE_GUARD_TOKEN"))
+    parser.add_argument('action', choices=['acquire','release'])
+    parser.add_argument('--base-url')
+    parser.add_argument('--expected-root')
+    parser.add_argument('--owner', default=os.environ.get('HEED_LIFECYCLE_GUARD_TOKEN'))
     arguments = parser.parse_args()
     try:
+        if arguments.expected_root is not None and arguments.base_url is None:
+            raise ValueError('An expected runtime root requires an explicit loopback API target.')
         if arguments.base_url is not None:
-            # An explicit destination is independently identity-checked by guard().
-            # Unrelated configured/legacy listeners must not influence this request.
-            guard(arguments.action,arguments.base_url.rstrip('/'),arguments.owner)
+            guard(arguments.action,arguments.base_url.rstrip('/'),arguments.owner,arguments.expected_root)
         else:
-            ports=service_config()
-            previous=saved_service_ports()
+            ports=service_config(); previous=saved_service_ports()
             targets=control_targets(str(ROOT),ports,{port:process_records(port) for port in set([ports['api'],LEGACY['api'],*([] if previous is None else [previous['api']])])},previous)
-            for port in targets:
-                guard(arguments.action,f'http://127.0.0.1:{port}',arguments.owner,legacy_owned=port==LEGACY['api'])
-            if not targets and occupied(ports['api']):raise ValueError('The configured API listener is not checkout-owned Heed. No services were changed.')
-    except (ValueError, RuntimeError, OSError, json.JSONDecodeError, urllib.error.URLError) as error:
+            for port in targets: guard(arguments.action,f'http://127.0.0.1:{port}',arguments.owner)
+            if not targets and occupied(ports['api']): raise ValueError('The configured API listener is not checkout-owned Heed. No services were changed.')
+    except (ValueError, RuntimeError, OSError) as error:
         sys.exit(str(error))

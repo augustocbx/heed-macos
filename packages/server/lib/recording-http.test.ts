@@ -53,7 +53,7 @@ test("authoritative lifecycle status is available without a browser owner", asyn
 
 test("all lifecycle and legacy capture controls reject nonlocal origins", async () => {
  for (const [path, body] of [
-  ["/api/recording/status", undefined], ["/api/recording/speakers", { meetingId: "missing", expectedRevision: 0, speakerNames: {} }],
+  ["/api/recording/lifecycle", undefined], ["/api/recording/status", undefined], ["/api/recording/speakers", { meetingId: "missing", expectedRevision: 0, speakerNames: {} }],
   ["/api/recording/retry", { requestId: "retry", meetingId: "missing" }], ["/api/recording/maintenance", { acquire: true, owner:"http-fixture" }],
   ["/api/sysrecord/start", { requestId: "start", mode: "mic" }], ["/api/sysrecord/stop", { requestId: "stop", meetingId: "missing" }],
   ["/api/desktop/control/commands", { action: "start", language: "en", requestId: "menu" }],
@@ -129,18 +129,40 @@ test("restart recovery finalizes and saves once without any browser, preserving 
 
 test("completed status hydrates current meeting edits and never resurrects a deleted meeting",async()=>{
  const manifest = join(directory,"recording-manifest.json");
- const persisted = readFileSync(manifest,"utf8");
- const updated = await request("/api/sessions?id=recovery-fixture",{speakers:["Ana Silva"],segments:[{speaker:"Ana Silva",channel:"sys",text:"Bom dia",start:0,end:2.25}],aiNotes:"User-edited notes"},undefined,"PATCH");
+ let persisted = readFileSync(manifest,"utf8");
+ const updated = await request("/api/sessions?id=recovery-fixture",{speakers:["Ana Silva"],segments:[{speaker:"Ana Silva",channel:"sys",text:"Bom dia",start:0,end:2.25}],aiNotes:"User-edited notes",transcript:"SYNTHETIC_PRIVATE_SENTINEL".repeat(5000)},undefined,"PATCH");
  expect(updated.status).toBe(200);
  for (const snapshot of [
   (await request("/api/recording/status")).body,
   (await request("/api/desktop/control/poll",{client:"new-browser"})).body.status.snapshot,
   (await request("/api/recording/retry",{requestId:"completed-retry",meetingId:"recovery-fixture"})).body,
  ]) expect(snapshot).toMatchObject({state:"completed",session:{speakers:["Ana Silva"],aiNotes:"User-edited notes"},segments:[{speaker:"Ana Silva"}]});
+ const legacy = await request("/api/desktop/control/status");
+ expect(JSON.stringify(legacy.body).length).toBeGreaterThan(65536);
+ const compact = await request("/api/recording/lifecycle");
+ expect(compact.status).toBe(200);
+ expect(compact.body).toMatchObject({service:"heed-api",protocolVersion:1,recording:false,processing:false,pending:false,starting:false,audioWork:false,maintenance:false});
+ expect(Object.keys(compact.body).sort()).toEqual(["audioWork","checkoutRoot","maintenance","pending","pid","processing","protocolVersion","recording","service","starting"]);
+ expect(JSON.stringify(compact.body)).not.toContain("SYNTHETIC_PRIVATE_SENTINEL");
+ expect(JSON.stringify(compact.body).length).toBeLessThan(4096);
+ expect(readFileSync(manifest,"utf8")).toBe(persisted);
+ for (const acquire of [true,false]) {
+  const acknowledgement=await request("/api/recording/maintenance",{acquire,owner:"compact-fixture",projection:"lifecycle"});
+  expect(acknowledgement.body.maintenance).toBe(acquire);
+  expect(Object.keys(acknowledgement.body).sort()).toEqual(Object.keys(compact.body).sort());
+ }
+ // Maintenance writes its own revision; subsequent UI reads remain read-only.
+ persisted=readFileSync(manifest,"utf8");
  const abort = new AbortController();
  const stream = await fetch(`${base}/api/sysrecord/live`,{signal:abort.signal});
  const reader = stream.body!.getReader();
- const frame = new TextDecoder().decode((await reader.read()).value).split("\n\n")[0];
+ let buffered = "";
+ const decoder = new TextDecoder();
+ while (!buffered.includes("\n\n")) {
+  const chunk=await reader.read(); expect(chunk.done).toBe(false);
+  buffered+=decoder.decode(chunk.value,{stream:true}); expect(buffered.length).toBeLessThan(1_000_000);
+ }
+ const frame=buffered.split("\n\n")[0];
  const replay = JSON.parse(frame.split("\ndata: ")[1]);
  expect(replay.session).toMatchObject({speakers:["Ana Silva"],aiNotes:"User-edited notes"});
  abort.abort();

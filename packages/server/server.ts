@@ -70,7 +70,7 @@ let manualNotesController: AbortController | null = null;
 let manualNotesDone: Promise<void> | null = null;
 function audioWorkBusy() {
  return !!(recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning || transcriptionRequests
-  || ["starting", "stopping", "finalizing"].includes(recordingCoordinator.snapshot().state));
+  || ["starting", "stopping", "finalizing"].includes(recordingCoordinator.lifecycleState().state));
 }
 async function preemptNotes() {
  manualNotesController?.abort();
@@ -2259,16 +2259,20 @@ function hydratedRecordingSnapshot(snapshot: RecordingSnapshot = recordingCoordi
  return {...snapshot,session,segments:session?.segments ?? [],speakerNames:{},path:session?.files?.wav || null,
   seconds:session?.duration ?? 0,liveModel:session?.liveModel,finalCapture:undefined};
 }
+function lifecycleMetadata(state: Pick<RecordingSnapshot,"state"|"maintenance"> = recordingCoordinator.lifecycleState()) {
+ return {...API_IDENTITY, recording:!!recorderProc && recorderProc.exitCode === null,
+  processing:["stopping","finalizing"].includes(state.state) || recordingFinalizationRunning,
+  starting:state.state === "starting", pending:false, audioWork:audioWorkBusy(), maintenance:state.maintenance};
+}
 function desktopRecordingStatus() {
  const state = hydratedRecordingSnapshot();
- return {...API_IDENTITY, ...state, snapshot:state, seconds:Math.floor(state.seconds), recording:!!recorderProc && recorderProc.exitCode === null,
-  processing:["stopping","finalizing"].includes(state.state) || recordingFinalizationRunning,
-  starting:state.state === "starting", pending:false, audioWork:audioWorkBusy(), clientConnected:true, ready:!state.maintenance,
+ return {...state, ...lifecycleMetadata(state), snapshot:state, seconds:Math.floor(state.seconds), clientConnected:true, ready:!state.maintenance,
   smbCommand:smbConnections?.desktopCommand()||null,meetingDetection:meetingDetection.status(),language:recordingLanguage,uiLocale:configuredUiLocale(loadConfig()),storage:{...managedQuota.snapshot(),bytes:managedQuota.snapshot().usedBytes},quotaStopped:!!quotaStopResult};
 }
 async function handleRecordingControl(req: Request, pathname: string): Promise<Response> {
  if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
  try {
+  if (req.method === "GET" && pathname === "/api/recording/lifecycle") return Response.json(lifecycleMetadata(),{headers:{"Cache-Control":"no-store"}});
   if (req.method === "GET" && pathname === "/api/recording/status") return Response.json(hydratedRecordingSnapshot());
   if (req.method !== "POST") return new Response(null,{status:405});
   const body = await req.json();
@@ -2289,7 +2293,8 @@ async function handleRecordingControl(req: Request, pathname: string): Promise<R
    if (typeof body.acquire !== "boolean" || typeof body.owner !== "string" || !body.owner.trim() || body.owner.length > 128) return Response.json({error:"Choose a valid maintenance owner"},{status:400});
    // Installers must not replace services while any audio work (including manual transcription) runs.
    if (body.acquire && audioWorkBusy()) return Response.json({error:"Wait for the current recording or transcription to finish."},{status:409});
-   return Response.json(hydratedRecordingSnapshot(recordingCoordinator.setMaintenance(body.acquire,body.owner)));
+   const state=recordingCoordinator.setMaintenance(body.acquire,body.owner);
+   return Response.json(body.projection === "lifecycle" ? lifecycleMetadata(state) : hydratedRecordingSnapshot(state));
   }
   return Response.json({error:"Unknown recording control endpoint"},{status:404});
  } catch (error) { return recordingControlError(error); }

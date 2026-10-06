@@ -227,7 +227,7 @@ check "refusal performs no launchd, credential or permission operations" cmp -s 
 # The supported migration fixture has the real configuration and lifecycle helpers.
 # Keep the incompatible checkout control above rather than bypassing the installer gate.
 mkdir -p "$LEGACY/scripts" "$LEGACY/config" "$LEGACY/packages/desktop"
-cp "$HEED_REPO_ROOT/scripts/service_config.py" "$HEED_REPO_ROOT/scripts/service_runtime.py" "$LEGACY/scripts/"
+cp "$HEED_REPO_ROOT/scripts/service_config.py" "$HEED_REPO_ROOT/scripts/service_runtime.py" "$HEED_REPO_ROOT/scripts/lifecycle_metadata.py" "$LEGACY/scripts/"
 cp "$HEED_REPO_ROOT/config/service-ports.json" "$LEGACY/config/"
 cp "$HEED_REPO_ROOT/packages/desktop/guard-lifecycle.py" "$LEGACY/packages/desktop/"
 # This disposable device already uses the simulator's ports. Persist them so

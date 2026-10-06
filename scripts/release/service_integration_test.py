@@ -55,7 +55,7 @@ class ServiceIntegrationTest(unittest.TestCase):
         payload = self.directory / 'payload'
         (payload / 'scripts/release').mkdir(parents=True)
         (payload / 'config').mkdir()
-        for name in ['service_config.py', 'service_runtime.py', 'service_diagnostics.py', 'postmortem.py']:
+        for name in ['lifecycle_metadata.py', 'service_config.py', 'service_runtime.py', 'service_diagnostics.py', 'postmortem.py']:
             shutil.copyfile(ROOT / 'scripts' / name, payload / 'scripts' / name)
         shutil.copyfile(ROOT / 'config/service-ports.json', payload / 'config/service-ports.json')
         shutil.copyfile(ROOT / 'scripts/release/heed_release.py', payload / 'scripts/release/heed_release.py')
@@ -63,7 +63,7 @@ class ServiceIntegrationTest(unittest.TestCase):
         cleanup = script.split('# Development material that the installed app never reads.\n', 1)[1].split("# Validate the full offline payload", 1)[0]
         result = subprocess.run(['bash', '-e', '-c', cleanup], cwd=payload, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        for name in ['service_config.py', 'service_runtime.py', 'service_diagnostics.py']:
+        for name in ['lifecycle_metadata.py', 'service_config.py', 'service_runtime.py', 'service_diagnostics.py']:
             self.assertTrue((payload / 'scripts' / name).is_file(), name)
         self.assertFalse((payload / 'scripts/postmortem.py').exists())
         result = subprocess.run([sys.executable, '-c', 'import service_config,service_runtime,service_diagnostics;print(service_config.service_config())'],
@@ -74,6 +74,23 @@ class ServiceIntegrationTest(unittest.TestCase):
         result = subprocess.run([sys.executable, str(self.directory / 'heed_release.py'), 'ports'],
                                 env={**self.env, 'HEED_SERVICE_CONFIG_ROOT': str(payload)}, capture_output=True, text=True)
         self.assertEqual(result.stdout.strip(), '48100 48101 48102', result.stderr)
+
+    def test_standalone_uninstall_copies_projector_before_runtime_removal(self):
+        payload=self.directory/'installed/runtime/current'
+        (payload/'scripts/release').mkdir(parents=True)
+        shutil.copyfile(ROOT/'scripts/release/heed_release.py',payload/'scripts/release/heed_release.py')
+        shutil.copyfile(ROOT/'scripts/lifecycle_metadata.py',payload/'scripts/lifecycle_metadata.py')
+        copied=self.directory/'copied';copied.mkdir()
+        script=(ROOT/'scripts/release/uninstall.sh').read_text()
+        fragment=script[script.index('HEED_HELPER="$HEED_TEMP/heed_release.py"'):script.index('HEED_STATE="$HEED_HOME/install.json"')]
+        result=subprocess.run(['bash','-eu','-c',fragment],env={**self.env,'HEED_TEMP':str(copied),'HEED_HOME':str(self.directory/'installed')},capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        shutil.rmtree(payload)
+        result=subprocess.run([sys.executable,'-c',"import io,lifecycle_metadata;assert lifecycle_metadata.project(io.BytesIO(b'{\"maintenance\":false}')) == {'maintenance':False}"],cwd=copied,env=self.env,capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        result=subprocess.run([sys.executable,str(copied/'heed_release.py'),'remaining',str(payload)],cwd=copied,env=self.env,capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(result.stdout,'')
 
     def test_release_readiness_rejects_a_proxy_with_only_matching_version(self):
         version = {'app': 'heed', 'component': 'api', 'version': '1.2.0', 'commit': 'abc'}
@@ -99,11 +116,12 @@ class ServiceIntegrationTest(unittest.TestCase):
         helper.write_text('pass\n')
         fragment = script[script.index('# The guard imports'):script.index('export HEED_LIFECYCLE_GUARD_TOKEN=')]
         environment = {**self.env, 'HEED_STAGE': str(stage), 'HEED_PREVIOUS_DIR': str(previous),
-                       'HEED_LEGACY_ROOT': '', 'HEED_HELPER': str(helper), 'HEED_LIFECYCLE_GUARD_TOKEN': 'original-owner',
+                       'HEED_API_PORT':'48110', 'HEED_LEGACY_ROOT': '', 'HEED_HELPER': str(helper), 'HEED_LIFECYCLE_GUARD_TOKEN': 'original-owner',
                        'TOKEN_FILE': str(token), 'HEED_VERSION': '1.2.0'}
         result = subprocess.run(['bash', '-eu', '-c', fragment + '\nprintf "%s" "$HEED_GUARD_SCRIPT"'],
                                 env=environment, capture_output=True, text=True)
-        self.assertEqual(result.stdout, str(previous / 'packages/desktop/guard-lifecycle.py'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, str(stage / 'packages/desktop/guard-lifecycle.py'))
         rollback = script.split('rollback() {', 1)[1].split("\nstep 'Stopping the running Heed services'", 1)[0]
         result = subprocess.run(['bash', '-eu', '-c', 'rollback() {' + rollback + '\nrollback'],
                                 env=environment, capture_output=True, text=True)
@@ -116,6 +134,17 @@ class ServiceIntegrationTest(unittest.TestCase):
         with patch.object(heed_release, 'listener_pids', return_value=[123456]), \
              patch.object(heed_release, 'process_cwd', return_value=str(ROOT)), \
              patch.object(heed_release.subprocess, 'run', return_value=SimpleNamespace(stdout='ruby unrelated.rb')), \
+             patch.object(heed_release.os, 'kill') as kill:
+            self.assertEqual(heed_release.command_stop_services(arguments), 2)
+            kill.assert_not_called()
+
+    def test_nested_unrelated_worktree_never_inherits_stop_authority(self):
+        from types import SimpleNamespace
+        nested = ROOT / '.claude/worktrees/unrelated-issue'
+        arguments = SimpleNamespace(root=[str(ROOT)], ports=[48110], timeout=0)
+        with patch.object(heed_release, 'listener_pids', return_value=[123456]), \
+             patch.object(heed_release, 'process_cwd', return_value=str(nested)), \
+             patch.object(heed_release.subprocess, 'run', return_value=SimpleNamespace(stdout='bun run packages/server/server.ts')), \
              patch.object(heed_release.os, 'kill') as kill:
             self.assertEqual(heed_release.command_stop_services(arguments), 2)
             kill.assert_not_called()
@@ -197,23 +226,19 @@ class ServiceIntegrationTest(unittest.TestCase):
             problems = heed_release.check_services('1.2.0', 48110, 48111, 48112, 'abc')
         self.assertEqual(set(problems.values()), {'not responding'})
 
-    def test_busy_refuses_partial_state_and_an_unresponsive_listener(self):
+    def test_busy_refuses_an_unresponsive_listener_and_accepts_absent_port(self):
         from types import SimpleNamespace
+        import service_runtime
         arguments = SimpleNamespace(api_port=48110, root=str(ROOT))
-        with patch.object(heed_release, 'fetch_json', return_value=(200, {'recording': False}, '')), \
-             patch.object(heed_release, 'service_identity', return_value={'service': 'heed-api'}):
+        with patch.object(heed_release, 'listener_pids', return_value=[123456]), \
+             patch.object(service_runtime, 'verified_api_identity', side_effect=ValueError('unresponsive')):
             self.assertEqual(heed_release.command_busy(arguments), 2)
-        with patch.object(heed_release, 'fetch_json', return_value=(None, None, '')), \
-             patch.object(heed_release, 'listener_pids', return_value=[123456]):
+        with patch.object(heed_release, 'listener_pids', return_value=[]), \
+             patch.object(service_runtime, 'occupied', return_value=False):
+            self.assertEqual(heed_release.command_busy(arguments), 0)
+        with patch.object(heed_release, 'listener_pids', return_value=[]), \
+             patch.object(service_runtime, 'occupied', return_value=True):
             self.assertEqual(heed_release.command_busy(arguments), 2)
-        diagnostics = io.StringIO()
-        old_owned = {key: False for key in heed_release.BUSY_KEYS if key != 'audioWork'}
-        with patch.object(heed_release, 'fetch_json', return_value=(200, old_owned, '')), \
-             patch.object(heed_release, 'service_identity', return_value={'service': 'heed-api'}), \
-             contextlib.redirect_stderr(diagnostics):
-            self.assertEqual(heed_release.command_busy(arguments), 2)
-        self.assertIn('incomplete or unsupported recording status', diagnostics.getvalue())
-        self.assertNotIn('another application', diagnostics.getvalue())
 
     def test_restore_previous_absence_removes_only_the_installers_exact_ports(self):
         app = pathlib.Path(self.env['HEED_APP_DIR'])

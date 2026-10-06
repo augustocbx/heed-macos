@@ -40,6 +40,9 @@ export class RecordingCoordinator {
     else if (this.value.maintenance) this.change({maintenance:false});
   }
   private now() {return this.options.now?.() ?? Date.now();}
+  lifecycleState(): Pick<RecordingSnapshot,"state"|"maintenance"> {
+    return {state:this.value.state,maintenance:this.value.maintenance};
+  }
   snapshot(): RecordingSnapshot {
     const value=structuredClone(this.value);
     if (value.state === "recording" && value.startedAt !== null) value.seconds=Math.max(0,(this.now()-value.startedAt)/1000);

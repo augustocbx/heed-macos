@@ -12,6 +12,7 @@ import sys
 import time
 import urllib.request
 import urllib.parse
+from lifecycle_metadata import BUSY_KEYS, read_status, request as lifecycle_request, valid_identity
 from service_config import service_config,saved_service_ports,transcription_url,ROOT
 HEALTH={'api':'/.well-known/heed-service','ui':'/.well-known/heed-service','transcription':'/health'}
 NAMES={'api':'heed-api','ui':'heed-ui','transcription':'heed-transcription'}
@@ -98,10 +99,17 @@ def process_records(port,timeout=None):
   command=subprocess.run(['ps','-ww','-p',str(pid),'-o','command='],capture_output=True,text=True,timeout=timeout).stdout.strip()
   records.append({'pid':pid,'cwd':paths[0] if paths else '', 'command':command})
  return records
-def status(port):
- opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
- with opener.open(f'http://127.0.0.1:{port}/api/desktop/control/status',timeout=5) as response:
-  return json.loads(response.read(65536))
+def verified_api_identity(base,root):
+ code,identity=lifecycle_request(base,'/.well-known/heed-service',max_bytes=65536,timeout=2)
+ if code!=200 or not valid_identity(identity,root):raise ValueError('The configured API listener has no matching Heed identity. No control request was sent.')
+ port=urllib.parse.urlsplit(base).port
+ records=process_records(port,timeout=2)
+ if not records or not all(entry['pid']==identity['pid'] and owned_process(root,'api',entry['cwd'],entry['command']) for entry in records):raise ValueError('The API identity does not match its independently owned listener. No control request was sent.')
+ return identity
+def status(port,root=None):
+ root=str(ROOT) if root is None else root
+ base=f'http://127.0.0.1:{port}'
+ return read_status(base,verified_api_identity(base,root))
 def control_targets(root,ports,records,previous=None):
  targets=[]
  for port in set([ports['api'],LEGACY['api'],*([] if previous is None else [previous['api']])]):
@@ -124,13 +132,13 @@ def restart_plan(root,ports,records,get_status,previous=None):
      if service=='api':api_ports.append(port)
  for port in set(api_ports):
   state=get_status(port)
-  if not all(type(state.get(key)) is bool for key in ['recording','processing','pending','starting']):raise RuntimeError('Could not verify checkout-owned Heed recording status. No services were stopped.')
-  if any(state[key] for key in ['recording','processing','pending','starting']):raise RuntimeError('An active meeting prevents restarting Heed services.')
+  if not all(type(state.get(key)) is bool for key in BUSY_KEYS):raise RuntimeError('Could not verify checkout-owned Heed recording status. No services were stopped.')
+  if any(state[key] for key in BUSY_KEYS):raise RuntimeError('An active meeting prevents restarting Heed services.')
  return list(set(plan))
 def restart(root,ports):
  previous=saved_service_ports()
  records={port:process_records(port) for port in set(ports.values())|set(LEGACY.values())|set((previous or {}).values())}
- plan=restart_plan(root,ports,records,status,previous)
+ plan=restart_plan(root,ports,records,lambda port:status(port,root),previous)
  # All ownership and busy checks complete before the first termination.
  for pid in plan:
   current=subprocess.run(['ps','-ww','-p',str(pid),'-o','command='],capture_output=True,text=True).stdout.strip()
