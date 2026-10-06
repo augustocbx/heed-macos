@@ -36,26 +36,26 @@ export function destinationHeader(value:unknown):{format:'heed-portable-library'
 /** Scoped child process: requests carry paths and opaque identities, never credentials. */
 export class MacSmbNative implements SmbNative {
  private helper=fileURLToPath(new URL('../native/smb-filesystem.py',import.meta.url));
- private spawn(request:SmbRequest,signal?:AbortSignal){
+ private async spawn(request:SmbRequest,signal?:AbortSignal){
   signal?.throwIfAborted();
   const process=track(Bun.spawn(['/usr/bin/python3',this.helper],{stdin:'pipe',stdout:'pipe',stderr:'ignore'}));
-  process.stdin.write(encode(request));process.stdin.write('\n');
   const abort=()=>process.kill('SIGTERM');signal?.addEventListener('abort',abort,{once:true});
   const timeout=setTimeout(abort,120_000);
   const clean=()=>{clearTimeout(timeout);signal?.removeEventListener('abort',abort);};
+  try{process.stdin.write(encode(request));process.stdin.write('\n');}catch(error){abort();await process.exited;clean();throw error;}
   return {process,clean,abort};
  }
  async *stream(request:SmbRequest,max:number,signal?:AbortSignal){
-  const {process,clean,abort}=this.spawn(request,signal);process.stdin.end();let received=0;
-  try{for await(const chunk of process.stdout){signal?.throwIfAborted();received+=chunk.length;if(received>max)throw failure();yield chunk;}if(await process.exited!==0)throw failure();signal?.throwIfAborted();}
+  const {process,clean,abort}=await this.spawn(request,signal);let received=0;
+  try{process.stdin.end();for await(const chunk of process.stdout){signal?.throwIfAborted();received+=chunk.length;if(received>max)throw failure();yield chunk;}if(await process.exited!==0)throw failure();signal?.throwIfAborted();}
   finally{abort();await process.exited;clean();}
  }
  async read(request:SmbRequest,max:number,signal?:AbortSignal){const chunks:Uint8Array[]=[];for await(const chunk of this.stream(request,max,signal))chunks.push(chunk);return Buffer.concat(chunks);}
  async json(request:SmbRequest,signal?:AbortSignal){try{return JSON.parse(Buffer.from(await this.read(request,1_048_576,signal)).toString('utf8'));}catch{signal?.throwIfAborted();throw failure();}}
  async write(request:SmbRequest,source:AsyncIterable<Uint8Array>,signal?:AbortSignal){
-  const {process,clean,abort}=this.spawn(request,signal);let written=0;const output=new Response(process.stdout).arrayBuffer();
+  const {process,clean,abort}=await this.spawn(request,signal);let written=0;const output=new Response(process.stdout).arrayBuffer();
   try{for await(const chunk of source){signal?.throwIfAborted();written+=chunk.length;if(written>(request.bytes??0))throw failure();await process.stdin.write(chunk);await process.stdin.flush();}if(written!==request.bytes)throw failure();process.stdin.end();if(await process.exited!==0)throw failure();if((await output).byteLength>4096)throw failure();signal?.throwIfAborted();}
-  finally{process.stdin.end();abort();await process.exited;await output.catch(()=>{});clean();}
+  finally{try{process.stdin.end();}finally{abort();await process.exited;await output.catch(()=>{});clean();}}
  }
 }
 

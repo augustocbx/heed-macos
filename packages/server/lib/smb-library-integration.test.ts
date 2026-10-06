@@ -29,6 +29,12 @@ function device(share:Share,quota?:QuotaBudget|((root:string)=>QuotaBudget)){
  return {root,recordingsDir,sessions,native,library,service,connect,provider};
 }
 function meeting(title='Planning',createdAt='2026-10-05T10:00:00Z'):Session{return {id:randomUUID(),title,createdAt,duration:12,language:'en',transcript:'Ana delivers review',speakers:['Ana'],segments:[{speaker:'Ana',start:0,end:12,text:'delivers review'}],aiNotes:'Review is due Friday.',summary:'Review',tags:['Product'],pinned:false,transcriptFinalized:true,transcriptionModel:'synthetic-local-model'};}
+test('deleted source hidden by provider scoping retires its SMB job before newer publication',async()=>{
+ const first=new Share(),second=new Share(),a=device(first),old=meeting('Old source');a.sessions.create(old);await a.connect();await a.service.tick();await a.service.tick(true);
+ (a.native as {share:Share}).share=second;await a.connect();a.native.interrupt=true;await a.service.tick(true);expect(a.service.snapshot().connections.find(c=>c.enabled)?.pending).toBe(1);
+ a.library.markDeleted(old.id);a.sessions.remove(old.id);const newer=meeting('New source');a.sessions.create(newer);expect(a.library.snapshot().previews.some(p=>p.meetingId===old.id)).toBe(false);
+ await a.service.tick(true);expect(a.service.snapshot().connections.find(c=>c.enabled)?.pending).toBe(0);expect([...second.files.keys()].filter(p=>p.startsWith('commits/'))).toHaveLength(1);expect([...first.files.keys()].filter(p=>p.startsWith('commits/'))).toHaveLength(1);expect(a.sessions.read(newer.id)?.title).toBe('New source');
+});
 test('two-device SMB publication is marker-last; read-only import stays usable offline without audio download',async()=>{
  const share=new Share(),a=device(share),b=device(share);const source=meeting();const wav=Buffer.alloc(48);wav.write('RIFF');wav.write('WAVE',8);const path=join(a.recordingsDir,'synthetic.wav');writeFileSync(path,wav);a.sessions.create({...source,files:{wav:path},embeddings:{Ana:[1,2]}});
  await a.connect();await a.service.tick();expect(a.service.snapshot().connections[0]!.pending).toBe(0);expect(share.writes.at(-1)).toMatch(/^commits\//);
