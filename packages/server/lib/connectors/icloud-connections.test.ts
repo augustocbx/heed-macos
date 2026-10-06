@@ -56,5 +56,6 @@ test('selected shared provider cannot bypass recovery after failed pause and fai
  const c=new ICloudConnections({...f.options,library,providers,native,write:(p:string,value:any)=>{if(p===f.options.configPath&&++writes===3&&failRestore)throw Error('Restore failed');atomicWriteJson(p,value);}});
  const selected=await c.select();await c.connect({name:'Original',receipt:selected.receipt,create:false});const id=c.snapshot().connection!.id;expect(library.snapshot().providerId).toBe(id);failPreference=true;failRestore=true;await expect(c.enable(false,id)).rejects.toThrow('restored');expect(library.snapshot().providerId).toBe(id);
  const before=nativeCalls;await library.discover();expect(library.snapshot().complete).toBe(false);expect(library.snapshot().error).toContain('recovery');expect(nativeCalls).toBe(before);expect(c.unavailable()).toBe(true);
+ expect(existsSync(f.options.configPath+'.transition.json')).toBe(true);let registered=0;expect(()=>new ICloudConnections({...f.options,library,providers:{...providers,register(){registered++;}}})).toThrow('recovery');expect(registered).toBe(0);
  }finally{f.close();}
 });

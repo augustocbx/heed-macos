@@ -1,4 +1,5 @@
-import {existsSync,readFileSync,lstatSync} from 'node:fs';import {randomUUID,createHash} from 'node:crypto';
+import {existsSync,unlinkSync} from 'node:fs';import {randomUUID,createHash} from 'node:crypto';
+import {readPrivateJson} from './private-json';
 import {atomicWriteJson} from '../atomic-json';import {desktopRequestAllowed} from '../desktop-permissions';
 import {MacCloudNative,ICloudFolderProvider,cloudBinding,cloudHeader,cloudUnavailable,type CloudBinding,type CloudNative} from './icloud-folder';
 interface Connection {id:string;name:string;destinationId:string;binding:CloudBinding;enabled:boolean}
@@ -6,13 +7,13 @@ interface Library {hasLocalRevision(revisionId:string):boolean;withMutation?<T>(
 interface Options {sessions?:()=>Array<{transcriptFinalized?:boolean;files?:{wav?:string}}>;configPath:string;jobsPath:string;library:Library|(()=>Library);native?:CloudNative;busy:()=>boolean;write?:typeof atomicWriteJson;now?:()=>number;providers?:{withMutation?<T>(run:()=>Promise<T>):Promise<T>;preferredId?():string|null;currentId?():string|undefined|null;assertIdle():void;register(id:string,factory:()=>ICloudFolderProvider):void;activate(id:string):void;deactivate(id:string):void;unregister(id:string):void}}
 interface Job {revisionId:string;attempts:number;next:number;state:string}
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
-function read(path:string,max:number){if(!existsSync(path))return null;if(!lstatSync(path).isFile()||lstatSync(path).size>max)throw cloudUnavailable();return JSON.parse(readFileSync(path,'utf8'));}
+function read(path:string,max:number){return existsSync(path)?readPrivateJson(path,max):null;}
 function name(value:string){if(typeof value!=='string'||!value.trim()||value.length>80||/[\x00-\x1f\x7f]/.test(value))throw Error('Invalid iCloud library name');return value.trim();}
 /** Connections are explicit. Observation and retries cannot connect a private account by themselves. */
 export class ICloudConnections {
  private connection:Connection|null=null;private jobs:Job[]=[];private native:CloudNative;private running=false;private controller?:AbortController;
  private receipts=new Map<string,{binding:CloudBinding;destinationId:string|null;time:number}>();private preview:{token:string;ids:string[];bytes:number;count:number;time:number}|null=null;private error:string|null=null;private factories=new Map<string,()=>ICloudFolderProvider>();private mutating=false;private recoveryRequired=false;
- constructor(private options:Options){this.native=options.native||new MacCloudNative();const config=read(options.configPath,150000);if(config){if(config.version!==1||!('connection' in config))throw cloudUnavailable();const c=config.connection;if(c){if(Object.keys(c).sort().join(',')!=='binding,destinationId,enabled,id,name'||!UUID.test(c.id)||!UUID.test(c.destinationId)||typeof c.enabled!=='boolean'||name(c.name)!==c.name)throw cloudUnavailable();cloudBinding(c.binding);this.connection=c;}}
+ constructor(private options:Options){this.native=options.native||new MacCloudNative();if(existsSync(options.configPath+'.transition.json'))throw Error('iCloud settings recovery is required. Preserve private configuration and pending copies.');const config=read(options.configPath,150000);if(config){if(config.version!==1||!('connection' in config))throw cloudUnavailable();const c=config.connection;if(c){if(Object.keys(c).sort().join(',')!=='binding,destinationId,enabled,id,name'||!UUID.test(c.id)||!UUID.test(c.destinationId)||typeof c.enabled!=='boolean'||name(c.name)!==c.name)throw cloudUnavailable();cloudBinding(c.binding);this.connection=c;}}
   const ledger=read(options.jobsPath,4_000_000);if(ledger){if(ledger.version!==1||!Array.isArray(ledger.jobs)||ledger.jobs.length>10000||ledger.jobs.some((j:Job)=>!UUID.test(j.revisionId)||!Number.isSafeInteger(j.attempts)||j.attempts<0||j.attempts>30||!Number.isFinite(j.next)||j.next<0||!['pending-upload','system-reported-uploaded','cloud-full','provider-offline','provider-error'].includes(j.state)))throw cloudUnavailable();this.jobs=ledger.jobs;}if(this.connection?.enabled)this.register(this.connection); }
  unavailable(){return this.recoveryRequired;}
  private assertRecovered(){if(this.recoveryRequired)throw Error('iCloud settings recovery is required. Preserve private configuration and pending copies.');}
@@ -21,9 +22,12 @@ export class ICloudConnections {
  private async mutate<T>(run:()=>Promise<T>):Promise<T>{if(this.mutating)throw Error('Wait for iCloud settings to finish');this.mutating=true;try{return this.options.providers?.withMutation?await this.options.providers.withMutation(run):this.owner().withMutation?await this.owner().withMutation!(run):await run();}finally{this.mutating=false;}}
  private control(value:Connection|null,activate:()=>void){
   const previous=this.connection?structuredClone(this.connection):null,preview=this.preview,preferred=this.options.providers?.preferredId?.()??null;
-  this.saveConnection(value);
-  try{activate();}catch(error){
-   try{this.saveConnection(previous);this.preview=preview;if(previous)this.register(previous);if(preferred)this.options.providers?.activate(preferred);else if(value)this.options.providers?.deactivate(value.id);if(value&&value.id!==previous?.id){this.options.providers?.unregister(value.id);this.factories.delete(value.id);}}
+  const intent=this.options.configPath+'.transition.json';
+  // Persist both bindings before changing either configuration or provider preferences.
+  (this.options.write||atomicWriteJson)(intent,{version:1,previous,next:value,preferred});
+  try{this.saveConnection(value);activate();unlinkSync(intent);}
+  catch(error){
+   try{this.connection=previous;if(previous)this.register(previous);if(preferred)this.options.providers?.activate(preferred);else if(value)this.options.providers?.deactivate(value.id);if(value&&value.id!==previous?.id){this.options.providers?.unregister(value.id);this.factories.delete(value.id);}this.saveConnection(previous);this.preview=preview;unlinkSync(intent);}
    catch{this.connection=previous||value;this.recoveryRequired=true;this.error='iCloud settings recovery is required. Retain the private configuration and pending jobs.';throw Error('iCloud settings could not be restored; preserve configuration for recovery');}
    throw error;
   }
@@ -34,7 +38,7 @@ export class ICloudConnections {
  private saveConnection(value:Connection|null){(this.options.write||atomicWriteJson)(this.options.configPath,{version:1,connection:value});this.connection=value;this.preview=null;}
  private editJobs(run:(jobs:Job[])=>void){const next=structuredClone(this.jobs);run(next);if(next.length>10000)throw Error('iCloud pending queue limit reached');(this.options.write||atomicWriteJson)(this.options.jobsPath,{version:1,jobs:next});this.jobs=next;}
  /** Native upload observation cannot release an unverified source before durable queue preparation. */
- protectedLocalPaths(){return this.recoveryRequired||this.connection?.enabled?(this.options.sessions?.()||[]).filter(s=>s.transcriptFinalized===true&&s.files?.wav).map(s=>s.files!.wav!):[];}
+ protectedLocalPaths(){return this.recoveryRequired||this.mutating||this.connection?.enabled?(this.options.sessions?.()||[]).filter(s=>s.transcriptFinalized===true&&s.files?.wav).map(s=>s.files!.wav!):[];}
  protectedRevisionIds(){return this.jobs.map(job=>job.revisionId);}
  snapshot(){const c=this.connection;return {recoveryRequired:this.recoveryRequired,connection:c?{id:c.id,name:c.name,destinationId:c.destinationId,enabled:c.enabled,pending:this.jobs.length,status:this.recoveryRequired?'recovery-required':this.jobs.some(j=>j.state==='cloud-full')?'cloud-full':this.jobs.some(j=>j.state==='provider-offline')?'provider-offline':this.jobs.length?'pending-upload':'connected',observations:this.jobs.reduce((counts,j)=>({...counts,[j.state]:(counts[j.state]||0)+1}),{} as Record<string,number>)}:null,syncing:this.running,error:this.error,preview:this.preview?{token:this.preview.token,count:this.preview.count,bytes:this.preview.bytes}:null,remoteChecksumVerified:false as const,confirmation:'local-only' as const};}
  async select(){this.idle();const binding=cloudBinding(await this.native.json({action:'pick'}));const probe=await this.native.json({action:'probe',binding}) as any;const header=cloudHeader(probe?.header);if(probe.remoteChecksumVerified!==false)throw cloudUnavailable();for(const [id,r] of this.receipts)if(this.now()-r.time>600000)this.receipts.delete(id);if(this.receipts.size>=16)this.receipts.delete(this.receipts.keys().next().value!);const receipt=randomUUID();this.receipts.set(receipt,{binding,destinationId:header?.destinationId??null,time:this.now()});return {receipt,needsCreation:!header,status:probe.status,confirmation:'local-only'};}

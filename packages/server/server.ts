@@ -47,6 +47,12 @@ import { type CaptureMode, nativeCaptureCommand, nativeRecordingCommand, verifyN
 const desktopPermissions = new DesktopPermissions();
 const retainedProcessing = new Map<string, number>();
 let captureLimitBytes=0;
+let recorderProc: ReturnType<typeof Bun.spawn> | null = null;
+let recorderPath: string | null = null;
+let recorderStarting = false;
+let recorderStartedAt = 0;
+let recorderStopping = false;
+let recordingLanguage: "pt" | "en" | null = null;
 let recordingWorkDirectory:string|null=null;
 let quotaReachedAt = 0;
 let quotaStopResult: any = null;
@@ -1176,12 +1182,6 @@ async function handleSummaryLine(req: Request): Promise<Response> {
 
 // --- Audio recording via ffmpeg + PipeWire/PulseAudio ---
 // Uses ffmpeg -f pulse which works reliably with PipeWire's PulseAudio layer
-let recorderProc: ReturnType<typeof Bun.spawn> | null = null;
-let recorderPath: string | null = null;
-let recorderStarting = false;
-let recorderStartedAt = 0;
-let recorderStopping = false;
-let recordingLanguage: "pt" | "en" | null = null;
 // ScreenCaptureKit system-audio helper (mac). When present + permission granted, it
 // replaces BlackHole as the system source — no driver, no output re-routing.
 let syscapProc: ReturnType<typeof Bun.spawn> | null = null;
