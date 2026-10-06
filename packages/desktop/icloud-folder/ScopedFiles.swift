@@ -41,33 +41,43 @@ final class ScopedFiles {
             return current
         } catch { close(current); throw error }
     }
-    func stream(_ path: String, max: Int, emit: (Data) throws -> Void) throws {
+    func stream(_ path: String, max: Int, validate: () throws -> Void = {}, emit: (Data) throws -> Void) throws {
         let parts = try artifactPath(path), parent = try self.parent(parts, create: false); defer { close(parent) }
         let file = openat(parent, parts.last!, O_RDONLY | O_NOFOLLOW | O_CLOEXEC); guard file >= 0 else { throw CloudFailure("Artifact unavailable or not hydrated") }; defer { close(file) }
         var info = stat(); guard fstat(file, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_size >= 0, info.st_size <= max else { throw CloudFailure("Artifact exceeds declared size") }
         var received = 0, buffer = [UInt8](repeating: 0, count: 65536)
-        while true { let count = Darwin.read(file, &buffer, buffer.count); guard count >= 0 else { throw CloudFailure("Artifact read failed") }; if count == 0 { break }; received += count; guard received <= max else { throw CloudFailure("Artifact grew during read") }; try emit(Data(buffer.prefix(count))) }
-        guard received == info.st_size else { throw CloudFailure("Artifact changed during read") }
+        while true { try validate(); let count = Darwin.read(file, &buffer, buffer.count); guard count >= 0 else { throw CloudFailure("Artifact read failed") }; if count == 0 { break }; received += count; guard received <= max else { throw CloudFailure("Artifact grew during read") }; try emit(Data(buffer.prefix(count))) }
+        try validate(); guard received == info.st_size else { throw CloudFailure("Artifact changed during read") }
     }
     func read(_ path: String, max: Int) throws -> Data { var data = Data(); try stream(path, max: max) { data.append($0) }; return data }
-    func write(_ path: String, bytes: Int, digest expected: String, stagingId: String = "synthetic-test", input: (Int) throws -> Data) throws {
+    func write(_ path: String, bytes: Int, digest expected: String, stagingId: String = "synthetic-test", validate: () throws -> Void = {}, input: (Int) throws -> Data) throws {
         let parts = try artifactPath(path), parent = try self.parent(parts, create: true); defer { close(parent) }
         guard bytes >= 0, bytes <= 8_000_000_000_000, expected.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw CloudFailure("Invalid object bounds") }
         guard stagingId.range(of: "^[A-Za-z0-9-]{1,64}$", options: .regularExpression) != nil else { throw CloudFailure("Invalid staging owner") }
         let temporary = ".heed-\(stagingId)-\(expected).pending"
+        let lockName = ".heed-\(stagingId)-\(expected).lock"
+        let lock = openat(parent, lockName, O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard lock >= 0 else { throw CloudFailure("Cannot lock artifact") }
+        var lockInfo = stat()
+        guard fstat(lock, &lockInfo) == 0, lockInfo.st_mode & S_IFMT == S_IFREG, lockInfo.st_nlink == 1,
+              flock(lock, LOCK_EX | LOCK_NB) == 0 else { close(lock); throw CloudFailure("Artifact writer busy") }
+        defer { close(lock) } // The stable lock name remains; removing it could split ownership across inodes.
         let file = openat(parent, temporary, O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard file >= 0 else { throw CloudFailure("Cannot stage artifact") }
         var info = stat()
         guard fstat(file, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1,
               flock(file, LOCK_EX | LOCK_NB) == 0, ftruncate(file, 0) == 0 else { close(file); throw CloudFailure("Artifact staging busy or unsafe") }
-        defer { close(file); unlinkat(parent, temporary, 0) }
+        defer { unlinkat(parent, temporary, 0); close(file) }
         var hash = SHA256(), received = 0
         while received < bytes {
+            try validate()
             let chunk = try input(min(65536, bytes - received)); guard !chunk.isEmpty, chunk.count <= bytes - received else { throw CloudFailure("Incomplete object") }
             hash.update(data: chunk); received += chunk.count
             try chunk.withUnsafeBytes { pointer in var offset = 0; while offset < chunk.count { let count = Darwin.write(file, pointer.baseAddress!.advanced(by: offset), chunk.count - offset); guard count > 0 else { throw CloudFailure("Artifact write failed") }; offset += count } }
         }
+        try validate()
         guard hash.finalize().map({ String(format: "%02x", $0) }).joined() == expected, fsync(file) == 0 else { throw CloudFailure("Artifact integrity failed") }
+        try validate()
         if renameatx_np(parent, temporary, parent, parts.last!, UInt32(RENAME_EXCL)) != 0 {
             guard errno == EEXIST else { throw CloudFailure("Artifact publication failed") }
             var existing = SHA256(), length = 0

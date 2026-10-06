@@ -9,6 +9,8 @@ struct CloudObservation: Codable {
     let errorCode: Int?
     var state: String {
         if !ubiquitous { return "unsupported-folder" }
+        if errorCode == 4354 { return "cloud-full" }
+        if errorCode == 4355 { return "provider-offline" }
         if errorCode != nil { return "provider-error" }
         if uploaded == true { return "system-reported-uploaded" }
         if uploading == true { return "uploading" }
@@ -29,7 +31,7 @@ func selfTests() throws {
     let uploaded = CloudObservation(ubiquitous:true,uploaded:true,uploading:false,downloaded:nil,errorCode:nil)
     try check(pending.state == "pending-upload" && !pending.remoteChecksumVerified,"Local saved data is not a remote receipt")
     try check(uploaded.state == "system-reported-uploaded" && !uploaded.remoteChecksumVerified,"System upload status is distinct from remote checksum verification")
-    try check(CloudObservation(ubiquitous:true,uploaded:true,uploading:false,downloaded:nil,errorCode:4354).state == "provider-error","Provider errors outrank an old upload flag")
+    try check(CloudObservation(ubiquitous:true,uploaded:true,uploading:false,downloaded:nil,errorCode:4354).state == "cloud-full","Provider errors outrank an old upload flag")
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("heed-icloud-prototype-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
     defer { try? FileManager.default.removeItem(at:folder) }

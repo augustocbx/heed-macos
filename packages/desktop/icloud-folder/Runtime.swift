@@ -42,13 +42,29 @@ func withBinding<T>(_ binding: CloudBinding, operation: (URL) throws -> T) throw
     guard files.identity == binding.identity, try observe(root).ubiquitous else { throw CloudFailure("Selected iCloud folder unavailable") }
     return try operation(root)
 }
-func coordinated<T>(_ root: URL, binding: CloudBinding, write: Bool, operation: (ScopedFiles) throws -> T) throws -> T {
+func checkpoint(root: URL, binding: CloudBinding) throws {
+    guard let token = Data(base64Encoded: binding.account), try sameAccount(token),
+          try ScopedFiles(root: root, expected: binding.identity).identity == binding.identity else { throw CloudFailure("iCloud account or selected folder changed") }
+}
+func coordinated<T>(_ root: URL, binding: CloudBinding, path: String = "heed-library.json", temporary: String? = nil, write: Bool, operation: @escaping (ScopedFiles) throws -> T) throws -> T {
     var coordinatorError: NSError?, result: Result<T, Error>?
-    let accessor: (URL) -> Void = { url in result = Result { try operation(ScopedFiles(root: url, expected: binding.identity)) } }
+    let target = root.appendingPathComponent(path).standardizedFileURL
+    guard target.resolvingSymlinksInPath().path == target.path else { throw CloudFailure("Unsafe coordinated path") }
+    let accessor: (URL) -> Void = { url in result = Result {
+        guard url.standardizedFileURL.path == target.path else { throw CloudFailure("Coordinated file moved outside selected scope") }
+        return try operation(ScopedFiles(root: root, expected: binding.identity))
+    } }
     // Upload observations happen after this accessor has returned, allowing provider work to proceed.
     let coordinator = NSFileCoordinator()
-    if write { coordinator.coordinate(writingItemAt: root, options: .forMerging, error: &coordinatorError, byAccessor: accessor) }
-    else { coordinator.coordinate(readingItemAt: root, options: [], error: &coordinatorError, byAccessor: accessor) }
+    if write, let temporary = temporary {
+        let stage = root.appendingPathComponent(temporary).standardizedFileURL
+        guard stage.resolvingSymlinksInPath().path == stage.path else { throw CloudFailure("Unsafe staging path") }
+        coordinator.coordinate(writingItemAt: target, options: .forReplacing, writingItemAt: stage, options: .forReplacing, error: &coordinatorError) { url, temp in
+            guard temp.standardizedFileURL.path == stage.path else { result = .failure(CloudFailure("Staging moved outside selected scope")); return }
+            accessor(url)
+        }
+    } else if write { coordinator.coordinate(writingItemAt: target, options: .forReplacing, error: &coordinatorError, byAccessor: accessor) }
+    else { coordinator.coordinate(readingItemAt: target, options: [], error: &coordinatorError, byAccessor: accessor) }
     if let error = coordinatorError { throw error }
     guard let result = result else { throw CloudFailure("File coordination unavailable") }
     return try result.get()
@@ -64,7 +80,7 @@ func header(_ files: ScopedFiles) throws -> [String: Any]? {
           let id = value["destinationId"] as? String, UUID(uuidString: id) != nil else { throw CloudFailure("Unsupported library descriptor") }
     return value
 }
-func createHeader(_ files: ScopedFiles, id: String) throws -> [String: Any] {
+func createHeader(_ files: ScopedFiles, id: String, validate: () throws -> Void = {}) throws -> [String: Any] {
     guard UUID(uuidString: id) != nil else { throw CloudFailure("Invalid destination identity") }
     if let existing = try header(files) { guard existing["destinationId"] as? String == id else { throw CloudFailure("Destination identity changed") }; return existing }
     guard let entries = fdopendir(dup(files.fd)) else { throw CloudFailure("Folder unavailable") }; defer { closedir(entries) }
@@ -74,9 +90,10 @@ func createHeader(_ files: ScopedFiles, id: String) throws -> [String: Any] {
     }
     let value: [String: Any] = ["format": "heed-portable-library", "schemaVersion": 1, "destinationId": id]
     let data = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
-    let temporary = ".heed-\(UUID().uuidString).pending", fd = openat(files.fd, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
-    guard fd >= 0 else { throw CloudFailure("Cannot create library descriptor") }; defer { close(fd); unlinkat(files.fd, temporary, 0) }
+    let temporary = ".heed-header-\(id).pending", fd = openat(files.fd, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+    guard fd >= 0 else { throw CloudFailure("Cannot create library descriptor") }; defer { unlinkat(files.fd, temporary, 0); close(fd) }
     try data.withUnsafeBytes { buffer in guard Darwin.write(fd, buffer.baseAddress, buffer.count) == buffer.count, fsync(fd) == 0 else { throw CloudFailure("Library descriptor write failed") } }
+    try validate()
     guard renameatx_np(files.fd, temporary, files.fd, "heed-library.json", UInt32(RENAME_EXCL)) == 0, fsync(files.fd) == 0 else { throw CloudFailure("Library descriptor creation changed") }
     return value
 }
@@ -130,9 +147,9 @@ func runtime() throws {
             try dictionaryJSON(["header": value as Any? ?? NSNull(), "status": try observe(root).state, "remoteChecksumVerified": false])
         case "create":
             guard let id = request.destinationId else { throw CloudFailure("Missing library identity") }
-            let value = try coordinated(root, binding: binding, write: true) { try createHeader($0, id: id) }; try dictionaryJSON(value)
+            let value = try coordinated(root, binding: binding, temporary: ".heed-header-\(id).pending", write: true) { try checkpoint(root: root, binding: binding); return try createHeader($0, id: id, validate: { try checkpoint(root: root, binding: binding) }) }; try dictionaryJSON(value)
         case "list":
-            let paths = try coordinated(root, binding: binding, write: false) { files in try requireHeader(files, destinationId: request.destinationId); return try files.listCommits() }; try outputJSON(paths)
+            let paths = try coordinated(root, binding: binding, path: "commits", write: false) { files in try requireHeader(files, destinationId: request.destinationId); return try files.listCommits() }; try outputJSON(paths)
         case "read", "write", "status", "hydrate", "watch":
             guard let path = request.path else { throw CloudFailure("Missing artifact path") }; _ = try artifactPath(path)
             if ["status", "hydrate", "watch"].contains(request.action) {
@@ -147,10 +164,13 @@ func runtime() throws {
                 guard let max = request.maxBytes, max >= 0, max <= 8_000_000_000_000 else { throw CloudFailure("Invalid read bounds") }
                 let state = try observe(root.appendingPathComponent(path))
                 if state.ubiquitous && ![URLUbiquitousItemDownloadingStatus.current.rawValue, URLUbiquitousItemDownloadingStatus.downloaded.rawValue].contains(state.downloaded ?? "") { throw CloudFailure("Artifact hydration pending") }
-                try coordinated(root, binding: binding, write: false) { files in try requireHeader(files, destinationId: request.destinationId); try files.stream(path, max: max) { FileHandle.standardOutput.write($0) } }
+                try coordinated(root, binding: binding, path: path, write: false) { files in try requireHeader(files, destinationId: request.destinationId); try files.stream(path, max: max, validate: { try checkpoint(root: root, binding: binding) }) { FileHandle.standardOutput.write($0) } }
             } else {
                 guard let bytes = request.bytes, let hash = request.sha256 else { throw CloudFailure("Missing object bounds") }
-                try coordinated(root, binding: binding, write: true) { files in try requireHeader(files, destinationId: request.destinationId); guard let owner = request.stagingId, UUID(uuidString: owner) != nil else { throw CloudFailure("Missing staging owner") }; try files.write(path, bytes: bytes, digest: hash, stagingId: owner) { try FileHandle.standardInput.read(upToCount: $0) ?? Data() } }; try dictionaryJSON(["localWriteVerified": true, "remoteChecksumVerified": false])
+                guard let owner = request.stagingId, UUID(uuidString: owner) != nil else { throw CloudFailure("Missing staging owner") }
+                let parent = Array(try artifactPath(path).dropLast()).joined(separator: "/")
+                let temporary = "\(parent)/.heed-\(owner)-\(hash).pending"
+                try coordinated(root, binding: binding, path: path, temporary: temporary, write: true) { files in try requireHeader(files, destinationId: request.destinationId); try files.write(path, bytes: bytes, digest: hash, stagingId: owner, validate: { try checkpoint(root: root, binding: binding) }) { try FileHandle.standardInput.read(upToCount: $0) ?? Data() } }; try dictionaryJSON(["localWriteVerified": true, "remoteChecksumVerified": false])
             }
         default: throw CloudFailure("Unsupported folder operation")
         }
