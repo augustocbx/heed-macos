@@ -72,6 +72,23 @@ describe('remote storage settings', () => {
   else expect(icloudApi.request).toHaveBeenCalledWith({action: 'enable', connectionId: 'existing-icloud', enabled: false});
  });
 
+ it.each(['smb', 'icloud'])('refreshes the shared library when a pending %s action finishes after switching forms', async provider => {
+  render(<PermissionsPage/>);
+  await screen.findByText('Permissions authorized');
+  const selector = screen.getByRole('combobox', {name: 'Remote storage provider'});
+  fireEvent.change(selector, {target: {value: provider}});
+  const button = await screen.findByRole('button', {name: provider === 'smb' ? 'Save name' : 'Pause iCloud access'});
+  let finish!: () => void;
+  if (provider === 'smb') vi.mocked(smbApi.rename).mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve(smbSnapshot); }));
+  else vi.mocked(icloudApi.request).mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve(icloudSnapshot as never); }));
+  fireEvent.click(button);
+  fireEvent.change(selector, {target: {value: provider === 'smb' ? 'icloud' : 'smb'}});
+  await screen.findByRole('button', {name: provider === 'smb' ? 'Pause iCloud access' : 'Save name'});
+  const previous = vi.mocked(StorageLibrarySettings).mock.calls.length;
+  await act(async () => { finish(); });
+  expect(vi.mocked(StorageLibrarySettings).mock.calls.length).toBeGreaterThan(previous);
+ });
+
  it.each([
   ['en', 'Remote storage provider', 'Choose remote storage'],
   ['pt-BR', 'Provedor de armazenamento remoto', 'Escolha o armazenamento remoto'],
