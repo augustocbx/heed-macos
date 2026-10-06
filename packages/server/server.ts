@@ -60,7 +60,7 @@ function audioWorkBusy() {
 }
 async function preemptNotes() {
  manualNotesController?.abort();
- await Promise.all([notesService.preempt(), tasksService.preempt(), chatService.preempt(), libraryChatService.preempt(), googleDrive?.preempt(), oneDriveConnections?.preempt(), manualNotesDone]);
+ await Promise.all([portableRuntime?.preempt(), notesService.preempt(), tasksService.preempt(), chatService.preempt(), libraryChatService.preempt(), googleDrive?.preempt(), oneDriveConnections?.preempt(), manualNotesDone]);
 }
 function cleanupCaptureWork(id:string){if(!/^[a-zA-Z0-9_-]{1,180}$/.test(id))return;const directory=join(APP_DIR,'library','staging',`capture-${id}`);rmSync(directory,{recursive:true,force:true});if(recordingWorkDirectory===directory)recordingWorkDirectory=null;}
 function protectAudio(path: string) { retainedProcessing.set(path, Date.now() + 120_000); }
