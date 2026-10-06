@@ -1,0 +1,2 @@
+import {expect,test} from 'vitest';import {SMB_TRANSLATIONS} from './translations-smb';import {tr} from './i18n';
+test('SMB locales preserve every English message and count placeholder',()=>{for(const [key,values] of Object.entries(SMB_TRANSLATIONS)){for(const locale of ['pt-BR','fr','de'] as const){expect(values[locale].trim()).not.toBe('');expect(tr(key,locale)).toBe(values[locale]);expect(values[locale].match(/\{[^}]+\}/g)?.sort()||[]).toEqual(key.match(/\{[^}]+\}/g)?.sort()||[]);}expect(tr(key,'en')).toBe(key);}});

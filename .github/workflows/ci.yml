@@ -17,6 +17,8 @@ jobs:
         run: bun test packages/server/lib
       - name: Scoped Meet bridge tests
         run: bun test packages/desktop/browser-meet
+      - name: Mounted SMB filesystem safety tests
+        run: python3 packages/server/native/smb-filesystem.test.py
       - name: Interface tests
         run: NODE_OPTIONS=--no-experimental-webstorage bun run --cwd packages/client test --run
       - name: Speaker identity preservation tests
