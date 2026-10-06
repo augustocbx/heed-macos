@@ -467,6 +467,79 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(recovered.journal.data["effects"],0)
         self.assertTrue(copies[0].exists())
 
+    def large_quota_journal(self):
+        tx=self.transaction()
+        tx.journal.data["allocations"]={
+            "objects/"+format(index,"064x"):dict(stage=".heed-claim/"+str(uuid4()),metadata=None,bytes=0,sha256="a"*64,state="planned",directory=False)
+            for index in range(10000)
+        }
+        tx.journal.save()
+        primary=Path(tx.journal.path)/tx.journal.name
+        self.assertGreater(primary.stat().st_size,2666666)
+        return tx,primary
+
+    def test_journal_quota_retained_failed_copy_refuses_same_uuid_retry_before_growth(self):
+        tx,primary=self.large_quota_journal()
+        original=primary.read_bytes()
+        with patch("journal.os.replace",side_effect=OSError("owned replacement failure")):
+            with self.assertRaises(OSError):tx.journal.save()
+        copies=list(primary.parent.glob(primary.name+".*.tmp"))
+        self.assertEqual(len(copies),1)
+        self.assertEqual(copies[0].read_bytes(),original)
+        before={p.name:p.stat().st_size for p in primary.parent.iterdir()}
+        tx.abort()
+        with self.assertRaises(SmbError) as refused:self.transaction()
+        self.assertEqual(refused.exception.code,"bounds-exceeded")
+        self.assertEqual({p.name:p.stat().st_size for p in primary.parent.iterdir()},before)
+        self.assertEqual(primary.read_bytes(),original)
+        self.assertTrue(pending_transactions(self.binding,self.app)[0]["recoverable"])
+
+    def test_journal_quota_exact_aggregate_boundary_admits_then_refuses_one_extra_byte(self):
+        tx,primary=self.large_quota_journal()
+        original=primary.read_bytes()
+        retained=primary.with_name(primary.name+"."+str(uuid4())+".tmp")
+        retained.write_bytes(b"");retained.chmod(0o600)
+        with retained.open("r+b") as stream:stream.truncate(8000000-2*len(original))
+        tx.journal.save()
+        self.assertTrue(retained.exists())
+        self.assertEqual(primary.read_bytes(),original)
+        with retained.open("r+b") as stream:stream.truncate(retained.stat().st_size+1)
+        before={p.name:p.stat().st_size for p in primary.parent.iterdir()}
+        with self.assertRaises(SmbError) as refused:tx.journal.save()
+        self.assertEqual(refused.exception.code,"bounds-exceeded")
+        self.assertEqual({p.name:p.stat().st_size for p in primary.parent.iterdir()},before)
+        self.assertEqual(primary.read_bytes(),original)
+
+    def test_journal_quota_refuses_unsafe_siblings_without_blocking_or_removing_evidence(self):
+        tx=self.transaction();primary=Path(tx.journal.path)/tx.journal.name
+        for kind in ("fifo","symlink","multiple-links"):
+            with self.subTest(kind=kind):
+                sibling=primary.with_name(primary.name+"."+str(uuid4())+".tmp")
+                if kind=="fifo":os.mkfifo(sibling,0o600)
+                elif kind=="symlink":sibling.symlink_to(primary)
+                else:os.link(primary,sibling)
+                before={p.name for p in primary.parent.iterdir()}
+                try:
+                    with self.assertRaises(SmbError):tx.journal.save()
+                    self.assertEqual({p.name for p in primary.parent.iterdir()},before)
+                    self.assertTrue(sibling.exists() or sibling.is_symlink())
+                finally:sibling.unlink()
+
+    def test_journal_quota_entry_scan_stops_before_materializing_excess_names(self):
+        tx=self.transaction();seen=[]
+        class Entries:
+            def __enter__(self):return self
+            def __exit__(self,*args):pass
+            def __iter__(self):
+                for index in range(20):
+                    seen.append(index)
+                    yield SimpleNamespace(name="unrelated-"+str(index))
+                raise AssertionError("unbounded directory enumeration")
+        with patch("journal.MAX_ENTRIES",10),patch("journal.os.scandir",return_value=Entries()):
+            with self.assertRaises(SmbError) as refused:tx.journal.save()
+        self.assertEqual(refused.exception.code,"bounds-exceeded")
+        self.assertEqual(len(seen),20)
+
     def test_exact_deletion_record_rejects_unrelated_revision_before_effects(self):
         tx,record=self.deletion_fixture()
         record["revisions"][0]["revisionId"]=str(uuid4())

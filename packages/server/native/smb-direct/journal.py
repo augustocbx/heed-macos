@@ -27,6 +27,8 @@ from protocol import (
 from identity import validate_metadata, validate_identity
 
 MAX_JOURNAL = 4_000_000
+# Matches the provider's per-operation reservation, including retained atomic copies.
+MAX_OPERATION_JOURNAL_BYTES = 8_000_000
 MAX_PENDING_JOURNAL_BYTES = 16_000_000
 MAX_PENDING_RESPONSE_BYTES = 1_900_000
 MAX_PENDING_ADMISSIONS = 10_000
@@ -405,6 +407,7 @@ class Journal:
         content = json.dumps(self.data, separators=(",", ":")).encode()
         if len(content) > MAX_JOURNAL:
             raise SmbError("bounds-exceeded")
+        self.admit_copy(len(content))
         name = self.name + "." + str(uuid4()) + ".tmp"
         fd = os.open(
             name,
@@ -426,6 +429,34 @@ class Journal:
         os.replace(name, self.name, src_dir_fd=self.fd, dst_dir_fd=self.fd)
         os.fsync(self.fd)
         self.previous = json.loads(content)
+
+    def admit_copy(self, size):
+        """Count all matching evidence without reading or adopting temporary copies."""
+        budget = [MAX_OPERATION_JOURNAL_BYTES]
+        charge(budget, size)
+        count = 0
+        with os.scandir(self.fd) as entries:
+            for entry in entries:
+                count += 1
+                if count > MAX_ENTRIES * 2 - 1:
+                    raise SmbError("bounds-exceeded")
+                name = entry.name
+                if name != self.name and not (
+                    name.startswith(self.name + ".")
+                    and re.fullmatch(r"\.[0-9a-f-]{36}\.tmp", name[len(self.name):])
+                ):
+                    continue
+                try:
+                    fd = os.open(
+                        name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                        dir_fd=self.fd,
+                    )
+                    try:
+                        charge(budget, regular(fd).st_size)
+                    finally:
+                        os.close(fd)
+                except OSError:
+                    raise SmbError("recovery-required") from None
 
     def begin_effect(self):
         self.check()
