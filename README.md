@@ -165,6 +165,8 @@ Create, rename and delete tags inline in meeting cards and detail. Removing a ta
 
 ## Diagnostics and tests
 
+See [troubleshooting](troubleshooting.md) for known recording, permissions, connection, automatic-notes, retention, and timer problems, with recovery steps and validation limits.
+
 Services are local: interface **5170**, Bun API **5001**, Python transcription **5002**, and Ollama **11434**. Logs are stored in `~/Library/Logs/Heed/`.
 
 ```sh
