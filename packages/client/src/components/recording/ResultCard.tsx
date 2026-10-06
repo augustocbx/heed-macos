@@ -7,6 +7,8 @@ import { useModelsStore } from "@/stores/models.ts";
 import { useUIStore } from "@/stores/ui.ts";
 import { generateNotes } from "@/api/notes.ts";
 import { sessionsApi } from "@/api/sessions.ts";
+import { recordingApi } from "@/api/recording";
+import { applyRecordingSnapshot } from "@/lib/recordingSnapshot";
 import { Tabs } from "@/components/shared/Tabs.tsx";
 import { SpeakerView } from "@/components/speakers/SpeakerView.tsx";
 import { NotesView } from "@/components/ai-notes/NotesView.tsx";
@@ -113,6 +115,16 @@ export function ResultCard() {
 		const previousName = useRecordingStore.getState().speakerNames[original];
 		renameSpeaker(original, newName);
 		const state = useRecordingStore.getState();
+		if (!state.currentSessionId && state.coordinatorMeetingId) {
+   try {
+    const snapshot=await recordingApi.rename(state.coordinatorMeetingId,state.coordinatorRevision,{[original]:newName});
+    applyRecordingSnapshot(snapshot);
+   } catch {
+    useRecordingStore.setState(latest=>({speakerNames:{...latest.speakerNames,[original]:previousName || original}}));
+    showToast(tr("Could not save the speaker name. Please try again."));
+   }
+   return;
+  }
 		if (state.currentSessionId) {
 			try {
 				await sessionsApi.patch(state.currentSessionId, applySpeakerNames(state.segments, state.speakers, state.embeddings, state.speakerNames));

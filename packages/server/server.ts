@@ -14,11 +14,11 @@ import { sseResponse } from "./lib/sse.ts";
 import { sessionAudioResponse } from "./lib/session-audio.ts";
 import { SessionTags, TagError, tagResponse } from "./lib/session-tags.ts";
 const sessionTags = new SessionTags(SESSIONS_DIR);
-import { DesktopControl } from "./lib/desktop-control.ts";
+import { RecordingCoordinator } from "./lib/recording-coordinator.ts";
+import type { FinalCapture, RecordingSnapshot } from "../shared/types/recording-coordinator.ts";
 import { DesktopPermissions, desktopRequestAllowed as permissionRequestAllowed, permissionAction, permissionReport } from "./lib/desktop-permissions.ts";
 import { AUDIO_LIMIT_BYTES, enforceAudioRetention, removeChannelCopies } from "./lib/audio-retention.ts";
 import { type CaptureMode, nativeCaptureCommand, nativeRecordingCommand, verifyNativeHandshake, isNativeProtocolLine } from "./lib/native-capture.ts";
-const desktopControl = new DesktopControl();
 const desktopPermissions = new DesktopPermissions();
 const retainedProcessing = new Map<string, number>();
 const CAPTURE_LIMIT_BYTES = Math.floor(AUDIO_LIMIT_BYTES / 2) - 10_000_000;
@@ -30,7 +30,7 @@ let manualNotesController: AbortController | null = null;
 let manualNotesDone: Promise<void> | null = null;
 function audioWorkBusy() {
  return !!(recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning || transcriptionRequests
-  || desktopControl.status().processing);
+  || ["starting", "stopping", "finalizing"].includes(recordingCoordinator.snapshot().state));
 }
 async function preemptNotes() {
  manualNotesController?.abort();
@@ -49,7 +49,7 @@ const PORT = Number(process.env.PORT) || 5001;
 
 const STATIC_ROOT = join(import.meta.dir, "..", "client", "dist");
 // Recordings stored in the project root
-const UPLOAD_DIR = join(import.meta.dir, "..", "..", "recordings");
+const UPLOAD_DIR = process.env.HEED_RECORDINGS_DIR || join(import.meta.dir, "..", "..", "recordings");
 const OLLAMA_HOST = process.env.OLLAMA_HOST || "http://localhost:11434";
 // Hard fallback only — actual model is read from ~/.heed-app/config.json (set by hardware
 // auto-detection on first launch, or by the user via the model picker modal).
@@ -1204,15 +1204,16 @@ function getMicSource(): string | null {
 const AUDIO_FMT = IS_MAC ? "avfoundation" : "pulse";
 
 async function handleSysRecordStart(req: Request): Promise<Response> {
- if (recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning || transcriptionRequests) return Response.json({error:"Heed is already recording or finalizing audio"}, {status:409});
- recorderStarting = true;
- try { await preemptNotes(); return await beginSysRecording(req); } finally { recorderStarting = false; }
+ if (!desktopRequestAllowed(req)) return new Response(null, {status:403});
+ try {
+  const body = await req.json();
+  const state = hydratedRecordingSnapshot(await recordingCoordinator.start(controlRequestId(body), body.mode ?? "both"));
+  return Response.json({...state, snapshot:state, recording:state.state === "recording", path:state.path, language:"en"});
+ } catch (error) { return recordingControlError(error); }
 }
 
-async function beginSysRecording(req: Request): Promise<Response> {
-	let mode: CaptureMode = "both";
+async function beginSysRecording(mode: CaptureMode, attachPath: (path: string) => void): Promise<Response> {
  recordingLanguage = "en";
-	try { const body = await req.json(); mode = ["both", "mic", "system"].includes(body.mode) ? body.mode : "both"; recordingLanguage = "en"; } catch {}
 
 	if (syscapProc) {
 		try { syscapProc.kill(); } catch {}
@@ -1231,6 +1232,11 @@ async function beginSysRecording(req: Request): Promise<Response> {
 	recorderStartedAt = 0;
 	const mic = getMicSource() || "default";
 
+ const proposedDual = mode === "both" && (IS_MAC || !!getMonitorSource());
+ recorderPath = join(UPLOAD_DIR, `${proposedDual ? "dual-capture" : "capture"}-${ts}.wav`);
+ attachPath(recorderPath);
+ retainedProcessing.set(recorderPath, Infinity);
+
 	// macOS captures both sources in one native PCM clock. Never silently fall back
 	// to the old AVFoundation/second-input path if a source cannot be captured.
 	if (IS_MAC) {
@@ -1248,7 +1254,7 @@ async function beginSysRecording(req: Request): Promise<Response> {
 
 	// Naming convention: dual-capture-* signals stereo (L=mic, R=system) → channel-based diarization later.
 	const isDual = mode === "both" && haveSystem;
-	recorderPath = join(UPLOAD_DIR, `${isDual ? "dual-capture" : "capture"}-${ts}.wav`);
+
 
 	let args: string[];
 	// When SCK feeds the system channel, ffmpeg reads its raw PCM from stdin (pipe:0).
@@ -1276,6 +1282,45 @@ async function beginSysRecording(req: Request): Promise<Response> {
 
 	recorderStartedAt = Date.now();
 	recorderProc = track(Bun.spawn(args, stdinStream ? { stdin: stdinStream, stdout: "pipe", stderr: "pipe" } : { stdout: "pipe", stderr: "pipe" }));
+
+ const writer = recorderProc;
+ const helper = syscapProc;
+ if (helper) void helper.exited.then(async () => {
+  if (syscapProc !== helper || recorderProc !== writer || recorderStopping || quotaReachedAt) return;
+  recorderStopping = true;
+  try {
+   await gracefulStop(writer,1500,"SIGINT");
+   recorderProc = null; syscapProc = null;
+   stopLiveTranscribe(); stopLevelMeter();
+   recordingCoordinator.captureFailed("Native audio capture stopped unexpectedly. Retained audio is available for recovery.");
+  } finally { recorderStopping = false; }
+ });
+ void new Response(writer.stderr).text().then(text => { if (text) console.log(`[heed-capture] ${text.slice(-4096)}`); });
+ void writer.exited.then(() => {
+  if (recorderProc !== writer || recorderStopping || quotaReachedAt) return;
+  if (recorderPath && existsSync(recorderPath) && statSync(recorderPath).size >= CAPTURE_LIMIT_BYTES - 1_000_000) {
+   quotaReachedAt = Date.now();
+   const state = recordingCoordinator.snapshot();
+   if (state.meetingId) void recordingCoordinator.stop(`quota-${state.meetingId}`,state.meetingId)
+    .then(result => {quotaStopResult=result.session;}).catch(error=>console.error("Quota finalization failed:",error));
+   return;
+  }
+  recorderProc = null;
+  if (syscapProc) { try { syscapProc.kill(); } catch {} syscapProc = null; }
+  stopLiveTranscribe(); stopLevelMeter();
+  recordingCoordinator.captureFailed("Audio capture stopped unexpectedly. Retained audio is available for recovery.");
+ });
+ const readyUntil = Date.now() + 5000;
+ while (!existsSync(recorderPath) || statSync(recorderPath).size < 44) {
+  if (writer.exitCode !== null || Date.now() >= readyUntil) {
+   throw new Error("Audio writer did not become ready. Check capture permissions and retry.");
+  }
+  await Bun.sleep(25);
+ }
+ if (writer.exitCode !== null || recorderProc !== writer || (helper && helper.exitCode !== null)) {
+  throw new Error("Audio capture ended before recording became ready. Retained audio is available for recovery.");
+ }
+ startLiveTranscribe();
 
 	// Feed the System (green) visualizer. We sample the growing recorder WAV directly instead of
 	// spawning a second ffmpeg on the monitor device — this works whether the system channel comes
@@ -1473,6 +1518,7 @@ async function processFullLive(
 				const res = await fetch(`${TRANSCRIPTION_SERVER}/transcribe-live`, {
 					method: "POST", headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({ wav_path: outPath, language: lang, audio_s: dur }),
+                    signal: liveAbort.signal,
 				});
 				if (res.ok) {
 					const tx = await res.json() as { text?: string; quality?: { ok: boolean; reason: string; hint: string } };
@@ -1525,11 +1571,11 @@ async function processStreamLive(
 		} catch { return; }
 	}
 	if (!streamStarted) {
-		const ok = await postJSON("/stream/start", { language: lang, channel: "mic" });
+		const ok = await postLiveJSON("/stream/start", { language: lang, channel: "mic" });
 		if (!ok) return;
 		if (isDual) {
-			await postJSON("/stream/start", { language: lang, channel: "sys" });
-			await postJSON("/diar/start", {});
+			await postLiveJSON("/stream/start", { language: lang, channel: "sys" });
+			await postLiveJSON("/diar/start", {});
 		}
 		streamStarted = true;
 		lastStreamOffset = 0;
@@ -1554,7 +1600,7 @@ async function processStreamLive(
 	const sysSeg = isDual ? extractChannelSeg(wavPath, 1, start, newAudio) : null;
 	if (micSeg) {
 		try {
-			const tx = await postJSON("/stream/feed", { wav_path: micSeg, channel: "mic", audio_s: newAudio, ref_wav_path: sysSeg || undefined, mic_is_owner: micIsOwner });
+			const tx = await postLiveJSON("/stream/feed", { wav_path: micSeg, channel: "mic", audio_s: newAudio, ref_wav_path: sysSeg || undefined, mic_is_owner: micIsOwner });
 			if (tx) {
 				micPartial = (tx.partial || "");
 				if (tx.quality) send("quality", tx.quality.ok === false ? { ok: false, reason: tx.quality.reason, hint: tx.quality.hint } : { ok: true });
@@ -1563,7 +1609,7 @@ async function processStreamLive(
 	}
 	if (isDual && sysSeg) {
 		try {
-			const sx = await postJSON("/stream/feed", { wav_path: sysSeg, channel: "sys", audio_s: newAudio });
+			const sx = await postLiveJSON("/stream/feed", { wav_path: sysSeg, channel: "sys", audio_s: newAudio });
 			sysPartial = (sx?.partial || "");
 		} finally { try { unlinkSync(sysSeg); } catch {} }
 		// Live speaker = the STABLE, conservatively-named speaker from the periodic offline-rolling
@@ -1582,7 +1628,7 @@ async function processStreamLive(
 			try {
 				const sysWin = extractChannelSeg(wavPath, 1, winStart, fileDurationS - winStart);
 				if (sysWin) {
-					const d = await postJSON("/diar/live", { wav_path: sysWin, window_s: fileDurationS - winStart });
+					const d = await postLiveJSON("/diar/live", { wav_path: sysWin, window_s: fileDurationS - winStart });
 					if (d?.ok && typeof d.speaker === "string" && d.speaker) {
 						liveSpeakerNow = d.speaker;
 						if (typeof d.label === "string" && d.label) liveSpeakerLabel = d.label;
@@ -1605,7 +1651,7 @@ async function processStreamLive(
 			try {
 				const micWin = extractChannelSeg(wavPath, 0, winStart, fileDurationS - winStart);
 				if (micWin) {
-					const d = await postJSON("/mic/filter", { wav_path: micWin, window_s: fileDurationS - winStart });
+					const d = await postLiveJSON("/mic/filter", { wav_path: micWin, window_s: fileDurationS - winStart });
 					if (d?.ok && typeof d.keep === "boolean") micIsOwner = d.keep;
 					try { unlinkSync(micWin); } catch {}
 				}
@@ -1649,53 +1695,31 @@ async function processStreamLive(
 	lastSysLen = sysPartial.length;
 }
 
-function handleLiveTranscribe(reqUrl?: URL): Response {
-	if (!recorderProc || !recorderPath) {
-		// Return an SSE stream that immediately closes instead of a JSON error.
-		// This prevents EventSource from seeing a non-SSE response and erroring.
-		const encoder = new TextEncoder();
-		return new Response(
-			new ReadableStream({
-				start(controller) {
-					controller.enqueue(encoder.encode("event: error\ndata: {\"message\":\"Not recording\"}\n\n"));
-					controller.close();
-				},
-			}),
-			{ headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" } },
-		);
-	}
-
-	const wavPath = recorderPath;
-	const isDual = wavPath.includes("dual-capture-");
-	// Fixed 3s chunks. NOTE: VAD-variable boundaries were tried and REVERTED — adding a
-	// silencedetect ffmpeg spawn per tick during active recording (on top of the recorder +
-	// level-meter ffmpeg) starved the pipeline and spiked live latency to 8-15s. Fixed length
-	// keeps it reliable (~0.3s/chunk). The accurate final pass re-transcribes with full context.
-	const LIVE_CHUNK = liveTuning.chunk_s; // engine-adaptive (parakeet 2s, whisper 3s)
-	let interval = liveTuning.interval_ms; // engine-adaptive (parakeet 800ms, whisper 2000ms)
-	const lang = "en"; // Every live preview starts in English; finalization detects en/pt.
-	// DON'T reset offset here — if EventSource reconnects, we continue from
-	// where we left off instead of re-processing the same first chunk forever.
-	// Offset is only reset in stopLiveTranscribe() when recording actually stops.
-
-	const encoder = new TextEncoder();
-	const stream = new ReadableStream({
-		start(controller) {
-			let closed = false;
-			const send = (event: string, data: unknown) => {
-				if (closed) return;
-				try {
-					controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-				} catch {
-					closed = true;
-				}
-			};
-
-			// Send a heartbeat immediately so the client knows the connection is alive
-			send("heartbeat", { ts: Date.now() });
-
+let liveFirstTimeout: ReturnType<typeof setTimeout> | null = null;
+let liveAbort = new AbortController();
+let liveWorker: Promise<void> | null = null;
+const liveListeners = new Set<(event: string, data: unknown) => void>();
+async function postLiveJSON(path: string, body: unknown): Promise<any> {
+ try {
+  const response = await fetch(`${TRANSCRIPTION_SERVER}${path}`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body), signal:liveAbort.signal});
+  return response.ok ? await response.json() : null;
+ } catch { return null; }
+}
+function startLiveTranscribe() {
+ if (!recorderProc || !recorderPath || liveTranscribeInterval || liveFirstTimeout) return;
+ liveAbort = new AbortController();
+ const wavPath = recorderPath;
+ const isDual = wavPath.includes("dual-capture-");
+ const LIVE_CHUNK = liveTuning.chunk_s;
+ let interval = liveTuning.interval_ms;
+ const lang = "en";
+ const send = (event: string, data: unknown) => {
+  if (!recorderProc || recorderPath !== wavPath || liveAbort.signal.aborted) return;
+  recordingCoordinator.live(event, data);
+  for (const listener of liveListeners) listener(event, data);
+ };
 			const processChunk = async () => {
-				if (closed || !recorderProc) {
+				if (!recorderProc || recorderPath !== wavPath || liveAbort.signal.aborted) {
 					if (liveTranscribeInterval) clearInterval(liveTranscribeInterval);
 					return;
 				}
@@ -1731,6 +1755,7 @@ function handleLiveTranscribe(reqUrl?: URL): Response {
 				// Check if the file has enough new data
 				if (!existsSync(wavPath)) {
 					console.log("[heed] live: WAV not found yet");
+                    liveChunkProcessing = false;
 					return;
 				}
 				const fileSize = Bun.file(wavPath).size;
@@ -1775,6 +1800,7 @@ function handleLiveTranscribe(reqUrl?: URL): Response {
 						method: "POST",
 						headers: { "Content-Type": "application/json" },
 						body: JSON.stringify({ wav_path: chunkPath, language: lang, audio_s: chunkDur }),
+                        signal: liveAbort.signal,
 					});
 					const whisperMs = Date.now() - whisperStart;
 
@@ -1829,6 +1855,7 @@ function handleLiveTranscribe(reqUrl?: URL): Response {
 								method: "POST",
 								headers: { "Content-Type": "application/json" },
 								body: JSON.stringify({ wav_path: sysChunkPath, language: lang }),
+                                signal: liveAbort.signal,
 							});
 							if (sysRes.ok) {
 								const sysTx = await sysRes.json() as { text?: string };
@@ -1863,31 +1890,23 @@ function handleLiveTranscribe(reqUrl?: URL): Response {
 				}
 			};
 
-			// First chunk after 1 second (was 3s) so words start appearing fast, then every interval
-			const firstTimeout = setTimeout(() => {
-				processChunk();
-				liveTranscribeInterval = setInterval(processChunk, interval);
-			}, 300);
-
-			// Cleanup when connection drops
-			const checkClosed = setInterval(() => {
-				if (!recorderProc) {
-					clearInterval(checkClosed);
-					if (liveTranscribeInterval) clearInterval(liveTranscribeInterval);
-					clearTimeout(firstTimeout);
-					send("stopped", {});
-					try { controller.close(); } catch {}
-				}
-			}, 1000);
-		},
-	});
-
-	return new Response(stream, {
-		headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" },
-	});
+ const tick = () => { if (!liveChunkProcessing) liveWorker = processChunk().finally(() => { liveWorker = null; }); };
+ liveFirstTimeout = setTimeout(() => { liveFirstTimeout = null; tick(); liveTranscribeInterval = setInterval(tick, interval); },300);
+}
+function handleLiveTranscribe(): Response {
+ return sseResponse(async (sink, signal) => {
+  sink.send("snapshot", hydratedRecordingSnapshot());
+  const listener = (event:string, data:unknown) => sink.send(event,data);
+  liveListeners.add(listener);
+  const unsubscribe = recordingCoordinator.subscribe(state => sink.send("snapshot",hydratedRecordingSnapshot(state)));
+  await new Promise<void>(resolve => signal.addEventListener("abort",()=>resolve(),{once:true}));
+  liveListeners.delete(listener); unsubscribe();
+ }, {heartbeatMs:1000});
 }
 
 function stopLiveTranscribe() {
+ liveAbort.abort();
+ if (liveFirstTimeout) { clearTimeout(liveFirstTimeout); liveFirstTimeout = null; }
 	if (liveTranscribeInterval) {
 		clearInterval(liveTranscribeInterval);
 		liveTranscribeInterval = null;
@@ -1914,78 +1933,59 @@ function stopLiveTranscribe() {
 	// dropped because processChunk checks `!recorderProc` at the top.
 }
 
-async function handleSysRecordStop(req: Request): Promise<Response> {
- if (!recorderProc && quotaStopResult) { const result=quotaStopResult; quotaStopResult=null; return Response.json(result); }
- if (recorderStopping) return Response.json({error:"Recording is already stopping"},{status:409});
- recorderStopping=true;
- const path=recorderPath; if(path) { retainedProcessing.set(path, Infinity); pruneAudio(Math.max(0,AUDIO_LIMIT_BYTES - (existsSync(path)?statSync(path).size:0) - 10_000_000)); }
- try { return await finishSysRecording(req); } finally {recorderStopping=false; if(path){removeChannelCopies(path);protectAudio(path);} }
+function controlRequestId(body: any): string {
+ if (body?.requestId === undefined) return crypto.randomUUID();
+ if (typeof body.requestId !== "string" || !body.requestId.trim() || body.requestId.length > 128) throw new Error("Choose a valid recording request ID");
+ return body.requestId;
 }
-async function finishSysRecording(req: Request): Promise<Response> {
-	// The live English preview is provisional. Always detect the language from the saved audio.
-	let captureDuration = Math.max(0, Math.floor((Date.now() - recorderStartedAt) / 1000));
-	const offset = liveTranscribeOffset; // save before reset
-	const wasStreaming = streamStarted;
-	const streamOffset = lastStreamOffset;
-	const turns = liveTurns.map((t) => ({ ...t })); // capture before stopLiveTranscribe resets it
-	stopLiveTranscribe();
-	if (!recorderProc || !recorderPath) return Response.json({ error: "Not recording" }, { status: 400 });
-
-	// Allow the native writer to flush its final frames before FFmpeg receives EOF.
-	if (syscapProc) {
-		await gracefulStop(syscapProc, 1500, "SIGTERM");
-		syscapProc = null;
-	}
-	// SIGINT lets ffmpeg flush the WAV cleanly; gracefulStop adds a SIGKILL fallback so a hung
-	// ffmpeg can't wedge the stop forever (previously this awaited .exited with no timeout).
-	await gracefulStop(recorderProc, 1500, "SIGINT");
-	await new Promise(r => setTimeout(r, 500));
-
-	const path = recorderPath;
-	recorderProc = null;
-	recorderPath = null;
-
-	stopLevelMeter();
-
-	if (!existsSync(path)) return Response.json({ error: "Recording file not created" }, { status: 500 });
-
-	// AUTHORITATIVE post-stop: re-transcribe the whole recording with REAL timestamps, diarize the
-	// system channel, acoustically strip the mic's echo (no-headphones), and name known voices — all
-	// in one /finalize call. Replaces the old "refine the live karaoke turns in place" path, which had
-	// no timestamps and inherited the live segmentation/echo. The live turns still power the instant
-	// on-screen karaoke; this rebuilds the saved transcript coherently.
-	let streamText = "";
-	let refinedTurns: Array<{ id: number; speaker: string; channel: "mic" | "sys"; text: string; start: number; end: number; auto?: boolean }> = [];
-	let speakerEmbeddings: Record<string, number[]> = {};
-	let autoNamed: Record<string, { name: string; score: number }> = {};
-	let finalLanguage = "en";
-	let finalModel = "";
-	try {
-			const isDual = path.includes("dual-capture-");
-			// Close the live streaming/diar sessions so the sidecar resets cleanly for the next recording.
-			if (wasStreaming) {
-   try { await postJSON("/stream/finish", { channel: "mic" }); } catch {}
-			if (isDual) {
-				try { await postJSON("/stream/finish", { channel: "sys" }); } catch {}
-				try { await postJSON("/diar/finish", {}); } catch {}
-			}
+function recordingControlError(error: unknown): Response {
+ return Response.json({error:error instanceof Error ? error.message : String(error)}, {status:409});
+}
+async function handleSysRecordStop(req: Request): Promise<Response> {
+ if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
+ try {
+  const body = await req.json();
+  const state = hydratedRecordingSnapshot(await recordingCoordinator.stop(controlRequestId(body),body.meetingId));
+  const session = state.session;
+  return Response.json({...state, snapshot:state, finalized:state.state === "completed", path:session?.files?.wav || state.path,
+   duration:session?.duration, language:session?.language, model:session?.transcriptionModel, liveModel:session?.liveModel,
+   turns:session?.segments ?? [], streamText:session?.transcript ?? "", embeddings:session?.embeddings, session});
+ } catch (error) { return recordingControlError(error); }
+}
+async function stopCapture(onCaptureStopped: () => void): Promise<FinalCapture> {
+ recorderStopping = true;
+ const path = recorderPath;
+ try {
+  if (!recorderProc || !path) throw new Error("Not recording");
+  const wasStreaming = streamStarted;
+  stopLiveTranscribe();
+  if (syscapProc) { await gracefulStop(syscapProc,1500,"SIGTERM"); syscapProc = null; }
+  await gracefulStop(recorderProc,1500,"SIGINT");
+  recorderProc = null; recorderPath = null; stopLevelMeter();
+  onCaptureStopped();
+  if (liveWorker) await liveWorker;
+  if (wasStreaming) {
+   try { await postJSON("/stream/finish",{channel:"mic"}); } catch {}
+   if (path.includes("dual-capture-")) {
+    try { await postJSON("/stream/finish",{channel:"sys"}); await postJSON("/diar/finish",{}); } catch {}
    }
-
-			const fin = await postJSON("/finalize", { wav_path: path, language: "auto", allowed_languages: ["en", "pt"], dual: isDual, mic_name: micLabel() });
-   const result = finalRecordingResult(fin, path);
-   if (result.duration !== undefined) captureDuration = result.duration;
-   finalLanguage = result.metadata.language;
-   finalModel = result.metadata.model;
-   speakerEmbeddings = result.embeddings;
-   autoNamed = result.autoNamed;
-   refinedTurns = result.segments;
-
-			streamText = refinedTurns.map((t) => t.text).join(" ");
-	} catch (error) {
-  return Response.json({ path, finalized: false, error: `Final transcription failed: ${(error as Error).message}. The audio is available in recovery.` }, {status: 502});
-	}
-
-	return Response.json({ path, duration: captureDuration, liveModel: recordingLiveModel, liveOffset: offset, streaming: wasStreaming, finalized: true, language: finalLanguage, model: finalModel, streamText, turns: refinedTurns, embeddings: speakerEmbeddings, autoNamed });
+  }
+  return await finalizeCapture(path);
+ } finally { recorderStopping = false; }
+}
+async function finalizeCapture(path: string): Promise<FinalCapture> {
+ if (!existsSync(path)) throw new Error("Recording file not created");
+ const fin = await postJSON("/finalize",{wav_path:path,language:"auto",allowed_languages:["en","pt"],dual:path.includes("dual-capture-"),mic_name:micLabel()});
+ const result = finalRecordingResult(fin,path);
+ // Final ASR must return the actual WAV duration instead of wall-clock capture time.
+ if (result.duration === undefined) {
+  const probe = Bun.spawnSync(["ffprobe","-v","error","-show_entries","format=duration","-of","default=noprint_wrappers=1:nokey=1",path]);
+  const measured = Number(new TextDecoder().decode(probe.stdout).trim());
+  if (probe.exitCode !== 0 || !Number.isFinite(measured) || measured <= 0) throw new Error("Could not measure the retained recording duration");
+  result.duration = measured;
+ }
+ recordingLanguage = result.metadata.language;
+ return {path,duration:result.duration,language:result.metadata.language,model:result.metadata.model,liveModel:recordingLiveModel || recordingCoordinator.snapshot().liveModel,turns:result.segments,embeddings:result.embeddings};
 }
 
 // --- Meeting auto-detector ---
@@ -2111,6 +2111,9 @@ interface OrphanedRecording {
 	created: string; // ISO date
 	duration_estimate_s: number; // estimated from file size (16kHz 16-bit mono ≈ 32KB/s, stereo ≈ 64KB/s)
 	is_dual: boolean;
+ recoveryMeetingId?:string;
+ speakerNames?:Record<string,string>;
+ segments?:RecordingSnapshot["segments"];
 }
 
 function handleListOrphaned(): Response {
@@ -2135,6 +2138,16 @@ function handleListOrphaned(): Response {
 		}
 	}
 
+ // Archived failed checkpoints retain manual names after leaving active recovery.
+ const archived = new Map<string,RecordingSnapshot>();
+ const recoveryDirectory=join(APP_DIR,"recording-recovery");
+ if (existsSync(recoveryDirectory)) for (const file of readdirSync(recoveryDirectory).filter(file=>file.endsWith(".json"))) {
+  try {
+   const record=JSON.parse(readFileSync(join(recoveryDirectory,file),"utf8"));
+   const snapshot=record?.snapshot as RecordingSnapshot;
+   if (record?.version===1 && snapshot?.state === "failed" && typeof snapshot.path === "string" && typeof snapshot.meetingId === "string" && Array.isArray(snapshot.segments) && snapshot.speakerNames && typeof snapshot.speakerNames === "object") archived.set(snapshot.path,snapshot);
+  } catch { /* Invalid recovery metadata never prevents listing retained audio. */ }
+ }
 	// An orphan = WAV exists but no session references it
 	const orphans: OrphanedRecording[] = [];
 	for (const f of wavFiles) {
@@ -2152,7 +2165,9 @@ function handleListOrphaned(): Response {
 		const tsMatch = f.match(/(\d+)\.wav$/);
 		const ts = tsMatch ? parseInt(tsMatch[1]) : Date.now();
 
+  const checkpoint=archived.get(fullPath);
 		orphans.push({
+   ...(checkpoint?{recoveryMeetingId:checkpoint.meetingId!,speakerNames:checkpoint.speakerNames,segments:checkpoint.segments}:{}),
 			path: fullPath,
 			filename: f,
 			size_mb: Math.round(sizeBytes / 1024 / 1024 * 10) / 10,
@@ -2209,50 +2224,65 @@ async function handleHealth(): Promise<Response> {
 	});
 }
 
-// Desktop controls are local-only and use the existing browser recording lifecycle.
-function desktopRequestAllowed(req: Request): boolean {
- return permissionRequestAllowed(req, PORT);
+// Every desktop/browser client observes the same backend-owned lifecycle.
+function desktopRequestAllowed(req: Request): boolean { return permissionRequestAllowed(req,PORT); }
+/** Completed manifests are recovery checkpoints; the meeting store owns later edits/deletion. */
+function hydratedRecordingSnapshot(snapshot: RecordingSnapshot = recordingCoordinator.snapshot()): RecordingSnapshot {
+ if (snapshot.state !== "completed") return snapshot;
+ const session = snapshot.session ? notesService.get(snapshot.session.id) : null;
+ return {...snapshot,session,segments:session?.segments ?? [],speakerNames:{},path:session?.files?.wav || null,
+  seconds:session?.duration ?? 0,liveModel:session?.liveModel,finalCapture:undefined};
 }
 function desktopRecordingStatus() {
- if (recorderProc && recorderProc.exitCode !== null && !recorderStopping && !quotaReachedAt && !(recorderPath && existsSync(recorderPath) && statSync(recorderPath).size >= CAPTURE_LIMIT_BYTES - 1_000_000)) {
-  recorderProc = null; recorderPath = null;
-  if (syscapProc) { try { syscapProc.kill(); } catch {} syscapProc = null; }
-  stopLevelMeter();
-  desktopControl.error = "Audio capture stopped unexpectedly. Check microphone permission and recover the audio in the interface.";
- }
- const state = desktopControl.status();
- return {...state, recording: !!recorderProc, seconds: recorderProc ? Math.floor((Date.now()-recorderStartedAt)/1000) : state.seconds, ready: state.ready, language:recordingLanguage, uiLocale:configuredUiLocale(loadConfig()), processing:state.processing || recorderStopping || recordingFinalizationRunning, starting:recorderStarting, storage:{limitBytes:AUDIO_LIMIT_BYTES, bytes:pruneAudio().bytes}, quotaStopped:!!quotaStopResult};
+ const state = hydratedRecordingSnapshot();
+ return {...state, snapshot:state, seconds:Math.floor(state.seconds), recording:!!recorderProc && recorderProc.exitCode === null,
+  processing:["stopping","finalizing"].includes(state.state) || recordingFinalizationRunning,
+  starting:state.state === "starting", pending:false, clientConnected:true, ready:!state.maintenance,
+  language:recordingLanguage,uiLocale:configuredUiLocale(loadConfig()),storage:{limitBytes:AUDIO_LIMIT_BYTES,bytes:pruneAudio().bytes},quotaStopped:!!quotaStopResult};
 }
-async function handleDesktopControl(req:Request, pathname:string): Promise<Response> {
- if (!desktopRequestAllowed(req)) return Response.json({error:"Desktop control is available only on localhost"}, {status:403});
+async function handleRecordingControl(req: Request, pathname: string): Promise<Response> {
+ if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
+ try {
+  if (req.method === "GET" && pathname === "/api/recording/status") return Response.json(hydratedRecordingSnapshot());
+  if (req.method !== "POST") return new Response(null,{status:405});
+  const body = await req.json();
+  if (pathname === "/api/recording/speakers") return Response.json(recordingCoordinator.rename(body.meetingId,body.expectedRevision,body.speakerNames));
+  if (pathname === "/api/recording/retry") return Response.json(hydratedRecordingSnapshot(await recordingCoordinator.retry(controlRequestId(body),body.meetingId)));
+  if (pathname === "/api/recording/abandon") {
+   const previous=recordingCoordinator.snapshot();
+   const state=await recordingCoordinator.abandon(controlRequestId(body),body.meetingId);
+   if (previous.path && state.state === "idle") {
+    retainedProcessing.delete(previous.path);
+    if (!recorderProc && recorderPath === previous.path) recorderPath=null;
+   }
+   return Response.json(hydratedRecordingSnapshot(state));
+  }
+  if (pathname === "/api/recording/maintenance") {
+   if (typeof body.acquire !== "boolean" || typeof body.owner !== "string" || !body.owner.trim() || body.owner.length > 128) return Response.json({error:"Choose a valid maintenance owner"},{status:400});
+   return Response.json(hydratedRecordingSnapshot(recordingCoordinator.setMaintenance(body.acquire,body.owner)));
+  }
+  return Response.json({error:"Unknown recording control endpoint"},{status:404});
+ } catch (error) { return recordingControlError(error); }
+}
+async function handleDesktopControl(req: Request, pathname: string): Promise<Response> {
+ if (!desktopRequestAllowed(req)) return Response.json({error:"Desktop control is available only on localhost"},{status:403});
  try {
   if (req.method === "GET" && pathname.endsWith("/status")) {
    const status = desktopRecordingStatus();
-   try { const health = await fetch(`${TRANSCRIPTION_SERVER}/health`, {signal:AbortSignal.timeout(1500)}); const data=await health.json(); status.ready = data.whisper === true; } catch {status.ready=false;}
-   return Response.json({...status, permissionRequest:desktopPermissions.request()});
+   try { const health = await fetch(`${TRANSCRIPTION_SERVER}/health`,{signal:AbortSignal.timeout(1500)}); const data=await health.json(); status.ready = !status.maintenance && data.whisper === true; } catch {status.ready=false;}
+   return Response.json({...status,permissionRequest:desktopPermissions.request()});
   }
   const body = await req.json();
-  if (pathname.endsWith("/commands") && req.method === "POST") {
-   if (!["start", "stop"].includes(body.action) || !["pt", "en"].includes(body.language)) return Response.json({error:"Choose start/stop and pt/en"}, {status:400});
-   const state = desktopRecordingStatus();
-   if (recorderStarting) return Response.json({error:"Recording is starting"}, {status:409});
-   const language = body.action === "start" ? "en" : recordingLanguage || "en";
-   const id = desktopControl.enqueue(body.action, language, state);
-   if (body.action === "start") recordingLanguage = language;
-   return Response.json({ok:true,id});
+  if (pathname.endsWith("/commands")) {
+   if (!["start","stop"].includes(body.action)) return Response.json({error:"Choose start or stop"},{status:400});
+   const id = controlRequestId(body);
+   const state = body.action === "start" ? await recordingCoordinator.start(id,body.mode ?? "both") : await recordingCoordinator.stop(id,body.meetingId);
+   return Response.json({ok:true,id,status:desktopRecordingStatus(),snapshot:hydratedRecordingSnapshot(state)});
   }
-  if (typeof body.client !== "string" || body.client.length > 100) return Response.json({error:"Missing browser id"}, {status:400});
-  if (pathname.endsWith("/poll") && req.method === "POST") {
-   desktopControl.heartbeat(body.client, {recording:body.recording === true,processing:body.processing === true,seconds:Number(body.seconds)||0,ready:body.ready === true,commandId:typeof body.commandId === "string" ? body.commandId : undefined});
-   const state = desktopRecordingStatus();
-   return Response.json({command:desktopControl.claim(body.client, Date.now(), typeof body.commandId === "string" ? body.commandId : undefined),status:state});
-  }
-  if (pathname.endsWith("/complete") && req.method === "POST") {
-   desktopControl.complete(body.id, body.client, typeof body.error === "string" ? body.error : null);
-   return Response.json({ok:true});
-  }
+  if (pathname.endsWith("/poll")) return Response.json({command:null,status:desktopRecordingStatus()});
+  if (pathname.endsWith("/complete")) return Response.json({ok:true,status:desktopRecordingStatus()});
   return Response.json({error:"Unknown desktop control endpoint"},{status:404});
- } catch (e) { return Response.json({error:(e as Error).message},{status:409}); }
+ } catch (error) { return recordingControlError(error); }
 }
 
 async function handleUiLocale(req:Request):Promise<Response> {
@@ -2301,20 +2331,10 @@ setInterval(async () => {
      if(syscapProc){try{syscapProc.kill();}catch{}syscapProc=null;}
      await gracefulStop(recorderProc,1500,"SIGINT");
     }
-    if(desktopControl.status().clientConnected && !desktopControl.pending) {
-     try{desktopControl.enqueue('stop',recordingLanguage === 'en'?'en':'pt',{recording:true,processing:false});}catch{}
-    }
-    // Without a browser, save the audio and a recoverable session on the server.
-    if(!desktopControl.status().clientConnected || Date.now()-quotaReachedAt>30_000) {
-     desktopControl.cancelPending();
-     const duration=Math.floor((Date.now()-recorderStartedAt)/1000);
-     const response=await handleSysRecordStop(new Request('http://localhost/api/sysrecord/stop',{method:'POST',body:JSON.stringify({language:recordingLanguage})}));
-     if(response.ok){
-      quotaStopResult=await response.json();
-      if(!desktopControl.status().clientConnected) {
-       await handleCreateSession(new Request('http://localhost/api/sessions',{method:'POST',body:JSON.stringify({title:'Recording stopped — 2 GB limit',duration,language:quotaStopResult.language || "en",transcriptFinalized:true,transcript:quotaStopResult.streamText||'',segments:quotaStopResult.turns||[],files:{wav:quotaStopResult.path,srt:'',txt:''},tags:[],speakers:[...new Set((quotaStopResult.turns||[]).map((turn:any)=>turn.speaker))],aiNotes:'',summary:''})}));
-      }
-     }
+    const state = recordingCoordinator.snapshot();
+    if (state.meetingId && state.state === "recording") {
+     await recordingCoordinator.stop(`quota-${state.meetingId}`,state.meetingId);
+     quotaStopResult = recordingCoordinator.snapshot().session;
     }
    }
   }
@@ -2334,6 +2354,37 @@ const notesService = new AutomaticNotesService({
 notesService.recover();
 const notesTimer = setInterval(() => { void notesService.tick().catch(error => console.error("Automatic notes queue failed:", error)); },1000);
 notesTimer.unref();
+
+const recordingCoordinator = new RecordingCoordinator({
+ manifestPath:join(APP_DIR,"recording-manifest.json"),
+ adapter:{
+  async start(mode, _meetingId, attachPath) {
+   if (transcriptionRequests || recordingFinalizationRunning) throw new Error("Wait for the current transcription to finish");
+   recorderStarting = true;
+   try {
+    await preemptNotes();
+    const response = await beginSysRecording(mode,attachPath);
+    const result = await response.json();
+    if (!response.ok || !result.recording) throw new Error(result.error || "Capture permissions are required");
+    return {path:result.path,liveModel:recordingLiveModel};
+   } catch (error) {
+    if (syscapProc) { try { syscapProc.kill(); } catch {} syscapProc = null; }
+    if (recorderProc) { await gracefulStop(recorderProc,1500,"SIGINT"); recorderProc = null; }
+    stopLiveTranscribe(); stopLevelMeter();
+    throw error;
+   } finally { recorderStarting = false; }
+  },
+  stop:stopCapture,
+  async finalize(path) { await preemptNotes(); return finalizeCapture(path); },
+  save(session) {
+   const saved = notesService.create(session);
+   if (saved.files?.wav) { retainedProcessing.delete(saved.files.wav); removeChannelCopies(saved.files.wav); }
+   return saved;
+  },
+ },
+});
+const retained = recordingCoordinator.snapshot();
+if (retained.path && retained.state !== "completed") retainedProcessing.set(retained.path,Infinity);
 
 const server = Bun.serve({
 	hostname: "127.0.0.1",
@@ -2385,14 +2436,15 @@ const server = Bun.serve({
 		if (method === "GET" && url.pathname === "/api/setup/install-ffmpeg") return handleInstallFfmpeg();
 		if (method === "POST" && url.pathname === "/api/setup/start-ollama") return handleStartOllama();
 		if (url.pathname === "/api/desktop/permissions" || url.pathname.startsWith("/api/desktop/permissions/")) return handleDesktopPermissions(req, url.pathname);
-		if (url.pathname.startsWith("/api/desktop/control/")) return handleDesktopControl(req, url.pathname);
+		if (url.pathname.startsWith("/api/recording/")) { httpServer.timeout(req,0); return handleRecordingControl(req,url.pathname); }
+		if (url.pathname.startsWith("/api/desktop/control/")) { httpServer.timeout(req,0); return handleDesktopControl(req, url.pathname); }
 		if (method === "POST" && url.pathname === "/api/desktop/float") return handleDesktopFloat();
 		if (method === "GET" && url.pathname === "/api/meeting-detector") return handleDetectorStream();
 		// /api/download and /api/recording removed — unused legacy endpoints
 		if (method === "POST" && url.pathname === "/api/sysrecord/start") return handleSysRecordStart(req);
 		if (method === "POST" && url.pathname === "/api/sysrecord/stop") { httpServer.timeout(req, 0); return handleSysRecordStop(req); }
-		if (method === "GET" && url.pathname === "/api/sysrecord/levels") return handleSysLevelsSSE();
-		if (method === "GET" && url.pathname === "/api/sysrecord/live") return handleLiveTranscribe(url);
+		if (method === "GET" && url.pathname === "/api/sysrecord/levels") return desktopRequestAllowed(req) ? handleSysLevelsSSE() : new Response(null,{status:403});
+		if (method === "GET" && url.pathname === "/api/sysrecord/live") return desktopRequestAllowed(req) ? handleLiveTranscribe() : new Response(null,{status:403});
 		if (method === "GET" && url.pathname === "/api/health") return handleHealth();
 		if (method === "GET" && url.pathname === "/api/recovery/list") return handleListOrphaned();
 		if (method === "DELETE" && url.pathname === "/api/recovery/discard") return handleDiscardOrphaned(url);

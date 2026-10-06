@@ -4,6 +4,7 @@ import { useRecording } from './useRecording';
 import { recordingApi } from '@/api/recording';
 import { useRecordingStore } from '@/stores/recording';
 beforeEach(() => {
+ vi.stubGlobal("EventSource",class {close(){}addEventListener(){}});
  useRecordingStore.getState().reset();
  useRecordingStore.getState().startRecording();
  vi.spyOn(recordingApi,'stop').mockResolvedValue({path:'/test.wav', finalized:false});

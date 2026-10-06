@@ -34,3 +34,16 @@ test("a result followed by a final stream error does not create an automatic job
  await waitFor(() => expect(screen.getByRole("button",{name:"Recover"})).toBeEnabled());
  expect(saves).toBe(0);
 });
+
+test('newly released recovery audio appears immediately and keeps archived manual speaker names',async()=>{
+ let available=false;let saved:any;
+ const archived={...orphan,recoveryMeetingId:'retained-meeting',speakerNames:{'Speaker 1':'Ana'},segments:[{speaker:'Speaker 1',channel:'sys',text:'Bom dia',start:0,end:2}]};
+ const final={...result,speakers:['Speaker 2'],segments:[{speaker:'Speaker 2',channel:'sys',text:'Bom dia',start:0,end:2}],embeddings:{'Speaker 2':[1,2]}};
+ vi.stubGlobal('fetch',vi.fn(async(url:string,init?:RequestInit)=>{
+  if(url.includes('recovery/list'))return Response.json({recordings:available?[archived]:[]});
+  if(url.includes('transcribe'))return new Response(`event: result\ndata: ${JSON.stringify(final)}\n\n`);
+  if(init?.method==='POST'){saved=JSON.parse(String(init.body));return Response.json({...saved,id:saved.id});}return Response.json([]);
+ }));
+ render(<RecoveryBanner/>);await waitFor(()=>expect(fetch).toHaveBeenCalled());available=true;fireEvent(window,new Event('heed:recovery-refresh'));
+ fireEvent.click(await screen.findByRole('button',{name:'Recover'}));await waitFor(()=>expect(saved).toMatchObject({id:'retained-meeting',speakers:['Ana'],segments:[{speaker:'Ana'}],embeddings:{Ana:[1,2]}}));
+});

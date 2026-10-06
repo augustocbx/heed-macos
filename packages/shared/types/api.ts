@@ -44,6 +44,8 @@ export interface TranscribeResult {
 }
 
 export interface SystemRecordStartResponse {
+ error?: string;
+ permissionNeeded?: boolean;
 	recording: boolean;
 	mode: string;
 	path: string;

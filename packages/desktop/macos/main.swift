@@ -16,8 +16,13 @@ struct ControlStatus: Decodable {
     let starting: Bool?
     var uiLocale: String? = nil
     var permissionRequest: PermissionRequest? = nil
-    var canStart: Bool { ready && !recording && !processing && !pending && starting != true }
-    var canStop: Bool { recording && !pending }
+    var meetingId: String? = nil
+    var state: String? = nil
+    var maintenance: Bool? = nil
+    var path: String? = nil
+    var canStart: Bool { ready && !recording && !processing && !pending && starting != true && maintenance != true && (state != "failed" || path == nil) }
+    var canStop: Bool { recording && !processing && !pending && starting != true && meetingId != nil }
+    var canQuit: Bool { !recording && !processing && !pending && starting != true }
 }
 struct APIError: Decodable { let error: String }
 func responseError(_ data: Data?, status: Int) -> String {
@@ -237,7 +242,10 @@ final class MenuController: NSObject, NSApplicationDelegate {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:5001/api/desktop/control/commands")!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["action": action, "language": "en"])
+        request.timeoutInterval = 600
+        var payload: [String: Any] = ["action": action, "language": "en", "requestId": UUID().uuidString]
+        if action == "stop", let meetingId = state?.meetingId { payload["meetingId"] = meetingId }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         session.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
@@ -252,7 +260,6 @@ final class MenuController: NSObject, NSApplicationDelegate {
                     self.logSlack(accepted ? "automatic \(action) accepted" : "automatic \(action) request failed")
                 }
                 if accepted {
-                    if slackCallID == nil { self.openInterface() }
                     self.poll()
                 } else {
                     self.statusMenu.title = MenuLocalization.message(error?.localizedDescription ?? responseError(data, status: (response as? HTTPURLResponse)?.statusCode ?? 0), locale: self.locale)
@@ -297,12 +304,28 @@ final class MenuController: NSObject, NSApplicationDelegate {
             self.poll()
         }
     }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Fresh backend state covers capture/finalization started from another tab or menu.
+        session.dataTask(with: URL(string: "http://127.0.0.1:5001/api/desktop/control/status")!) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                guard let self = self else { sender.reply(toApplicationShouldTerminate: false); return }
+                let latest = data.flatMap { try? JSONDecoder().decode(ControlStatus.self, from: $0) }
+                let allowed = (response as? HTTPURLResponse)?.statusCode == 200 && latest?.canQuit == true
+                if !allowed {
+                    self.statusMenu.title = self.text(latest == nil ? "Could not check recording status. Try again before quitting." : "Finish the active meeting before quitting Heed.")
+                    self.updateMenu()
+                }
+                sender.reply(toApplicationShouldTerminate: allowed)
+            }
+        }.resume()
+        return .terminateLater
+    }
     @objc private func quitApp() { NSApplication.shared.terminate(nil) }
 }
 
 if CommandLine.arguments.contains("--self-test") {
     func status(_ recording: Bool = false, _ processing: Bool = false, _ ready: Bool = true, _ pending: Bool = false) -> ControlStatus {
-        ControlStatus(recording: recording, processing: processing, seconds: 0, ready: ready, clientConnected: true, error: nil, pending: pending, starting: false)
+        ControlStatus(recording: recording, processing: processing, seconds: 0, ready: ready, clientConnected: true, error: nil, pending: pending, starting: false, meetingId: recording ? "fixture" : nil)
     }
     precondition(recordingStatusImage(false)?.isTemplate == true)
     precondition(recordingStatusImage(true)?.isTemplate == false)
@@ -321,8 +344,12 @@ if CommandLine.arguments.contains("--self-test") {
     precondition(status().canStart && !status().canStop)
     precondition(!status(true).canStart && status(true).canStop)
     precondition(!status(false, true).canStart)
+    precondition(!status(true).canQuit && !status(false, true).canQuit && status().canQuit)
     precondition(!status(false, false, false).canStart)
     precondition(!status(true, false, true, true).canStop)
+    var retryable = status(); retryable.state = "failed"; precondition(retryable.canStart)
+    retryable.path = "/synthetic/retained.wav"; precondition(!retryable.canStart)
+    var untargeted = status(true); untargeted.meetingId = nil; precondition(!untargeted.canStop)
     precondition(responseError(Data("{\"error\":\"Permission required\"}".utf8), status: 409) == "Permission required")
     precondition(responseError(nil, status: 500).contains("500"))
     menuInstanceLockSelfTests()

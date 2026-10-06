@@ -5,6 +5,8 @@ struct MenuLocalization {
     static func normalize(_ locale: String?) -> String { locales.contains(locale ?? "") ? locale! : "en" }
     private static let translations: [String: [String: String]] = [
         "pt-BR": [
+            "Finish the active meeting before quitting Heed.": "Finalize a reunião ativa antes de sair do Heed.",
+            "Could not check recording status. Try again before quitting.": "Não foi possível verificar a gravação. Tente novamente antes de sair.",
             "Preparing services…": "Preparando serviços…",
             "Start recording": "Iniciar gravação",
             "Stop recording": "Parar gravação",
@@ -46,6 +48,8 @@ struct MenuLocalization {
             "A recording command is already pending": "Já há um comando de gravação pendente"
         ],
         "fr": [
+            "Finish the active meeting before quitting Heed.": "Terminez la réunion active avant de quitter Heed.",
+            "Could not check recording status. Try again before quitting.": "Impossible de vérifier l’enregistrement. Réessayez avant de quitter.",
             "Preparing services…": "Préparation des services…",
             "Start recording": "Démarrer l’enregistrement",
             "Stop recording": "Arrêter l’enregistrement",
@@ -87,6 +91,8 @@ struct MenuLocalization {
             "A recording command is already pending": "Une commande d’enregistrement est déjà en attente"
         ],
         "de": [
+            "Finish the active meeting before quitting Heed.": "Beenden Sie die aktive Besprechung, bevor Sie Heed schließen.",
+            "Could not check recording status. Try again before quitting.": "Der Aufnahmestatus konnte nicht geprüft werden. Versuchen Sie es vor dem Beenden erneut.",
             "Preparing services…": "Dienste werden vorbereitet…",
             "Start recording": "Aufnahme starten",
             "Stop recording": "Aufnahme beenden",
