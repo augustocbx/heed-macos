@@ -1,0 +1,29 @@
+# Optional Google Drive libraries
+
+Google Drive is optional. Recording, transcription, notes, tasks and local chat continue using local data. Connection does not upload meetings automatically: choose the library, then explicitly queue and publish immutable revisions in Storage Library. Discovery previews remote revisions before quota-aware transcript import; audio downloads require an explicit request. Disconnect preserves local transcripts and pending copies.
+
+## Registration and access
+
+Register a **Desktop** OAuth client in a Google Cloud project, enable Drive API and configure the consent screen. Enter the public client ID in Heed Settings. Authorization opens the system browser with S256 PKCE and a one-use loopback callback. No client secret is embedded or requested by Heed. Tokens and resumable upload URLs are stored behind opaque references in this Mac's unsynchronized Keychain. A locked or unavailable credential helper fails closed. Failed credential removal retains a bounded opaque cleanup reference for a later disconnect or reconnect; retired credentials cannot authorize requests. Resolve Keychain or network access before retrying.
+
+The default `drive.file` mode only sees files individually authorized for that OAuth application. Use the same registered application on both Macs. Selecting a folder does not authorize its arbitrary descendants. For an existing library created by another application, choose existing-library read-only (`drive.readonly`) or read/write (`drive`) access and explicitly acknowledge its account-wide scope. These restricted scopes can require Google verification, organization administrator approval and consent-screen distribution work. Heed does not bypass those requirements or promise access that Google has not granted.
+
+Browse accessible folders or enter a stable folder ID. **Use existing library** requires exactly one valid `heed-library.json` shared portable header. An ordinary folder, shortcut, ambiguous header or insufficient permission is rejected. **Create dedicated library** explicitly creates a new folder inside the selected parent without changing existing files. Interrupted creation retains reserved IDs; retry the same parent/name or explicitly forget the job. Forgetting never deletes a partial remote folder.
+
+## Publication and recovery
+
+Portable paths resolve through stable Drive IDs. Existing hierarchical libraries are supported; new artifacts use public Drive properties to record their portable path and destination identity. Public properties are metadata visible to applications that already have access to the file; they contain no credential or transcript text. Commit markers appear only after referenced objects, meeting metadata and manifest pass verification. Each device keeps immutable revision branches rather than overwriting another device's work.
+
+Uploads reserve a file ID before starting and keep resumable progress durably. Session URLs stay in Keychain. After restart Heed probes the provider's acknowledged offset; expired sessions reuse the reserved file ID. Network, capacity, rate-limit and permission failures leave the local pending copy protected for retry. No cleanup, disconnect or local tombstone deletes a remote file. While a writable library is enabled, finalized local WAVs receive conservative protection before queue preparation. A device-private destination journal retains pending protection after disconnect; release requires a matching remote bundle and a streamed hash check of the current local source. This protection does not upload meetings automatically.
+
+Discovery paginates bounded metadata and stages incremental checkpoints. A checkpoint advances only after the complete discovery has validated referenced artifacts and saved its local catalog. Expired change tokens trigger bounded reconciliation. Files outside the selected library are excluded. Discovery does not bulk-download audio. Missing SHA-256 metadata requires streamed content verification; MD5 is never treated as SHA-256. Oversized or ambiguous libraries fail with an incomplete result rather than claiming full coverage. Private connector journals have file-size and entry limits; malformed or oversized state is preserved for recovery and disables the optional connector while local meeting access remains available.
+
+Provider capacity is separate from Heed's managed local quota and from Google Drive for desktop's unmanaged cache. Imported complete English and Portuguese transcripts, speakers and labels remain available to local notes and label-scoped chat while offline.
+
+## Validation limits
+
+Automated checks use disposable local HTTP providers, synthetic transcripts and a fake credential vault. They cover OAuth state/PKCE/cancellation, refresh/revocation, scope enforcement, immutable publication, interrupted and expired transfers, pagination/checkpoint recovery, integrity, hostile origins, changed library identity and stale-tab commands. The native helper compiles for macOS 14+ and its self-test does not access Keychain.
+
+Real consent-screen configuration, account policy, Keychain authorization after installation/update, shared-drive permissions, Drive failure behavior and Air M1/Pro M4 Pro transfers still require user-operated acceptance. Validate a real two-Mac publication/import, interrupted transfer and offline bilingual AI before considering those acceptance checks complete.
+
+Primary documentation: [Desktop OAuth](https://developers.google.com/identity/protocols/oauth2/native-app), [Drive scopes](https://developers.google.com/workspace/drive/api/guides/api-specific-auth), [resumable uploads](https://developers.google.com/workspace/drive/api/guides/manage-uploads), [change tracking](https://developers.google.com/workspace/drive/api/guides/manage-changes), [shared drives](https://developers.google.com/workspace/drive/api/guides/enable-shareddrives).

@@ -40,3 +40,6 @@ recordings/
 eval_diar/cache/
 eval_echo/cache/
 **/*.wav.json
+
+# Device-local native credential helper, rebuilt by the installer
+packages/desktop/native-keychain/.build/
