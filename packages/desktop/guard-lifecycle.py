@@ -6,6 +6,9 @@ import os
 import sys
 import urllib.error
 import urllib.request
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args): return None
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/"scripts"))
 from service_config import service_config,saved_service_ports,local_service_url,ROOT
@@ -34,7 +37,7 @@ def guard(action, base_url, owner, legacy_owned=False, transaction_id=None):
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=5) as response:
+        with OPENER.open(request, timeout=5) as response:
             state = json.load(response)
         if state.get("maintenance") is not (action == "acquire"):
             raise ValueError("The backend did not acknowledge the maintenance guard.")
@@ -46,7 +49,7 @@ def guard(action, base_url, owner, legacy_owned=False, transaction_id=None):
         if transaction_id:
             raise ValueError('This backend does not support durable update maintenance.') from error
         # Older releases have no atomic guard. Preserve their existing busy-state check.
-        with urllib.request.urlopen(base_url + "/api/desktop/control/status", timeout=5) as response:
+        with OPENER.open(base_url + "/api/desktop/control/status", timeout=5) as response:
             state = json.load(response)
         if not all(isinstance(state.get(key), bool) for key in ["recording", "processing", "pending"]):
             raise ValueError("The legacy backend did not return a valid recording status.")
