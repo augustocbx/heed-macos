@@ -225,6 +225,11 @@ try {
     await button.click();
     await page.getByRole('button', { name: 'Export PDF or subtitles…', exact: true }).click();
     await page.getByRole('dialog').waitFor();
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll('dialog button')].some(
+        (button) => button.textContent === 'Preview selected content' && !button.disabled,
+      ),
+    );
     return button;
   }
   async function preview() {
@@ -285,6 +290,7 @@ try {
     const frozen = await preview();
     assert.equal(frozen.selection.transcript, scope === 'transcript');
     assert.equal(frozen.selection.notes, scope === 'notes');
+    assert.deepEqual(frozen.selection.taskIds, scope === 'tasks' ? ['export-task'] : []);
     const bytes = await save(name, frozen);
     if (format !== 'pdf') {
       const parsed = parseSync(bytes.toString('utf8')).filter((node) => node.type === 'cue');
