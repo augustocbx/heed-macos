@@ -54,3 +54,7 @@ Audio is optional. Imports retain complete text without downloading it. An expli
 ## Validation limits
 
 Synthetic tests cover strict format, privacy, path/hash corruption, stable aliases, concurrent revisions and clock skew, restart/commit acknowledgment failure, partial listing, quota pressure, streaming audio and interrupted migration. No real destination/accounts/shares or private meeting data are used. Equivalent M1/M4 Pro, English/Portuguese meeting and actual provider transport/confirmation/permission scenarios remain manual acceptance gates. macOS 14+ is the declared platform target; automated native builds are separate evidence from physical-device acceptance.
+
+## Transcript-only archival intent
+
+Portable schema v2 can carry optional immutable `meetingMode` and intentional `audioUnavailableReason: "transcript-only"`. Such meetings never advertise an archived audio reference. Device-local temporary WAV paths, pending/completed cleanup receipts and discard intents are excluded. Imports preserve the intentional reason across refresh and restart without inventing a cleanup receipt on the receiving Mac. Accepted remote corrections preserve an existing local pending cleanup claim/path, and a replacement cannot change an existing meeting’s archival intent. Legacy payloads remain unchanged. Older strict readers may refuse these new optional v2 fields; upgrade both Macs to read new transcript-only revisions.

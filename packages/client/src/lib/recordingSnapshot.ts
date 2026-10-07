@@ -23,6 +23,7 @@ export function applyRecordingSnapshot(snapshot:RecordingSnapshot) {
   const saved=snapshot.state==="completed" && !!session?.transcriptFinalized;
   const segments=saved?session.segments:snapshot.segments;
   useRecordingStore.setState({
+    meetingMode:snapshot.meetingMode ?? "audio-transcript",audioCleanup:snapshot.audioCleanup ?? null,
     realTimeTranscription:snapshot.realTimeTranscription !== false,
     liveOptions:snapshot.liveOptions || null,liveSpeechLanguage:snapshot.liveSpeechLanguage || "en",liveModel:snapshot.liveModel || snapshot.liveOptions?.initialModel || null,
     coordinatorMeetingId:snapshot.meetingId,coordinatorRevision:snapshot.revision,

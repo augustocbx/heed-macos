@@ -25,6 +25,7 @@ export async function createRetranscriptionCandidate(
   language: MeetingLanguage,
   handlers: Pick<TranscribeHandlers, "onStep" | "onProgress">,
   stage: (id: string, input: CandidateInput) => Promise<Session>,
+  vocabulary?:import("@heed/shared").VocabularySelection,
 ): Promise<Session> {
   if (!session.files?.wav)
     throw new Error(tr("The saved audio is unavailable."));
@@ -66,6 +67,7 @@ export async function createRetranscriptionCandidate(
       diarize: true,
       recording_finalize: true,
       final_model: model,
+      vocabulary,
     },
     {
       ...handlers,

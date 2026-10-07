@@ -7,12 +7,14 @@ interface Props {
  sessionId:string;
  available:boolean;
  archived?:boolean;
+ unavailableReason?:"transcript-only";
+ cleanupPending?:boolean;
  audioRef:RefObject<HTMLAudioElement|null>;
  onTime:(seconds:number|null)=>void;
  onDuration:(seconds:number)=>void;
 }
 
-export function SessionAudioPlayer({sessionId,available,archived,audioRef,onTime,onDuration}:Props) {
+export function SessionAudioPlayer({sessionId,available,archived,unavailableReason,cleanupPending,audioRef,onTime,onDuration}:Props) {
 	useLocale();
  const [error,setError]=useState(false);
  const [downloaded,setDownloaded]=useState(false),[downloading,setDownloading]=useState(false),[downloadError,setDownloadError]=useState('');
@@ -35,6 +37,7 @@ export function SessionAudioPlayer({sessionId,available,archived,audioRef,onTime
   void graph.current?.resume().catch(()=>setError(true));
   onTime(audio.currentTime);
  };
+ if(unavailableReason === "transcript-only")return <div><p className={styles.audioMessage}>{tr("Transcript-only meeting. Playback and retranscription are unavailable.")}</p>{cleanupPending&&<p role="status">{tr("Temporary audio cleanup is pending. Open recording recovery to retry cleanup.")}</p>}</div>;
  if(!available&&!downloaded&&archived)return <div><button disabled={downloading} onClick={()=>{setDownloading(true);setDownloadError('');void libraryApi.audio(sessionId).then(()=>setDownloaded(true)).catch(error=>setDownloadError(/quota|reservation/i.test(String(error))?'Increase the storage limit or select fewer meetings. Retained transcripts are preserved.':'Archived audio is unavailable. The transcript remains available.')).finally(()=>setDownloading(false));}}>{tr(downloading?'Downloading audio…':'Download archived audio')}</button>{downloadError&&<p role="alert">{tr(downloadError)}</p>}</div>;
  if(!available&&!downloaded)return <p className={styles.audioMessage}>{tr("Audio is unavailable for this meeting. The transcript remains available.")}</p>;
  return <div className={styles.audioPlayer}>

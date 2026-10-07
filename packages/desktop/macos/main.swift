@@ -24,14 +24,16 @@ struct ControlStatus: Decodable {
     var state: String? = nil
     var maintenance: Bool? = nil
     var path: String? = nil
+    var meetingMode: String? = nil
     var realTimeTranscription: Bool? = nil
     var liveOptions: AdmittedLiveOptions? = nil
     var liveModel: String? = nil
     func captureLabel(locale: String) -> String {
-        if realTimeTranscription == false { return MenuLocalization.text("Recording • live text off; transcript after stop",locale:locale) }
-        guard let language = liveOptions?.effectiveLanguage else { return MenuLocalization.text("Recording",locale:locale) }
+        let archivalLabel = meetingMode == "transcript-only" ? " • " + MenuLocalization.text("Transcript only",locale:locale) : ""
+        if realTimeTranscription == false { return MenuLocalization.text("Recording • live text off; transcript after stop",locale:locale) + archivalLabel }
+        guard let language = liveOptions?.effectiveLanguage else { return MenuLocalization.text("Recording",locale:locale) + archivalLabel }
         let label = MenuLocalization.text(language == "pt" ? "Brazilian Portuguese" : "English",locale:locale)
-        return "\(MenuLocalization.text("Recording",locale:locale)) • \(label) • \(liveOptions?.engine ?? "?") / \(liveModel ?? liveOptions?.initialModel ?? "?")"
+        return "\(MenuLocalization.text("Recording",locale:locale)) • \(label) • \(liveOptions?.engine ?? "?") / \(liveModel ?? liveOptions?.initialModel ?? "?")\(archivalLabel)"
     }
     var canStart: Bool { ready && !recording && !processing && !pending && starting != true && maintenance != true && (state != "failed" || path == nil) }
     var canStop: Bool { recording && !processing && !pending && starting != true && meetingId != nil }
@@ -99,11 +101,10 @@ struct RecordingMenuPresentation {
         if state.maintenance == true {
             return Self(status: "Preparing update…", blocker: "Preparing update…", recovery: nil, canStart: false, canStop: false)
         }
-        if !state.ready {
-            return Self(status: "Recording unavailable", blocker: "Recording unavailable", recovery: nil, canStart: false, canStop: false)
-        }
-        if !state.canStart {
-            return Self(status: "Recording unavailable", blocker: "Recording unavailable", recovery: nil, canStart: false, canStop: false)
+        if !state.ready || !state.canStart {
+            let reason = state.clientConnected ? "Recording is not ready" : "Recording interface disconnected"
+            return Self(status: reason, blocker: reason, recovery: "Check recording in interface…",
+                        canStart: false, canStop: false)
         }
         return Self(status: "Ready to record", blocker: nil, recovery: nil, canStart: true, canStop: false)
     }
@@ -144,6 +145,8 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private lazy var liveLanguageClient = LiveLanguageClient(session:session,endpoints:{ [weak self] in self?.endpoints })
     private var liveLanguageSettings: LiveLanguageSettings?
     private var liveLanguageItems: [NSMenuItem] = []
+    private let meetingModeMenu = NSMenuItem(title:"Meeting mode",action:nil,keyEquivalent:"")
+    private var meetingModeItems:[NSMenuItem] = []
     private let liveLanguageMenu = NSMenuItem(title:"Live speech language",action:nil,keyEquivalent:"")
     private let liveLanguageStateMenu = NSMenuItem(title:"",action:nil,keyEquivalent:"")
     private let finalOnlyMenu = NSMenuItem(title:"Record final-only (keeps real-time off)",action:#selector(recordFinalOnly),keyEquivalent:"")
@@ -235,6 +238,12 @@ final class MenuController: NSObject, NSApplicationDelegate {
         permissionStatusMenu.isEnabled = false; settingsGroup.addItem(permissionStatusMenu)
         for entry in [microphoneMenu, screenMenu, recheckPermissionsMenu, permissionHelpMenu] { entry.target = self; settingsGroup.addItem(entry) }
         settingsGroup.addItem(.separator())
+        meetingModeMenu.isEnabled = false; settingsGroup.addItem(meetingModeMenu)
+        for (title, code) in [("Audio + transcript", "audio-transcript"), ("Transcript only", "transcript-only")] {
+            let entry = NSMenuItem(title: title, action: #selector(selectMeetingMode(_:)), keyEquivalent: "")
+            entry.target = self; entry.representedObject = code; settingsGroup.addItem(entry); meetingModeItems.append(entry)
+        }
+        settingsGroup.addItem(.separator())
         let speechMenu = NSMenu()
         for (title,code) in [("English","en"),("Brazilian Portuguese","pt")] {
             let entry = NSMenuItem(title:title,action:#selector(selectLiveLanguage(_:)),keyEquivalent:"")
@@ -264,7 +273,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit menu app", action: #selector(quitApp), keyEquivalent: "")
         quit.target = self; menu.addItem(quit)
-        localizedItems = [(liveLanguageMenu,"Live speech language"),(finalOnlyMenu,"Record final-only (keeps real-time off)"),(startMenu, "Start recording"), (stopMenu, "Stop recording"),
+        localizedItems = [(meetingModeMenu, "Meeting mode"), (liveLanguageMenu,"Live speech language"),(finalOnlyMenu,"Record final-only (keeps real-time off)"),(startMenu, "Start recording"), (stopMenu, "Stop recording"),
             (open, "Open interface"), (settings, "Open settings…"), (automaticMenu, "Automatic recording"),
             (settingsMenu, "Settings and permissions"), (diagnosticsMenu, "Diagnostics"),
             (microphoneMenu, "Open Microphone settings…"), (screenMenu, "Open Screen Recording settings…"),
@@ -370,7 +379,8 @@ final class MenuController: NSObject, NSApplicationDelegate {
         } else if presentation.blocker == "Services are not ready", let notice = notice {
             statusMenu.title = notice.message(locale: locale)
         } else { statusMenu.title = text(presentation.status) }
-        if state?.recording != true && state?.processing != true, let message = statusMessage {
+        if state?.recording != true && state?.processing != true && presentation.blocker == nil,
+           let message = statusMessage {
             if message.until > Date() { statusMenu.title = message.text }
             else { statusMessage = nil }
         }
@@ -388,6 +398,13 @@ final class MenuController: NSObject, NSApplicationDelegate {
             entry.title = text(language == "pt" ? "Brazilian Portuguese" : "English")
             entry.state = language == (liveLanguageSettings?.liveLanguage ?? "en") ? .on : .off
             entry.isEnabled = liveLanguageSettings != nil && !sending
+        }
+        let activeMode = ["starting","recording","stopping","finalizing","failed"].contains(state?.state ?? "")
+        for entry in meetingModeItems {
+            let selected=entry.representedObject as? String
+            entry.title=text(selected == "transcript-only" ? "Transcript only" : "Audio + transcript")
+            entry.state=selected == (activeMode ? state?.meetingMode : liveLanguageSettings?.meetingMode) ? .on : .off
+            entry.isEnabled=liveLanguageSettings != nil && !sending && !activeMode
         }
         liveLanguageStateMenu.title = state?.recording == true ? state!.captureLabel(locale:locale) : text("Live speech language") + ": " + text(liveLanguageSettings?.liveLanguage == "pt" ? "Brazilian Portuguese" : "English")
         finalOnlyMenu.isHidden = !liveAdmissionUnavailable && !["unsupported","unavailable"].contains(liveLanguageSettings?.liveLanguageState ?? "")
@@ -531,6 +548,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         case "Check recording status again": recheckPermissions()
         case "Check permissions again": recheckPermissions()
         case "Open recording recovery…": openInterface()
+        case "Check recording in interface…": openInterface()
         case "Settings and permissions…": openSettings()
         default: openInterface()
         }
@@ -645,6 +663,24 @@ final class MenuController: NSObject, NSApplicationDelegate {
             guard generation == self.languageSettingsGeneration else { return }
             if case .success(let settings) = result { self.liveLanguageSettings = settings }
             else { self.liveLanguageSettings = nil; self.liveAdmissionUnavailable = true }
+            self.updateMenu()
+        }
+    }
+    @objc private func selectMeetingMode(_ sender:NSMenuItem) {
+        guard !sending, let mode=sender.representedObject as? String else {return}
+        if mode == "transcript-only" {
+            let alert=NSAlert();alert.messageText=text("Enable transcript only")
+            alert.informativeText=text("Transcript only uses temporary local audio during capture and final processing. After the final transcript is saved, audio is deleted. Playback and retranscription are unavailable.")
+            alert.addButton(withTitle:text("Enable transcript only"));alert.addButton(withTitle:text("Cancel"))
+            guard alert.runModal() == .alertFirstButtonReturn else {return}
+        }
+        sending=true;languageSettingsGeneration += 1;updateMenu()
+        liveLanguageClient.save(meetingMode:mode) { [weak self] result in
+            guard let self=self else {return};self.sending=false
+            switch result {
+            case .success(let action):self.liveLanguageSettings=action.settings
+            case .failure:self.statusMenu.title=self.text("Could not save meeting mode. Try again.")
+            }
             self.updateMenu()
         }
     }
@@ -812,6 +848,8 @@ if CommandLine.arguments.contains("--update-client-self-test") {
     let settings = menu.items.first { $0.title == "Settings and permissions" }!.submenu!
     precondition(settings.items.contains { $0.title == "Interface language" })
     precondition(settings.items.contains { $0.title == "Check permissions again" })
+    precondition(["Meeting mode", "Audio + transcript", "Transcript only"].allSatisfy { title in settings.items.contains { $0.title == title } },
+                 "The new recording mode must remain directly reachable in Settings after merging main")
     let diagnostics = menu.items.first { $0.title == "Diagnostics" }!.submenu!
     precondition(diagnostics.items.contains { $0.title == "Local meeting storage" })
     let readyPresentation = RecordingMenuPresentation.evaluate(status(), fresh: true, microphone: "authorized", screenCapture: true, services: [], sending: false)
@@ -834,6 +872,13 @@ if CommandLine.arguments.contains("--update-client-self-test") {
     precondition(unknownPermission.status == "Could not verify permissions" && unknownPermission.recovery == "Check permissions again" && !unknownPermission.canStart)
     let unknown = RecordingMenuPresentation.evaluate(status(), fresh: false, microphone: "authorized", screenCapture: true, services: [], sending: false)
     precondition(unknown.status == "Service unavailable — open the interface" && !unknown.canStart && unknown.recovery == "Check recording status again")
+    let notReady = RecordingMenuPresentation.evaluate(status(false, false, false), fresh: true, microphone: "authorized", screenCapture: true, services: [], sending: false)
+    precondition(notReady.status == "Recording is not ready" && !notReady.canStart && notReady.recovery == "Check recording in interface…")
+    let disconnected = ControlStatus(recording: false, processing: false, seconds: 0, ready: false, clientConnected: false,
+                                     error: nil, pending: false, starting: false, meetingId: nil)
+    let disconnectedPresentation = RecordingMenuPresentation.evaluate(disconnected, fresh: true, microphone: "authorized", screenCapture: true, services: [], sending: false)
+    precondition(disconnectedPresentation.status == "Recording interface disconnected" && !disconnectedPresentation.canStart
+                 && disconnectedPresentation.recovery == "Check recording in interface…")
     let conflict = ServiceNoticeInfo(service: "api", port: 48100, state: "conflict", application: "OtherApp")
     let unavailable = RecordingMenuPresentation.evaluate(status(), fresh: true, microphone: "authorized", screenCapture: true, services: [conflict], sending: false)
     precondition(!unavailable.canStart && unavailable.recovery == "Retry service startup")
@@ -849,7 +894,7 @@ if CommandLine.arguments.contains("--update-client-self-test") {
     let saving = RecordingMenuPresentation.evaluate(status(false, true), fresh: true, microphone: "denied", screenCapture: false, services: [], sending: false)
     precondition(saving.status == "Processing meeting…" && !saving.canStart)
     for locale in MenuLocalization.locales {
-        for key in ["Automatic recording", "Settings and permissions", "Diagnostics", "Open Microphone settings…", "Open Screen Recording settings…", "Check recording status again", "Recording needs recovery", "Open recording recovery…"] {
+        for key in ["Automatic recording", "Settings and permissions", "Diagnostics", "Open Microphone settings…", "Open Screen Recording settings…", "Check recording status again", "Recording needs recovery", "Open recording recovery…", "Recording is not ready", "Recording interface disconnected", "Check recording in interface…"] {
             precondition(!MenuLocalization.text(key, locale: locale).isEmpty)
             if locale != "en" && !(locale == "fr" && key == "Diagnostics") {
                 precondition(MenuLocalization.text(key, locale: locale) != key)
@@ -874,6 +919,9 @@ if CommandLine.arguments.contains("--update-client-self-test") {
     precondition(finalOnly.captureLabel(locale: "en") == "Recording • live text off; transcript after stop")
     for locale in ["pt-BR", "fr", "de"] { precondition(finalOnly.captureLabel(locale: locale) != finalOnly.captureLabel(locale: "en")) }
     precondition(status(true).captureLabel(locale: "en") == "Recording")
+    var transcriptOnly=finalOnly;transcriptOnly.meetingMode="transcript-only"
+    precondition(transcriptOnly.captureLabel(locale:"en") == "Recording • live text off; transcript after stop • Transcript only")
+    for locale in ["pt-BR","fr","de"] {precondition(transcriptOnly.captureLabel(locale:locale) != transcriptOnly.captureLabel(locale:"en"))}
     let portuguese = try JSONDecoder().decode(ControlStatus.self,from:Data("{\"recording\":true,\"processing\":false,\"seconds\":12,\"ready\":true,\"clientConnected\":false,\"pending\":false,\"liveModel\":\"tiny\",\"liveOptions\":{\"effectiveLanguage\":\"pt\",\"engine\":\"mlx\",\"initialModel\":\"base\"}}".utf8))
     for locale in MenuLocalization.locales {
         precondition(portuguese.captureLabel(locale:locale).contains(MenuLocalization.text("Brazilian Portuguese",locale:locale)))

@@ -1,6 +1,8 @@
 import Foundation
 
 struct LiveLanguageSettings: Decodable {
+    let meetingMode: String?
+    let activeMeetingMode: String?
     let enabled: Bool
     let liveLanguage: String?
     let activeLiveLanguage: String?
@@ -51,6 +53,12 @@ final class LiveLanguageClient {
     func save(language: String, completion: @escaping (Result<LiveLanguageAction,Error>) -> Void) {
         guard ["en","pt"].contains(language) else { completion(.failure(LiveLanguageClientError(message:"Could not save live speech language. Try again.",code:nil))); return }
         settings(body:["liveLanguage":language],completion:completion)
+    }
+    func save(meetingMode: String, completion: @escaping (Result<LiveLanguageAction,Error>) -> Void) {
+        guard ["audio-transcript","transcript-only"].contains(meetingMode) else { completion(.failure(LiveLanguageClientError(message:"Could not save meeting mode. Try again.",code:nil))); return }
+        var body:[String:Any] = ["meetingMode":meetingMode]
+        if meetingMode == "transcript-only" { body["acknowledgeTemporaryAudio"] = true }
+        settings(body:body,completion:completion)
     }
     private func settings(body:[String:Any], completion:@escaping (Result<LiveLanguageAction,Error>)->Void) {
         request("/api/recording/settings",body:body) { result in

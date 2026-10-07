@@ -44,7 +44,8 @@ describe("RecordPage", () => {
 	it("explains configured preview and automatic final language", () => {
 		render(<RecordPage />);
 		expect(screen.getByText(/Live speech language is configured in Settings/)).toBeInTheDocument();
-		expect(document.querySelector("select")).toBeNull();
+		expect(screen.queryByRole("combobox",{name:"Live speech language"})).toBeNull();
+		expect(screen.getByLabelText("Glossary")).toBeInTheDocument();
 	});
 
 	it("renders exactly 48 visualizer bars total (24 mic + 24 system)", () => {
@@ -78,3 +79,5 @@ it('explains final-only capture without offering a live preview', async()=>{
  expect(screen.queryByText(/Live speech language is configured in Settings/)).toBeNull();
  useRecordingStore.getState().reset();
 });
+
+vi.mock('@/api/vocabulary',()=>({vocabularyApi:{read:vi.fn(async()=>({schemaVersion:1,version:0,defaultGlossaryId:null,glossaries:[]}))}}));

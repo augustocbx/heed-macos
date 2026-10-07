@@ -238,3 +238,38 @@ test("snapshots the device preference at admission and preserves it through reco
   expect(done.realTimeTranscription).toBe(false);
   expect((await recovered.start("next", "mic")).realTimeTranscription).toBe(true);
 });
+
+describe('transcript-only lifecycle',()=>{
+ test('freezes archival preference and saves authoritative text before confirmed cleanup',async()=>{
+  let preference='transcript-only';const events:string[]=[];
+  const base=setup({save:(s:Partial<Session>)=>{events.push('save');return {...s,id:s.id!} as Session;},cleanup:(s:Session)=>{events.push('cleanup');expect(s.transcriptFinalized).toBe(true);expect(s.audioCleanup?.status).toBe('pending');return {...s,files:{...s.files,wav:''},audioCleanup:{...s.audioCleanup!,status:'completed'}};}} as any);
+  const coordinator=new RecordingCoordinator({manifestPath:base.manifestPath,adapter:base.adapter,meetingMode:()=>preference as any});
+  const active=await coordinator.start('archive-start');preference='audio-transcript';
+  const completed=await coordinator.stop('archive-stop',active.meetingId!);
+  expect(events).toEqual(['save','cleanup']);expect(completed.meetingMode).toBe('transcript-only');expect(completed.session).toMatchObject({meetingMode:'transcript-only',audioUnavailableReason:'transcript-only',audioCleanup:{status:'completed'},files:{wav:''}});
+ });
+ test('save failure retains the bounded capture checkpoint and cannot abandon transcript-only audio',async()=>{
+  let fail=true,cleanups=0;const base=setup({save:(s:Partial<Session>)=>{if(fail)throw Error('Synthetic save fault');return {...s,id:s.id!} as Session;},cleanup:(s:Session)=>{cleanups++;return {...s,audioCleanup:{...s.audioCleanup!,status:'completed'},files:{wav:''}};}} as any);
+  const coordinator=new RecordingCoordinator({manifestPath:base.manifestPath,adapter:base.adapter,meetingMode:()=> 'transcript-only'});
+  const active=await coordinator.start('save-fault-start');await expect(coordinator.stop('save-fault-stop',active.meetingId!)).rejects.toThrow('Synthetic save fault');
+  expect(cleanups).toBe(0);expect(coordinator.snapshot().audioCleanup?.status).toBe('pending');
+  await expect(coordinator.abandon('archive',active.meetingId!)).rejects.toThrow('transcript-only');await expect(coordinator.start('another')).rejects.toThrow('Recover');
+  fail=false;expect((await coordinator.retry('save-retry',active.meetingId!)).session?.audioCleanup?.status).toBe('completed');
+ });
+ test('cleanup failure resumes after restart without retranscription or duplicate save',async()=>{
+  let fail=true,saved:Session|null=null,saves=0,finalizes=0;
+  const base=setup({save:(s:Partial<Session>)=>{saves++;saved={...s,id:s.id!} as Session;return saved;},read:(id:string)=>saved?.id===id?saved:null,finalize:async()=>{finalizes++;return base.capture;},cleanup:(s:Session)=>{if(fail)throw Error('Synthetic deletion fault');saved={...s,files:{wav:''},audioCleanup:{...s.audioCleanup!,status:'completed'}};return saved;}} as any);
+  const coordinator=new RecordingCoordinator({manifestPath:base.manifestPath,adapter:base.adapter,meetingMode:()=> 'transcript-only'});
+  const active=await coordinator.start('delete-start');await expect(coordinator.stop('delete-stop',active.meetingId!)).rejects.toThrow('Synthetic deletion fault');expect((saved as Session|null)?.audioCleanup?.status).toBe('pending');
+  fail=false;const recovered=new RecordingCoordinator({manifestPath:base.manifestPath,adapter:base.adapter});const result=await recovered.resumeCleanup();
+  expect(result.state).toBe('completed');expect(saves).toBe(1);expect(finalizes).toBe(0);expect(result.session?.audioCleanup?.status).toBe('completed');
+ });
+ test('confirmed discard deletes owned temporary audio before resetting the failed slot',async()=>{
+  let discarded=false;const base=setup({stop:async()=>{throw Error('Synthetic transcription fault');},discard:()=>{discarded=true;}} as any);
+  const coordinator=new RecordingCoordinator({manifestPath:base.manifestPath,adapter:base.adapter,meetingMode:()=> 'transcript-only'});
+  const active=await coordinator.start('discard-start');await expect(coordinator.stop('discard-stop',active.meetingId!)).rejects.toThrow();
+  const result=await coordinator.discard('discard',active.meetingId!);expect(discarded).toBe(true);expect(result.state).toBe('idle');
+ });
+});
+test('a new meeting clears prior authoritative cleanup checkpoints before any recovery',async()=>{const base=setup();const first=await base.coordinator.start('first');await base.coordinator.stop('first-stop',first.meetingId!);const second=await base.coordinator.start('second');expect(second.finalCapture).toBeUndefined();expect(second.audioCleanup).toBeUndefined();expect(second.audioDiscardRequested).toBeUndefined();});
+test('a crashed confirmed discard resumes exact cleanup before releasing the failed capture slot',async()=>{let discarded=0,fail=true;const base=setup({stop:async()=>{throw Error('Synthetic processing fault');},discard:()=>{discarded++;}} as any);const coordinator=new RecordingCoordinator({manifestPath:base.manifestPath,adapter:base.adapter,meetingMode:()=> 'transcript-only',write(path,value){if((value as any).snapshot.state==='idle'&&fail){fail=false;throw Error('Synthetic discard receipt fault');}atomicWriteJson(path,value);}});const active=await coordinator.start('discard-restart-start');await expect(coordinator.stop('discard-restart-stop',active.meetingId!)).rejects.toThrow();await expect(coordinator.discard('confirmed-discard',active.meetingId!)).rejects.toThrow('receipt');expect(coordinator.snapshot().audioDiscardRequested).toBe(true);const recovered=new RecordingCoordinator({manifestPath:base.manifestPath,adapter:base.adapter});expect((await recovered.resumeCleanup()).state).toBe('idle');expect(discarded).toBe(2);});

@@ -4,6 +4,7 @@ import { useRecording } from "./useRecording";
 import { useRecordingStore } from "@/stores/recording";
 import { recordingApi } from "@/api/recording";
 import { createRecordingSession } from "@/lib/recordingSession";
+import {useVocabularyStore} from '@/stores/vocabulary';
 import {ApiError} from '@/api/client';
 
 vi.mock("@/api/recording", () => ({ recordingApi: { start: vi.fn(), recordFinalOnly:vi.fn(), stop: vi.fn(), status:vi.fn() } }));
@@ -15,6 +16,7 @@ afterEach(() => vi.unstubAllGlobals());
 const options = { micBars: { current: [] }, systemBars: { current: [] } };
 beforeEach(() => {
  vi.clearAllMocks();
+ useVocabularyStore.getState().setSelection({});
  useRecordingStore.getState().reset();
  vi.stubGlobal("EventSource", class { close() {} });
  vi.mocked(recordingApi.start).mockResolvedValue({ success: true } as never);
@@ -29,7 +31,7 @@ describe("recording language and finalization", () => {
   await act(async()=>{expect(await result.current.start()).toBe(false);});
   expect(result.current.liveStartError).toBe('live-language-unsupported');expect(recordingApi.recordFinalOnly).not.toHaveBeenCalled();
   await act(async()=>{expect(await result.current.recordFinalOnly()).toBe(true);});
-  expect(recordingApi.recordFinalOnly).toHaveBeenCalledWith('both',expect.any(String));
+  expect(recordingApi.recordFinalOnly).toHaveBeenCalledWith('both',expect.any(String),{});
   unmount();expect(recordingApi.stop).not.toHaveBeenCalled();
  });
  it('subscribes without a language override and closure releases observers without stopping capture',()=>{
@@ -42,7 +44,7 @@ describe("recording language and finalization", () => {
  it("delegates speech language to authoritative admission", async () => {
   const { result } = renderHook(() => useRecording(options));
   await act(async () => { await result.current.start(); });
-  expect(recordingApi.start).toHaveBeenCalledWith("both", expect.any(String));
+  expect(recordingApi.start).toHaveBeenCalledWith("both", expect.any(String), {});
  });
  it("finishes native start even when browser microphone permission never resolves", async () => {
   vi.stubGlobal("navigator", {mediaDevices:{getUserMedia:vi.fn(() => new Promise(() => {}))}});
@@ -82,4 +84,12 @@ describe("recording language and finalization", () => {
   expect(useRecordingStore.getState().transcript).toBe("A decision");
   expect(useRecordingStore.getState().processing).toBe(false);
  });
+});
+
+it('preserves rejected meeting additions, then consumes admitted additions before the next meeting',async()=>{
+ const selection={glossaryId:'work',additions:[{term:'Private A'}]};useVocabularyStore.getState().setSelection(selection);
+ vi.mocked(recordingApi.start).mockRejectedValueOnce(Error('admission failed')).mockResolvedValue({success:true} as never);
+ const first=renderHook(()=>useRecording(options));await act(async()=>{expect(await first.result.current.start()).toBe(false);});expect(useVocabularyStore.getState().selection).toEqual(selection);
+ await act(async()=>{expect(await first.result.current.start()).toBe(true);});expect(recordingApi.start).toHaveBeenLastCalledWith('both',expect.any(String),selection);expect(useVocabularyStore.getState().selection).toEqual({glossaryId:'work'});
+ first.unmount();useRecordingStore.getState().reset();const second=renderHook(()=>useRecording(options));await act(async()=>{expect(await second.result.current.start()).toBe(true);});expect(recordingApi.start).toHaveBeenLastCalledWith('both',expect.any(String),{glossaryId:'work'});second.unmount();
 });

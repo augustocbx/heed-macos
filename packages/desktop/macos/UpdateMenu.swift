@@ -43,6 +43,7 @@ final class UpdateMenu: NSObject {
     let item = NSMenuItem(title: "Updates", action: nil, keyEquivalent: "")
     private let menu = NSMenu()
     private let installedVersionItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private var rows: [String: NSMenuItem] = [:]
     var check: (() -> Void)?; var install: (() -> Void)?; var retry: (() -> Void)?
     private var snapshot = UpdateSnapshot()
     private var home = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".heed")
@@ -50,19 +51,20 @@ final class UpdateMenu: NSObject {
         self.snapshot = snapshot
         home = URL(fileURLWithPath: ProcessInfo.processInfo.environment["HEED_HOME"] ?? Bundle.main.url(forResource: "heed-home", withExtension: "txt").flatMap {try? String(contentsOf: $0, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)} ?? home.path).resolvingSymlinksInPath()
         menu.autoenablesItems = false; item.submenu = menu
-        var rowIndex = 0
-        func text(_ key: String) -> String {MenuLocalization.text(key, locale: locale)}
-        func row(_ title: String, _ selector: Selector? = nil, enabled: Bool = true) {
-            let entry: NSMenuItem
-            if rowIndex < menu.numberOfItems, let existing = menu.item(at: rowIndex), !existing.isSeparatorItem {
-                entry = existing
-            } else {
-                entry = NSMenuItem(title: title, action: selector, keyEquivalent: "")
-                menu.insertItem(entry, at: rowIndex)
+        if rows.isEmpty {
+            for key in ["status", "check", "progress", "available", "notes", "install", "recovery", "log"] {
+                let entry = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+                menu.addItem(entry)
+                rows[key] = entry
             }
+        }
+        for entry in rows.values { entry.isHidden = true }
+        func text(_ key: String) -> String {MenuLocalization.text(key, locale: locale)}
+        func row(_ key: String, _ title: String, _ selector: Selector? = nil, enabled: Bool = true) {
+            guard let entry = rows[key] else { preconditionFailure("Unknown update menu row") }
             entry.title = title; entry.action = selector; entry.target = self
             entry.isEnabled = selector != nil && enabled
-            rowIndex += 1
+            entry.isHidden = false
         }
         item.title = text("Updates")
         let installedVersion = String(format: text("Installed version: %@"), build?.version ?? text("Unknown")) + (build?.development == true ? " (" + text("development") + ")" : "")
@@ -71,25 +73,25 @@ final class UpdateMenu: NSObject {
         if let mainMenu = item.menu, installedVersionItem.menu !== mainMenu {
             mainMenu.insertItem(installedVersionItem, at: 0)
         }
-        row(text(UpdatePresentation.status(snapshot)))
+        row("status", text(UpdatePresentation.status(snapshot)))
+        if !snapshot.isInstalling {
+            row("check", text("Check for updates…"), #selector(checkAction),
+                enabled: snapshot.state != "checking" && snapshot.recovery != "recoveryRequired")
+        }
         if let p = snapshot.progress, snapshot.phase == "downloading", p.total > 0 {
-            row("\(min(100, max(0, Int(Double(p.completed) / Double(p.total) * 100))))%")
+            row("progress", "\(min(100, max(0, Int(Double(p.completed) / Double(p.total) * 100))))%")
         }
         let availableUpgrade = snapshot.state == "available" && !snapshot.isInstalling && snapshot.phase != "completed"
             && snapshot.release?.manifest.version != build?.version && snapshot.release != nil
         if availableUpgrade, let version = snapshot.release?.manifest.version {
-            row(String(format: text("Available version: %@"), version))
+            row("available", String(format: text("Available version: %@"), version))
         }
-        if !snapshot.isInstalling {
-            row(text("Check for updates…"), #selector(checkAction), enabled: snapshot.state != "checking" && snapshot.recovery != "recoveryRequired")
-        }
-        if notesURL != nil {row(text("Release notes"), #selector(notesAction))}
+        if notesURL != nil {row("notes", text("Release notes"), #selector(notesAction))}
         if availableUpgrade && snapshot.canInstall {
-            row(text(snapshot.phase == "waitingForIdle" || snapshot.phase == "failed" ? "Retry update" : "Update…"), #selector(installAction))
+            row("install", text(snapshot.phase == "waitingForIdle" || snapshot.phase == "failed" ? "Retry update" : "Update…"), #selector(installAction))
         }
-        if snapshot.recovery == "recoveryRequired" {row(text("Retry recovery"), #selector(retryAction), enabled: !snapshot.isInstalling)}
-        if validLog != nil {row(text("View update log…"), #selector(logAction))}
-        while menu.numberOfItems > rowIndex { menu.removeItem(at: menu.numberOfItems - 1) }
+        if snapshot.recovery == "recoveryRequired" {row("recovery", text("Retry recovery"), #selector(retryAction), enabled: !snapshot.isInstalling)}
+        if validLog != nil {row("log", text("View update log…"), #selector(logAction))}
     }
     private var notesURL: URL? {
         guard let release = snapshot.release, release.manifest.tag == "v" + release.manifest.version,

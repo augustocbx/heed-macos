@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Built UI, protected API and FFmpeg with an owned synthetic capture helper. */
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createServer as createSocket } from 'node:net';
 import { mkdtemp, mkdir, cp, writeFile, readFile, rm } from 'node:fs/promises';
@@ -12,9 +12,18 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const acceptance = process.argv.includes('--acceptance');
+const vocabularyConfiguration = acceptance
+  ? (await import(new URL('../../packages/shared/lib/vocabulary.ts', import.meta.url))).vocabularyConfiguration
+  : undefined;
+function recognitionContext(body, engine, model, language) {
+  return acceptance && body.vocabulary
+    ? { vocabularyRun: { schemaVersion: 1, snapshot: body.vocabulary, configuration: vocabularyConfiguration(body.vocabulary, engine, model, language) } }
+    : {};
+}
 const outputIndex = process.argv.indexOf('--output');
 if (outputIndex < 0 || !process.argv[outputIndex + 1])
-  throw Error('Usage: live-language-ui.mjs --output DIR');
+  throw Error('Usage: live-language-ui.mjs --output DIR [--acceptance]');
 const output = resolve(process.argv[outputIndex + 1]);
 assert(!output.startsWith(root + '/'), 'Generated evidence must remain outside the checkout');
 const temporary = await mkdtemp(join(tmpdir(), 'heed-language-ui-'));
@@ -54,11 +63,13 @@ setInterval(()=>process.stdout.write(pcm),100);
 );
 let supported = true,
   usedModel = 'base';
+let holdFinalization = false, finishFinalization;
 const requests = [],
   errors = [],
   external = [],
   checks = [];
 const mock = createServer(async (req, res) => {
+  try {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
@@ -77,17 +88,31 @@ const mock = createServer(async (req, res) => {
       modelIdentity: `mlx:mlx-community/whisper-${model}-mlx`,
       gov: { live_model: 'tiny', interval_ms: 500, changed: model !== 'tiny' },
       segments: [],
+      ...recognitionContext(body, 'mlx', model, body.language),
     };
-  } else if (req.url === '/finalize')
+  } else if (req.url === '/finalize' || (acceptance && req.url === '/finalize-import')) {
+    const imported = req.url === '/finalize-import';
+    if (!imported && holdFinalization) await new Promise((resolve) => { finishFinalization = resolve; });
+    const duration = Number(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', body.wav_path], {encoding: 'utf8'}).trim());
+    assert(Number.isFinite(duration) && duration > 0, 'Actual managed WAV duration is required');
+    const language = imported && body.language === 'en' ? 'en' : 'pt';
+    const model = imported ? body.final_model : acceptance ? 'parakeet-v3' : 'fixture-final';
     result = {
       finalized: true,
-      duration: 3,
-      language: 'pt',
-      model: 'fixture-final',
-      turns: [{ speaker: 'João', channel: 'sys', text: 'Decisão final em português.', start: 0, end: 3 }],
+      duration,
+      language,
+      model,
+      turns: [{ speaker: 'João', channel: imported ? 'mic' : 'sys', text: imported && language === 'en' ? 'Final decision in English.' : 'Decisão final em português.', start: 0, end: duration }],
       embeddings: {},
+      ...recognitionContext(body, model === 'parakeet-v3' ? 'parakeet' : 'mlx', model, language),
     };
-  else {
+    if (imported) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.end(['event: phase\ndata: {"phase":"diarization"}', 'event: phase\ndata: {"phase":"transcription"}', `event: result\ndata: ${JSON.stringify(result)}`].join('\n\n') + '\n\n');
+      return;
+    }
+  } else {
     const live = {
       engine: 'mlx',
       model: supported ? usedModel : 'base.en',
@@ -137,6 +162,12 @@ const mock = createServer(async (req, res) => {
   }
   res.setHeader('Content-Type', 'application/json');
   res.end(JSON.stringify(result));
+  } catch (error) {
+    errors.push(String(error));
+    res.statusCode = 500;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({error: 'Synthetic finalization responder failed'}));
+  }
 });
 await new Promise((resolve) => mock.listen(0, '127.0.0.1', resolve));
 async function port() {
@@ -189,6 +220,26 @@ async function until(read, accept, label, timeout = 12000) {
   }
   throw Error(`Timed out: ${label}`);
 }
+async function assertHorizontalFit(locator, label) {
+  const overflow = await locator.evaluate((panel) => {
+    const issues = [], bounds = panel.getBoundingClientRect(), tolerance = 1;
+    const identify = (element) => `${element.tagName.toLowerCase()}${element.id ? '#' + element.id : ''} ${element.getAttribute('aria-label') || element.textContent?.trim().replace(/\s+/g, ' ').slice(0, 80) || ''}`;
+    if (bounds.left < -tolerance || bounds.right > window.innerWidth + tolerance)
+      issues.push({element: identify(panel), kind: 'outside viewport horizontally', left: bounds.left, right: bounds.right, viewportWidth: window.innerWidth});
+    for (const element of [panel, ...panel.querySelectorAll('label,input,select,textarea,button,fieldset,legend,p,h2,h3,ul,li,section,article')]) {
+      const box = element.getBoundingClientRect();
+      if (!box.width || !box.height || getComputedStyle(element).visibility === 'hidden') continue;
+      // Text entry controls may scroll their values internally. Containers and labels must fit.
+      if (!element.matches('input,select,textarea') && element.clientWidth > 0 && element.scrollWidth > element.clientWidth + tolerance)
+        issues.push({element: identify(element), kind: 'horizontal content overflow', scrollWidth: element.scrollWidth, clientWidth: element.clientWidth});
+      if (box.left < bounds.left - tolerance || box.right > bounds.right + tolerance)
+        issues.push({element: identify(element), kind: 'child outside panel horizontally', left: box.left, right: box.right, panelLeft: bounds.left, panelRight: bounds.right});
+    }
+    // Vertical bounds/scrollHeight are intentionally unrestricted for these tall, scrollable views.
+    return issues;
+  });
+  assert.deepEqual(overflow, [], `${label}: ${JSON.stringify(overflow)}`);
+}
 try {
   await until(
     async () => {
@@ -229,12 +280,12 @@ try {
   });
   const page = await context.newPage();
   page.on('pageerror', (error) => errors.push(error.message));
-  async function navigate(index) {
-    const disclosure = page.locator('[aria-controls="heed-pages"]');
+  async function navigate(index, target = page) {
+    const disclosure = target.locator('[aria-controls="heed-pages"]');
     if (await disclosure.isVisible()) {
       if ((await disclosure.getAttribute('aria-expanded')) !== 'true') await disclosure.click();
     }
-    await page.locator('#heed-pages > button').nth(index).click();
+    await target.locator('#heed-pages > button').nth(index).click();
   }
   await page.goto(origin);
   await page.getByRole('button', { name: 'Start recording', exact: true }).click();
@@ -346,6 +397,194 @@ try {
   checks.push(
     'four narrow interface locales, separate persisted speech and preview preferences, actual live/final model metadata',
   );
+  // Exercise the already implemented desktop protocol through real HTTP and the
+  // built client. The synthetic helper never requests physical audio permissions.
+  await request('/api/ui-locale', {locale: 'en'});
+  await request('/api/recording/settings', {enabled: false, liveLanguage: 'en'});
+  for (const tab of context.pages()) await tab.close();
+  const menuStarted = await request('/api/desktop/control/commands', {action: 'start', requestId: 'qa-no-tabs-start', mode: 'both'});
+  const meetingId = menuStarted.snapshot.meetingId;
+  assert.equal(menuStarted.status.recording, true);
+  const repeated = await request('/api/desktop/control/commands', {action: 'start', requestId: 'qa-no-tabs-start', mode: 'both'});
+  assert.equal(repeated.snapshot.meetingId, meetingId);
+  const tabs = await Promise.all([context.newPage(), context.newPage()]);
+  for (const tab of tabs) {
+    tab.on('pageerror', (error) => errors.push(error.message));
+    await tab.goto(origin);
+    await tab.getByRole('button', {name: 'Stop recording', exact: true}).waitFor();
+    await tab.reload();
+    await tab.getByRole('button', {name: 'Stop recording', exact: true}).waitFor();
+  }
+  await until(() => request('/api/recording/status'), (value) => value.seconds >= 2, 'real elapsed capture');
+  for (const tab of tabs) {
+    await until(() => tab.locator('[class*="timer"]').innerText(), (value) => /^00:0[2-9]$/.test(value) || /^00:[1-5]\d$/.test(value), 'attached elapsed duration');
+    await tab.close();
+  }
+  assert.equal(context.pages().length, 0);
+  assert.equal((await request('/api/desktop/control/status')).recording, true);
+  holdFinalization = true;
+  const previousFinals = requests.filter((value) => value.path === '/finalize').length;
+  const stopA = request('/api/desktop/control/commands', {action: 'stop', requestId: 'qa-no-tabs-stop', meetingId});
+  const stopB = request('/api/desktop/control/commands', {action: 'stop', requestId: 'qa-second-stop', meetingId});
+  await until(() => request('/api/desktop/control/status'), (value) => value.state === 'finalizing', 'separate finalization');
+  const finalStatus = await request('/api/desktop/control/status');
+  assert.equal(finalStatus.recording, false);
+  assert.equal(finalStatus.processing, true);
+  const maintenance = await fetch(origin + '/api/recording/maintenance', {method: 'POST', headers: {'Content-Type': 'application/json', Origin: origin}, body: JSON.stringify({acquire: true, owner: 'qa-finalizing'})});
+  assert.equal(maintenance.status, 409);
+  const finalTab = await context.newPage();
+  await finalTab.goto(origin);
+  await finalTab.getByText('Finalizing...', {exact: true}).waitFor();
+  await finalTab.screenshot({path: join(output, 'lifecycle-finalizing.png'), fullPage: true});
+  await until(async () => typeof finishFinalization === 'function', Boolean, 'owned finalizer gate');
+  finishFinalization(); holdFinalization = false;
+  const replies = await Promise.all([stopA, stopB]);
+  assert(replies.every((reply) => reply.snapshot.state === 'completed'));
+  const durable = await request('/api/recording/status');
+  assert.equal(durable.meetingId, meetingId);
+  assert.equal(requests.filter((value) => value.path === '/finalize').length, previousFinals + 1);
+  const actualDuration = Number(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', durable.session.files.wav], {encoding: 'utf8'}).trim());
+  assert.equal(durable.session.duration, actualDuration);
+  const meetings = JSON.parse(await readFile(join(app, 'sessions', meetingId + '.json'), 'utf8'));
+  assert.equal(meetings.duration, actualDuration);
+  assert.equal(meetings.transcriptFinalized, true);
+  await finalTab.reload();
+  await finalTab.getByText('Decisão final em português.', {exact: true}).first().waitFor();
+  checks.push('no-tab desktop start/stop, idempotent start and concurrent stop, two reloaded tabs with elapsed timer, capture off during visible finalization, maintenance refusal, one durable save with actual WAV duration');
+  if (acceptance) {
+    const acceptancePage = finalTab;
+    await acceptancePage.setViewportSize({width: 1100, height: 800});
+    supported = true; usedModel = 'base';
+    const library = await request('/api/vocabulary');
+    const glossary = {id: 'qa-default', name: 'QA default', version: 1, entries: [{term: 'João São José', hint: 'John', language: 'pt'}, {term: 'API'}]};
+    const admittedLibrary = await request('/api/vocabulary', {library: {...library, defaultGlossaryId: glossary.id, glossaries: [glossary]}, expectedVersion: library.version});
+    await request('/api/recording/settings', {enabled: true, liveLanguage: 'pt'});
+    await acceptancePage.reload();
+    const mode = acceptancePage.getByRole('combobox', {name: 'Meeting mode', exact: true});
+    await mode.selectOption('transcript-only');
+    await acceptancePage.getByRole('button', {name: 'Enable transcript only', exact: true}).click();
+    await until(() => request('/api/recording/settings'), value => value.meetingMode === 'transcript-only', 'acknowledged transcript-only preference');
+    await acceptancePage.getByRole('textbox', {name: 'Meeting additions', exact: true}).fill('Temporary meeting only');
+    const liveBefore = requests.filter(value => value.path === '/transcribe-live').length;
+    await acceptancePage.getByRole('button', {name: 'Start recording', exact: true}).click();
+    const textCapture = await until(() => request('/api/recording/status'), value => value.state === 'recording', 'transcript-only capture');
+    assert.equal(textCapture.meetingMode, 'transcript-only');
+    assert.equal(textCapture.vocabulary.libraryVersion, admittedLibrary.version);
+    assert.equal(textCapture.vocabulary.entries[0].term, 'João São José');
+    assert.deepEqual(textCapture.vocabulary.additions, [{term: 'Temporary meeting only'}]);
+    const nextLibrary = await request('/api/vocabulary', {library: {...admittedLibrary, glossaries: [{...admittedLibrary.glossaries[0], entries: [{term: 'Next meeting only'}]}]}, expectedVersion: admittedLibrary.version});
+    await until(() => requests.filter(value => value.path === '/transcribe-live').length, value => value >= liveBefore + 2, 'admitted glossary live runs');
+    await acceptancePage.screenshot({path: join(output, 'acceptance-transcript-only-active.png'), fullPage: true});
+    await acceptancePage.getByRole('button', {name: 'Stop recording', exact: true}).click();
+    const textMeeting = await until(() => request('/api/recording/status'), value => value.state === 'completed', 'transcript-only durable cleanup');
+    assert.equal(textMeeting.session.meetingMode, 'transcript-only');
+    assert.equal(textMeeting.session.audioCleanup.status, 'completed');
+    assert.equal(textMeeting.session.audioUnavailableReason, 'transcript-only');
+    assert.equal(textMeeting.session.files.wav, '');
+    assert.equal(existsSync(textCapture.path), false);
+    assert.equal(existsSync(join(app, 'library/staging', `capture-${textCapture.meetingId}`)), false);
+    assert.equal(textMeeting.session.vocabularyRun.configuration.status, 'unsupported');
+    assert.equal(textMeeting.session.vocabularyRun.snapshot.libraryVersion, admittedLibrary.version);
+    assert(textMeeting.session.liveVocabularyRuns.length > 0);
+    assert(textMeeting.session.liveVocabularyRuns.every(run => run.snapshot.libraryVersion === admittedLibrary.version && run.configuration.status === 'recognition-context'));
+    const unavailable = await fetch(origin + `/api/sessions/${textMeeting.session.id}/audio`);
+    assert.equal(unavailable.status, 410);
+    assert.equal(unavailable.headers.get('X-Heed-Audio-Unavailable-Reason'), 'transcript-only');
+    await acceptancePage.reload();
+    await until(() => acceptancePage.getByRole('combobox', {name: 'Meeting mode', exact: true}).inputValue(), value => value === 'transcript-only', 'refreshed archival mode');
+    assert.equal(await acceptancePage.getByRole('textbox', {name: 'Meeting additions', exact: true}).inputValue(), '');
+    const persisted = JSON.parse(await readFile(join(app, 'sessions', textMeeting.session.id + '.json'), 'utf8'));
+    assert.equal(persisted.audioCleanup.status, 'completed');
+    checks.push('acknowledged built-UI transcript-only capture, exact managed audio/staging deletion, durable unavailable reason after refresh, frozen default glossary and one-run additions, actual live/final context receipts');
+
+    const labels = {
+      en: ['Meeting mode', 'Meeting vocabulary', 'Import recording', 'Meeting storage'],
+      'pt-BR': ['Modo da reunião', 'Vocabulário da reunião', 'Importar gravação', 'Armazenamento da reunião'],
+      fr: ['Mode de réunion', 'Vocabulaire de la réunion', 'Importer un enregistrement', 'Stockage de la réunion'],
+      de: ['Besprechungsmodus', 'Besprechungsvokabular', 'Aufnahme importieren', 'Besprechungsspeicherung'],
+    };
+    await acceptancePage.setViewportSize({width: 360, height: 740});
+    for (const [locale, [modeLabel, vocabularyLabel, importLabel, storageLabel]] of Object.entries(labels)) {
+      await navigate(4, acceptancePage);
+      await acceptancePage.locator('#interface-language').selectOption(locale);
+      await until(() => request('/api/ui-locale'), value => value.locale === locale, 'new controls interface locale');
+      const localVocabulary = acceptancePage.locator('article[aria-labelledby="vocabulary-title"]');
+      await localVocabulary.scrollIntoViewIfNeeded();
+      assert(await localVocabulary.getByRole('button').count() > 0);
+      await assertHorizontalFit(localVocabulary, `${locale} local vocabulary card at 360px`);
+      await acceptancePage.screenshot({path: join(output, `acceptance-vocabulary-settings-${locale}.png`)});
+      await navigate(0, acceptancePage);
+      const localizedMode = acceptancePage.getByRole('combobox', {name: modeLabel, exact: true});
+      await until(() => localizedMode.inputValue(), value => value === 'transcript-only', 'localized archival mode');
+      const meetingVocabulary = acceptancePage.getByRole('group', {name: vocabularyLabel, exact: true});
+      await meetingVocabulary.waitFor();
+      await localizedMode.scrollIntoViewIfNeeded();
+      await assertHorizontalFit(localizedMode.locator('xpath=../..'), `${locale} recording mode controls at 360px`);
+      await meetingVocabulary.scrollIntoViewIfNeeded();
+      await assertHorizontalFit(meetingVocabulary, `${locale} meeting vocabulary controls at 360px`);
+      await acceptancePage.screenshot({path: join(output, `acceptance-recording-controls-${locale}.png`)});
+      await navigate(1, acceptancePage);
+      await acceptancePage.getByRole('button', {name: importLabel, exact: true}).click();
+      const dialog = acceptancePage.getByRole('dialog', {name: importLabel, exact: true});
+      await dialog.getByRole('combobox', {name: storageLabel, exact: true}).selectOption('transcript-only');
+      assert.equal(await dialog.getByRole('combobox').count(), 3);
+      await dialog.scrollIntoViewIfNeeded();
+      await assertHorizontalFit(dialog, `${locale} import dialog at 360px`);
+      await acceptancePage.screenshot({path: join(output, `acceptance-import-${locale}.png`)});
+      await acceptancePage.keyboard.press('Escape');
+      await dialog.waitFor({state: 'hidden'});
+    }
+    checks.push('four narrow locale labels/screenshots and horizontal overflow checks for vocabulary settings, recording archival mode and import storage disclosure');
+
+    await navigate(4, acceptancePage);
+    await acceptancePage.locator('#interface-language').selectOption('en');
+    await until(() => request('/api/ui-locale'), value => value.locale === 'en', 'English import controls');
+    await acceptancePage.setViewportSize({width: 1100, height: 800});
+    const original = join(temporary, 'authored-synthetic.wav');
+    execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=16000:duration=3', '-ac', '1', '-c:a', 'pcm_s16le', original]);
+    const originalBytes = await readFile(original);
+    for (const meetingMode of ['audio-transcript', 'transcript-only']) {
+      await navigate(1, acceptancePage);
+      await acceptancePage.getByRole('button', {name: 'Import recording', exact: true}).click();
+      const dialog = acceptancePage.getByRole('dialog', {name: 'Import recording', exact: true});
+      await dialog.getByLabel('Choose recording file', {exact: true}).setInputFiles(original);
+      await dialog.getByRole('combobox', {name: 'Transcription model', exact: true}).selectOption('base');
+      await dialog.getByRole('combobox', {name: 'Meeting language', exact: true}).selectOption(meetingMode === 'transcript-only' ? 'pt' : 'en');
+      await dialog.getByRole('combobox', {name: 'Meeting storage', exact: true}).selectOption(meetingMode);
+      await dialog.getByRole('button', {name: 'Start import', exact: true}).click();
+      const imported = await until(() => request('/api/media/imports'), value => value.jobs.find(job => job.config.meetingMode === meetingMode && ['completed', 'failed', 'cancelled'].includes(job.state)), `built UI ${meetingMode} import`);
+      const job = imported.jobs.find(value => value.config.meetingMode === meetingMode);
+      assert.equal(job.state, 'completed', job.error);
+      const session = (await request('/api/sessions')).find(value => value.id === job.sessionId);
+      assert.equal(session.duration, 3);
+      assert.equal(session.transcriptionModel, 'base');
+      assert.equal(session.language, meetingMode === 'transcript-only' ? 'pt' : 'en');
+      assert.equal(session.vocabularyRun.snapshot.libraryVersion, nextLibrary.version);
+      assert.deepEqual(session.vocabularyRun.snapshot.additions, []);
+      assert.equal(session.vocabularyRun.configuration.status, 'recognition-context');
+      const importAudio = await fetch(origin + `/api/sessions/${session.id}/audio`, {headers: {Range: 'bytes=44-63'}});
+      if (meetingMode === 'audio-transcript') {
+        assert.equal(importAudio.status, 206);
+        assert.equal((await importAudio.arrayBuffer()).byteLength, 20);
+        assert.equal(Number(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', session.files.wav], {encoding: 'utf8'}).trim()), session.duration);
+      } else {
+        assert.equal(importAudio.status, 410);
+        assert.equal(session.audioCleanup.status, 'completed');
+        assert.equal(session.files.wav, '');
+        assert.equal(existsSync(join(app, 'recordings', `import-${job.id}.wav`)), false);
+      }
+      assert.equal(existsSync(join(app, 'library/staging', `media-import-${job.id}`)), false);
+      assert.deepEqual(await readFile(original), originalBytes);
+      await acceptancePage.screenshot({path: join(output, `acceptance-import-completed-${meetingMode}.png`), fullPage: true});
+      await acceptancePage.keyboard.press('Escape');
+      await dialog.waitFor({state: 'hidden'});
+      await acceptancePage.reload();
+      assert.equal((await request('/api/media/imports')).jobs.find(value => value.id === job.id).state, 'completed');
+    }
+    assert.equal((await request('/api/storage')).reservedBytes, 0);
+    checks.push('built UI audio/transcript-only local imports through real FFmpeg and phased synthetic ASR, real duration/seekable bytes, next default snapshot, no carried additions, durable cleanup/reload, original bytes preserved and quota claims released');
+  }
+  assert.deepEqual(errors, []);
   await writeFile(
     join(output, 'manifest.json'),
     JSON.stringify(
@@ -355,6 +594,7 @@ try {
         deniedExternalOrigins: [...new Set(external)],
         syntheticCapture: true,
         actualInference: false,
+        acceptance,
         capturedAudioBytes: audio.length,
       },
       null,
@@ -364,6 +604,7 @@ try {
   console.log(JSON.stringify({ checks: checks.length, pageErrors: errors.length, audioBytes: audio.length }));
 } finally {
   await browser?.close();
+  finishFinalization?.();
   if (child.exitCode === null) {
     const exited = new Promise((resolve) => child.once('exit', resolve));
     child.kill('SIGTERM');

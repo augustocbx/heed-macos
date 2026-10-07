@@ -17,6 +17,9 @@ struct MenuLocalization {
             "Open Screen Recording settings…": "Abrir ajustes de Gravação de Tela…",
             "Services are not ready": "Os serviços ainda não estão prontos",
             "Recording unavailable": "Gravação indisponível",
+            "Recording is not ready": "A gravação ainda não está pronta",
+            "Recording interface disconnected": "Interface de gravação desconectada",
+            "Check recording in interface…": "Verificar a gravação na interface…",
             "Recording needs recovery": "A gravação precisa de recuperação",
             "Open recording recovery…": "Abrir recuperação da gravação…",
             "Automatic recording": "Gravação automática",
@@ -160,6 +163,9 @@ struct MenuLocalization {
             "Open Screen Recording settings…": "Ouvrir les réglages d’enregistrement de l’écran…",
             "Services are not ready": "Les services ne sont pas prêts",
             "Recording unavailable": "Enregistrement indisponible",
+            "Recording is not ready": "L’enregistrement n’est pas prêt",
+            "Recording interface disconnected": "Interface d’enregistrement déconnectée",
+            "Check recording in interface…": "Vérifier l’enregistrement dans l’interface…",
             "Recording needs recovery": "L’enregistrement nécessite une récupération",
             "Open recording recovery…": "Ouvrir la récupération de l’enregistrement…",
             "Automatic recording": "Enregistrement automatique",
@@ -303,6 +309,9 @@ struct MenuLocalization {
             "Open Screen Recording settings…": "Bildschirmaufnahme-Einstellungen öffnen…",
             "Services are not ready": "Dienste sind noch nicht bereit",
             "Recording unavailable": "Aufnahme nicht verfügbar",
+            "Recording is not ready": "Aufnahme ist noch nicht bereit",
+            "Recording interface disconnected": "Aufnahmeoberfläche nicht verbunden",
+            "Check recording in interface…": "Aufnahme in der Oberfläche prüfen…",
             "Recording needs recovery": "Aufnahme muss wiederhergestellt werden",
             "Open recording recovery…": "Wiederherstellung der Aufnahme öffnen…",
             "Automatic recording": "Automatische Aufnahme",
@@ -434,7 +443,7 @@ struct MenuLocalization {
             "A recording command is already pending": "Ein Aufnahmebefehl wartet bereits auf Ausführung"
         ]
     ]
-    static func text(_ key: String, locale: String) -> String { translations[normalize(locale)]?[key] ?? LiveLanguageLocalization.translations[key]?[normalize(locale)] ?? key }
+    static func text(_ key: String, locale: String) -> String { translations[normalize(locale)]?[key] ?? MeetingModeLocalization.translations[key]?[normalize(locale)] ?? LiveLanguageLocalization.translations[key]?[normalize(locale)] ?? key }
     static func format(_ key: String, locale: String, value: String) -> String {
         String(format: text(key, locale: locale), value)
     }
@@ -451,6 +460,7 @@ struct MenuLocalization {
         return text(message, locale: locale)
     }
     static func selfTestCoverage() {
+        for (key, values) in MeetingModeLocalization.translations { for locale in ["pt-BR","fr","de"] {precondition(values[locale] != nil && text(key,locale:locale) != key)} }
         let keys = Set(translations["pt-BR"]!.keys)
         for locale in ["fr", "de"] { precondition(Set(translations[locale]!.keys) == keys) }
     }
@@ -490,5 +500,24 @@ struct LiveLanguageLocalization {
         "Live speech language is configured in Settings. The final transcript automatically detects English or Portuguese.": ["pt-BR": "O idioma da fala ao vivo é configurado em Configurações. A transcrição final detecta inglês ou português automaticamente.", "fr": "La langue de la parole en direct se configure dans les paramètres. La transcription finale détecte automatiquement l’anglais ou le portugais.", "de": "Die Live-Sprache wird in den Einstellungen gewählt. Die finale Transkription erkennt Englisch oder Portugiesisch automatisch."],
         "Provisional live text: {language} • {engine} / {model}": ["pt-BR": "Texto ao vivo provisório: {language} • {engine} / {model}", "fr": "Texte provisoire en direct : {language} • {engine} / {model}", "de": "Vorläufiger Live-Text: {language} • {engine} / {model}"],
         "Initial model: {model}": ["pt-BR": "Modelo inicial: {model}", "fr": "Modèle initial : {model}", "de": "Anfängliches Modell: {model}"]
+    ]
+}
+
+struct MeetingModeLocalization {
+    static let translations:[String:[String:String]] = [
+        "Meeting mode": ["pt-BR": "Modo da reunião", "fr": "Mode de réunion", "de": "Besprechungsmodus"],
+        "Audio + transcript": ["pt-BR": "Áudio + transcrição", "fr": "Audio + transcription", "de": "Audio + Transkript"],
+        "Transcript only": ["pt-BR": "Somente transcrição", "fr": "Transcription uniquement", "de": "Nur Transkript"],
+        "Enable transcript only": ["pt-BR": "Ativar somente transcrição", "fr": "Activer la transcription uniquement", "de": "Nur Transkript aktivieren"],
+        "Transcript only uses temporary local audio during capture and final processing. After the final transcript is saved, audio is deleted. Playback and retranscription are unavailable.": ["pt-BR": "Somente transcrição usa áudio local temporário durante a captura e o processamento final. Após salvar a transcrição final, o áudio é excluído. Reprodução e retranscrição ficam indisponíveis.", "fr": "La transcription uniquement utilise un audio local temporaire pendant la capture et le traitement final. Après l’enregistrement de la transcription finale, l’audio est supprimé. La lecture et la retranscription sont indisponibles.", "de": "Nur Transkript verwendet während der Aufnahme und abschließenden Verarbeitung temporäres lokales Audio. Nach dem Speichern des endgültigen Transkripts wird das Audio gelöscht. Wiedergabe und erneute Transkription sind nicht verfügbar."],
+        "Could not load meeting mode. Retry when the service is ready.": ["pt-BR": "Não foi possível carregar o modo da reunião. Tente quando o serviço estiver pronto.", "fr": "Impossible de charger le mode de réunion. Réessayez lorsque le service sera prêt.", "de": "Der Besprechungsmodus konnte nicht geladen werden. Versuchen Sie es erneut, sobald der Dienst bereit ist."],
+        "Could not save meeting mode. Try again.": ["pt-BR": "Não foi possível salvar o modo da reunião. Tente novamente.", "fr": "Impossible d’enregistrer le mode de réunion. Réessayez.", "de": "Der Besprechungsmodus konnte nicht gespeichert werden. Versuchen Sie es erneut."],
+        "Temporary audio cleanup is pending. Retry finalization or explicitly discard temporary audio. Saved transcripts are preserved.": ["pt-BR": "A limpeza do áudio temporário está pendente. Tente finalizar novamente ou descarte explicitamente o áudio temporário. As transcrições salvas são preservadas.", "fr": "Le nettoyage de l’audio temporaire est en attente. Réessayez la finalisation ou supprimez explicitement l’audio temporaire. Les transcriptions enregistrées sont conservées.", "de": "Die Bereinigung des temporären Audios steht aus. Versuchen Sie die Finalisierung erneut oder verwerfen Sie das temporäre Audio ausdrücklich. Gespeicherte Transkripte bleiben erhalten."],
+        "Discard temporary audio": ["pt-BR": "Descartar áudio temporário", "fr": "Supprimer l’audio temporaire", "de": "Temporäres Audio verwerfen"],
+        "Discard unsaved temporary audio? The unsaved meeting cannot be recovered. Saved transcripts are preserved.": ["pt-BR": "Descartar áudio temporário não salvo? A reunião não salva não poderá ser recuperada. As transcrições salvas são preservadas.", "fr": "Supprimer l’audio temporaire non enregistré ? La réunion non enregistrée ne pourra pas être récupérée. Les transcriptions enregistrées sont conservées.", "de": "Nicht gespeichertes temporäres Audio verwerfen? Die nicht gespeicherte Besprechung kann nicht wiederhergestellt werden. Gespeicherte Transkripte bleiben erhalten."],
+        "Confirm discard": ["pt-BR": "Confirmar descarte", "fr": "Confirmer la suppression", "de": "Verwerfen bestätigen"],
+        "Could not discard temporary audio. Retry cleanup.": ["pt-BR": "Não foi possível descartar o áudio temporário. Tente limpar novamente.", "fr": "Impossible de supprimer l’audio temporaire. Réessayez le nettoyage.", "de": "Das temporäre Audio konnte nicht verworfen werden. Versuchen Sie die Bereinigung erneut."],
+        "Transcript-only meeting. Playback and retranscription are unavailable.": ["pt-BR": "Reunião somente com transcrição. Reprodução e retranscrição ficam indisponíveis.", "fr": "Réunion avec transcription uniquement. La lecture et la retranscription sont indisponibles.", "de": "Besprechung nur mit Transkript. Wiedergabe und erneute Transkription sind nicht verfügbar."],
+        "Temporary audio cleanup is pending. Open recording recovery to retry cleanup.": ["pt-BR": "A limpeza do áudio temporário está pendente. Abra a recuperação da gravação para tentar limpar novamente.", "fr": "Le nettoyage de l’audio temporaire est en attente. Ouvrez la récupération de l’enregistrement pour réessayer le nettoyage.", "de": "Die Bereinigung des temporären Audios steht aus. Öffnen Sie die Aufnahmewiederherstellung, um die Bereinigung erneut zu versuchen."]
     ]
 }

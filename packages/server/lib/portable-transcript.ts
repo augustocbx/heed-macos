@@ -25,7 +25,7 @@ function segments(value: unknown): asserts value is Segment[] {
 const strings = (value: unknown): value is string[] => Array.isArray(value)&&value.length<=10000&&value.every(item=>portableText(item,10000))&&new Set(value).size===value.length;
 export function portableHistory(state: Session['transcriptEditing']): PortableTranscriptHistory | undefined {
  if (!state) return;
- return {schemaVersion:1,activeGenerationId:state.activeGenerationId,generations:state.generations.map(({transcriptionDiagnostics,...g})=>({...g,segments:g.segments.map(portableSegment)})),edits:state.edits.map(({requestId,requestSignature,...edit})=>edit)};
+ return {schemaVersion:1,activeGenerationId:state.activeGenerationId,generations:state.generations.map(({transcriptionDiagnostics,vocabularyRun,liveVocabularyRuns,...g})=>({...g,segments:g.segments.map(portableSegment)})),edits:state.edits.map(({requestId,requestSignature,...edit})=>edit)};
 }
 type SourceState = Pick<Session,'transcript'|'segments'|'speakers'|'language'>;
 interface ReplayNode {base:SourceState;parent?:ReplayNode;changes?:TranscriptEdit['changes'];sourceIdentity?:TranscriptSourceIdentity}
@@ -121,13 +121,15 @@ export function sessionFromPortable(payload: PortableMeeting, localId: string): 
  const {transcriptHistory,notesMetadata,...fields}=raw as typeof raw & {transcriptHistory?:PortableTranscriptHistory;notesMetadata?:NotesMetadata};
  return {...fields,id:localId,files:undefined,audioArchived:!!audio,...(transcriptHistory?{transcriptEditing:{...structuredClone(transcriptHistory),candidates:[],candidateRequestReceipts:[]}}:{}),...(fields.aiNotes.trim()?{notesMetadata:schemaVersion===2&&notesMetadata?structuredClone(notesMetadata):{origin:'manual',sourceRevision:null,stale:true}}:{})} as Session;
 }
-const semanticGeneration=(g:RecognitionGeneration)=>{const {transcriptionDiagnostics,...fields}=g;return {...fields,segments:g.segments.map(portableSegment)};};
+const semanticGeneration=(g:RecognitionGeneration)=>{const {transcriptionDiagnostics,vocabularyRun,liveVocabularyRuns,...fields}=g;return {...fields,segments:g.segments.map(portableSegment)};};
 const semanticEdit=(e:TranscriptEdit)=>{const {requestId,requestSignature,...fields}=e;return fields;};
 function merge<T extends {id:string}>(local:T[],incoming:T[],projection:(value:T)=>unknown):T[]{const result=[...local],byId=new Map(local.map(value=>[value.id,value]));for(const item of incoming){const saved=byId.get(item.id);if(saved){if(!isDeepStrictEqual(projection(saved),projection(item)))fail('Portable transcript history ID collision');}else{result.push(item);byId.set(item.id,item);}}return result;}
 /** Latest local identity/history/private state survives a validated accepted replacement. */
 export function preparePortableTranscript(current: Session|null, incoming: Session, now: string): Session {
  const portable=portableHistory(incoming.transcriptEditing);validatePortableTranscript(incoming,portable,incoming.notesMetadata);
+ if(current && incoming.meetingMode && incoming.meetingMode !== (current.meetingMode ?? "audio-transcript"))fail("Meeting archival intent cannot change during portable replacement");
  let next={...current,...incoming,id:current?.id??incoming.id,createdAt:current?.createdAt??incoming.createdAt};
+ if(current?.meetingMode === "transcript-only" && current.audioCleanup?.status === "pending")next.files=current.files;
  delete next.transcriptVersion;delete next.transcriptRevision;
  if(current){next.transcriptVersion=current.transcriptVersion;next.notesJobs=structuredClone(current.notesJobs);}
  if(next.segments.length)next.transcript=renderAcceptedTranscript(next.segments);
@@ -141,6 +143,7 @@ export function preparePortableTranscript(current: Session|null, incoming: Sessi
   const applicable=sameSource&&current.transcriptionModel===next.transcriptionModel&&current.duration===next.duration&&(!recognized||recognized.activeGenerationId===prior.activeGenerationId);
   next.embeddings=applicable?current.embeddings:undefined;
   next.transcriptionDiagnostics=applicable?current.transcriptionDiagnostics:undefined;
+  next.vocabularyRun=applicable?current.vocabularyRun:undefined;next.liveVocabularyRuns=applicable?current.liveVocabularyRuns:undefined;
   if(current.transcriptEditing||recognized||acceptedSourceChanged(current,next)){
    next.transcriptEditing={...prior,
     generations:merge(prior.generations,recognized?.generations??[],semanticGeneration),

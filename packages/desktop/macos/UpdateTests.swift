@@ -51,12 +51,14 @@ private func updateMenuStateSelfTests() {
     root.addItem(updates.item)
     let build = InstalledMenuBuild(version: "1.0.1", commit: String(repeating: "a", count: 40))
     var snapshot = UpdateSnapshot()
-    func titles() -> [String] { updates.item.submenu?.items.filter { !$0.isSeparatorItem }.map(\.title) ?? [] }
-    func action(_ title: String) -> NSMenuItem? { updates.item.submenu?.items.first { $0.title == title } }
+    func titles() -> [String] { updates.item.submenu?.items.filter { !$0.isSeparatorItem && !$0.isHidden }.map(\.title) ?? [] }
+    func action(_ title: String) -> NSMenuItem? { updates.item.submenu?.items.first { !$0.isHidden && $0.title == title } }
 
     updates.render(snapshot, build: build, locale: "en")
     precondition(titles() == ["Updates not checked", "Check for updates…"], "An unchecked menu needs only its status and next action")
     let statusRow = updates.item.submenu!.items[0]
+    let checkRow = action("Check for updates…")!
+    let rowCount = updates.item.submenu!.numberOfItems
     updates.render(snapshot, build: build, locale: "en")
     precondition(updates.item.submenu!.items[0] === statusRow, "Unchanged refreshes must preserve menu navigation")
 
@@ -64,12 +66,16 @@ private func updateMenuStateSelfTests() {
     updates.render(snapshot, build: build, locale: "en")
     precondition(titles()[0] == "Checking for updates…" && action("Check for updates…")?.isEnabled == false)
     precondition(updates.item.submenu!.items[0] === statusRow, "Status changes must preserve the current menu row")
+    precondition(action("Check for updates…") === checkRow && updates.item.submenu!.numberOfItems == rowCount,
+                 "Checking must not replace a focused action or rebuild the native submenu")
 
     snapshot.state = "available"
     snapshot.release = SelectedUpdateRelease(manifest: UpdateManifest(version: "1.0.2", tag: "v1.0.2"), notesURL: "https://github.com/augustocbx/heed-macos/releases/tag/v1.0.2")
     updates.render(snapshot, build: build, locale: "en")
     precondition(titles().contains("Available version: 1.0.2") && action("Update…")?.isEnabled == true)
     precondition(action("Release notes")?.isEnabled == true)
+    precondition(action("Check for updates…") === checkRow && updates.item.submenu!.numberOfItems == rowCount,
+                 "Dynamic update rows must not retarget the check action")
 
     snapshot.phase = "installing"
     updates.render(snapshot, build: build, locale: "en")

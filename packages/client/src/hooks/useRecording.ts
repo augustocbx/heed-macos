@@ -1,3 +1,4 @@
+import {useVocabularyStore} from '@/stores/vocabulary';
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "@/api/client";
 import { recordingApi } from "@/api/recording";
@@ -58,11 +59,13 @@ export function useRecording({micBars,systemBars}:UseRecordingOptions) {
     if(starting)return false;
     setStarting(true);setLiveStartError(null);
     try {
-      const data=await (finalOnly?recordingApi.recordFinalOnly("both",crypto.randomUUID()):recordingApi.start("both",crypto.randomUUID()));
+      const selection=useVocabularyStore.getState().selection;
+      const data=await (finalOnly?recordingApi.recordFinalOnly("both",crypto.randomUUID(),selection):recordingApi.start("both",crypto.randomUUID(),selection));
       if(finalOnly)useUIStore.getState().showToast(tr("Real-time transcription is now off for future recordings. Change it in Settings to turn it on again."));
       if(data.permissionNeeded){useUIStore.getState().showToast(tr("Allow Screen Recording in the Settings window, then try recording again"));return false;}
       if(data.error)throw new Error(data.error);
       if(data.snapshot)applyRecordingSnapshot(data.snapshot);else useRecordingStore.getState().startRecording();
+      useVocabularyStore.getState().consumeAdditions(selection);
       return true;
     }catch(error){
       if(error instanceof ApiError && ["live-language-unsupported","live-capabilities-unavailable"].includes(error.code || ""))setLiveStartError(error.code!);
