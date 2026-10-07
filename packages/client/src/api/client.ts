@@ -42,8 +42,8 @@ export const apiClient = {
 			body: body !== undefined ? JSON.stringify(body) : undefined,
 		}),
 	delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
-	postForm: <T>(path: string, form: FormData) =>
-		request<T>(path, { method: "POST", body: form }),
+	postForm: <T>(path: string, form: FormData,headers?:Record<string,string>) =>
+		request<T>(path, { method: "POST", body: form,headers }),
 };
 
 export function buildUrl(path: string): string {

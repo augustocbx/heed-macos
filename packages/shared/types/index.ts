@@ -27,3 +27,4 @@ export * from '../lib/service-identity';
 export type * from './retrieval';
 
 export type * from './vocabulary';
+export type * from './media-import';

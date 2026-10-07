@@ -7,6 +7,7 @@ import { SessionItem } from "./SessionItem.tsx";
 import { ActionMenu } from "./ActionMenu.tsx";
 import { SessionDetail } from "./SessionDetail.tsx";
 import { MeetingExportDialog } from './MeetingExportDialog';
+import {ImportRecordingDialog} from "./ImportRecordingDialog";
 import styles from "./SessionsPage.module.css";
 
 export function SessionsPage() {
@@ -17,6 +18,7 @@ export function SessionsPage() {
 	const [search, setSearch] = useState("");
 	const [activeTagFilter, setActiveTagFilter] = useState<string | null>(null);
 	const [menuState, setMenuState] = useState<{ x: number; y: number; session: Session; trigger: HTMLElement } | null>(null);
+ const [importOpen,setImportOpen]=useState(false);
  const [exportState, setExportState] = useState<{ sessionId: string; trigger: HTMLElement } | null>(null);
  const headingRef = useRef<HTMLHeadingElement>(null);
 	const [deleteTarget, setDeleteTarget] = useState<Session | null>(null);
@@ -96,6 +98,7 @@ export function SessionsPage() {
 		<div>
    <h2 className={styles.focusHeading} tabIndex={-1} ref={headingRef}>{tr('Meetings')}</h2>
 			<div className={styles.header}>
+    <button type="button" onClick={()=>setImportOpen(true)}>{tr("Import recording")}</button>
 				<input
 					type="search"
 					placeholder={tr("Search meetings...")}
@@ -159,6 +162,7 @@ export function SessionsPage() {
      onExport={session => setExportState({ sessionId: session.id, trigger: menuState.trigger })}
 				/>
 			)}
+   {importOpen && <ImportRecordingDialog onClose={()=>{setImportOpen(false);void load(true);}}/>}
    {exportState && <MeetingExportDialog sessionId={exportState.sessionId} onClose={() => {
     const trigger = exportState.trigger; setExportState(null);
     queueMicrotask(() => (trigger.isConnected ? trigger : headingRef.current)?.focus());

@@ -2110,13 +2110,15 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
     # Use the FluidAudio path directly on Apple Silicon so this works whether or not the server's
     # boot set the `diarize_backend` global (the harness imports the module without booting).
     def _diar(path):
-        if on_phase: on_phase("diarization")
+        if on_phase:
+            on_phase("diarization")
         if engines.is_apple_silicon():
             return _diarize_parakeet(path)
         return diarize(path)
 
     def segs_for(path):
-        if on_phase: on_phase("transcription")
+        if on_phase:
+            on_phase("transcription")
         if asr is None:
             return transcribe_complete(path, final_model, language, **({"vocabulary": vocabulary} if vocabulary["entries"] or vocabulary["additions"] else {}))
         tok = asr.transcribe_ts(path, language)
@@ -2871,6 +2873,17 @@ class Handler(BaseHTTPRequestHandler):
             )
             result["time_ms"] = int((time.time() - t) * 1000)
             self._json(result)
+
+        elif self.path == "/finalize-import":
+            from media_import import IMPORT_JOBS
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            def emit(event, data):
+                self.wfile.write(f"event: {event}\ndata: {json.dumps(data)}\n\n".encode())
+                self.wfile.flush()
+            IMPORT_JOBS.stream(emit, finalize_recording, body)
 
         elif self.path == "/finalize":
             # Post-stop: full re-transcription with real timestamps + diarization + mic echo removal.
