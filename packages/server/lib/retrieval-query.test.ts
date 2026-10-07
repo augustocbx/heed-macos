@@ -44,6 +44,10 @@ test('quota eligibility excludes unexpected generation data and hard-linked cach
  const linked=join(f.root,'provider-index.sqlite');linkSync(database,linked);expect(f.index.disposableFiles()).toEqual([]);expect(()=>f.index.reclaim([database])).toThrow();expect(existsSync(linked)).toBe(true);unlinkSync(linked);expect(f.index.disposableFiles()).toContain(database);
  const backup=join(f.root,'owned-database.sqlite');renameSync(database,backup);writeFileSync(linked,'foreign target');symlinkSync(linked,database);try{expect(f.index.disposableFiles()).toEqual([]);expect(()=>f.index.reclaim([database])).toThrow();expect(readFileSync(linked,'utf8')).toBe('foreign target');}finally{unlinkSync(database);renameSync(backup,database);}
 });
+test('an externally missing active database cannot become a pointer-only disposable bundle',async()=>{
+ const f=await retrievalFixture();f.add('meeting-a','alpha');await f.index.tick();const generation=f.index.describe(f.snapshot()).generationId!,pointer=join(f.directory,'active.json'),source=readFileSync(join(f.root,'sessions/meeting-a.json'));
+ unlinkSync(join(f.directory,generation,'index.sqlite'));expect(f.index.disposableFiles()).toEqual([]);expect(()=>f.index.reclaim([pointer])).toThrow();expect(existsSync(pointer)).toBe(true);expect(readFileSync(join(f.root,'sessions/meeting-a.json'))).toEqual(source);
+});
 test('quota retirement rejects an active update transaction without consuming its claim or accepted text',async()=>{
  const f=await retrievalFixture();f.add('meeting-a','alpha');await f.index.tick();const paths=f.index.disposableFiles(),generation=f.index.describe(f.snapshot()).generationId!;
  const current=f.store.read('meeting-a')!;f.store.commitSource(current.id,transcriptGuard(current),()=>({...current,transcript:Array.from({length:200},()=> 'alpha updated').join('\n\n')}));

@@ -359,7 +359,8 @@ export class RetrievalIndex {
   if(this.closed||this.running||this.querying||this.claims.size||this.stage||this.retired.size||this.uncertainPublication||!this.active||this.active.readers||this.active.writer.inTransaction)return [];
   try{
    if(this.selectedGeneration()!==this.active.id)return [];
-   const files=[this.pointer(),...readdirSync(this.active.path).map(name=>join(this.active!.path,name))];
+   const names=readdirSync(this.active.path);if(!names.includes('index.sqlite'))return [];
+   const files=[this.pointer(),...names.map(name=>join(this.active!.path,name))];
    this.ownedBytes();
    if(files.some(path=>{const stat=lstatSync(path);return !stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1;}))return [];
    return files.sort();

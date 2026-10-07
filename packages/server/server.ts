@@ -165,7 +165,7 @@ let quotaRetrievalOwner:RetrievalIndex|undefined;
 const managedQuota=createAppQuota({
  recordingsDir:UPLOAD_DIR,
  disposableFiles:()=>quotaRetrievalOwner?.disposableFiles()??[],
- disposeFiles:paths=>{if(!quotaRetrievalOwner)throw Error('Retrieval cache is unavailable');quotaRetrievalOwner.reclaim(paths);meetingRetriever.invalidateCache();},
+ disposeFiles:paths=>{if(!quotaRetrievalOwner)throw Error('Retrieval cache is unavailable');meetingRetriever.invalidateCache();quotaRetrievalOwner.reclaim(paths);},
  protectedPaths:()=>[...captureProtectedPaths(),...synchronizationProtectedPaths()],
  onEvicted:paths=>{
   sessionTags.recover();
