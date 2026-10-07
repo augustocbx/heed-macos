@@ -41,3 +41,12 @@ export interface AiConnectionInput {
  endpoint?: string; validationEndpoint?: string; trusted?: true;
  capabilities?: AiCapabilities;
 }
+/** Safe device-local command binding. Exporters must allowlist provenance instead. */
+export interface AiJobBinding {selection:AiSelection;commandRevision?:string;planId?:string;dispatched?:boolean;}
+export interface AiAuthorizationDecision {allowRemote:true;expectedPayloadHash:string;allowUnknownCost?:true;}
+export interface AiPreview {
+ id:string;jobId:string;feature:AiFeature;selection:AiSelection;payloadHash:string;expiresAt:number;
+ calls:Array<{id:string;system:string;data:unknown;schema?:Record<string,unknown>;contextTokens:number;maxOutputTokens:number}>;
+ sources:Array<{sessionId:string;sourceRevision:string;sourceVersion?:number;expectedNotesHash?:string}>;
+ excluded:string[];costStatus:'unknown';
+}

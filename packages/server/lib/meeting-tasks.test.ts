@@ -96,3 +96,11 @@ test('duplicate mentions become one suggestion with both sources and ambiguous n
  first.evidence=[{segmentIndex:0,quote:quoted}];const second={...first,evidence:[{segmentIndex:1,quote:quoted}]};
  const suggestions=validateTaskSuggestions(f.meeting,JSON.stringify({suggestions:[first,second]}));expect(suggestions).toHaveLength(1);expect(suggestions[0].evidence).toHaveLength(2);expect(suggestions[0]).toMatchObject({dueDate:null,dateReview:'05/06/2026'});
 });
+
+test('a recovered task attempt fences an older completion for the same source revision',async()=>{
+ const f=fixture();let releaseOld!:(value:string)=>void,releaseNew!:(value:string)=>void;
+ f.setGenerate(()=>new Promise(resolve=>releaseOld=resolve));const old=f.service.tick();
+ const recovered=new MeetingTasksService(f.options);f.setGenerate(()=>new Promise(resolve=>releaseNew=resolve));const newer=recovered.tick();
+ releaseOld('{"suggestions":[]}');await old;expect(recovered.snapshot('m').review?.status).toBe('running');
+ releaseNew(JSON.stringify({suggestions:f.raw}));await newer;expect(recovered.snapshot('m').review?.suggestions).toHaveLength(2);
+});

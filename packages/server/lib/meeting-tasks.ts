@@ -1,3 +1,5 @@
+import {AiPlanError, aiErrorCode, aiFingerprint, remoteBinding, type AiDomainInference, type AiJobDraft} from './inference/planning';
+import {taskPrompt,taskResponseSchema} from './inference/prompts';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -8,9 +10,11 @@ import { notesHash, sourceRevision } from './automatic-notes';
 interface Store { version:1; tasks: MeetingTask[]; reviews: Record<string,TaskReview>; decisions:Record<string,{state:'accepted'|'dismissed';acceptedTaskId?:string}>; }
 interface Options {
  path:string;
+ inference?:AiDomainInference;
+ getModel?:()=>string;
  listSessions:()=>Session[];
  getSession:(id:string)=>Session|null;
- generate:(session:Session,signal:AbortSignal)=>Promise<string>;
+ generate:(session:Session,signal:AbortSignal,model?:string)=>Promise<string>;
  isBusy:()=>boolean;
  now?:()=>Date;
  write?:typeof atomicWriteJson;
@@ -59,7 +63,7 @@ export function validateTaskSuggestions(session:Session,output:string):TaskSugge
 }
 /** Synchronous read/modify/atomic-write transactions serialize browser tabs in one local server. */
 export class MeetingTasksService {
- private active?:{sessionId:string;revision:string;controller:AbortController;done:Promise<void>};
+ private active?:{sessionId:string;revision:string;attemptId:string;sourceVersion:number;controller:AbortController;done:Promise<void>};
  constructor(private readonly options:Options){mkdirSync(dirname(options.path),{recursive:true});}
  get busy():boolean{return !!this.active;}
  private now():string{return (this.options.now?.()||new Date()).toISOString();}
@@ -84,7 +88,7 @@ export class MeetingTasksService {
  }
  private review(store:Store,id:string,revision:string):TaskReview {
   const session=this.session(id);const review=store.reviews[id];
-  if(!session.transcriptFinalized||sourceRevision(session)!==revision||review?.sourceRevision!==revision||review.status!=='ready')throw new Error('Task suggestions changed; reload before reviewing');
+  if(!session.transcriptFinalized||sourceRevision(session)!==revision||review?.sourceRevision!==revision||review.sourceVersion!==undefined&&review.sourceVersion!==(session.transcriptVersion??0)||review.status!=='ready')throw new Error('Task suggestions changed; reload before reviewing');
   return review;
  }
  accept(id:string,revision:string,items:AcceptTaskInput[]):TasksSnapshot {
@@ -120,32 +124,72 @@ export class MeetingTasksService {
  retry(id:string):void {
   const meeting=this.session(id);if(!meeting.transcriptFinalized)throw new Error('Final transcript required');
   const store=this.read();const old=store.reviews[id];const revision=sourceRevision(meeting);
-  if(old?.sourceRevision===revision&&['running','ready'].includes(old.status))return;
-  store.reviews[id]={sessionId:id,sourceRevision:revision,status:'queued',suggestions:[],updatedAt:this.now()};this.save(store);
+  if(old?.sourceRevision===revision&&(old.sourceVersion===undefined||old.sourceVersion===(meeting.transcriptVersion??0))){
+   if(['running','ready'].includes(old.status))return;
+   const selection=this.options.inference?.planner.selection('tasks',this.options.getModel?.()??'');
+   if(['queued','waiting'].includes(old.status)&&(!selection||aiFingerprint(selection)===aiFingerprint(old.ai?.selection)))return;
+  }
+  store.reviews[id]=this.newReview(meeting);this.save(store);
+ }
+ private newReview(session:Session):TaskReview {
+  const review:TaskReview={sessionId:session.id,sourceRevision:sourceRevision(session),sourceVersion:session.transcriptVersion??0,attemptId:randomUUID(),status:'queued',suggestions:[],updatedAt:this.now()};
+  try{const selection=this.options.inference?.planner.selection('tasks',this.options.getModel?.()??'');if(selection)review.ai={selection};}
+  catch{review.status='failed';review.error='settings-recovery';}
+  return review;
+ }
+ async prepareAi(sessionId:string):Promise<AiJobDraft>{
+  const session=this.session(sessionId),review=this.read().reviews[sessionId];
+  if(!this.options.inference||!review||!remoteBinding(review)||!['queued','waiting'].includes(review.status))throw new AiPlanError('job-not-reviewable');
+  const selection=review.ai!.selection,attemptId=review.attemptId;
+  const validate=()=>{
+   const current=this.session(sessionId),live=this.read().reviews[sessionId];
+   if(!live||!['queued','waiting','running'].includes(live.status)||!current.transcriptFinalized||sourceRevision(current)!==review.sourceRevision||(current.transcriptVersion??0)!==review.sourceVersion||aiFingerprint(live.ai?.selection)!==aiFingerprint(selection))throw new AiPlanError('source-changed');
+   if(live.attemptId!==attemptId)throw new AiPlanError('review-invalidated');
+  };
+  return {jobId:`tasks:${sessionId}:${review.sourceRevision}`,feature:'tasks',selection,calls:[{id:'tasks',...taskPrompt(session.language,taskSegments(session)),schema:taskResponseSchema(),contextTokens:8192,maxOutputTokens:1800}],sources:[{sessionId,sourceRevision:review.sourceRevision,sourceVersion:review.sourceVersion}],validate,
+   attach:plan=>{validate();const store=this.read();store.reviews[sessionId]!.ai={selection,planId:plan.id};this.save(store);},
+   dispatched:()=>{const store=this.read();store.reviews[sessionId]!.ai!.dispatched=true;this.save(store);}};
  }
  async preempt():Promise<void>{const active=this.active;if(!active)return;active.controller.abort();await active.done;}
  async tick():Promise<void>{
   if(this.active)return;const store=this.read();let changed=false;
-  for(const review of Object.values(store.reviews))if(review.status==='running'){review.status='waiting';review.error='interrupted';changed=true;}
+  for(const review of Object.values(store.reviews))if(review.status==='running'){review.status=remoteBinding(review)?'failed':'waiting';review.error=remoteBinding(review)?'remote-attempt-uncertain':'interrupted';changed=true;}
   for(const session of this.options.listSessions())if(session.transcriptFinalized&&session.transcript.trim()){
-   const revision=sourceRevision(session);if(store.reviews[session.id]?.sourceRevision!==revision){store.reviews[session.id]={sessionId:session.id,sourceRevision:revision,status:'queued',suggestions:[],updatedAt:this.now()};changed=true;}
+   const revision=sourceRevision(session);if(store.reviews[session.id]?.sourceRevision!==revision){store.reviews[session.id]=this.newReview(session);changed=true;}
   }
   if(changed)this.save(store);if(this.options.isBusy())return;
-  const review=Object.values(store.reviews).find(r=>r.status==='queued'||r.status==='waiting');if(!review)return;
-  const session=this.options.getSession(review.sessionId);if(!session||!session.transcriptFinalized||sourceRevision(session)!==review.sourceRevision){review.status='superseded';this.save(store);return;}
-  review.status='running';delete review.error;review.updatedAt=this.now();this.save(store);
-  const controller=new AbortController();const active={sessionId:session.id,revision:review.sourceRevision,controller,done:Promise.resolve()};this.active=active;
+  const review=Object.values(store.reviews).find(candidate=>{
+   if(!['queued','waiting'].includes(candidate.status))return false;
+   const source=this.options.getSession(candidate.sessionId);
+   if(!source||!source.transcriptFinalized||sourceRevision(source)!==candidate.sourceRevision||candidate.sourceVersion!==undefined&&candidate.sourceVersion!==(source.transcriptVersion??0)){candidate.status='superseded';this.save(store);return false;}
+   if(!remoteBinding(candidate))return true;
+   try{if(!candidate.ai?.planId||!this.options.inference)throw new AiPlanError('authorization-required');this.options.inference.authorizations.assert(this.options.inference.planner.get(candidate.ai.planId));return true;}
+   catch(error){const reason=error instanceof AiPlanError?error.code:'review-invalidated';if(candidate.status!=='waiting'||candidate.error!==reason){candidate.status='waiting';candidate.error=reason;this.save(store);}return false;}
+  });if(!review)return;
+  const session=this.options.getSession(review.sessionId);if(!session||!session.transcriptFinalized||sourceRevision(session)!==review.sourceRevision||review.sourceVersion!==undefined&&review.sourceVersion!==(session.transcriptVersion??0)){review.status='superseded';this.save(store);return;}
+  review.sourceVersion??=session.transcriptVersion??0;
+  if(!remoteBinding(review))review.attemptId=randomUUID();review.attemptId??=randomUUID();review.status='running';delete review.error;review.updatedAt=this.now();this.save(store);
+  const controller=new AbortController();const active={sessionId:session.id,revision:review.sourceRevision,attemptId:review.attemptId,sourceVersion:review.sourceVersion,controller,done:Promise.resolve()};this.active=active;
   active.done=this.execute(session,active);try{await active.done;}finally{if(this.active===active)this.active=undefined;}
  }
- private async execute(session:Session,active:{revision:string;controller:AbortController}):Promise<void>{
-  let suggestions:TaskSuggestion[]|undefined;let error:string|undefined;
-  try{suggestions=validateTaskSuggestions(session,await this.options.generate(session,active.controller.signal));}catch(failure){error=(failure as Error).message;}
-  const store=this.read();const review=store.reviews[session.id];if(!review||review.sourceRevision!==active.revision||review.status!=='running')return;
+ private async execute(session:Session,active:{revision:string;attemptId:string;sourceVersion:number;controller:AbortController}):Promise<void>{
+  let suggestions:TaskSuggestion[]|undefined;let error:string|undefined;let safeError:string|undefined;
+  let provenance:import('../../shared/types/ai').AiProvenance|undefined;
+  try{
+   const review=this.read().reviews[session.id]!,inference=this.options.inference;
+   const plan=remoteBinding(review)?inference!.planner.get(review.ai!.planId!):undefined;
+   const generate=()=>this.options.generate(session,active.controller.signal,review.ai?.selection.model??this.options.getModel?.());
+   const results=plan?await inference!.runtime.execute(plan,active.controller.signal):undefined;
+   const output=results?results[0]!.text:inference?await inference.runtime.local('tasks',review.ai?.selection.model??this.options.getModel?.()??'',active.controller.signal,generate):await generate();
+   if(plan)inference!.planner.assertCurrent(plan);provenance=results?.[0]?.provenance;
+   suggestions=validateTaskSuggestions(session,output);
+  }catch(failure){error=(failure as Error).message;safeError=aiErrorCode(failure);}
+  const store=this.read();const review=store.reviews[session.id];if(!review||review.sourceRevision!==active.revision||review.attemptId!==active.attemptId||review.status!=='running')return;
   const current=this.options.getSession(session.id);
-  if(!current||!current.transcriptFinalized||sourceRevision(current)!==active.revision)review.status='superseded';
-  else if(active.controller.signal.aborted){review.status='waiting';review.error='interrupted';}
-  else if(error){review.status='failed';review.error=['model-missing','local-only','ollama-unavailable','incomplete-output','Invalid task output','Invalid task evidence','Invalid task text','Invalid task'].includes(error)?error:'generation-failed';}
-  else{review.status='ready';review.suggestions=suggestions!.map(suggestion=>({...suggestion,...store.decisions[suggestion.id]}));delete review.error;}
+  if(!current||!current.transcriptFinalized||sourceRevision(current)!==active.revision||(current.transcriptVersion??0)!==active.sourceVersion)review.status='superseded';
+  else if(active.controller.signal.aborted){review.status=remoteBinding(review)?'failed':'waiting';review.error=remoteBinding(review)?'remote-attempt-uncertain':'interrupted';}
+  else if(error){review.status='failed';review.error=safeError??(['model-missing','local-only','ollama-unavailable','incomplete-output','Invalid task output','Invalid task evidence','Invalid task text','Invalid task'].includes(error)?error:'generation-failed');}
+  else{review.status='ready';if(provenance)review.provenance=provenance;review.suggestions=suggestions!.map(suggestion=>({...suggestion,...store.decisions[suggestion.id]}));delete review.error;}
   review.updatedAt=this.now();this.save(store);
  }
 }

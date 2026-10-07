@@ -150,3 +150,22 @@ test('stale pending chat fails and releases admission for background work',async
  expect(service.pending).toBe(true);s={...s,transcript:'Changed source'};busy=false;
  await service.tick();expect(service.get(s.id).turns[0]).toMatchObject({status:'failed',reason:'source-changed'});expect(service.pending).toBe(false);
 });
+
+test('pure preparation freezes every bounded chat call before generation and completion validates each batch',async()=>{
+ const api=await import('./meeting-chat');
+ expect(typeof api.prepareMeetingQuestion).toBe('function');
+ const s=meeting();s.segments=Array.from({length:32},(_,i)=>({speaker:'Ana',start:i,end:i+1,text:`Selected excerpt ${i}. `+'context '.repeat(130)}));
+ const evidence=transcriptEvidence(s).slice(0,32),coverage=testCoverage(evidence);
+ const prepared=api.prepareMeetingQuestion({evidence,coverage,question:'Context?',history:[],model:'local'});
+ const calls=api.chatPlanCalls(prepared);expect(calls).toHaveLength(4);expect(Object.isFrozen(prepared.requests[0]!.data)).toBe(true);
+ for(const call of calls){expect(Buffer.byteLength(call.system)+Buffer.byteLength(JSON.stringify(call.data))).toBeLessThanOrEqual(5500);expect(call.contextTokens).toBe(8192);expect(call.maxOutputTokens).toBe(1800);}
+ const outputs=calls.map(()=>JSON.stringify({claims:[],notFound:true}));
+ expect(api.completeMeetingQuestion(prepared,outputs).coverage.reviewedChunks).toBe(4);
+ expect(()=>api.completeMeetingQuestion(prepared,outputs.slice(1))).toThrow('invalid-answer');
+ expect(()=>api.completeMeetingQuestion(prepared,outputs.map((text,index)=>index===0?result('unselected'):text))).toThrow('invalid-evidence');
+});
+
+test('local batched chat still stops at its first invalid answer',async()=>{
+ const s=meeting();s.segments=Array.from({length:12},(_,i)=>({speaker:'Ana',start:i,end:i+1,text:'Evidence '.repeat(130)}));let calls=0;
+ await expect(answerMeetingQuestion({sessions:[s],question:'Evidence?',history:[],model:'local',generate:async()=>{calls++;return result('invented');}})).rejects.toThrow('invalid-evidence');expect(calls).toBe(1);
+});

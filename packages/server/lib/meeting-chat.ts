@@ -97,14 +97,15 @@ function parseClaims(text: string, evidence: TranscriptEvidence[]) {
  });
 }
 
-/** Generation receives bounded current retrieval only; history is never factual evidence. */
-export async function answerMeetingQuestion(input: {
- evidence:TranscriptEvidence[];coverage:RetrievalCoverage;question:string;history:ChatHistory;model:string;
- generate:ChatGenerator;signal?:AbortSignal;policy?:RetrievalPolicy;
-}):Promise<ChatAnswer>{
- const policy=input.policy??defaultRetrievalPolicy,coverage=structuredClone(input.coverage),claims:ChatAnswer['claims']=[],seen=new Set<string>();
+function freezePrepared<T>(value:T):T{if(value&&typeof value==='object'){for(const child of Object.values(value))freezePrepared(child);Object.freeze(value);}return value;}
+export interface PreparedMeetingQuestion {
+ requests:ChatGenerationRequest[];coverage:RetrievalCoverage;totalBatches:number;omitted:boolean;
+ reasons:RetrievalCoverage['partialReasons'];contextTokens:number;
+}
+/** Pure complete-call preparation; no call depends on another model output. */
+export function prepareMeetingQuestion(input:{evidence:TranscriptEvidence[];coverage:RetrievalCoverage;question:string;history:ChatHistory;model:string;policy?:RetrievalPolicy}):PreparedMeetingQuestion {
+ const policy=input.policy??defaultRetrievalPolicy,coverage=structuredClone(input.coverage);
  if(input.evidence.length>policy.excerpts)throw new ChatError('retrieval-unavailable',409);
- const check=()=>{if(input.signal?.aborted)throw new ChatError('cancelled',409);};check();
  let history=input.history.slice(-2).map(turn=>({question:turn.question.slice(0,100),answer:turn.answer?.claims.slice(0,2).map(claim=>claim.text).join('\n').slice(0,200)}));
  const cost=(data:ChatGenerationData)=>Buffer.byteLength(CHAT_SYSTEM)+Buffer.byteLength(JSON.stringify(data));
  const reasons=new Set(coverage.partialReasons);let omitted=false;
@@ -119,9 +120,18 @@ export async function answerMeetingQuestion(input: {
  }
  if(batch.evidence.length)batches.push(batch);if(omitted)reasons.add('context-budget');
  const selected=batches.slice(0,policy.generationCalls);if(selected.length<batches.length)reasons.add('generation-limit');
+ return freezePrepared(structuredClone({requests:selected.map(data=>({model:input.model,question:input.question,history:data.history,evidence:data.evidence,data})),coverage,totalBatches:batches.length,omitted,reasons:[...reasons],contextTokens:policy.generationContextTokens}));
+}
+export function chatPlanCalls(prepared:PreparedMeetingQuestion):import('./inference/contracts').AiCall[]{
+ return prepared.requests.map((request,index)=>({id:`chat-${index+1}`,system:CHAT_SYSTEM,data:structuredClone(request.data),schema:chatResponseSchema(request.evidence),contextTokens:prepared.contextTokens,maxOutputTokens:1800}));
+}
+/** Apply the same grounding and coverage checks to local or authorized provider results. */
+export function completeMeetingQuestion(prepared:PreparedMeetingQuestion,outputs:string[]):ChatAnswer {
+ if(outputs.length!==prepared.requests.length)throw new ChatError('invalid-answer',502);
+ const coverage=structuredClone(prepared.coverage),claims:ChatAnswer['claims']=[],seen=new Set<string>(),reasons=new Set(prepared.reasons),omitted=prepared.omitted;
  const supplied=new Map<string,TranscriptEvidence>();let answerLimited=false;
- for(const data of selected){
-  check();const text=await input.generate({model:input.model,question:input.question,history:data.history,evidence:data.evidence,data,signal:input.signal});check();
+ for(const [index,request] of prepared.requests.entries()){
+  const data=request.data,text=outputs[index]!;
   for(const item of data.evidence)supplied.set(item.id,item);
   for(const claim of parseClaims(text,data.evidence)){
    const key=JSON.stringify([claim.text,claim.citations.map(item=>item.id)]);if(seen.has(key))continue;seen.add(key);
@@ -131,9 +141,20 @@ export async function answerMeetingQuestion(input: {
  const cited=new Map(claims.flatMap(claim=>claim.citations).map(item=>[item.id,item]));
  coverage.suppliedEvidence=supplied.size;coverage.suppliedMeetings=new Set([...supplied.values()].map(e=>e.sessionId)).size;
  coverage.citedEvidence=cited.size;coverage.citedMeetings=new Set([...cited.values()].map(e=>e.sessionId)).size;
- coverage.generationComplete=!omitted&&selected.length===batches.length&&!answerLimited;coverage.partialReasons=[...reasons];
+ coverage.generationComplete=!omitted&&prepared.requests.length===prepared.totalBatches&&!answerLimited;coverage.partialReasons=[...reasons];
  if(answerLimited){coverage.generationComplete=false;coverage.partialReasons.push('generation-limit');}
- return {claims,coverage:{reviewedChunks:selected.length,totalChunks:batches.length,complete:false,answerLimited,retrieval:coverage}};
+ return {claims,coverage:{reviewedChunks:prepared.requests.length,totalChunks:prepared.totalBatches,complete:false,answerLimited,retrieval:coverage}};
+}
+
+/** Generation receives bounded current retrieval only; history is never factual evidence. */
+export async function answerMeetingQuestion(input: {
+ evidence:TranscriptEvidence[];coverage:RetrievalCoverage;question:string;history:ChatHistory;model:string;
+ generate:ChatGenerator;signal?:AbortSignal;policy?:RetrievalPolicy;
+}):Promise<ChatAnswer>{
+ const check=()=>{if(input.signal?.aborted)throw new ChatError('cancelled',409);};check();
+ const prepared=prepareMeetingQuestion(input),outputs:string[]=[];
+ for(const request of prepared.requests){check();const text=await input.generate({...request,signal:input.signal});check();parseClaims(text,request.evidence);outputs.push(text);}
+ return completeMeetingQuestion(prepared,outputs);
 }
 
 interface ChatOptions {
