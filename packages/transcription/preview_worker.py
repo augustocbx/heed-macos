@@ -16,6 +16,10 @@ class PreviewWhisper:
         self.worker = NativeWorker([sys.executable, "-u", os.path.abspath(__file__),
                                     model, kind, json.dumps(devices)])
 
+    @property
+    def alive(self):
+        return self.worker.alive
+
     def transcribe(self, wav_path, language=None, **opts):
         result = self.worker.request({"wav_path":wav_path, "language":language, "opts":opts},
                                      timeout=NATIVE_LIVE_TIMEOUT_SECONDS)

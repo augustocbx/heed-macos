@@ -186,6 +186,9 @@ def main():
     if args.native_binary and not pathlib.Path(args.native_binary).is_file():parser.error('Native binary does not exist')
     modes=[True,False] if args.order=='on-off' else [False,True]
     report={'host':{'system':platform.system(),'machine':platform.machine(),'macOS':platform.mac_ver()[0]},
+            'commit':command_output(['git','-C',str(ROOT),'rev-parse','HEAD']),
+            'interpreterVersion':command_output([args.python,'--version']),
+            'hardware':command_output(['sysctl','hw.model','hw.memsize']),
             'nativeBinarySha256':file_hash(args.native_binary) if args.native_binary else None,
             'limits':['Fixture replay does not prove physical capture on either Mac.','ps %cpu is a sampled process estimate; process RSS may double-count shared pages.',
                       'OS memory pressure, swap and battery are system-wide and influenced by other apps.','Direct energy is unavailable without a separate authorized profiler.'],

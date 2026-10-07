@@ -20,13 +20,13 @@ console.error(JSON.stringify({ready:true,sample_rate:16000,channels,mode}));
 const pcm=Buffer.alloc(3200*channels);for(let i=0;i<1600;i++)for(let ch=0;ch<channels;ch++)pcm.writeInt16LE(Math.round(3000*Math.sin(i/8+ch)),(i*channels+ch)*2);
 setInterval(()=>{if(existsSync(join(process.env.HEED_APP_DIR,'fail-capture')))process.exit(1);process.stdout.write(pcm);},100);
 `,{mode:0o700});
- const jobs:string[]=[];const configurations:boolean[]=[];let app:Bun.Subprocess|undefined;
+ let sidecarPid=process.pid;const jobs:string[]=[];const configurations:boolean[]=[];let app:Bun.Subprocess|undefined;
  const sidecar=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(req){
   const path=new URL(req.url).pathname;if(req.method==='POST')jobs.push(path);
   if(path==='/preview/configure')configurations.push((await req.json()).enabled);
   if(path==='/finalize')return Response.json({finalized:true,duration:2.5,language:'pt',model:'fixture-final',turns:[{speaker:'Me',channel:'mic',text:'Synthetic microphone',start:0,end:1},{speaker:'Speaker 1',channel:'sys',text:'Synthetic system',start:1,end:2.5}],embeddings:{'Speaker 1':[1,2]}});
   if(path==='/transcribe-live')return Response.json({text:'Preview fixture',language:'en',segments:[]});
-  return Response.json({service:'heed-transcription',whisper:true,warm:true,live_tuning:{mode:'chunk',chunk_s:2,interval_ms:500},models:[]});
+  return Response.json({service:'heed-transcription',protocolVersion:1,checkoutRoot:source,pid:sidecarPid,ready:true,pyannote:true,whisper:true,warm:true,live_tuning:{mode:'chunk',chunk_s:2,interval_ms:500},models:[]});
  }});
  const lease=Bun.serve({hostname:'127.0.0.1',port:0,fetch:()=>new Response()});const base=`http://127.0.0.1:${lease.port}`;lease.stop(true);
  const request=async(path:string,body?:unknown)=>{const response=await fetch(base+path,{method:body===undefined?'GET':'POST',headers:{'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});return {status:response.status,body:await response.json()};};
@@ -51,6 +51,10 @@ setInterval(()=>{if(existsSync(join(process.env.HEED_APP_DIR,'fail-capture')))pr
   await request('/api/recording/settings',{enabled:false});
   const until=Date.now()+6000;while(!jobs.includes('/transcribe-live') && Date.now()<until)await Bun.sleep(50);
   expect(jobs).toContain('/transcribe-live');
+  const beforeRestart=configurations.length;sidecarPid++;
+  const restartDeadline=Date.now()+2500;while(configurations.length===beforeRestart && Date.now()<restartDeadline)await Bun.sleep(20);
+  expect(configurations.length).toBeGreaterThan(beforeRestart);expect(configurations.at(-1)).toBe(true);
+
   expect((await request('/api/recording/status')).body.realTimeTranscription).toBe(true);
   await request('/api/desktop/control/commands',{action:'stop',requestId:'menu-stop',meetingId:next.body.meetingId});
   await request('/api/recording/settings',{enabled:true});

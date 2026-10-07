@@ -22,7 +22,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from preview_preference import saved_preview_preference
+from preview_preference import saved_preview_preference, startup_preview_policy
 
 # Threading HTTP server so health/hardware checks don't block while whisper is processing.
 # Without this, the server is single-threaded and ANY request during transcription hangs.
@@ -34,30 +34,46 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 whisper_lock = threading.Lock()
 whisper_live_lock = threading.Lock()
 
-# Serialize startup, live admission, and release. Final inference owns separate locks/resources.
+# Serialize configuration/startup; independent live jobs hold counted leases.
+# Final inference owns separate locks/resources.
 preview_lock = threading.RLock()
-preview_enabled = saved_preview_preference()
+preview_condition = threading.Condition(preview_lock)
+preview_configuration_lock = threading.Lock()
+preview_users = 0
+preview_enabled, preview_startup_pending = startup_preview_policy()
 
 @contextmanager
 def preview_lease():
-    with preview_lock:
+    global preview_users
+    with preview_condition:
         if not preview_enabled:
             raise RuntimeError("Real-time transcription is disabled for this recording.")
+        preview_users += 1
+    try:
         yield
+    finally:
+        with preview_condition:
+            preview_users -= 1
+            preview_condition.notify_all()
 
 def configure_preview(enabled):
-    global preview_enabled, whisper_model_live, live_governor, models_warm
+    global preview_enabled, preview_startup_pending, whisper_model_live, live_governor, models_warm
     if not isinstance(enabled, bool):
         raise ValueError("Choose a valid real-time transcription setting.")
-    with preview_lock:
+    with preview_configuration_lock, preview_condition:
         preview_enabled = enabled
+        preview_startup_pending = False
         if not enabled:
+            # Closing admission prevents starvation, without serializing ASR and diarization.
+            preview_condition.wait_for(lambda: preview_users == 0)
             owned = whisper_model_live
             whisper_model_live = None
             live_governor = None
             if owned is not None and owned is not whisper_model:
                 close = getattr(owned, "close", None)
                 if close: close()
+        elif live_governor is None:
+            _arm_live_governor()
         # Re-enabling is lazy; no wait for a warm-only flag can deadlock capture.
         models_warm = True
         return {"enabled":preview_enabled, "warm":models_warm}
@@ -104,6 +120,7 @@ whisper_model_name = "small"
 whisper_model_live_name = "small"
 # RuntimeGovernor + the bits it needs to hot-swap the live model under contention.
 live_governor = None
+live_governor_ceiling = None
 _devices = None
 _warmup_path = None
 # Per-engine LIVE cadence hint the Node server reads from /health. Parakeet (Apple Neural
@@ -893,6 +910,16 @@ def _load_preview_with_fallback(model_name, devices, warmup_path, label="live"):
     raise RuntimeError("No live transcription model could be loaded")
 
 
+def _arm_live_governor():
+    global live_governor
+    if active_engine == "parakeet":
+        live_governor = None
+        return
+    from governor import RuntimeGovernor
+    live_governor = RuntimeGovernor(start_model=whisper_model_live_name,
+                                    ceiling=live_governor_ceiling or whisper_model_live_name, floor="tiny")
+
+
 def _swap_live_model(new_model):
     """Hot-swap the live preview model when the governor decides to degrade/recover.
     Loads + warms the new model OUTSIDE the transcribe lock, then swaps the reference under it."""
@@ -914,12 +941,12 @@ def _swap_live_model(new_model):
 
 
 def load_models():
-    with preview_lock:
+    with preview_configuration_lock, preview_lock:
         _load_models()
 
 def _load_models():
     global whisper_model, whisper_model_live, diarize_pipeline, whisper_model_name, whisper_model_live_name, whisper_runtime_info, pyannote_runtime_info, diarize_backend
-    global live_governor, _devices, _warmup_path, live_tuning, active_engine, models_warm
+    global live_governor, live_governor_ceiling, _devices, _warmup_path, live_tuning, active_engine, models_warm
 
     try:
         devices = get_device_config()
@@ -1022,14 +1049,9 @@ def _load_models():
     # Arm the RuntimeGovernor for the live preview: it self-corrects the live model under
     # recording-time contention (the 8-15s regression). Ceiling = the policy's live pick so it
     # never upgrades past what the hardware was judged able to run.
-    try:
-        from governor import RuntimeGovernor
-        live_governor = RuntimeGovernor(start_model=whisper_model_live_name,
-                                        ceiling=whisper_model_live_name, floor="tiny") if preview_enabled else None
-        if preview_enabled: print(f"[heed] Live governor armed (start={whisper_model_live_name}, floor=tiny)", flush=True)
-    except Exception as e:
-        live_governor = None
-        print(f"[heed] Live governor unavailable (non-critical): {e}", flush=True)
+    live_governor_ceiling = whisper_model_live_name
+    if preview_enabled: _arm_live_governor()
+    else: live_governor = None
 
     # Bounded chunk preview avoids repeated whole-recording inference during a meeting.
     if engine_kind == "parakeet":
@@ -1224,17 +1246,21 @@ def _ensure_whisper_live():
     global whisper_model_live, whisper_model_live_name
     if not preview_enabled:
         raise RuntimeError("Real-time transcription is disabled for this recording.")
-    if whisper_model_live is None:
-        with whisper_live_lock:
-            if whisper_model_live is None:
-                if active_engine == "parakeet":
-                    from preview_worker import PreviewWhisper
-                    whisper_model_live = PreviewWhisper("base", active_engine, _devices)
-                    whisper_model_live_name = "base"
-                else:
-                    whisper_model_live, whisper_model_live_name = _load_preview_with_fallback(
-                        "base", _devices, _warmup_path, "live-lazy")
-    return whisper_model_live
+    with whisper_live_lock:
+        current = whisper_model_live
+        if current is not None and current is not whisper_model and getattr(current, "alive", True) is False:
+            current.close()
+            whisper_model_live = None
+        if whisper_model_live is None:
+            if active_engine == "parakeet":
+                from preview_worker import PreviewWhisper
+                whisper_model_live = PreviewWhisper("base", active_engine, _devices)
+                whisper_model_live_name = "base"
+            else:
+                whisper_model_live, whisper_model_live_name = _load_preview_with_fallback(
+                    whisper_model_live_name or "base", _devices, _warmup_path, "live-lazy")
+                _arm_live_governor()
+        return whisper_model_live
 
 
 def transcribe(wav_path, language="auto", srt_output=None):
@@ -2483,7 +2509,7 @@ class Handler(BaseHTTPRequestHandler):
                 "ready": all(models_ready.values()),
                 "warm": models_warm,
                 "preview_enabled":preview_enabled,
-                "preview_state":"disabled" if not preview_enabled else "lazy" if whisper_model_live is None else "loaded",
+                "preview_state":"awaiting-capture" if preview_startup_pending else "disabled" if not preview_enabled else "lazy" if whisper_model_live is None else "failed" if getattr(whisper_model_live,"alive",True) is False else "loaded",
                 **models_ready,
                 "whisper_info": whisper_runtime_info,
                 "pyannote_info": pyannote_runtime_info,

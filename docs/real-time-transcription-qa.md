@@ -5,6 +5,10 @@ true. Only an explicit saved `false` disables it; unknown configuration fields a
 A data-preserving upgrade keeps this file. Browser, menu, and automatic capture share the
 backend coordinator's admission snapshot; request bodies cannot override this setting.
 Changes during capture apply to the next recording. Recording continues in its admitted mode.
+A Python-only restart checks a valid active checkpoint against the matching local API
+identity and compact capture status before any preview startup work. Unverified/stale active
+ownership suppresses preview startup until an admitted-mode handshake. Live ticks detect
+sidecar PID generation changes and restore the immutable mode before sending inference.
 
 When disabled, PCM microphone/system capture, audio persistence, metering, stop, final ASR,
 timestamps, final speaker labels, recovery and final-source notes/tasks retain their existing
@@ -31,7 +35,10 @@ readiness and failure behavior; replacing it with universal lazy loading would r
 lifecycle changes.
 
 Re-enabling is lazy and does not perform preview-only warm-up. `/health.preview_state` reports
-`disabled`, `lazy`, or `loaded`. The legacy `warm` flag remains an admission gate; it does not
+`awaiting-capture`, `disabled`, `lazy`, `loaded`, or `failed`. Failed owned workers are
+retired under the model lock and replaced for the next request; shared final instances remain
+untouched. Re-enabling non-native preview restores adaptation using the actual loaded model
+and retained safe governor ceiling. The legacy `warm` flag remains an admission gate; it does not
 promise every kernel or model has already warmed. The first enabled chunk may have cold latency.
 Settings reports saved-but-service-unavailable errors honestly; recording preparation may be
 retried after the local transcription service becomes ready.
@@ -42,15 +49,20 @@ zero-AI-memory, or battery improvement is promised.
 
 ## Acceptance evidence
 
-| Issue criterion | Automated evidence | External acceptance still required |
+| Issue criterion | Automated evidence | Pending issue evidence or limitations |
 | --- | --- | --- |
-| Default on, validation, restart, preserving upgrades | `recording-preference.test.ts` runs real config reads/writes across independent processes; `recording-http.test.ts` rejects malformed/nonlocal writes, persists false through server restart and preserves unknown config. | Actual data-preserving upgrade/reinstall on both Macs. |
-| Browser and menu use one preference, next-recording changes | `real-time-capture.http.test.ts` runs production HTTP/coordinator/FFmpeg with synthetic native PCM. A disabled menu start ignores a client override, a setting change stays deferred, browser stop saves the meeting; next browser start uses saved on despite another override, then menu stop succeeds. | Physical microphone/system capture and UI feedback on both Macs. |
-| No live work when off, final text/speakers preserved | Same fixture counts every sidecar POST: off has only preference configuration and finalization; it verifies stereo 16 kHz retained WAV, final text and speaker labels. Python `PreviewHTTPTests` exercises production HTTP and rejects all nine live boundaries when off. | Actual EN/PT engines and both physical capture sources. |
+| Default on, validation, restart, preserving upgrades | `recording-preference.test.ts` runs real config reads/writes across independent processes; `recording-http.test.ts` rejects malformed/nonlocal writes, persists false through server restart and preserves unknown config. | Upgrade preservation follows the existing installer contract; no installed-app upgrade was run here. |
+| Browser and menu use one preference, next-recording changes | `real-time-capture.http.test.ts` runs production HTTP/coordinator/FFmpeg with synthetic native PCM. A disabled menu start ignores a client override, a setting change stays deferred, browser stop saves the meeting; next browser start uses saved on despite another override, then menu stop succeeds. | Fixture/resource comparisons on both Macs are pending. Synthetic capture does not prove physical device permission/completeness. |
+| No live work when off, final text/speakers preserved | Same fixture counts every sidecar POST: off has only preference configuration and finalization; it verifies stereo 16 kHz retained WAV, final text and speaker labels. Python `PreviewHTTPTests` exercises production HTTP and rejects all nine live boundaries when off. | Actual paired EN/PT engines on both Macs; physical input completeness is distinct from inference replay. |
 | No startup preview work and safe release | Python `PreviewPreferenceTests` guards native startup/capability calls, in-flight live leases, preserved shared final instance, and lazy re-enable. `InstallerWarmupTests` exercises the real installer warm-up function. `PreviewHTTPTests` runs actual owned subprocess stdio transport and verifies release/reaping. | Actual process residency before/after toggle, cold re-enable, model cache variants. |
-| Recovery, final-source notes/tasks and priority | Coordinator regression preserves admitted mode through restart/retry and final timed speaker-labelled saving. Existing recording recovery, automatic-notes/task and preemption suites run with the full server/client/Python suites. | Physical crash recovery, long recording, and existing retention behavior. Pause/resume remains pending #12; #13 remains pending. |
-| Four-locale Settings/recording/menu feedback | Settings component tests use literal accessible EN/PT-BR/FR/DE labels and success prefixes, test save failure/retry; snapshot/RecordPage tests show final-only capture. Native self-tests decode final-only status and verify localized menu labels. | Visual and screen-reader acceptance on both Macs. |
-| Paired CPU/RAM/swap/energy/finalization evidence | Executable production-engine replay harness below; controlled fixtures prove scheduling and transport, not real-engine accuracy/performance. | Execute paired EN/PT runs on each Mac, repeat reverse order, physical capture completeness and energy profiling where available. |
+| Recovery, final-source notes/tasks and priority | Coordinator regression preserves admitted mode through restart/retry and final timed speaker-labelled saving. Existing recording recovery, automatic-notes/task and preemption suites run with the full server/client/Python suites. | Existing recovery/preemption/retention contracts were retained. Physical crash/long-recording checks were not exercised; #12/#13 remain pending separate work. |
+| Four-locale Settings/recording/menu feedback | Settings component tests use literal accessible EN/PT-BR/FR/DE labels and success prefixes, test save failure/retry; snapshot/RecordPage tests show final-only capture. Native self-tests decode final-only status and verify localized menu labels. | Automated semantic/localization evidence is available; manual visual/screen-reader checks were not run. |
+| Paired CPU/RAM/swap/energy/finalization evidence | Executable production-engine replay harness below; controlled fixtures prove scheduling and transport, not real-engine accuracy/performance. | Execute paired EN/PT runs on each Mac, compare capture completeness, CPU/RAM/pressure/swap and finalization; energy evidence where available. Reverse-order repetition improves measurement confidence. |
+
+Manual upgrade/reinstall, long physical recording/crash-recovery and screen-reader checks may
+be useful follow-up QA. They are not additional issue-63 blockers by themselves; this change
+does not reopen unrelated historical acceptance gates. The pending paired resource/final-output
+evidence above maps to the live issue.
 
 ## Reproducible paired resource measurement
 

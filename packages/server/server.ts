@@ -1367,7 +1367,7 @@ async function beginSysRecording(mode: CaptureMode, attachPath: (path: string) =
 	liveTranscribeOffset = 0;
 	liveChunkProcessing = false;
 	// Pick up the engine-adaptive live cadence (parakeet = fast) before the loop starts.
-	recordingLiveModel = undefined;
+	recordingLiveModel = undefined; recordingLiveGeneration=undefined;
 	if (preview) await refreshLiveTuning();
 
 	const ts = Date.now();
@@ -1613,6 +1613,7 @@ let liveTurns: Array<{ id: number; channel: "mic" | "sys"; speaker: string; base
 // Parakeet (Apple Neural Engine) polls fast with short windows for near-instant words;
 // Whisper keeps the safe 3s/2000ms cadence so slow CPUs never starve. Defaults are safe.
 let recordingLiveModel: string | undefined;
+let recordingLiveGeneration:number|undefined;
 let liveTuning = { chunk_s: 3.0, interval_ms: 2000, mode: "chunk" as "chunk" | "full" | "stream" };
 async function refreshLiveTuning() {
 	try {
@@ -1620,13 +1621,29 @@ async function refreshLiveTuning() {
 		if (r.ok) {
 			const h = await r.json() as { live_tuning?: { chunk_s?: number; interval_ms?: number; mode?: "chunk" | "full" | "stream"; model?: string }; whisper_info?: {live_model?: string} };
 			if(!isTranscriptionHealth(h))return;
-			recordingLiveModel = h.live_tuning?.model || h.whisper_info?.live_model;
+			recordingLiveGeneration=Number(h.pid);
+            recordingLiveModel = h.live_tuning?.model || h.whisper_info?.live_model;
 			if (h.live_tuning?.chunk_s && h.live_tuning?.interval_ms) {
 				liveTuning = { chunk_s: h.live_tuning.chunk_s, interval_ms: h.live_tuning.interval_ms, mode: h.live_tuning.mode || "chunk" };
 				console.log(`[heed] live: mode=${liveTuning.mode} interval=${liveTuning.interval_ms}ms`);
 			}
 		}
 	} catch { /* keep safe defaults */ }
+}
+
+/** A Python-only restart must receive the immutable capture mode before the next live job. */
+async function ensureLiveGeneration():Promise<boolean> {
+ const signal=liveAbort.signal;
+ try{
+  const response=await fetch(`${TRANSCRIPTION_SERVER}/health`,{signal:AbortSignal.any([signal,AbortSignal.timeout(2000)])});
+  const health=await response.json();
+  if(!response.ok || !isTranscriptionHealth(health) || !health.whisper)return false;
+  if(recordingLiveGeneration!==health.pid){
+   await configurePreview(recordingCoordinator.snapshot().realTimeTranscription !== false);
+   recordingLiveGeneration=health.pid;
+  }
+  return !signal.aborted;
+ }catch{return false;}
 }
 
 // Live "full" mode (Parakeet/MLX): re-transcribe the whole growing audio each tick and emit a
@@ -1874,6 +1891,7 @@ function startLiveTranscribe() {
 				// Lock: skip if previous chunk is still processing
 				if (liveChunkProcessing) return;
 				liveChunkProcessing = true;
+                if(!await ensureLiveGeneration()){liveChunkProcessing=false;return;}
 
 				// STREAM mode (Parakeet): feed ONLY the new audio to the sidecar's streaming
 				// session; show the model's append-only partial (confirmed prefix never changes).
@@ -2338,7 +2356,11 @@ async function handleRecordingSettings(req:Request):Promise<Response> {
 async function handleRecordingControl(req: Request, pathname: string): Promise<Response> {
  if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
  try {
-  if (req.method === "GET" && pathname === "/api/recording/status") return Response.json(hydratedRecordingSnapshot());
+  if (req.method === "GET" && pathname === "/api/recording/status") {
+   const snapshot=hydratedRecordingSnapshot();
+   if(new URL(req.url).searchParams.get("inference")==="1")return Response.json({meetingId:snapshot.meetingId,state:snapshot.state,revision:snapshot.revision,realTimeTranscription:snapshot.realTimeTranscription !== false});
+   return Response.json(snapshot);
+  }
   if (req.method !== "POST") return new Response(null,{status:405});
   const body = await req.json();
   if (pathname === "/api/recording/speakers") return Response.json(recordingCoordinator.rename(body.meetingId,body.expectedRevision,body.speakerNames));

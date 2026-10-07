@@ -42,6 +42,40 @@ class PreviewPreferenceTests(unittest.TestCase):
                 env=dict(os.environ,HEED_APP_DIR=directory,PYTHONPATH=str(Path(__file__).parent)),capture_output=True,text=True,check=True,timeout=5)
             self.assertEqual(result.stdout.strip(),'False None')
 
+    def test_python_only_restart_preserves_active_mode_in_both_preference_directions(self):
+        import os
+        import subprocess
+        import sys
+        from http.server import BaseHTTPRequestHandler
+        owner_snapshot={}
+        class Owner(BaseHTTPRequestHandler):
+            def log_message(self,*args):pass
+            def do_GET(self):
+                body=owner_snapshot if self.path.startswith('/api/recording/status') else {'service':'heed-api','protocolVersion':1,'checkoutRoot':str(Path(server.__file__).resolve().parents[2])}
+                data=json.dumps(body).encode();self.send_response(200);self.end_headers();self.wfile.write(data)
+        owner=server.ThreadingHTTPServer(('127.0.0.1',0),Owner);thread=threading.Thread(target=owner.serve_forever,daemon=True);thread.start()
+        try:
+            for active,saved in [(False,True),(True,False)]:
+                with self.subTest(active=active,saved=saved),tempfile.TemporaryDirectory() as directory:
+                    Path(directory,'config.json').write_text(json.dumps({'real_time_transcription':saved}))
+                    snapshot={'state':'recording','meetingId':'active-fixture','revision':5,'startedAt':100,
+                              'path':str(Path(directory,'capture.wav')),'seconds':1,'mode':'both','segments':[],
+                              'speakerNames':{},'session':None,'error':None,'maintenance':False,'realTimeTranscription':active}
+                    owner_snapshot.update(snapshot)
+                    Path(directory,'recording-manifest.json').write_text(json.dumps({'version':1,'snapshot':snapshot,'receipts':{}}))
+                    result=subprocess.run([sys.executable,'-c','import transcription_server as s;print(s.preview_enabled)'],
+                        env=dict(os.environ,HEED_APP_DIR=directory,HEED_API_PORT=str(owner.server_address[1]),PYTHONPATH=str(Path(__file__).parent)),capture_output=True,text=True,check=True,timeout=5)
+                    self.assertEqual(result.stdout.strip(),str(active))
+        finally:owner.shutdown();owner.server_close();thread.join(1)
+
+    def test_unverified_active_manifest_cannot_warm_stale_preview_resources(self):
+        from preview_preference import startup_preview_preference
+        with tempfile.TemporaryDirectory() as directory,patch.dict('os.environ',{'HEED_APP_DIR':directory,'HEED_API_PORT':'65534'}):
+            Path(directory,'config.json').write_text('{"real_time_transcription":true}')
+            snapshot={'state':'recording','meetingId':'stale-fixture','revision':2,'mode':'both','segments':[],'realTimeTranscription':True}
+            Path(directory,'recording-manifest.json').write_text(json.dumps({'version':1,'snapshot':snapshot}))
+            self.assertFalse(startup_preview_preference())
+
     def test_startup_cannot_overwrite_an_admitted_mode_with_a_later_saved_preference(self):
         observed=[]
         with tempfile.TemporaryDirectory() as directory, patch.dict('os.environ',{'HEED_APP_DIR':directory}), \
@@ -72,6 +106,18 @@ class PreviewPreferenceTests(unittest.TestCase):
             self.assertFalse(final.closed); self.assertIs(server.whisper_model, final)
         server.configure_preview(True)
 
+    def test_independent_live_jobs_can_overlap_while_release_waits_for_both(self):
+        first,second,release=threading.Event(),threading.Event(),threading.Event()
+        def active(entered):
+            with server.preview_lease():entered.set();release.wait(2)
+        workers=[threading.Thread(target=active,args=(entered,)) for entered in (first,second)]
+        try:
+            workers[0].start();self.assertTrue(first.wait(1))
+            workers[1].start();self.assertTrue(second.wait(.3),'ASR and diarization admission must not serialize')
+        finally:
+            release.set()
+            for worker in workers:worker.join(2)
+
     def test_shared_model_is_not_closed_and_reenabling_is_lazy(self):
         class Model:
             def close(self): raise AssertionError("shared final model closed")
@@ -83,6 +129,23 @@ class PreviewPreferenceTests(unittest.TestCase):
             server.configure_preview(True)
             self.assertIsNone(server.whisper_model_live)
             with server.preview_lease(): pass
+
+
+    def test_saved_off_then_enable_restores_governor_adaptation_without_loading_preview(self):
+        with patch.object(server,'live_governor',None),patch.object(server,'active_engine','ctranslate2'),patch.object(server,'whisper_model_live_name','base'):
+            server.configure_preview(False);server.configure_preview(True)
+            self.assertIsNotNone(server.live_governor)
+            decisions=[server.live_governor.observe(3,3) for _ in range(3)]
+            self.assertEqual(decisions[-1].live_model,'tiny')
+
+    def test_off_on_resets_governor_for_the_next_recording(self):
+        from governor import RuntimeGovernor
+        original=RuntimeGovernor(start_model='small',ceiling='small',floor='tiny')
+        with patch.object(server,'live_governor',original),patch.object(server,'active_engine','mlx'),patch.object(server,'whisper_model_live_name','small'):
+            server.configure_preview(False);server.configure_preview(True)
+            self.assertIsNotNone(server.live_governor)
+            decisions=[server.live_governor.observe(3,3) for _ in range(3)]
+            self.assertEqual(decisions[-1].live_model,'base')
 
 
 class PreviewHTTPTests(unittest.TestCase):
@@ -166,6 +229,29 @@ class PreviewWorkerOwnershipTests(unittest.TestCase):
             self.assertIsNotNone(model.worker.proc.returncode)
             self.assertIsNone(unrelated.poll())
         finally:model.close();unrelated.terminate();unrelated.wait(timeout=2)
+
+    def test_next_live_request_recreates_a_timed_out_owned_preview(self):
+        import subprocess
+        import sys
+        from preview_worker import PreviewWhisper
+        failed=self.make_hung_preview()
+        with patch('preview_worker.NATIVE_LIVE_TIMEOUT_SECONDS',.1):
+            with self.assertRaises(TimeoutError):failed.transcribe('fixture.wav',language='en')
+        script='import sys,json;print(json.dumps({"ready":True}),flush=True)\nfor line in sys.stdin:\n print(json.dumps({"ok":True,"language":"en","segments":[{"start":0,"end":1,"text":"Recovered preview"}]}),flush=True)'
+        popen=subprocess.Popen
+        server.configure_preview(True)
+        with patch.object(server,'whisper_model_live',failed),patch.object(server,'active_engine','parakeet'), \
+             patch('native_worker.subprocess.Popen',side_effect=lambda _command,**kwargs:popen([sys.executable,'-u','-c',script],**kwargs)):
+            replacement=None
+            try:
+                with server.preview_lease():
+                    replacement=server._ensure_whisper_live()
+                    segments,_=replacement.transcribe('fixture.wav',language='en')
+                    self.assertEqual(list(segments)[0].text,'Recovered preview')
+                    self.assertIsNot(replacement,failed)
+            finally:
+                if replacement is not None:replacement.close()
+                failed.close()
 
     def test_preview_close_interrupts_an_inflight_request_and_reaps(self):
         import time
