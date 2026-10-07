@@ -69,15 +69,27 @@ function checkSchema(schema: unknown, depth = 0): void {
  for (const key of ['minimum', 'maximum']) if (value[key] !== undefined && (typeof value[key] !== 'number' || !Number.isFinite(value[key]))) return fail('unsupported-capability');
  if (value.uniqueItems !== undefined && typeof value.uniqueItems !== 'boolean') return fail('unsupported-capability');
 }
+/** JSON object property order is insignificant; array order remains significant. */
+function canonicalJson(value: unknown, depth = 0): string {
+ if (depth > 64) return fail('invalid-output');
+ if (value === null || typeof value === 'string' || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))) return JSON.stringify(value);
+ if (Array.isArray(value)) return '[' + value.map(item => canonicalJson(item, depth + 1)).join(',') + ']';
+ if (value && typeof value === 'object') {
+  const object = value as Record<string, unknown>;
+  return '{' + Object.keys(object).sort().map(key => JSON.stringify(key) + ':' + canonicalJson(object[key], depth + 1)).join(',') + '}';
+ }
+ return fail('invalid-output');
+}
 function matches(value: unknown, schema: Record<string, any>): boolean {
  const types = Array.isArray(schema.type) ? schema.type : schema.type ? [schema.type] : [];
  if (types.length && !types.some((type: string) => type === 'null' ? value === null : type === 'array' ? Array.isArray(value) : type === 'object' ? !!value && typeof value === 'object' && !Array.isArray(value) : type === 'integer' ? Number.isSafeInteger(value) : type === 'number' ? typeof value === 'number' && Number.isFinite(value) : typeof value === type)) return false;
- if (schema.enum && !schema.enum.some((entry: unknown) => JSON.stringify(entry) === JSON.stringify(value))) return false;
- if ('const' in schema && JSON.stringify(schema.const) !== JSON.stringify(value)) return false;
+ const comparable = schema.enum || 'const' in schema ? canonicalJson(value) : undefined;
+ if (schema.enum && !schema.enum.some((entry: unknown) => canonicalJson(entry) === comparable)) return false;
+ if ('const' in schema && canonicalJson(schema.const) !== comparable) return false;
  if (schema.anyOf && !schema.anyOf.some((entry: Record<string, any>) => matches(value, entry))) return false;
  if (Array.isArray(value)) {
   if (value.length < (schema.minItems ?? 0) || value.length > (schema.maxItems ?? Infinity)) return false;
-  if (schema.uniqueItems && new Set(value.map(item => JSON.stringify(item))).size !== value.length) return false;
+  if (schema.uniqueItems && new Set(value.map(item => canonicalJson(item))).size !== value.length) return false;
   if (schema.items && !value.every(item => matches(item, schema.items))) return false;
  } else if (value && typeof value === 'object') {
   const object = value as Record<string, unknown>;

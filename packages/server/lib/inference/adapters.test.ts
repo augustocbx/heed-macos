@@ -9,7 +9,7 @@ const schema = { type: 'object', additionalProperties: false, required: ['answer
 const capabilities: AiCapabilities = { features: ['notes', 'tasks', 'chat', 'library-chat'], structuredOutput: 'schema', streaming: false, contextTokens: 8192, maxOutputTokens: 1800, usageCategories: ['inputTokens', 'cachedInputTokens', 'cacheWriteTokens', 'outputTokens', 'reasoningTokens'], billableOutputBound: 'max-output' };
 function fixture(body: unknown, status = 200) {
  const requests: { url: string; init: RequestInit }[] = [];
- return { requests, fetch: (async (url: string | URL | Request, init?: RequestInit) => { requests.push({ url: String(url), init: init! }); return Response.json(body, { status }); }) as typeof fetch };
+ return { requests, fetch: (async (url: string | URL | Request, init?: RequestInit) => { requests.push({ url: String(url), init: init! }); return Response.json(body, { status }); }) as unknown as typeof fetch };
 }
 function input(provider: AiProviderId, fetcher: typeof fetch, overrides: Partial<AiAdapterRequest> = {}): AiAdapterRequest {
  return { selection: Object.freeze({ provider, connectionId: 'synthetic', model: 'fixture-model' }), endpoint: provider === 'compatible' ? 'https://trusted.example/v1/chat/completions' : AI_ENDPOINTS[provider], key: 'synthetic-secret', call: { id: 'fixture-call', system: 'Use supplied evidence only. Return JSON with an answer string.', data: { evidence: 'Synthetic approved action.' }, schema, contextTokens: 8192, maxOutputTokens: 1800 }, signal: new AbortController().signal, capabilities: { ...capabilities, structuredOutput: provider === 'deepseek' ? 'validated-json' : 'schema', billableOutputBound: provider === 'xai' ? 'unknown' : 'max-output' }, fetch: fetcher, ...overrides };
@@ -20,6 +20,29 @@ function responseBody(provider: AiProviderId, text = '{"answer":"Approved"}') {
  return { id: 'resp_fixture', object: 'response', model: 'fixture-model', status: 'completed', incomplete_details: null, error: null, output: [{ id: 'msg_fixture', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] }], usage: { input_tokens: 17, input_tokens_details: { cached_tokens: 4, ...(provider === 'openai' ? { cache_write_tokens: 3 } : {}) }, output_tokens: 8, output_tokens_details: { reasoning_tokens: 2 }, total_tokens: 25 } };
 }
 const remoteProviders = ['openai', 'anthropic', 'deepseek', 'xai', 'compatible'] as const;
+test('uniqueItems rejects recursively equal objects regardless of property order', async () => {
+ const call = { id: 'unique-objects', system: 'Return JSON only.', data: {}, schema: { type: 'array', uniqueItems: true, items: { type: 'object' } }, contextTokens: 8192, maxOutputTokens: 1800 };
+ const duplicate = fixture(responseBody('compatible', '[{"a":1,"nested":{"x":2,"y":[3,4]}},{"nested":{"y":[3,4],"x":2},"a":1}]'));
+ await expect(getAiAdapter('compatible').generate(input('compatible', duplicate.fetch, { call, capabilities: { ...capabilities, structuredOutput: 'validated-json' } }))).rejects.toThrow('invalid-output');
+ const distinct = fixture(responseBody('compatible', '[{"a":1,"nested":{"x":2,"y":[3,4]}},{"nested":{"y":[4,3],"x":2},"a":1}]'));
+ expect((await getAiAdapter('compatible').generate(input('compatible', distinct.fetch, { call, capabilities: { ...capabilities, structuredOutput: 'validated-json' } }))).finish).toBe('completed');
+});
+for (const keyword of ['enum', 'const'] as const) {
+ test(`${keyword} accepts recursively reordered object properties while preserving array order`, async () => {
+  const expected = { outer: { a: 1, b: 2 }, ordered: [1, 2] };
+  const call = { id: keyword, system: 'Return JSON only.', data: {}, schema: { type: 'object', [keyword]: keyword === 'enum' ? [expected] : expected }, contextTokens: 8192, maxOutputTokens: 1800 };
+  const equivalent = fixture(responseBody('compatible', '{"ordered":[1,2],"outer":{"b":2,"a":1}}'));
+  expect((await getAiAdapter('compatible').generate(input('compatible', equivalent.fetch, { call, capabilities: { ...capabilities, structuredOutput: 'validated-json' } }))).finish).toBe('completed');
+  const reorderedArray = fixture(responseBody('compatible', '{"ordered":[2,1],"outer":{"b":2,"a":1}}'));
+  await expect(getAiAdapter('compatible').generate(input('compatible', reorderedArray.fetch, { call, capabilities: { ...capabilities, structuredOutput: 'validated-json' } }))).rejects.toThrow('invalid-output');
+ });
+}
+test('JSON value equality rejects excessive nested constant values without completing output', async () => {
+ let nested: unknown = 1; for (let depth = 0; depth < 80; depth++) nested = { child: nested };
+ const call = { id: 'deep-const', system: 'Return JSON only.', data: {}, schema: { type: 'object', const: nested }, contextTokens: 8192, maxOutputTokens: 1800 };
+ const fake = fixture(responseBody('compatible', JSON.stringify(nested)));
+ await expect(getAiAdapter('compatible').generate(input('compatible', fake.fetch, { call, capabilities: { ...capabilities, structuredOutput: 'validated-json' } }))).rejects.toThrow('invalid-output');
+});
 for (const provider of remoteProviders) {
  test(`${provider} maps its native request, complete output and inclusive usage without changing evidence`, async () => {
   const fake = fixture(responseBody(provider)); const result = await getAiAdapter(provider).generate(input(provider, fake.fetch));
@@ -88,7 +111,7 @@ test('schema keywords outside the supported validator subset fail before dispatc
 });
 test('blocked response body reads are cancelled by the request deadline', async () => {
  let cancelled = false;
- const fetcher = (async () => new Response(new ReadableStream({ cancel() { cancelled = true; } }))) as typeof fetch;
+ const fetcher = (async () => new Response(new ReadableStream({ cancel() { cancelled = true; } }))) as unknown as typeof fetch;
  await expect(getAiAdapter('openai').generate(input('openai', fetcher, { timeoutMs: 5 }))).rejects.toThrow('provider-timeout'); expect(cancelled).toBe(true);
 });
 test('local text adapter applies the selected output cap and returns plain notes with unsupported usage', async () => {
@@ -97,13 +120,13 @@ test('local text adapter applies the selected output cap and returns plain notes
   if (String(url).endsWith('/api/tags')) return Response.json({ models: [{ name: 'fixture-model' }] });
   if (String(url).endsWith('/api/show')) return Response.json({ details: { family: 'llama' }, capabilities: ['completion'], model_info: { 'llama.context_length': 8192 } });
   sent = JSON.parse(String(init!.body)); return new Response('{"response":"Plain grounded notes","done":true,"done_reason":"stop"}');
- }) as typeof fetch;
+ }) as unknown as typeof fetch;
  const request = input('ollama', fetcher, { endpoint: 'http://127.0.0.1:11434', key: undefined, call: { id: 'local-notes', system: 'Grounding retained.', data: { final_transcript: 'Synthetic action' }, contextTokens: 8192, maxOutputTokens: 321 } });
  const result = await getAiAdapter('ollama').generate(request); expect(result.text).toBe('Plain grounded notes'); expect(result.usage).toEqual({ supported: false }); expect(sent.options.num_predict).toBe(321); expect(sent.format).toBeUndefined(); expect(sent.system).toBe('Grounding retained.'); expect(JSON.parse(sent.prompt)).toEqual({ final_transcript: 'Synthetic action' });
 });
 test('local adapter rejects length-truncated plain text and caps response wire bytes', async () => {
  for (const stream of ['{"response":"Partial notes","done":true,"done_reason":"length"}', '{"response":"' + 'é'.repeat(1_000_001) + '","done":true}']) {
-  const fetcher = (async (url: string | URL | Request) => String(url).endsWith('/api/tags') ? Response.json({ models: [{ name: 'fixture-model' }] }) : String(url).endsWith('/api/show') ? Response.json({ details: { family: 'llama' }, capabilities: ['completion'], model_info: { 'llama.context_length': 8192 } }) : new Response(stream)) as typeof fetch;
+  const fetcher = (async (url: string | URL | Request) => String(url).endsWith('/api/tags') ? Response.json({ models: [{ name: 'fixture-model' }] }) : String(url).endsWith('/api/show') ? Response.json({ details: { family: 'llama' }, capabilities: ['completion'], model_info: { 'llama.context_length': 8192 } }) : new Response(stream)) as unknown as typeof fetch;
   await expect(getAiAdapter('ollama').generate(input('ollama', fetcher, { endpoint: 'http://127.0.0.1:11434', key: undefined, call: { id: 'local-text', system: 'Grounding', data: {}, contextTokens: 8192, maxOutputTokens: 321 } }))).rejects.toThrow();
  }
 });
@@ -129,12 +152,12 @@ test('local metadata validation and generation cannot exceed their declared dead
  await expect(getAiAdapter('ollama').generate(input('ollama', fake.fetch, { endpoint: 'http://127.0.0.1:11434', key: undefined, timeoutMs: 300_001 }))).rejects.toThrow('ollama-unavailable'); expect(fake.requests).toHaveLength(0);
 });
 test('local metadata JSON is bounded before a generation request is eligible', async () => {
- const fetcher = (async () => new Response(JSON.stringify({ models: [], padding: 'é'.repeat(1_000_001) }))) as typeof fetch;
+ const fetcher = (async () => new Response(JSON.stringify({ models: [], padding: 'é'.repeat(1_000_001) }))) as unknown as typeof fetch;
  await expect(listLocalNotesModels('http://127.0.0.1:11434', { fetch: fetcher })).rejects.toThrow('ollama-unavailable');
 });
 test('adapters freeze the reviewed schema, capability and selection snapshot through completion', async () => {
  let release: (response: Response) => void = () => {};
- const fetcher = (() => new Promise<Response>(resolve => { release = resolve; })) as typeof fetch;
+ const fetcher = (() => new Promise<Response>(resolve => { release = resolve; })) as unknown as typeof fetch;
  const request = input('openai', fetcher, { call: { id: 'frozen', system: 'Return JSON with an answer string.', data: {}, schema: structuredClone(schema), contextTokens: 8192, maxOutputTokens: 1800 }, capabilities: structuredClone(capabilities), selection: { provider: 'openai', connectionId: 'synthetic', model: 'fixture-model' } });
  const run = getAiAdapter('openai').generate(request);
  (request.call.schema!.properties as any).answer.type = 'number'; request.capabilities!.usageCategories.length = 0; (request.selection as any).model = 'changed-model';
@@ -143,11 +166,11 @@ test('adapters freeze the reviewed schema, capability and selection snapshot thr
 });
 test('transport bounds total response bytes including UTF-8 and aborts oversized readers', async () => {
  let cancelled = false; const bytes = new TextEncoder().encode('é'.repeat(1_000_001));
- const fetcher = (async () => new Response(new ReadableStream({ start(controller) { controller.enqueue(bytes); }, cancel() { cancelled = true; } }))) as typeof fetch;
+ const fetcher = (async () => new Response(new ReadableStream({ start(controller) { controller.enqueue(bytes); }, cancel() { cancelled = true; } }))) as unknown as typeof fetch;
  await expect(getAiAdapter('openai').generate(input('openai', fetcher))).rejects.toThrow('response-too-large'); expect(cancelled).toBe(true);
 });
 test('deadline and cancellation bound blocked fetch and body reads without retries', async () => {
- let attempts = 0; const blocked = (() => { attempts++; return new Promise<Response>(() => {}); }) as typeof fetch;
+ let attempts = 0; const blocked = (() => { attempts++; return new Promise<Response>(() => {}); }) as unknown as typeof fetch;
  await expect(getAiAdapter('openai').generate(input('openai', blocked, { timeoutMs: 5 }))).rejects.toThrow('provider-timeout'); expect(attempts).toBe(1);
  const controller = new AbortController(); const run = getAiAdapter('openai').generate(input('openai', blocked, { signal: controller.signal })); controller.abort(new Error('synthetic-secret')); await expect(run).rejects.toThrow('cancelled');
  await expect(getAiAdapter('openai').generate(input('openai', blocked, { timeoutMs: 300_001 }))).rejects.toThrow('invalid-request');
@@ -156,6 +179,6 @@ test('deadline and cancellation bound blocked fetch and body reads without retri
 test('local adapter retains loopback, installed-model metadata and completion protections', async () => {
  const fake = fixture({}); await expect(getAiAdapter('ollama').generate(input('ollama', fake.fetch, { endpoint: 'https://remote.example', key: undefined }))).rejects.toThrow('local-only'); expect(fake.requests).toHaveLength(0);
  const requests: string[] = [];
- const fetcher = (async (url: string | URL | Request) => { requests.push(String(url)); return String(url).endsWith('/api/tags') ? Response.json({ models: [{ name: 'fixture-model' }] }) : Response.json({ details: { remote_host: 'https://cloud.example' } }); }) as typeof fetch;
+ const fetcher = (async (url: string | URL | Request) => { requests.push(String(url)); return String(url).endsWith('/api/tags') ? Response.json({ models: [{ name: 'fixture-model' }] }) : Response.json({ details: { remote_host: 'https://cloud.example' } }); }) as unknown as typeof fetch;
  await expect(getAiAdapter('ollama').generate(input('ollama', fetcher, { endpoint: 'http://127.0.0.1:11434', key: undefined }))).rejects.toThrow('local-only'); expect(requests.some(url => url.endsWith('/api/generate'))).toBe(false);
 });
