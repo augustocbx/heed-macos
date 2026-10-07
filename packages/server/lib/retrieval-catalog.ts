@@ -25,6 +25,8 @@ export class RetrievalCatalog {
  private status: "discovering" | "ready" | "capacity" | "unavailable" = "discovering";
  private scopes = new WeakMap<RetrievalSnapshot, RetrievalScope>();
  private invalidation = 0;
+ private epoch = 0;
+ private validated = new WeakMap<RetrievalSnapshot, number>();
  private pass?: Pass;
  private running?: Promise<void>;
  private closed = false;
@@ -57,6 +59,7 @@ export class RetrievalCatalog {
  }
  observe(change: CommittedSessionChange): void {
   if (this.closed) return;
+  this.epoch++;
   if (change.kind === "invalidate") { this.invalidation++; this.status = "unavailable"; return; }
   const descriptor = change.kind === "upsert" ? this.descriptor(change.session) : null;
   const id = change.kind === "upsert" ? change.session.id : change.sessionId;
@@ -85,17 +88,20 @@ export class RetrievalCatalog {
   }).sort((a, b) => binary(a.sessionId, b.sessionId));
   const sources = values.map(stamp);
   const key = createHash("sha256").update(JSON.stringify({ scope, descriptors: values })).digest("hex");
-  return { snapshot: { key, sources } as RetrievalSnapshot, descriptors: values.map(value => ({ ...value, tags: [...value.tags] })) };
+  for(const source of sources)Object.freeze(source);Object.freeze(sources);
+  return { snapshot: Object.freeze({ key, sources }) as RetrievalSnapshot, descriptors: values.map(value => ({ ...value, tags: [...value.tags] })) };
  }
  resolve(scope: RetrievalScope) {
   if (this.status !== "ready") throw new RetrievalCatalogError(this.status === "capacity" ? "retrieval-capacity" : "retrieval-not-ready");
-  const normalized = this.normalize(scope), result = this.selected(normalized); this.scopes.set(result.snapshot, normalized); return result;
+  const normalized = this.normalize(scope), result = this.selected(normalized); this.scopes.set(result.snapshot, normalized); this.validated.set(result.snapshot, this.epoch); return result;
  }
  validate(snapshot: RetrievalSnapshot): void {
   if (this.status !== "ready") throw new RetrievalCatalogError(this.status === "capacity" ? "retrieval-capacity" : "retrieval-not-ready");
   const scope = this.scopes.get(snapshot); if (!scope) throw new RetrievalCatalogError("scope-changed");
+  if(this.validated.get(snapshot)===this.epoch)return;
   const current = this.selected(scope).snapshot;
   if (snapshot.key !== current.key || JSON.stringify(snapshot.sources) !== JSON.stringify(current.sources)) throw new RetrievalCatalogError("scope-changed");
+  this.validated.set(snapshot,this.epoch);
  }
  describe(snapshot: RetrievalSnapshot): RetrievalDescriptor[] {
   this.validate(snapshot);return this.selected(this.scopes.get(snapshot)!).descriptors;
@@ -117,7 +123,7 @@ export class RetrievalCatalog {
     if (item.done) {
      for (const [id, descriptor] of pass.changes) pass.bytes = this.replace(pass.descriptors, id, descriptor, pass.bytes);
      if (!this.withinBudget(pass.descriptors.size, pass.bytes)) this.status = "capacity";
-     else { this.descriptors = pass.descriptors; this.descriptorBytes = pass.bytes; this.status = "ready"; this.lastReconciled = this.options.now(); }
+     else { this.descriptors = pass.descriptors; this.descriptorBytes = pass.bytes; this.epoch++; this.status = "ready"; this.lastReconciled = this.options.now(); }
      this.pass = undefined; return;
     }
     if (++pass.seen > this.options.policy.catalogSources) { this.status = "capacity"; pass.ids.return?.(); this.pass = undefined; return; }

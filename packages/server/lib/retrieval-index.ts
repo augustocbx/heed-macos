@@ -2,16 +2,17 @@ import {Database} from 'bun:sqlite';
 import {randomUUID} from 'node:crypto';
 import {chmodSync,closeSync,constants,fstatSync,fsyncSync,lstatSync,mkdirSync,openSync,readdirSync,readSync,rmSync,existsSync} from 'node:fs';
 import {join} from 'node:path';
-import type {RetrievalSnapshot,RetrievalSourceStamp,RetrievalPartialReason} from '../../shared/types/retrieval';
+import type {RetrievalSnapshot,RetrievalSourceStamp,RetrievalPartialReason,RetrievalResult,RetrievalHit} from '../../shared/types/retrieval';
 import {sourceRevision} from '../../shared/lib/transcript-source';
-import type {Session} from '@heed/shared';
+import type {Session,TranscriptEvidence} from '@heed/shared';
 import {atomicWriteJson} from './atomic-json';
 import {RetrievalCatalog,type RetrievalDescriptor,type RetrievalScope} from './retrieval-catalog';
 import type {RetrievalPolicy} from './retrieval-policy';
 import {SessionTags,type CommittedSessionChange} from './session-tags';
 import type {ManagedQuota} from './managed-quota';
 import {iterateTranscriptEvidence} from './meeting-chat';
-import {ScratchTokenizer} from './retrieval-tokenizer';
+import {ScratchTokenizer,normalizeRetrievalQuery,RetrievalQueryError,RetrievalUnavailableError} from './retrieval-tokenizer';
+import {CandidateRanking,initialCoverage,recordRetrieved,type Candidate} from './retrieval-ranking';
 
 interface Options {directory:string;catalog:RetrievalCatalog;store:SessionTags;quota:ManagedQuota;isBusy:()=>boolean;policy:RetrievalPolicy;now:()=>number;}
 interface Manifest extends RetrievalSourceStamp {totalEvidence:number;indexedEvidence:number;indexedPrefix:number;epoch:number;}
@@ -26,6 +27,7 @@ class InterruptedIndexWork extends Error {}
 /** Disposable accepted-source data. Authoritative JSON is never modified here. */
 export class RetrievalIndex {
  private active?:Generation;
+ private querying=false;
  private retired=new Set<Generation>();
  private pending=new Set<string>();
  private indexed=new Map<string,string>();
@@ -40,7 +42,7 @@ export class RetrievalIndex {
  private claims=new Set<string>();
  private config:string;
  constructor(private options:Options){
-  const p=options.policy;this.config=JSON.stringify({schemaVersion:1,tokenizer:'unicode61-diacritics2',chunker:'legacy1200-utf16-v1',quote:'utf16le-v1',databaseBytes:p.databaseBytes,evidenceRows:p.evidenceRows,postingRows:p.postingRows});
+  const p=options.policy;this.config=JSON.stringify({schemaVersion:1,tokenizer:'unicode61-diacritics2-scalar-v1',chunker:'legacy1200-utf16-v1',quote:'utf16le-v1',databaseBytes:p.databaseBytes,evidenceRows:p.evidenceRows,postingRows:p.postingRows});
   mkdirSync(options.directory,{recursive:true,mode:0o700});
   if(lstatSync(options.directory).isSymbolicLink())throw new Error('Retrieval directory must be private local storage');
   chmodSync(options.directory,0o700);this.recover();
@@ -148,15 +150,103 @@ export class RetrievalIndex {
   if(change.kind==='upsert'&&change.session.transcriptFinalized&&this.indexed.get(id)===signature({sessionId:id,sourceRevision:change.session.transcriptRevision!,transcriptVersion:change.session.transcriptVersion!}))return;
   this.queue(id);this.failures.delete(id);
  }
+ available(){return !this.closed&&!this.options.isBusy();}
  describe(snapshot:RetrievalSnapshot):RetrievalIndexDescription {
+  return this.describeGeneration(snapshot,this.active);
+ }
+ private describeGeneration(snapshot:RetrievalSnapshot,g?:Generation):RetrievalIndexDescription {
   const descriptors=this.options.catalog.describe(snapshot);
   const sources=descriptors.map(source=>{
-   const row=this.active?.reader.query('SELECT * FROM manifests WHERE sessionId=? AND sourceRevision=? AND transcriptVersion=?').get(source.sessionId,source.sourceRevision,source.transcriptVersion) as Manifest|null;
+   const row=g?.reader.query('SELECT * FROM manifests WHERE sessionId=? AND sourceRevision=? AND transcriptVersion=?').get(source.sessionId,source.sourceRevision,source.transcriptVersion) as Manifest|null;
    const current=!!row&&row.totalEvidence===source.evidenceCount;
    return {...source,totalEvidence:source.evidenceCount,indexedEvidence:current?row.indexedEvidence:0,indexedPrefix:current?row.indexedPrefix:0,epoch:current?row.epoch:0,current,
     ...(!current?{reason:this.failures.get(source.sessionId)??(this.indexed.has(source.sessionId)?'index-stale':'index-missing')}:row.indexedEvidence<row.totalEvidence?{reason:'index-capacity'}:{})} as RetrievalIndexedSource;
   });
-  return {generationId:this.active?.id??null,sources};
+  return {generationId:g?.id??null,sources};
+ }
+ /** Only exact selected accepted stamps enter SQL; the query pins a readonly generation. */
+ async search(snapshot:RetrievalSnapshot,terms:string[],signal?:AbortSignal):Promise<RetrievalResult> {
+  this.options.catalog.validate(snapshot);
+  if(!Array.isArray(terms)||terms.length>this.options.policy.queryTerms||terms.some(t=>typeof t!=='string'))throw new RetrievalQueryError();
+  const normalized=terms.length?normalizeRetrievalQuery(terms.join(' '),this.options.policy):[];
+  if(JSON.stringify(normalized)!==JSON.stringify([...new Set(terms)].sort()))throw new RetrievalQueryError();
+  if(this.closed||this.querying||this.options.isBusy())throw new RetrievalUnavailableError();
+  signal?.throwIfAborted();const g=this.active;if(g?.writer.inTransaction)throw new RetrievalUnavailableError();this.querying=true;let transaction=false;
+  if(g)g.readers++;
+  try{
+   if(g){g.reader.exec('BEGIN');transaction=true;}
+   const description=this.describeGeneration(snapshot,g),coverage=initialCoverage(snapshot,description),ranking=new CandidateRanking(this.options.policy);
+   const deadline=this.options.now()+this.options.policy.queryMilliseconds;let fetched=0,partial=false,sourcesExamined=0;
+   const check=()=>{signal?.throwIfAborted();this.options.catalog.validate(snapshot);if(this.closed)throw new RetrievalUnavailableError();if(this.options.isBusy()||this.options.now()>=deadline)throw new InterruptedIndexWork();};
+   try{
+    if(g&&normalized.length)for(const source of description.sources){
+     check();if(!source.current||!source.indexedPrefix)continue;
+     coverage.searchedMeetings++;
+     type Posting={evidenceOrdinal:number;frequency:number};
+     const streams=normalized.map(term=>({term,cursor:-1,rows:[] as Posting[],offset:0,eof:false}));
+     const head=async(stream:typeof streams[number]):Promise<Posting|undefined>=>{
+      if(stream.offset===stream.rows.length&&!stream.eof){
+       check();const remaining=this.options.policy.queryRows-fetched;if(remaining<=0)throw new InterruptedIndexWork();
+       const limit=Math.min(this.options.policy.evidenceSlice,remaining);
+       stream.rows=g.reader.query('SELECT evidenceOrdinal,frequency FROM postings WHERE sessionId=? AND sourceRevision=? AND transcriptVersion=? AND term=? AND evidenceOrdinal>? ORDER BY evidenceOrdinal LIMIT ?').all(source.sessionId,source.sourceRevision,source.transcriptVersion,stream.term,stream.cursor,limit) as Posting[];
+       fetched+=stream.rows.length;stream.offset=0;stream.eof=stream.rows.length<limit;
+       if(stream.rows.length===this.options.policy.evidenceSlice)await Bun.sleep(0);check();
+      }
+      return stream.rows[stream.offset];
+     };
+     while(true){
+      check();const heads=[] as Array<Posting|undefined>;for(const stream of streams)heads.push(await head(stream));
+      const ordinals=heads.flatMap(row=>row?[row.evidenceOrdinal]:[]);if(!ordinals.length)break;
+      const ordinal=Math.min(...ordinals);let distinct=0,frequency=0;
+      for(let i=0;i<streams.length;i++){const row=heads[i];if(row?.evidenceOrdinal===ordinal){distinct++;frequency+=Math.min(row.frequency,3);streams[i].cursor=ordinal;streams[i].offset++;coverage.matchingRowsVisited++;}}
+      coverage.matchedEvidence++;ranking.add({sessionId:source.sessionId,sourceRevision:source.sourceRevision,transcriptVersion:source.transcriptVersion,evidenceOrdinal:ordinal,score:100*distinct+frequency});
+     }
+     coverage.searchedEvidence!+=source.indexedPrefix;
+     if(++sourcesExamined%this.options.policy.evidenceSlice===0){await Bun.sleep(0);check();}
+    }
+   }catch(error){if(!(error instanceof InterruptedIndexWork))throw error;partial=true;}
+   if(partial){coverage.lookupComplete=false;coverage.searchedEvidence=null;coverage.partialReasons.push('query-budget');}
+   if(!coverage.indexComplete)coverage.lookupComplete=false;
+   const getHit=(candidate:Candidate):RetrievalHit|undefined=>{
+    const row=g?.reader.query('SELECT evidenceId FROM chunks WHERE sessionId=? AND sourceRevision=? AND transcriptVersion=? AND evidenceOrdinal=?').get(candidate.sessionId,candidate.sourceRevision,candidate.transcriptVersion,candidate.evidenceOrdinal) as {evidenceId:string}|null;
+    return row?{...candidate,evidenceId:row.evidenceId}:undefined;
+   };
+   const anchors=ranking.anchors(),hits:RetrievalHit[]=[],seen=new Set<string>();
+   for(const anchor of anchors){const hit=getHit(anchor);if(!hit)throw new RetrievalUnavailableError();hits.push(hit);seen.add(hit.evidenceId);}
+   for(const anchor of anchors)for(const ordinal of [anchor.evidenceOrdinal-1,anchor.evidenceOrdinal+1]){
+    if(hits.length>=this.options.policy.excerpts)break;
+    const source=description.sources.find(s=>s.sessionId===anchor.sessionId)!;if(ordinal<0||ordinal>=source.indexedPrefix)continue;
+    const hit=getHit({...anchor,evidenceOrdinal:ordinal,score:0});if(hit&&!seen.has(hit.evidenceId)){hits.push(hit);seen.add(hit.evidenceId);}
+   }
+   signal?.throwIfAborted();this.options.catalog.validate(snapshot);if(this.closed)throw new RetrievalUnavailableError();
+   recordRetrieved(coverage,hits);return {snapshot,generationId:g?.id??null,hits,coverage};
+  }finally{
+   if(transaction)try{g!.reader.exec('ROLLBACK');}catch{}
+   this.querying=false;
+   if(g){g.readers--;if(g.retired&&!this.uncertainPublication&&!g.readers)this.dispose(g);else if(this.closed&&!g.readers){g.reader.close();g.writer.close();}}
+  }
+ }
+ /** ID-only neighbor expansion. Never look up outside the caller's selected stamps. */
+ identify(snapshot:RetrievalSnapshot,candidates:Candidate[]):Array<RetrievalHit|null>{
+  this.options.catalog.validate(snapshot);if(this.closed||candidates.length>this.options.policy.excerpts)throw new RetrievalUnavailableError();
+  const selected=new Map(snapshot.sources.map(s=>[s.sessionId,s]));return candidates.map(candidate=>{
+   const source=selected.get(candidate.sessionId);
+   if(!source||source.sourceRevision!==candidate.sourceRevision||source.transcriptVersion!==candidate.transcriptVersion||!Number.isSafeInteger(candidate.evidenceOrdinal)||candidate.evidenceOrdinal<0)throw new RetrievalUnavailableError();
+   const row=this.active?.reader.query('SELECT evidenceId FROM chunks WHERE sessionId=? AND sourceRevision=? AND transcriptVersion=? AND evidenceOrdinal=?').get(candidate.sessionId,candidate.sourceRevision,candidate.transcriptVersion,candidate.evidenceOrdinal) as {evidenceId:string}|null;
+   return row?{...candidate,evidenceId:row.evidenceId}:null;
+  });
+ }
+ /** Bounded stored bindings, for verification against authoritative accepted JSON. */
+ bindings(snapshot:RetrievalSnapshot,hits:RetrievalHit[]):Array<TranscriptEvidence|null>{
+  this.options.catalog.validate(snapshot);if(this.closed||hits.length>this.options.policy.excerpts)throw new RetrievalUnavailableError();
+  const selected=new Map(snapshot.sources.map(s=>[s.sessionId,s]));
+  return hits.map(hit=>{
+   const source=selected.get(hit.sessionId);
+   if(!source||source.sourceRevision!==hit.sourceRevision||source.transcriptVersion!==hit.transcriptVersion||!Number.isSafeInteger(hit.evidenceOrdinal)||hit.evidenceOrdinal<0)throw new RetrievalUnavailableError();
+   const row=this.active?.reader.query('SELECT evidenceId,quote,location FROM chunks WHERE sessionId=? AND sourceRevision=? AND transcriptVersion=? AND evidenceOrdinal=?').get(hit.sessionId,hit.sourceRevision,hit.transcriptVersion,hit.evidenceOrdinal) as {evidenceId:string;quote:Uint8Array;location:string}|null;
+   if(!row)return null;if(row.evidenceId!==hit.evidenceId)throw new RetrievalUnavailableError();
+   return {id:row.evidenceId,...JSON.parse(row.location),quote:Buffer.from(row.quote).toString('utf16le')};
+  });
  }
  private check(signal?:AbortSignal){signal?.throwIfAborted();if(this.closed||this.options.isBusy())throw new InterruptedIndexWork();}
  private source(descriptor:RetrievalDescriptor):Session {
@@ -206,6 +296,7 @@ export class RetrievalIndex {
   if(this.closed||this.options.isBusy()||this.options.catalog.state()!=='ready')return;
   if(!this.confirmPublication())return;
   if(!this.active||this.rebuildNeeded){await this.build(signal);return;}
+  if(this.active.readers)return;
   const descriptors=this.options.catalog.resolve(all).descriptors,byId=new Map(descriptors.map(s=>[s.sessionId,s]));
   for(const id of this.indexed.keys())if(!byId.has(id)&&!this.queue(id))break;
   if(!this.rebuildNeeded)for(const source of descriptors)if(this.indexed.get(source.sessionId)!==signature(source)&&!this.queue(source.sessionId))break;
@@ -218,7 +309,7 @@ export class RetrievalIndex {
   this.running=this.build(signal).finally(()=>{this.running=undefined;});return this.running;
  }
  private async build(signal?:AbortSignal){
-  if(this.closed||this.options.isBusy()||this.options.catalog.state()!=='ready')return;
+  if(this.closed||this.options.isBusy()||this.options.catalog.state()!=='ready'||this.retired.size)return;
   const selection=this.options.catalog.resolve(all),id=randomUUID(),claim='retrieval-rebuild-'+id,path=join(this.options.directory,id);
   let g:Generation|undefined,published=false;
   try{
@@ -266,7 +357,7 @@ export class RetrievalIndex {
  close(){
   if(this.closed)return;this.closed=true;this.unsubscribe();
   if(this.stage){try{this.stage.writer.exec('ROLLBACK');}catch{}this.stage.reader.close();this.stage.writer.close();rmSync(this.stage.path,{recursive:true,force:true});this.stage=undefined;}
-  if(this.active){try{this.active.writer.exec('ROLLBACK');}catch{}this.active.reader.close();this.active.writer.close();this.active=undefined;}
-  for(const g of this.retired){if(this.uncertainPublication){g.reader.close();g.writer.close();}else this.dispose(g);}this.retired.clear();for(const claim of [...this.claims])this.release(claim);this.pending.clear();this.indexed.clear();this.partial.clear();this.failures.clear();
+  if(this.active){try{this.active.writer.exec('ROLLBACK');}catch{}if(!this.active.readers){this.active.reader.close();this.active.writer.close();}this.active=undefined;}
+  for(const g of this.retired){if(g.readers)continue;if(this.uncertainPublication){g.reader.close();g.writer.close();this.retired.delete(g);}else this.dispose(g);}for(const claim of [...this.claims])this.release(claim);this.pending.clear();this.indexed.clear();this.partial.clear();this.failures.clear();
  }
 }

@@ -24,10 +24,12 @@ export class ScratchTokenizer {
  tokenize(text: string): RetrievalTerm[] {
   if (!this.db) throw new RetrievalUnavailableError();
   // Existing evidence splits at UTF-16 boundaries, including an isolated half of an emoji.
-  // SQLite may replace that half; original quote/offset bytes stay authoritative.
+  // Replace isolated halves before the Bun SQLite UTF-8 binding; otherwise it
+  // can combine the half with the next character and swallow an adjacent term.
+  // Exact original quote/offset bytes stay authoritative.
   if (typeof text !== "string" || text.length > defaultRetrievalPolicy.queryCharacters) throw new RetrievalQueryError();
   try {
-   this.db.query("INSERT INTO tokens(rowid,text) VALUES(1,?)").run(text);
+   this.db.query("INSERT INTO tokens(rowid,text) VALUES(1,?)").run(Buffer.from(text,"utf8").toString("utf8"));
    return this.db.query("SELECT term, COUNT(*) AS frequency FROM terms GROUP BY term ORDER BY term COLLATE BINARY").all() as RetrievalTerm[];
   } catch { throw new RetrievalUnavailableError(); }
   finally { this.db.exec("DELETE FROM tokens"); }

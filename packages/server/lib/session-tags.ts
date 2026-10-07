@@ -162,11 +162,20 @@ export class SessionTags {
   }
 
   read(id: string, maximumBytes?: number): Session | null {
+    return this.readRecord(id, maximumBytes).session;
+  }
+
+  /** Exact original JSON byte accounting for bounded read-only retrieval. */
+  readSized(id: string, maximumBytes: number): {session: Session | null; bytes: number} {
+    return this.readRecord(id, maximumBytes);
+  }
+
+  private readRecord(id: string, maximumBytes?: number): {session: Session | null; bytes: number} {
     this.recover();
     const path = this.path(id);
-    if (!existsSync(path)) return null;
-    let raw: string;
-    if (maximumBytes === undefined) raw = readFileSync(path, "utf8");
+    if (!existsSync(path)) return {session: null, bytes: 0};
+    let raw: string; let originalBytes: number;
+    if (maximumBytes === undefined) { raw = readFileSync(path, "utf8"); originalBytes = Buffer.byteLength(raw); }
     else {
       if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) throw new TagError("Invalid source record budget");
       const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -176,14 +185,14 @@ export class SessionTags {
         const buffer = Buffer.alloc(stat.size + 1); let bytes = 0;
         while (bytes < buffer.length) { const received = readSync(fd, buffer, bytes, buffer.length - bytes, null); if (!received) break; bytes += received; }
         if (bytes > stat.size) throw new TagError("Source record changed during retrieval read", 409);
-        raw = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, bytes));
+        raw = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, bytes)); originalBytes = bytes;
       } finally { closeSync(fd); }
     }
     const session = JSON.parse(raw) as Session;
     if (!session || session.id !== id || (session.tags !== undefined && (!Array.isArray(session.tags) || session.tags.some(t => typeof t !== "string")))) {
       throw new TagError("Invalid meeting file", 500);
     }
-    return normalizeNotesSource(normalizeTranscriptSession({ ...session, tags: session.tags ?? [], tagsRevision: assignmentRevision(session) }));
+    return {session: normalizeNotesSource(normalizeTranscriptSession({ ...session, tags: session.tags ?? [], tagsRevision: assignmentRevision(session) })), bytes: originalBytes};
   }
 
   snapshot(): TagSnapshot {
