@@ -35,7 +35,7 @@ export class RetrievalCatalog {
  }
  state() { return this.status; }
  reconciliationDue() { return this.status !== "ready" || this.options.now() - this.lastReconciled >= 30_000; }
- private describe(session: Session): RetrievalDescriptor {
+ private descriptor(session: Session): RetrievalDescriptor {
   if (typeof session.id !== "string" || typeof session.title !== "string" || typeof session.transcript !== "string" || !Array.isArray(session.segments) || !Array.isArray(session.tags) || typeof session.transcriptRevision !== "string" || !Number.isSafeInteger(session.transcriptVersion) || session.transcriptVersion! < 0) throw new RetrievalCatalogError("retrieval-not-ready");
   const prior = this.descriptors.get(session.id);
   const sameSource = prior?.sourceRevision === session.transcriptRevision && prior.transcriptVersion === session.transcriptVersion;
@@ -58,7 +58,7 @@ export class RetrievalCatalog {
  observe(change: CommittedSessionChange): void {
   if (this.closed) return;
   if (change.kind === "invalidate") { this.invalidation++; this.status = "unavailable"; return; }
-  const descriptor = change.kind === "upsert" ? this.describe(change.session) : null;
+  const descriptor = change.kind === "upsert" ? this.descriptor(change.session) : null;
   const id = change.kind === "upsert" ? change.session.id : change.sessionId;
   const bytes = this.descriptorBytes + this.bytes(descriptor) - this.bytes(this.descriptors.get(id));
   const size = this.descriptors.size + (descriptor ? Number(!this.descriptors.has(id)) : -Number(this.descriptors.has(id)));
@@ -97,6 +97,9 @@ export class RetrievalCatalog {
   const current = this.selected(scope).snapshot;
   if (snapshot.key !== current.key || JSON.stringify(snapshot.sources) !== JSON.stringify(current.sources)) throw new RetrievalCatalogError("scope-changed");
  }
+ describe(snapshot: RetrievalSnapshot): RetrievalDescriptor[] {
+  this.validate(snapshot);return this.selected(this.scopes.get(snapshot)!).descriptors;
+ }
  reconcile(signal?: AbortSignal): Promise<void> {
   if (this.running) return this.running;
   this.running = this.discover(signal).finally(() => { this.running = undefined; }); return this.running;
@@ -119,7 +122,7 @@ export class RetrievalCatalog {
     }
     if (++pass.seen > this.options.policy.catalogSources) { this.status = "capacity"; pass.ids.return?.(); this.pass = undefined; return; }
     const session = this.options.store.read(item.value, this.options.policy.sourceRecordBytes);
-    if (session) pass.bytes = this.replace(pass.descriptors, item.value, this.describe(session), pass.bytes);
+    if (session) pass.bytes = this.replace(pass.descriptors, item.value, this.descriptor(session), pass.bytes);
     if (!this.withinBudget(pass.descriptors.size, pass.bytes)) { this.status = "capacity"; pass.ids.return?.(); this.pass = undefined; return; }
     await Bun.sleep(0);
    }

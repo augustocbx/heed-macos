@@ -78,12 +78,14 @@ class RetrievalCatalog {
     {kind:'library';scope:LibraryChatScope}):
     {snapshot:RetrievalSnapshot;descriptors:RetrievalDescriptor[]};
   validate(snapshot:RetrievalSnapshot):void; // source/scope/version conflict
+  describe(snapshot:RetrievalSnapshot):RetrievalDescriptor[]; // validated, text-free current selection
   reconcile(signal?:AbortSignal):Promise<void>;
   observe(change:CommittedSessionChange):void;
 }
 function iterateTranscriptEvidence(session:Session):IterableIterator<TranscriptEvidence>;
 function normalizeRetrievalQuery(question:string):string[];
 class RetrievalIndex {
+  describe(snapshot:RetrievalSnapshot):RetrievalIndexDescription; // generation and selected exact manifest stamps/counts/epochs; no quotes
   search(snapshot:RetrievalSnapshot,terms:string[],signal?:AbortSignal):Promise<RetrievalResult>;
   enqueue(change:CommittedSessionChange):void;
   tick(signal?:AbortSignal):Promise<void>;
@@ -101,7 +103,7 @@ class MeetingRetriever {
 
 Snapshot key hashes normalized scope plus selected session IDs, source hashes, local versions, titles and normalized tags in stable binary order. Before cache/SQL access call catalog.validate; before each source load and after awaits validate source hash/version. The library service retains its public LibraryChatSnapshot and request guards, additionally capturing the device-local RetrievalSnapshot per attempt. Meeting service captures one stamp per attempt. Hash-only public snapshots must not bypass the private local version guard during a running generation.
 
-Define `RetrievalPolicy` in `retrieval-policy.ts` with these exact production hard maxima: catalogSources=20_000; catalogBytes=16_777_216; sourceRecordBytes=67_108_864; databaseBytes=67_108_864; workingDiskBytes=201_326_592; evidenceRows=250_000; postingRows=2_000_000; evidenceSlice=128; queryRows=100_000; queryMilliseconds=250; queryTerms=64; queryCharacters=2_000; queryBytes=8_000; candidateHits=64; globalHits=48; sourceWinners=16; anchors=16; excerpts=32; fallbackSources=4; fallbackEvidence=256; fallbackSourceBytes=67_108_864; cacheEntries=32; cacheBytes=1_048_576; cacheTTLMilliseconds=60_000; sqliteCacheKiB=4096; generationCalls=4; generationInputBytes=5_500; generationContextTokens=8_192. Tests may reduce maxima. Production overrides cannot increase them. Require globalHits+sourceWinners<=candidateHits and anchors<=candidateHits. Periodic external reconciliation interval is 30_000 ms; initial discovery and each reconciliation pass read one source per consecutive idle slice, yield/recheck admission and continue immediately rather than wait for that timer per source. SQLite page size=4096, max_page_count=16384, journal_mode=DELETE, temp_store=MEMORY, mmap_size=0. Index path is `join(LIBRARY_DIR,'indexes','retrieval')`.
+Define `RetrievalPolicy` in `retrieval-policy.ts` with these exact production hard maxima: catalogSources=20_000; catalogBytes=16_777_216; sourceRecordBytes=67_108_864; databaseBytes=67_108_864; workingDiskBytes=201_326_592; evidenceRows=250_000; postingRows=2_000_000; evidenceSlice=128; queryRows=100_000; queryMilliseconds=250; queryTerms=64; queryCharacters=2_000; queryBytes=8_000; candidateHits=64; globalHits=48; sourceWinners=16; anchors=16; excerpts=32; fallbackSources=4; fallbackEvidence=256; fallbackSourceBytes=67_108_864; cacheEntries=32; cacheBytes=1_048_576; cacheTTLMilliseconds=60_000; sqliteCacheKiB=4096; generationCalls=4; generationInputBytes=5_500; generationContextTokens=8_192. Tests may reduce maxima. Production overrides cannot increase them. Require globalHits+sourceWinners<=candidateHits and anchors<=candidateHits. Periodic external reconciliation interval is 30_000 ms; initial discovery and each reconciliation pass read one source per consecutive idle slice, yield/recheck admission and continue immediately rather than wait for that timer per source. SQLite page size=4096, max_page_count=16384, journal_mode=DELETE, temp_store=MEMORY, mmap_size=0, cache_spill=OFF. The configured 4-MiB cache target can expand for pinned dirty transaction pages, bounded by the 64-MiB main-file cap; account journal headers/records and pointer copies, declining writes whose overhead cannot fit the working cap. Exact quotes are UTF-16LE BLOBs. Selected manifest descriptions include exact hash/version, total/indexed/prefix, epoch/current and an honest missing/stale/capacity reason. Index path is `join(LIBRARY_DIR,'indexes','retrieval')`.
 
 ## Review focus
 
