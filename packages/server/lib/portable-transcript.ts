@@ -127,7 +127,9 @@ function merge<T extends {id:string}>(local:T[],incoming:T[],projection:(value:T
 /** Latest local identity/history/private state survives a validated accepted replacement. */
 export function preparePortableTranscript(current: Session|null, incoming: Session, now: string): Session {
  const portable=portableHistory(incoming.transcriptEditing);validatePortableTranscript(incoming,portable,incoming.notesMetadata);
+ if(current && incoming.meetingMode && incoming.meetingMode !== (current.meetingMode ?? "audio-transcript"))fail("Meeting archival intent cannot change during portable replacement");
  let next={...current,...incoming,id:current?.id??incoming.id,createdAt:current?.createdAt??incoming.createdAt};
+ if(current?.meetingMode === "transcript-only" && current.audioCleanup?.status === "pending")next.files=current.files;
  delete next.transcriptVersion;delete next.transcriptRevision;
  if(current){next.transcriptVersion=current.transcriptVersion;next.notesJobs=structuredClone(current.notesJobs);}
  if(next.segments.length)next.transcript=renderAcceptedTranscript(next.segments);

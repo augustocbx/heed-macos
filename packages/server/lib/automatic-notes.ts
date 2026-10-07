@@ -83,6 +83,9 @@ export class AutomaticNotesService {
   const transcriptionDiagnostics=sanitizeTranscriptionDiagnostics(input.transcriptionDiagnostics);
   const session: Session = { id, title: input.title || "Untitled meeting", createdAt: input.createdAt || this.timestamp(), duration: input.duration || 0, language: input.language || "en", transcript: input.transcript || "", speakers: input.speakers || [], segments: input.segments || [], aiNotes: input.aiNotes || "", summary: input.summary || "", tags: input.tags || [], pinned: !!input.pinned, files: input.files, embeddings: input.embeddings, transcriptionModel: input.transcriptionModel, liveModel: input.liveModel, transcriptFinalized: input.transcriptFinalized === true };
   if(transcriptionDiagnostics) session.transcriptionDiagnostics=transcriptionDiagnostics;
+  if(input.meetingMode)session.meetingMode=input.meetingMode;
+  if(input.audioCleanup)session.audioCleanup=structuredClone(input.audioCleanup);
+  if(input.audioUnavailableReason)session.audioUnavailableReason=input.audioUnavailableReason;
   if (session.segments.length) session.transcript = renderAcceptedTranscript(session.segments);
   session.transcriptRevision = sourceRevision(session);
   session.transcriptVersion = 1;

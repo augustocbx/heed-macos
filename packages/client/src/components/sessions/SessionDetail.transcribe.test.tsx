@@ -335,3 +335,4 @@ test("generated fallback labels do not replace newly available speaker attributi
     "System (unattributed)",
   ]);
 });
+test('transcript-only meeting disables retranscription despite a pending local WAV',()=>{const source={...session(),meetingMode:'transcript-only' as const,audioCleanup:{status:'pending' as const,requestedAt:'2026-10-07'}};open(source);expect(screen.getByRole('button',{name:'Transcribe'})).toBeDisabled();expect(screen.queryByLabelText('Meeting audio')).toBeNull();expect(screen.getByText(/Playback and retranscription are unavailable/)).toBeInTheDocument();});

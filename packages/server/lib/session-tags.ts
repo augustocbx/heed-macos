@@ -228,6 +228,8 @@ export class SessionTags {
   /** Validate the raw client patch before merging so missing revisions cannot be inherited. */
   preparePatch(existing: Session, patch: SessionPatch): SessionPatch {
     if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new TagError("Invalid meeting patch");
+    if (["meetingMode","audioCleanup","audioUnavailableReason"].some(key=>Object.hasOwn(patch,key)))throw new TagError("Meeting archival mode and cleanup receipts cannot be changed by metadata updates");
+    if(existing.meetingMode === "transcript-only" && Object.hasOwn(patch,"files"))throw new TagError("Transcript-only audio paths are owned by durable cleanup",409);
     if (sourcePatch(patch)) checkTranscriptGuard(existing, patch as TranscriptGuard);
     const fields: SessionPatch = Object.fromEntries([...metadataFields, ...sourceFields].filter(key => Object.hasOwn(patch, key)).map(key => [key, patch[key]]));
     if (Object.hasOwn(fields, "transcriptionDiagnostics")) fields.transcriptionDiagnostics = sanitizeTranscriptionDiagnostics(fields.transcriptionDiagnostics);

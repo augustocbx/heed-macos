@@ -24,6 +24,7 @@ export const recordingApi = {
   snapshot?:RecordingSnapshot;
 	}>("/api/sysrecord/stop", {meetingId,requestId}),
  status:()=>apiClient.get<RecordingSnapshot>("/api/recording/status"),
+ discard:(meetingId:string,requestId:string=crypto.randomUUID())=>apiClient.post<RecordingSnapshot>("/api/recording/discard",{meetingId,requestId,confirm:true}),
  abandon:(meetingId:string,requestId:string=crypto.randomUUID())=>apiClient.post<RecordingSnapshot>("/api/recording/abandon",{meetingId,requestId}),
  rename:(meetingId:string,expectedRevision:number,speakerNames:Record<string,string>)=>apiClient.post<RecordingSnapshot>("/api/recording/speakers",{meetingId,expectedRevision,speakerNames}),
  retry:(meetingId:string,requestId:string=crypto.randomUUID())=>apiClient.post<RecordingSnapshot>("/api/recording/retry",{meetingId,requestId}),

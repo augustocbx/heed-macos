@@ -102,7 +102,7 @@ export function RetranscribeDialog({
       saving ||
       unsaved ||
       candidates.length >= 2 ||
-      !current.files?.wav
+      (!current.files?.wav || current.meetingMode === "transcript-only")
     )
       return;
     if (state.recording || state.processing) {
@@ -213,10 +213,10 @@ export function RetranscribeDialog({
             "Models may need to download on first use. Larger models use more memory and take longer.",
           )}
         </p>
-        {!current.files?.wav && (
+        {(!current.files?.wav || current.meetingMode === "transcript-only") && (
           <p>
             {tr(
-              "Saved audio is unavailable. You can still review pending drafts.",
+              current.meetingMode === "transcript-only"?"Transcript-only meeting. Playback and retranscription are unavailable.":"Saved audio is unavailable. You can still review pending drafts.",
             )}
           </p>
         )}
@@ -248,7 +248,7 @@ export function RetranscribeDialog({
             recordingBusy ||
             !!unsaved ||
             candidates.length >= 2 ||
-            !current.files?.wav
+            (!current.files?.wav || current.meetingMode === "transcript-only")
           }
           onClick={() => void start()}
         >

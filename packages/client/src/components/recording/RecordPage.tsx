@@ -12,6 +12,7 @@ import { Timer } from "./Timer.tsx";
 import { Visualizer } from "./Visualizer.tsx";
 import vizStyles from "./Visualizer.module.css";
 import { ResultCard } from "./ResultCard.tsx";
+import {MeetingModeSelect} from "./MeetingModeSelect";
 import { RecordingRecovery } from "./RecordingRecovery";
 import { ErrorBoundary } from "@/components/ErrorBoundary.tsx";
 import styles from "./RecordPage.module.css";
@@ -98,6 +99,7 @@ export function RecordPage() {
 			<RecordingRecovery />
 			<div className={styles.center}>
 				<Timer seconds={useSeconds()} />
+                <MeetingModeSelect/>
 				<div className={vizStyles.dualWrap}>
 					<Visualizer ref={micBars} barCount={24} variant="mic" label={tr("Microphone")} />
 					<Visualizer ref={systemBars} barCount={24} variant="system" label={tr("System")} />

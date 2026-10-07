@@ -22,6 +22,7 @@ export const TEMPLATES_DIR = join(APP_DIR, "templates");
  * unknown keys on write so the old CLI tool keeps working.
  */
 export interface TrxConfig {
+ meeting_mode?:"audio-transcript"|"transcript-only";
  live_speech_language?: "en" | "pt";
  real_time_transcription?: boolean;
 	storage_limit_bytes?: number;
@@ -64,3 +65,6 @@ export function micLabel(): string {
 export function realTimeTranscription(config: TrxConfig = loadConfig()): boolean {
  return config.real_time_transcription !== false;
 }
+
+/** Missing or invalid archival preferences preserve legacy audio-plus-transcript behavior. */
+export function configuredMeetingMode(config:TrxConfig=loadConfig()):"audio-transcript"|"transcript-only" {return config.meeting_mode === "transcript-only" ? "transcript-only" : "audio-transcript";}
