@@ -132,26 +132,72 @@ func acceptanceVerifiedBinding(_ directory:Int32,_ name:String,_ expected:[Strin
     let fd=openat(directory,name,O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC);guard fd>=0 else {throw CloudFailure("Original acceptance binding unavailable")};defer {close(fd)}
     guard try acceptanceIdentity(fd)==expected["identity"] as? String,digest(try JSONSerialization.data(withJSONObject:value,options:[.sortedKeys]))==expected["digest"] as? String else {throw CloudFailure("Acceptance binding changed")};return value
 }
+func acceptanceCanonical(_ value:[String:Any]) throws -> Data {try JSONSerialization.data(withJSONObject:value,options:[.sortedKeys,.withoutEscapingSlashes])}
+func acceptanceFileBytes(_ fd:Int32,_ maximum:Int) throws -> Data {
+    var info=stat();guard fstat(fd,&info)==0,info.st_mode&S_IFMT==S_IFREG,info.st_uid==getuid(),info.st_mode&0o777==0o600,info.st_nlink==1,info.st_size>=0,info.st_size<=maximum else {throw CloudFailure("Unsafe acceptance file")}
+    var buffer=[UInt8](repeating:0,count:Int(info.st_size)+1);let count=pread(fd,&buffer,buffer.count,0)
+    guard count==info.st_size else {throw CloudFailure("Acceptance file changed")};return Data(buffer.prefix(count))
+}
+func acceptanceOriginalEntry(_ directory:Int32,_ name:String,_ fd:Int32,_ expected:Data) throws {
+    let other=openat(directory,name,O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC);guard other>=0 else {throw CloudFailure("Original acceptance file unavailable")};defer {close(other)}
+    guard try acceptanceIdentity(other)==acceptanceIdentity(fd),try acceptanceFileBytes(fd,expected.count)==expected,try acceptanceFileBytes(other,expected.count)==expected else {throw CloudFailure("Original acceptance file changed")}
+}
+func acceptanceLog(_ fd:Int32,_ maximum:Int,_ kind:String) throws -> ([String:Any],[[String:Any]],Data) {
+    let bytes=try acceptanceFileBytes(fd,maximum);guard bytes.last==10 else {throw CloudFailure("Incomplete acceptance append retained")}
+    let lines=bytes.dropLast().split(separator:10,omittingEmptySubsequences:false);guard lines.count>=2,lines.count<=(kind=="receipt" ? 5:3) else {throw CloudFailure("Acceptance append bound exceeded")}
+    let values=try lines.map{try acceptanceJSON(Data($0),maximum:maximum)};let header=values[0]
+    guard Set(header.keys)==Set(kind=="receipt" ? ["format","version","identity","scope"]:["format","version","identity"]),header["format"] as? String=="heed-qa-"+kind,acceptanceInteger(header["version"],2) else {throw CloudFailure("Original acceptance format required")}
+    if kind=="receipt" {guard try header["identity"] as? String==acceptanceIdentity(fd) else {throw CloudFailure("Original receipt inode required")}}
+    else {var info=stat();guard fstat(fd,&info)==0 else {throw CloudFailure("Original ledger unavailable")};let identity=["device":String(info.st_dev),"inode":String(info.st_ino),"birth":String(Int64(info.st_birthtimespec.tv_sec)*1000+Int64(info.st_birthtimespec.tv_nsec)/1_000_000)];guard header["identity"] as? [String:String]==identity else {throw CloudFailure("Original ledger inode required")}}
+    return (header,Array(values.dropFirst()),bytes)
+}
+func acceptanceReceipt(_ fd:Int32) throws -> ([String:Any],[String:Any],Data) {
+    let (header,records,bytes)=try acceptanceLog(fd,16384,"receipt")
+    guard let scope=header["scope"] as? [String:Any],acceptanceInteger(scope["version"],2),let role=scope["role"] as? String,["creator","participant"].contains(role) else {throw CloudFailure("Invalid receipt scope")}
+    let phases=role=="creator" ? ["prepared","allocating","allocated","initialized"]:["prepared","joined"]
+    guard records.count<=phases.count else {throw CloudFailure("Invalid receipt phase count")}
+    for (index,record) in records.enumerated() {
+        guard Set(record.keys)==Set(["phase","child","childFile"]),record["phase"] as? String==phases[index] else {throw CloudFailure("Invalid receipt phase chain")}
+        if index==0 || phases[index]=="allocating" {guard record["child"] is NSNull,record["childFile"] is NSNull else {throw CloudFailure("Invalid unallocated receipt")}}
+        else {guard let child=record["child"] as? String,child.range(of:"^[0-9]+:[0-9]+:[0-9]+:[0-9]+$",options:.regularExpression) != nil,(phases[index]=="allocated" ? record["childFile"] is NSNull:record["childFile"] is [String:Any]) else {throw CloudFailure("Invalid allocated receipt")}}
+    }
+    return (header,scope.merging(records.last!){_,new in new},bytes)
+}
+func acceptanceReadReceipt(_ directory:Int32) throws -> [String:Any]? {
+    let fd=openat(directory,"receipt",O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC);if fd<0 && errno==ENOENT {return nil};guard fd>=0 else {throw CloudFailure("Original receipt unavailable")};defer {close(fd)}
+    let (_,value,bytes)=try acceptanceReceipt(fd);try acceptanceOriginalEntry(directory,"receipt",fd,bytes);return value
+}
+struct AcceptanceIO {
+    var append:(Int32,Data) throws -> Void
+    var sync:(Int32) throws -> Void
+    static let system=AcceptanceIO(append:{fd,data in try data.withUnsafeBytes {pointer in var offset=0;while offset<data.count {let size=Darwin.write(fd,pointer.baseAddress!.advanced(by:offset),data.count-offset);guard size>0 else {throw CloudFailure("Acceptance append failed")};offset+=size}}},sync:{fd in guard fsync(fd)==0 else {throw CloudFailure("Acceptance fsync failed")}})
+}
 func acceptanceBudget(workspace:AcceptanceChain,files:AcceptanceChain,quota:AcceptanceChain,spec:[String:Any]) throws {
     let run=spec["runId"] as! String
     let inventory=openat(quota.fd,".",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);guard inventory>=0 else {throw CloudFailure("Acceptance quota unavailable")};guard let entries=fdopendir(inventory) else {close(inventory);throw CloudFailure("Acceptance quota unavailable")};defer {closedir(entries)};var count=0
     while let entry=readdir(entries) {let name=withUnsafePointer(to:entry.pointee.d_name){$0.withMemoryRebound(to:CChar.self,capacity:1024){String(cString:$0)}};if name=="."||name==".."{continue};count+=1;guard count<=3,name=="ledger" else {throw CloudFailure("Unknown quota checkpoint retained")}}
     let names=["guard","receipt","checkpoint","parent-binding","child-binding"],paths=names.map{workspace.path+"/acceptance/"+$0}.sorted()
     let expected:[String:Any]=["version":1,"reservations":["qa-ledger-\(run)":["bytes":8192,"paths":[]],"qa-bootstrap-\(run)":["bytes":332768,"paths":paths]],"atomicWrites":[:]]
-    guard let ledger=try acceptancePrivateJSON(quota.fd,"ledger",4096),acceptanceEqual(ledger,expected) else {throw CloudFailure("Acceptance quota reservation required")}
+    let ledgerFD=openat(quota.fd,"ledger",O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC);guard ledgerFD>=0 else {throw CloudFailure("Acceptance quota reservation required")};defer {close(ledgerFD)}
+    let (_,updates,ledgerBytes)=try acceptanceLog(ledgerFD,4096,"ledger");try acceptanceOriginalEntry(quota.fd,"ledger",ledgerFD,ledgerBytes);try AcceptanceIO.system.sync(ledgerFD);try AcceptanceIO.system.sync(quota.fd);try acceptanceOriginalEntry(quota.fd,"ledger",ledgerFD,ledgerBytes)
+    let first:[String:Any]=["version":1,"reservations":["qa-ledger-\(run)":["bytes":8192,"paths":[]]],"atomicWrites":[:]]
+    guard updates.count==2,acceptanceEqual(updates[0],first),acceptanceEqual(updates[1],expected) else {throw CloudFailure("Acceptance quota reservation required")}
     var total:Int64=0
     for name in names {let file=openat(files.fd,name,O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC);if file<0 && errno==ENOENT {continue};guard file>=0 else {throw CloudFailure("Acceptance budget unavailable")};defer {close(file)};var s=stat();let maximum:Int64=name=="guard" ? 0:["receipt","checkpoint"].contains(name) ? 16384:150000;guard fstat(file,&s)==0,s.st_mode&S_IFMT==S_IFREG,s.st_uid==getuid(),s.st_mode&0o777==0o600,s.st_nlink==1,s.st_size<=maximum else {throw CloudFailure("Invalid acceptance budget file")};total+=s.st_size}
     guard total<=332768 else {throw CloudFailure("Acceptance budget exceeded")}
 }
 final class AcceptanceOwnership {
     let workspace:AcceptanceChain;let files:AcceptanceChain;let quota:AcceptanceChain;var guardFD:Int32 = -1;var machine:String = ""
-    let spec:[String:Any];var origin:[String:Any]=[:];var value:[String:Any]=[:];var previous:[String:Any]?
-    init(workspace descriptor:[String:Any],spec:[String:Any],binding:CloudBinding,generation:String,parent:[String],role:String,machine:() throws -> String) throws {
+    let spec:[String:Any];var origin:[String:Any]=[:];var value:[String:Any]=[:];var previous:[String:Any]?;var receiptFD:Int32 = -1;var committed=Data();var receiptHeader:[String:Any]=[:];let io:AcceptanceIO
+    init(workspace descriptor:[String:Any],spec:[String:Any],binding:CloudBinding,generation:String,parent:[String],role:String,machine:() throws -> String,io:AcceptanceIO = .system) throws {
+        self.io=io
         guard Set(descriptor.keys)==Set(["path","identity","receipts","quota"]),let path=descriptor["path"] as? String,!generation.isEmpty,generation.utf8.count<=128 else {throw CloudFailure("Invalid acceptance workspace")}
         self.spec=spec;workspace=try AcceptanceChain(path);files=try AcceptanceChain(path+"/acceptance");quota=try AcceptanceChain(path+"/quota")
         for (chain,key) in [(workspace,"identity"),(files,"receipts"),(quota,"quota")] {try chain.requirePrivate();guard let expected=descriptor[key] as? [String:String],try acceptanceLocalDescriptor(URL(fileURLWithPath:chain.path))==expected else {throw CloudFailure("Acceptance workspace changed")}}
         try acceptanceAbsent(files.fd,"checkpoint")
-        let prior=try acceptancePrivateJSON(files.fd,"receipt",16384)
+        receiptFD=openat(files.fd,"receipt",O_RDWR|O_APPEND|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC)
+        let prior:[String:Any]?
+        if receiptFD>=0 {let (header,value,bytes)=try acceptanceReceipt(receiptFD);receiptHeader=header;committed=bytes;prior=value;try acceptanceOriginalEntry(files.fd,"receipt",receiptFD,bytes)}else {guard errno==ENOENT else {throw CloudFailure("Original receipt unavailable")};prior=nil}
         let fd=openat(files.fd,"guard",O_RDWR|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC|(prior==nil ? O_CREAT|O_EXCL:0),0o600)
         guard fd>=0 else {throw CloudFailure("Original acceptance guard unavailable")}
         var info=stat();guard fstat(fd,&info)==0,info.st_mode&S_IFMT==S_IFREG,info.st_uid==getuid(),info.st_mode&0o777==0o600,info.st_nlink==1,info.st_size==0,flock(fd,LOCK_EX|LOCK_NB)==0 else {close(fd);throw CloudFailure("Acceptance guard unavailable")}
@@ -163,13 +209,14 @@ final class AcceptanceOwnership {
             if let prior=prior,let saved=prior["parentFile"] as? [String:Any] {guard try acceptanceEqual(acceptanceVerifiedBinding(files.fd,"parent-binding",saved),parentObject) else {throw CloudFailure("Original parent binding changed")};parentFile=saved}
             else if prior==nil {parentFile=try acceptanceExclusiveBinding(files.fd,"parent-binding",parentObject)}
             else {throw CloudFailure("Original parent binding unavailable")}
-            var initial:[String:Any]=["parentFile":parentFile,"version":1,"role":role,"spec":spec,"bindingHash":digest(bindingData),"generation":generation,"parent":parent,"origin":origin]
+            var initial:[String:Any]=["parentFile":parentFile,"version":2,"role":role,"spec":spec,"bindingHash":digest(bindingData),"generation":generation,"parent":parent,"origin":origin]
             if let prior=prior {guard Set(prior.keys)==Set(initial.keys).union(["phase","child","childGeneration","childFile"]),initial.allSatisfy({key,item in acceptanceEqual([key:item],[key:prior[key] as Any])}),let phase=prior["phase"] as? String,(role=="creator" ? ["prepared","allocating","allocated","initialized"]:["prepared","joined"]).contains(phase),let childGeneration=prior["childGeneration"] as? String,UUID(uuidString:childGeneration) != nil else {throw CloudFailure("Original acceptance receipt required")};value=prior;previous=prior}
             else {initial["phase"]="prepared";initial["child"]=NSNull();initial["childFile"]=NSNull();initial["childGeneration"]=UUID().uuidString.lowercased();value=initial;previous=nil;guard fsync(fd)==0,fsync(files.fd)==0 else {throw CloudFailure("Acceptance guard checkpoint failed")}}
         } catch {throw error}
-        try check();if prior==nil {try save()}
+        if prior==nil {receiptFD=openat(files.fd,"receipt",O_RDWR|O_APPEND|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0o600);guard receiptFD>=0 else {throw CloudFailure("Exclusive original receipt required")};let scope=value.filter{!["phase","child","childFile"].contains($0.key)};receiptHeader=["format":"heed-qa-receipt","version":2,"identity":try acceptanceIdentity(receiptFD),"scope":scope]}
+        try check();if prior==nil {try save()}else {try io.sync(receiptFD);try io.sync(files.fd);try check()}
     }
-    deinit {if guardFD>=0 {close(guardFD)}}
+    deinit {if receiptFD>=0 {close(receiptFD)};if guardFD>=0 {close(guardFD)}}
     func budget() throws {try acceptanceBudget(workspace:workspace,files:files,quota:quota,spec:spec)}
 
     func check() throws {
@@ -179,13 +226,23 @@ final class AcceptanceOwnership {
         try budget()
         guard let parentFile=value["parentFile"] as? [String:Any] else {throw CloudFailure("Parent binding receipt required")};_=try acceptanceVerifiedBinding(files.fd,"parent-binding",parentFile)
         if let childFile=value["childFile"] as? [String:Any] {_=try acceptanceVerifiedBinding(files.fd,"child-binding",childFile)}else {try acceptanceAbsent(files.fd,"child-binding")}
-        if let previous=previous {guard let actual=try acceptancePrivateJSON(files.fd,"receipt",16384),acceptanceEqual(actual,previous) else {throw CloudFailure("Acceptance receipt changed")}}
+        try acceptanceOriginalEntry(files.fd,"receipt",receiptFD,committed)
     }
     func save() throws {
-        try check();try acceptanceAbsent(files.fd,"checkpoint");let data=try JSONSerialization.data(withJSONObject:value,options:[.sortedKeys]);guard data.count<=16384 else {throw CloudFailure("Acceptance receipt bound exceeded")}
-        let fd=openat(files.fd,"checkpoint",O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0o600);guard fd>=0 else {throw CloudFailure("Acceptance checkpoint unavailable")};defer {close(fd)}
-        try data.withUnsafeBytes {pointer in var offset=0;while offset<data.count {let size=Darwin.write(fd,pointer.baseAddress!.advanced(by:offset),data.count-offset);guard size>0 else {throw CloudFailure("Acceptance checkpoint write failed")};offset+=size}}
-        guard fsync(fd)==0 else {throw CloudFailure("Acceptance checkpoint failed")};try check();guard renameat(files.fd,"checkpoint",files.fd,"receipt")==0,fsync(files.fd)==0 else {throw CloudFailure("Acceptance checkpoint failed")};previous=value
+        try check();try acceptanceAbsent(files.fd,"checkpoint")
+        if let previous=previous,acceptanceEqual(previous,value) {return}
+        let scope=value.filter{!["phase","child","childFile"].contains($0.key)}
+        guard let originalScope=receiptHeader["scope"] as? [String:Any],acceptanceEqual(scope,originalScope) else {throw CloudFailure("Immutable receipt scope changed")}
+        let phases=value["role"] as? String=="creator" ? ["prepared","allocating","allocated","initialized"]:["prepared","joined"]
+        let count=committed.isEmpty ? 0:committed.split(separator:10).count-1
+        guard count<phases.count,value["phase"] as? String==phases[count] else {throw CloudFailure("Invalid receipt phase transition")}
+        let record=value.filter{["phase","child","childFile"].contains($0.key)}
+        var addition=committed.isEmpty ? try acceptanceCanonical(receiptHeader)+Data([10]):Data();addition += try acceptanceCanonical(record)+Data([10])
+        let expected=committed+addition;guard expected.count<=16384 else {throw CloudFailure("Receipt append bound exceeded")}
+        try io.append(receiptFD,addition);try io.sync(receiptFD);try io.sync(files.fd)
+        try acceptanceOriginalEntry(files.fd,"receipt",receiptFD,expected)
+        let (_,actual,raw)=try acceptanceReceipt(receiptFD);guard acceptanceEqual(actual,value),raw==expected else {throw CloudFailure("Receipt append unverified")}
+        committed=expected;previous=value;try check()
     }
 }
 func acceptancePreflight(workspace descriptor:[String:Any],spec:[String:Any],binding:CloudBinding,generation:String,role:String,machine:() throws -> String) throws {
@@ -193,13 +250,13 @@ func acceptancePreflight(workspace descriptor:[String:Any],spec:[String:Any],bin
     let workspace=try AcceptanceChain(path),files=try AcceptanceChain(path+"/acceptance"),quota=try AcceptanceChain(path+"/quota")
     for (chain,key) in [(workspace,"identity"),(files,"receipts"),(quota,"quota")] {try chain.requirePrivate();guard let expected=descriptor[key] as? [String:String],try acceptanceLocalDescriptor(URL(fileURLWithPath:chain.path))==expected else {throw CloudFailure("Acceptance workspace changed")}}
     try acceptanceBudget(workspace:workspace,files:files,quota:quota,spec:spec);try acceptanceAbsent(files.fd,"checkpoint")
-    if let prior=try acceptancePrivateJSON(files.fd,"receipt",16384) {
+    if let prior=try acceptanceReadReceipt(files.fd) {
         guard let parent=prior["parent"] as? [String] else {throw CloudFailure("Original acceptance parent required")}
         let receipt=try AcceptanceOwnership(workspace:descriptor,spec:spec,binding:binding,generation:generation,parent:parent,role:role,machine:machine)
         try receipt.check();guard receipt.value["phase"] as? String != "allocating" else {throw CloudFailure("Ambiguous allocation retained")}
     } else {for name in ["guard","parent-binding","child-binding"] {try acceptanceAbsent(files.fd,name)}}
 }
-func acceptanceBootstrap(action:String,binding:CloudBinding,generation:String,spec raw:[String:Any],workspace:[String:Any],evidence:[String:Any]?,environment:AcceptanceEnvironment = .system,machine:() throws -> String = acceptanceMachine) throws -> [String:Any] {
+func acceptanceBootstrap(action:String,binding:CloudBinding,generation:String,spec raw:[String:Any],workspace:[String:Any],evidence:[String:Any]?,environment:AcceptanceEnvironment = .system,machine:() throws -> String = acceptanceMachine,io:AcceptanceIO = .system) throws -> [String:Any] {
     let spec=try acceptanceSpec(raw),creator=action=="qa-create-child",role=creator ? "creator":"participant",component=spec["child"] as! String,destination=spec["destinationId"] as! String
     guard ["qa-create-child","qa-join-child"].contains(action) else {throw CloudFailure("Invalid acceptance action")}
     if !creator {var expected:[String:Any]=["initialized":true];for key in ["runId","destinationId","provider","destinationVersion","child"] {expected[key]=spec[key]};guard let evidence=evidence,acceptanceEqual(evidence,expected) else {throw CloudFailure("Successful creator evidence required")}}
@@ -207,11 +264,11 @@ func acceptanceBootstrap(action:String,binding:CloudBinding,generation:String,sp
     return try withAcceptanceParent(binding,environment:environment) {root,parent,validate in
         guard creator || root.lastPathComponent==component else {throw CloudFailure("Select the exact synthetic child")}
         guard !creator || parent.descriptors.count<64 else {throw CloudFailure("Acceptance ancestry bound exceeded")}
-        let receipt=try AcceptanceOwnership(workspace:workspace,spec:spec,binding:binding,generation:generation,parent:parent.identities,role:role,machine:machine)
+        let receipt=try AcceptanceOwnership(workspace:workspace,spec:spec,binding:binding,generation:generation,parent:parent.identities,role:role,machine:machine,io:io)
         guard receipt.value["phase"] as? String != "allocating" else {throw CloudFailure("Ambiguous allocation retained")}
         try receipt.check();try validate()
         let allocating=creator && receipt.value["phase"] as? String=="prepared"
-        if allocating {receipt.value["phase"]="allocating";try receipt.save();try validate();guard mkdirat(parent.fd,component,0o700)==0 else {throw CloudFailure("Exclusive acceptance child unavailable")};guard fsync(parent.fd)==0 else {throw CloudFailure("Acceptance allocation uncertain")}}
+        if allocating {receipt.value["phase"]="allocating";try receipt.save();try validate();try receipt.check();guard mkdirat(parent.fd,component,0o700)==0 else {throw CloudFailure("Exclusive acceptance child unavailable")};guard fsync(parent.fd)==0 else {throw CloudFailure("Acceptance allocation uncertain")}}
         let childURL=creator ? root.appendingPathComponent(component):root,child=try AcceptanceChain(childURL.path)
         let check:() throws -> Void = {try validate();try receipt.check();try child.check()}
         try check();let childIdentity=try acceptanceIdentity(child.fd)

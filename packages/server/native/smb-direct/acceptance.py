@@ -225,6 +225,135 @@ def verified_binding(directory, name, expected):
         os.close(fd)
 
 
+def canonical(value):
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode()
+
+
+def file_bytes(fd, maximum):
+    info = regular(fd, maximum)
+    if stat.S_IMODE(info.st_mode) != 0o600:
+        raise SmbError("recovery-required")
+    data = os.pread(fd, maximum + 1, 0)
+    if len(data) != info.st_size:
+        raise SmbError("recovery-required")
+    return data
+
+
+def original_entry(directory, name, fd, expected):
+    other = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    try:
+        if local_identity(regular(other, len(expected))) != local_identity(
+            regular(fd, len(expected))
+        ):
+            raise SmbError("recovery-required")
+        if (
+            file_bytes(fd, len(expected)) != expected
+            or file_bytes(other, len(expected)) != expected
+        ):
+            raise SmbError("recovery-required")
+    finally:
+        os.close(other)
+
+
+def log_frames(fd, maximum, kind):
+    data = file_bytes(fd, maximum)
+    if not data or not data.endswith(b"\n"):
+        raise SmbError("recovery-required")
+    lines = data.splitlines()
+    if len(lines) < 2 or len(lines) > (5 if kind == "receipt" else 3):
+        raise SmbError("recovery-required")
+    values = [json.loads(line, object_pairs_hook=duplicate_free) for line in lines]
+    if any(canonical(value) != line for value, line in zip(values, lines)):
+        raise SmbError("recovery-required")
+    header = exact(
+        values[0],
+        (
+            ("format", "version", "identity", "scope")
+            if kind == "receipt"
+            else ("format", "version", "identity")
+        ),
+    )
+    info = os.fstat(fd)
+    identity = (
+        local_identity(info)
+        if kind == "receipt"
+        else dict(
+            device=str(info.st_dev),
+            inode=str(info.st_ino),
+            birth=str(int(info.st_birthtime * 1000)),
+        )
+    )
+    if (
+        header["format"] != "heed-qa-" + kind
+        or type(header["version"]) is not int
+        or header["version"] != 2
+        or header["identity"] != identity
+    ):
+        raise SmbError("recovery-required")
+    return header, values[1:], data
+
+
+def receipt_log(fd):
+    header, records, data = log_frames(fd, RECEIPT_BYTES, "receipt")
+    scope = header["scope"]
+    if (
+        not isinstance(scope, dict)
+        or scope.get("role") not in ("creator", "participant")
+        or scope.get("version") != 2
+    ):
+        raise SmbError("recovery-required")
+    phases = (
+        ("prepared", "allocating", "allocated", "initialized")
+        if scope["role"] == "creator"
+        else ("prepared", "joined")
+    )
+    if len(records) > len(phases):
+        raise SmbError("recovery-required")
+    for index, record in enumerate(records):
+        exact(record, ("phase", "child", "childFile"))
+        if record["phase"] != phases[index]:
+            raise SmbError("recovery-required")
+        if record["phase"] in ("prepared", "allocating"):
+            if record["child"] is not None or record["childFile"] is not None:
+                raise SmbError("recovery-required")
+        else:
+            validate_identity(record["child"])
+            if (record["phase"] == "allocated") != (record["childFile"] is None):
+                raise SmbError("recovery-required")
+    return header, dict(scope, **records[-1]), data
+
+
+def read_receipt(directory):
+    fd = os.open(
+        "receipt", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
+    )
+    try:
+        _, value, data = receipt_log(fd)
+        original_entry(directory, "receipt", fd, data)
+        return value
+    finally:
+        os.close(fd)
+
+
+def read_ledger(directory):
+    fd = os.open(
+        "ledger", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
+    )
+    try:
+        _, values, data = log_frames(fd, 4096, "ledger")
+        if len(values) != 2:
+            raise SmbError("recovery-required")
+        original_entry(directory, "ledger", fd, data)
+        os.fsync(fd)
+        os.fsync(directory)
+        original_entry(directory, "ledger", fd, data)
+        return values
+    finally:
+        os.close(fd)
+
+
 def verify_budget(files, quota, workspace, run_id):
     quota.check()
     inventory = os.open(
@@ -237,10 +366,8 @@ def verify_budget(files, quota, workspace, run_id):
                     raise SmbError("recovery-required")
     finally:
         os.close(inventory)
-    ledger = exact(
-        private_json(quota.fd, "ledger", 4096),
-        ("version", "reservations", "atomicWrites"),
-    )
+    ledgers = read_ledger(quota.fd)
+    ledger = exact(ledgers[-1], ("version", "reservations", "atomicWrites"))
     expected = {
         "qa-ledger-" + run_id: dict(bytes=LEDGER_BYTES, paths=[]),
         "qa-bootstrap-"
@@ -249,6 +376,14 @@ def verify_budget(files, quota, workspace, run_id):
             paths=sorted(workspace["path"] + "/acceptance/" + name for name in FILES),
         ),
     }
+    if digest(ledgers[0]) != digest(
+        dict(
+            version=1,
+            reservations={"qa-ledger-" + run_id: expected["qa-ledger-" + run_id]},
+            atomicWrites={},
+        )
+    ):
+        raise SmbError("recovery-required")
     if digest(ledger) != digest(
         dict(version=1, reservations=expected, atomicWrites={})
     ):
@@ -282,6 +417,9 @@ class Ownership:
         self.chains = []
         self.guard = None
         self.previous = None
+        self.receipt = None
+        self.committed = b""
+        self.log_header = None
         try:
             self.workspace = workspace
             for suffix in ("", "/acceptance", "/quota"):
@@ -302,7 +440,13 @@ class Ownership:
             self.verify_budget(spec["runId"])
             absent(self.files.fd, "checkpoint")
             try:
-                existing = private_json(self.files.fd, "receipt", RECEIPT_BYTES)
+                self.receipt = os.open(
+                    "receipt",
+                    os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK,
+                    dir_fd=self.files.fd,
+                )
+                self.log_header, existing, self.committed = receipt_log(self.receipt)
+                original_entry(self.files.fd, "receipt", self.receipt, self.committed)
             except FileNotFoundError:
                 existing = None
             flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
@@ -325,7 +469,7 @@ class Ownership:
                 ):
                     raise SmbError("recovery-required")
             self.scope = dict(
-                version=1,
+                version=2,
                 role=role,
                 spec=spec,
                 bindingHash=digest(binding),
@@ -360,6 +504,10 @@ class Ownership:
                     raise SmbError("recovery-required")
                 self.data = existing
                 self.previous = json.loads(json.dumps(existing))
+                self.check()
+                os.fsync(self.receipt)
+                os.fsync(self.files.fd)
+                self.check()
             else:
                 os.fsync(self.guard)
                 os.fsync(self.files.fd)
@@ -370,6 +518,23 @@ class Ownership:
                     childId=str(uuid4()),
                     childGeneration=str(uuid4()),
                     childFile=None,
+                )
+                self.receipt = os.open(
+                    "receipt",
+                    os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=self.files.fd,
+                )
+                scope = {
+                    key: value
+                    for key, value in self.data.items()
+                    if key not in ("phase", "child", "childFile")
+                }
+                self.log_header = dict(
+                    format="heed-qa-receipt",
+                    version=2,
+                    identity=local_identity(os.fstat(self.receipt)),
+                    scope=scope,
                 )
                 self.save()
         except BaseException:
@@ -404,42 +569,59 @@ class Ownership:
             verified_binding(self.files.fd, "child-binding", self.data["childFile"])
         else:
             absent(self.files.fd, "child-binding")
-        if (
-            self.previous is not None
-            and private_json(self.files.fd, "receipt", RECEIPT_BYTES) != self.previous
-        ):
-            raise SmbError("recovery-required")
+        original_entry(self.files.fd, "receipt", self.receipt, self.committed)
 
     def save(self):
         self.check()
         absent(self.files.fd, "checkpoint")
-        content = json.dumps(self.data, sort_keys=True, separators=(",", ":")).encode()
-        if len(content) > RECEIPT_BYTES:
+        if self.previous == self.data:
+            return
+        scope = {
+            key: value
+            for key, value in self.data.items()
+            if key not in ("phase", "child", "childFile")
+        }
+        if scope != self.log_header["scope"]:
+            raise SmbError("recovery-required")
+        phases = (
+            ("prepared", "allocating", "allocated", "initialized")
+            if self.data["role"] == "creator"
+            else ("prepared", "joined")
+        )
+        count = len(self.committed.splitlines()) - 1 if self.committed else 0
+        if count >= len(phases) or self.data["phase"] != phases[count]:
+            raise SmbError("recovery-required")
+        record = {key: self.data[key] for key in ("phase", "child", "childFile")}
+        addition = (
+            (canonical(self.log_header) + b"\n" if not self.committed else b"")
+            + canonical(record)
+            + b"\n"
+        )
+        expected = self.committed + addition
+        if len(expected) > RECEIPT_BYTES:
             raise SmbError("bounds-exceeded")
-        fd = os.open(
-            "checkpoint",
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-            0o600,
-            dir_fd=self.files.fd,
-        )
-        try:
-            remaining = memoryview(content)
-            while remaining:
-                n = os.write(fd, remaining)
-                if n <= 0:
-                    raise SmbError("recovery-required")
-                remaining = remaining[n:]
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        self.check()
-        os.replace(
-            "checkpoint", "receipt", src_dir_fd=self.files.fd, dst_dir_fd=self.files.fd
-        )
+        # Only the original open descriptor is writable. Namespace substitutions are
+        # retained, never renamed over, and cannot grant committed authority.
+        remaining = memoryview(addition)
+        while remaining:
+            count = os.write(self.receipt, remaining)
+            if count <= 0:
+                raise SmbError("recovery-required")
+            remaining = remaining[count:]
+        os.fsync(self.receipt)
         os.fsync(self.files.fd)
-        self.previous = json.loads(content)
+        original_entry(self.files.fd, "receipt", self.receipt, expected)
+        _, committed, raw = receipt_log(self.receipt)
+        if committed != self.data or raw != expected:
+            raise SmbError("recovery-required")
+        self.committed = expected
+        self.previous = json.loads(json.dumps(self.data))
+        self.check()
 
     def close(self):
+        if self.receipt is not None:
+            os.close(self.receipt)
+            self.receipt = None
         if self.guard is not None:
             os.close(self.guard)
             self.guard = None
@@ -448,12 +630,13 @@ class Ownership:
         self.chains = []
 
 
-def child_transport(parent, component, allocate):
+def child_transport(parent, component, allocate, validate):
     """Borrow authenticated backend and all parent pins; never connect or close a second transport."""
     from transport import DirectTransport
 
     full = "/".join(p for p in (parent.endpoint["folder"], component) if p)
     parent.revalidate()
+    validate()
     handle = parent.backend.open(full, directory=True, exclusive=allocate)
     try:
         metadata = validate_metadata(parent.backend.metadata(handle), True)
@@ -507,7 +690,7 @@ def preflight_workspace(startup):
         verify_budget(chains[1], chains[2], workspace, spec["runId"])
         absent(chains[1].fd, "checkpoint")
         try:
-            prior = private_json(chains[1].fd, "receipt", RECEIPT_BYTES)
+            prior = read_receipt(chains[1].fd)
         except FileNotFoundError:
             for name in ("guard", "parent-binding", "child-binding"):
                 absent(chains[1].fd, name)
@@ -580,7 +763,7 @@ def bootstrap(parent, startup):
             owner.data["phase"] = "allocating"
             owner.save()
         child = (
-            child_transport(parent, spec["child"], allocating)
+            child_transport(parent, spec["child"], allocating, owner.check)
             if role == "creator"
             else parent
         )

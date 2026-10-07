@@ -65,7 +65,7 @@ test('checkpoint ancestor substitution preserves foreign bytes and refuses nativ
   const original=fs.fsyncSync;let injected=false,effects=0;
   hook=spyOn(fs,'fsyncSync').mockImplementation(fd=>{original(fd);if(injected||!fs.fstatSync(fd).isFile())return;injected=true;const names=fs.readdirSync(directory);renameSync(directory,directory+'-original');mkdirSync(directory,{mode:0o700});writeFileSync(ledger,'foreign sentinel',{mode:0o600});for(const name of names)if(name!=='ledger')writeFileSync(join(directory,name),'foreign checkpoint',{mode:0o600});});
   expect(()=>{const quota=openAcceptanceQuota(workspace,randomUUID(),1048576);try{quota.verify();effects++;}finally{quota.close();}}).toThrow();
-  expect(injected).toBe(true);expect(readFileSync(ledger,'utf8')).toBe('foreign sentinel');expect(effects).toBe(0);expect(fs.existsSync(join(directory+'-original','checkpoint'))).toBe(true);
+  expect(injected).toBe(true);expect(readFileSync(ledger,'utf8')).toBe('foreign sentinel');expect(effects).toBe(0);expect(fs.existsSync(join(directory+'-original','ledger'))).toBe(true);
  }finally{hook?.mockRestore();f.close();}
 });
 
@@ -120,7 +120,54 @@ finally:server.close()
   const participantBinding={...created.private.binding,id:randomUUID(),connectionGeneration:randomUUID(),credentialRef:randomUUID()} as typeof parent;
   const joined=await joinOwnedChild({descriptor:selected(participantBinding),workspace:createAcceptanceWorkspace(join(f.root,'participant')),spec,limitBytes:1048576},{runId,destinationId:spec.destinationId,provider:'smb-direct',destinationVersion:3,child:spec.child,initialized:true},{smb:native,vault});
   expect(joined.public.role).toBe('participant');expect(JSON.stringify(joined.public)).not.toContain(remote);
-  expect(JSON.parse(readFileSync(join(workspace.path,'acceptance','receipt'),'utf8')).phase).toBe('initialized');
+  expect(JSON.parse(readFileSync(join(workspace.path,'acceptance','receipt'),'utf8').trimEnd().split('\n').at(-1)!).phase).toBe('initialized');
   expect(JSON.parse(readFileSync(join(remote,'Heed','library',spec.child,'heed-library.json'),'utf8')).destinationId).toBe(spec.destinationId);
  }finally{for(const child of children){if(child.exitCode===null)child.kill();await child.exited;}f.close();}
 },15000);
+
+test('bootstrap refuses enabled selected iCloud connection before quota and native effects',async()=>{
+ const {createAcceptanceWorkspace,createOwnedChild,joinOwnedChild,provisioningEvidence}=await import('./synchronization-device-binding');const f=fixture();
+ try{const runId=randomUUID(),spec=parseAcceptanceSpec({version:1,runId,destinationId:randomUUID(),provider:'icloud',destinationVersion:2,child:'heed-qa-'+runId,aliases:['a','b'],locales:['en','pt'],fixtureSchema:1,fixtureHash:'a'.repeat(64)}),workspace=createAcceptanceWorkspace(join(f.root,'active'));let calls=0;
+  await expect(createOwnedChild({descriptor:f.descriptor,workspace,spec,limitBytes:1048576},{cloud:{acceptance:async()=>{calls++;throw Error('Synthetic native boundary');}}})).rejects.toThrow();
+  expect(calls).toBe(0);expect(fs.existsSync(join(workspace.path,'quota','ledger'))).toBe(false);
+  await expect(joinOwnedChild({descriptor:f.descriptor,workspace,spec,limitBytes:1048576},provisioningEvidence(spec),{cloud:{acceptance:async()=>{calls++;throw Error('Synthetic participant boundary');}}})).rejects.toThrow();expect(calls).toBe(0);expect(fs.existsSync(join(workspace.path,'quota','ledger'))).toBe(false);
+ }finally{f.close();}
+});
+
+test('SMB bootstrap requires disabled selected connection and no pending selected jobs',async()=>{
+ const {createAcceptanceWorkspace,createOwnedChild}=await import('./synchronization-device-binding');
+ for(const state of ['enabled','pending','drained']){const f=fixture();try{
+  const binding={id:randomUUID(),name:'Synthetic',endpoint:{server:'nas.local',port:445,share:'meetings',folder:'Heed/library',requireEncryption:false},identity:{serverGuid:'0123456789abcdef0123456789abcdef',volumeSerial:'00000001',volumeCreated:'01db000000000001',rootId:'0000000000000010',rootCreated:'01db000000000002'},destinationId:randomUUID(),destinationVersion:3,connectionGeneration:randomUUID(),credentialRef:randomUUID(),readOnly:false,security:'signed'};
+  const path=join(f.app,'direct-smb-connections.json');writeFileSync(path,JSON.stringify({version:1,connections:[{binding,dialect:'3.1.1',enabled:state==='enabled',uncertainty:null,jobs:state==='pending'?{[randomUUID()]:{attempts:0,next:0}}:{},acknowledged:[],retryAt:0,failures:0,lastSync:null,imported:0,skipped:0,error:null}],cleanup:[]}),{mode:0o600});
+  const descriptor={version:1 as const,provider:'smb-direct' as const,appPath:f.app,appIdentity:localIdentity(f.app),configIdentity:localIdentity(path),connectionId:binding.id,generation:binding.connectionGeneration};
+  const runId=randomUUID(),spec=parseAcceptanceSpec({version:1,runId,destinationId:randomUUID(),provider:'smb-direct',destinationVersion:3,child:'heed-qa-'+runId,aliases:['a','b'],locales:['en','pt'],fixtureSchema:1,fixtureHash:'a'.repeat(64)}),workspace=createAcceptanceWorkspace(join(f.root,'preparation'));let calls=0;
+  await expect(createOwnedChild({descriptor,workspace,spec,limitBytes:1048576},{smb:{acceptance:async()=>{calls++;throw Error('Synthetic native boundary');}},vault:{get:async<T>()=>({username:'fixture',password:'synthetic',domain:''} as T)}})).rejects.toThrow();
+  expect(calls).toBe(state==='drained'?1:0);expect(fs.existsSync(join(workspace.path,'quota','ledger'))).toBe(state==='drained');
+ }finally{f.close();}}
+});
+
+for(const boundary of ['source','destination'])test(`ledger ${boundary} entry substitution retains foreign bytes without success`,async()=>{
+ const {createAcceptanceWorkspace,openAcceptanceQuota}=await import('./synchronization-device-binding');
+ const f=fixture();let hook:ReturnType<typeof spyOn>|undefined;try{
+  const workspace=createAcceptanceWorkspace(join(f.root,'ledger-swap')),directory=join(workspace.path,'quota');let injected=false,effects=0,entry='';
+  const substitute=(fd:number)=>{if(injected||!fs.fstatSync(fd).isFile())return;entry=fs.existsSync(join(directory,'checkpoint'))?'checkpoint':'ledger';const path=join(directory,entry);if(!fs.existsSync(path)||fs.statSync(path).ino!==fs.fstatSync(fd).ino)return;injected=true;renameSync(path,join(workspace.path,'original-'+boundary));writeFileSync(path,'foreign entry sentinel',{mode:0o600});};
+  if(boundary==='source'){const original=fs.writeSync;hook=spyOn(fs,'writeSync').mockImplementation(((fd:number,...args:unknown[])=>{substitute(fd);return (original as any)(fd,...args);}) as any);}
+  else{const original=fs.fsyncSync;hook=spyOn(fs,'fsyncSync').mockImplementation(fd=>{original(fd);substitute(fd);});}
+  expect(()=>{const quota=openAcceptanceQuota(workspace,randomUUID(),1048576);try{quota.verify();effects++;}finally{quota.close();}}).toThrow();
+  expect(injected).toBe(true);expect(effects).toBe(0);expect(readFileSync(join(directory,entry),'utf8')).toBe('foreign entry sentinel');
+ }finally{hook?.mockRestore();f.close();}
+});
+
+test('byte-identical ledger replacement and torn append refuse on restart',async()=>{
+ const {createAcceptanceWorkspace,openAcceptanceQuota}=await import('./synchronization-device-binding');
+ for(const kind of ['inode','torn']){const f=fixture();try{const workspace=createAcceptanceWorkspace(join(f.root,'ledger-resume')),run=randomUUID(),quota=openAcceptanceQuota(workspace,run,1048576);quota.close();const path=join(workspace.path,'quota','ledger'),bytes=readFileSync(path);
+  if(kind==='inode'){renameSync(path,join(workspace.path,'original-ledger'));writeFileSync(path,bytes,{mode:0o600});}else fs.appendFileSync(path,'{"partial":');
+  expect(()=>{const unexpected=openAcceptanceQuota(workspace,run,1048576);unexpected.close();}).toThrow();expect(readFileSync(path)).toEqual(kind==='inode'?bytes:Buffer.concat([bytes,Buffer.from('{"partial":')]));
+ }finally{f.close();}}
+});
+
+test('original ledger allows only one active bootstrap writer',async()=>{
+ const {createAcceptanceWorkspace,openAcceptanceQuota}=await import('./synchronization-device-binding');const f=fixture();let first:ReturnType<typeof openAcceptanceQuota>|undefined,second:ReturnType<typeof openAcceptanceQuota>|undefined;
+ try{const workspace=createAcceptanceWorkspace(join(f.root,'ledger-lock')),run=randomUUID();first=openAcceptanceQuota(workspace,run,1048576);expect(()=>{second=openAcceptanceQuota(workspace,run,1048576);}).toThrow();first.close();first=undefined;second=openAcceptanceQuota(workspace,run,1048576);second.verify();}
+ finally{second?.close();first?.close();f.close();}
+});

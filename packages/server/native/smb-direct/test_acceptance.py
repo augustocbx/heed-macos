@@ -205,8 +205,26 @@ def fixture_workspace(base, name, run):
     )
     with open(p + "/quota/ledger", "w") as f:
         os.chmod(f.name, 0o600)
-        json.dump(ledger, f)
+        header = dict(format="heed-qa-ledger", version=2, identity=identity(f.name))
+        first = dict(
+            version=1,
+            reservations={"qa-ledger-" + run: dict(bytes=8192, paths=[])},
+            atomicWrites={},
+        )
+        for record in (header, first, ledger):
+            f.write(
+                json.dumps(
+                    record, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                )
+                + "\n"
+            )
     return value
+
+
+def receipt_state(path):
+    with open(path) as file:
+        records = [json.loads(line) for line in file]
+    return dict(records[0]["scope"], **records[-1])
 
 
 class BootstrapOwnershipTests(unittest.TestCase):
@@ -278,8 +296,7 @@ class BootstrapOwnershipTests(unittest.TestCase):
         original = self.server.exclusive_create
 
         def header(path, data):
-            with open(self.workspace["path"] + "/acceptance/receipt") as f:
-                r = json.load(f)
+            r = receipt_state(self.workspace["path"] + "/acceptance/receipt")
             self.assertEqual(r["phase"], "allocated")
             self.assertIsNotNone(r["child"])
             return original(path, data)
@@ -319,8 +336,10 @@ class BootstrapOwnershipTests(unittest.TestCase):
 
         with patch.object(Ownership, "save", save):
             self.assertFalse(self.call()["ok"])
-        with open(self.workspace["path"] + "/acceptance/receipt") as f:
-            self.assertEqual(json.load(f)["phase"], "allocating")
+        self.assertEqual(
+            receipt_state(self.workspace["path"] + "/acceptance/receipt")["phase"],
+            "allocating",
+        )
         self.assertFalse(self.call()["ok"])
         self.assertEqual(len(self.server.directory_creations), 1)
         self.assertEqual(self.server.header_creations, [])
@@ -483,10 +502,13 @@ class BootstrapOwnershipTests(unittest.TestCase):
         self.assertTrue(self.call()["ok"])
         path = self.workspace["path"] + "/acceptance/receipt"
         with open(path) as f:
-            value = json.load(f)
-        value["phase"] = "joined"
+            records = [json.loads(line) for line in f]
+        records[-1]["phase"] = "joined"
         with open(path, "w") as f:
-            json.dump(value, f)
+            for record in records:
+                f.write(
+                    json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+                )
         calls = []
         self.server.connect = lambda *args: calls.append("connect")
         self.assertFalse(self.call()["ok"])
@@ -506,6 +528,78 @@ class BootstrapOwnershipTests(unittest.TestCase):
         self.assertEqual(len(self.server.directory_creations), 1)
         self.assertEqual(self.server.header_creations, [])
         self.assertTrue(os.path.isdir(path + "-original"))
+
+    def test_original_receipt_source_substitution_never_allocates_or_changes_foreign_entry(
+        self,
+    ):
+        original = os.write
+        path = self.workspace["path"] + "/acceptance/receipt"
+        injected = []
+
+        def write(fd, data):
+            if b'"phase":"allocating"' in bytes(data) and not injected:
+                injected.append(True)
+                os.rename(path, path + "-original")
+                with open(path, "wb") as file:
+                    os.chmod(path, 0o600)
+                    file.write(b"foreign source sentinel")
+            return original(fd, data)
+
+        with patch("acceptance.os.write", write):
+            self.assertFalse(self.call()["ok"])
+        self.assertTrue(injected)
+        self.assertEqual(self.server.directory_creations, [])
+        with open(path, "rb") as file:
+            self.assertEqual(file.read(), b"foreign source sentinel")
+
+    def test_receipt_destination_substitution_after_fsync_never_allocates(self):
+        original = os.fsync
+        path = self.workspace["path"] + "/acceptance/receipt"
+        injected = []
+
+        def sync(fd):
+            original(fd)
+            if os.path.exists(path) and os.fstat(fd).st_ino == os.stat(path).st_ino:
+                data = os.pread(fd, 16385, 0)
+                if data.endswith(b'"phase":"allocating"}\n') and not injected:
+                    injected.append(data)
+                    os.rename(path, path + "-original")
+                    with open(path, "wb") as file:
+                        os.chmod(path, 0o600)
+                        file.write(data)
+
+        with patch("acceptance.os.fsync", sync):
+            self.assertFalse(self.call()["ok"])
+        self.assertTrue(injected)
+        self.assertEqual(self.server.directory_creations, [])
+        with open(path, "rb") as file:
+            self.assertEqual(file.read(), injected[0])
+
+    def test_byte_identical_receipt_new_inode_refuses_before_authentication(self):
+        self.assertTrue(self.call()["ok"])
+        path = self.workspace["path"] + "/acceptance/receipt"
+        with open(path, "rb") as file:
+            data = file.read()
+        os.rename(path, path + "-original")
+        with open(path, "wb") as file:
+            os.chmod(path, 0o600)
+            file.write(data)
+        calls = []
+        self.server.connect = lambda *args: calls.append("connect")
+        self.assertFalse(self.call()["ok"])
+        self.assertEqual(calls, [])
+
+    def test_torn_original_receipt_append_refuses_before_authentication(self):
+        self.assertTrue(self.call()["ok"])
+        path = self.workspace["path"] + "/acceptance/receipt"
+        with open(path, "ab") as file:
+            file.write(b'{"partial":')
+        calls = []
+        self.server.connect = lambda *args: calls.append("connect")
+        self.assertFalse(self.call()["ok"])
+        self.assertEqual(calls, [])
+        with open(path, "rb") as file:
+            self.assertTrue(file.read().endswith(b'{"partial":'))
 
 
 if __name__ == "__main__":

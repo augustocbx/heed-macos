@@ -149,7 +149,10 @@ func acceptanceOwnershipTests() throws {
         for url in [root,root.appendingPathComponent("acceptance"),root.appendingPathComponent("quota")] {try FileManager.default.createDirectory(at:url,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])}
         let names=["guard","receipt","checkpoint","parent-binding","child-binding"].map {root.appendingPathComponent("acceptance/\($0)").path}.sorted()
         let ledger:[String:Any]=["version":1,"reservations":["qa-ledger-\(run)":["bytes":8192,"paths":[]],"qa-bootstrap-\(run)":["bytes":332768,"paths":names]],"atomicWrites":[:]]
-        let file=root.appendingPathComponent("quota/ledger");try JSONSerialization.data(withJSONObject:ledger).write(to:file);try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:file.path)
+        let file=root.appendingPathComponent("quota/ledger");let fd=open(file.path,O_RDWR|O_APPEND|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0o600);guard fd>=0 else {throw CloudFailure("Fixture ledger unavailable")};defer {close(fd)}
+        var info=stat();guard fstat(fd,&info)==0 else {throw CloudFailure("Fixture ledger identity unavailable")};let identity=["device":String(info.st_dev),"inode":String(info.st_ino),"birth":String(Int64(info.st_birthtimespec.tv_sec)*1000+Int64(info.st_birthtimespec.tv_nsec)/1_000_000)]
+        let first:[String:Any]=["version":1,"reservations":["qa-ledger-\(run)":["bytes":8192,"paths":[]]],"atomicWrites":[:]]
+        for record in [["format":"heed-qa-ledger","version":2,"identity":identity] as [String:Any],first,ledger] {try AcceptanceIO.system.append(fd,acceptanceCanonical(record)+Data([10]))};try AcceptanceIO.system.sync(fd)
         return ["path":root.path,"identity":try acceptanceLocalDescriptor(root),"receipts":try acceptanceLocalDescriptor(root.appendingPathComponent("acceptance")),"quota":try acceptanceLocalDescriptor(root.appendingPathComponent("quota"))]
     }
     let environment=AcceptanceEnvironment(resolve:{data,options,stale in try URL(resolvingBookmarkData:data,options:options,relativeTo:nil,bookmarkDataIsStale:&stale)},account:{_ in},ubiquitous:{_ in true},start:{$0.startAccessingSecurityScopedResource()},stop:{$0.stopAccessingSecurityScopedResource()})
@@ -169,18 +172,35 @@ func acceptanceOwnershipTests() throws {
     do {_=try acceptanceBootstrap(action:"qa-create-child",binding:parentBinding,generation:"fixture-generation",spec:spec,workspace:a,evidence:nil,environment:environment,machine:{"copied-physical-device"})}catch{refused=true}
     guard refused else {throw CloudFailure("Copied device authority must refuse")}
     let receiptURL=URL(fileURLWithPath:(a["path"] as! String)+"/acceptance/receipt")
-    let original=try Data(contentsOf:receiptURL);var invalid=try acceptanceJSON(original);invalid["phase"]="joined"
-    try JSONSerialization.data(withJSONObject:invalid).write(to:receiptURL)
+    let original=try Data(contentsOf:receiptURL);var records=try original.split(separator:10).map{try acceptanceJSON(Data($0))};records[records.count-1]["phase"]="joined"
+    func writeRecords(_ records:[[String:Any]]) throws {var bytes=Data();for record in records {bytes += try acceptanceCanonical(record)+Data([10])};try bytes.write(to:receiptURL)}
+    try writeRecords(records)
     var resolutions=0;var guarded=environment;guarded.resolve={_,_,_ in resolutions+=1;throw CloudFailure("Unexpected resolution")}
     refused=false;do {_=try acceptanceBootstrap(action:"qa-create-child",binding:parentBinding,generation:"fixture-generation",spec:spec,workspace:a,evidence:nil,environment:guarded,machine:{"synthetic-physical-a"})}catch{refused=true}
     guard refused,resolutions==0 else {throw CloudFailure("Creator cannot resume participant phase")}
-    try original.write(to:receiptURL)
-    invalid=try acceptanceJSON(original);invalid["phase"]="allocating";invalid["child"]=NSNull();invalid["childFile"]=NSNull()
-    try JSONSerialization.data(withJSONObject:invalid).write(to:receiptURL)
+    records=try original.split(separator:10).map{try acceptanceJSON(Data($0))};try writeRecords(Array(records.prefix(3)))
     refused=false;do {_=try acceptanceBootstrap(action:"qa-create-child",binding:parentBinding,generation:"fixture-generation",spec:spec,workspace:a,evidence:nil,environment:guarded,machine:{"synthetic-physical-a"})}catch{refused=true}
     guard refused,resolutions==0,FileManager.default.fileExists(atPath:child.path) else {throw CloudFailure("Ambiguous child must retain and refuse before resolution")}
+    try original.write(to:receiptURL)
+    let oldReceipt=receiptURL.appendingPathExtension("original");try FileManager.default.moveItem(at:receiptURL,to:oldReceipt);try original.write(to:receiptURL);try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:receiptURL.path)
+    refused=false;do {_=try acceptanceBootstrap(action:"qa-create-child",binding:parentBinding,generation:"fixture-generation",spec:spec,workspace:a,evidence:nil,environment:guarded,machine:{"synthetic-physical-a"})}catch{refused=true}
+    guard refused,resolutions==0 else {throw CloudFailure("Byte-identical foreign receipt must refuse before resolution")}
     var malformed=spec;malformed["fixtureSchema"]=true;refused=false;do {_=try acceptanceSpec(malformed)}catch{refused=true}
     guard refused else {throw CloudFailure("Boolean schema must refuse")}
+    for boundary in ["source","destination","torn"] {
+        // The workspace ledger is scoped to the original fixture run; use the same run
+        // with a different selected empty parent to isolate each native allocation.
+        let selected=base.appendingPathComponent("parent-"+boundary);try FileManager.default.createDirectory(at:selected,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
+        let selectedBinding=try binding(selected),local=try workspace("replace-"+boundary),path=URL(fileURLWithPath:(local["path"] as! String)+"/acceptance/receipt");var injected=false
+        func substitute() throws {try FileManager.default.moveItem(at:path,to:path.appendingPathExtension("original"));try Data("foreign fixture sentinel".utf8).write(to:path);try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:path.path);injected=true}
+        var io=AcceptanceIO.system
+        io.append={fd,data in if boundary=="torn",String(data:data,encoding:.utf8)?.contains("\"phase\":\"allocating\"")==true,!injected {injected=true;try AcceptanceIO.system.append(fd,Data(data.prefix(data.count/2)));throw CloudFailure("Synthetic torn append")};if boundary=="source",String(data:data,encoding:.utf8)?.contains("\"phase\":\"allocating\"")==true,!injected {try substitute()};try AcceptanceIO.system.append(fd,data)}
+        io.sync={fd in try AcceptanceIO.system.sync(fd);if boundary=="destination",!injected,let bytes=try? acceptanceFileBytes(fd,16384),String(data:bytes,encoding:.utf8)?.hasSuffix("\"phase\":\"allocating\"}\n")==true {try substitute()}}
+        refused=false;do {_=try acceptanceBootstrap(action:"qa-create-child",binding:selectedBinding,generation:"fixture-generation",spec:spec,workspace:local,evidence:nil,environment:environment,machine:{"synthetic-physical-a"},io:io)}catch{refused=true}
+        guard refused,injected,!FileManager.default.fileExists(atPath:selected.appendingPathComponent("heed-qa-\(run)").path),(boundary=="torn" ? try Data(contentsOf:path).last != 10:try Data(contentsOf:path)==Data("foreign fixture sentinel".utf8)) else {throw CloudFailure("Receipt substitution must retain foreign bytes without allocation")}
+        if boundary=="torn" {resolutions=0;refused=false;do {_=try acceptanceBootstrap(action:"qa-create-child",binding:selectedBinding,generation:"fixture-generation",spec:spec,workspace:local,evidence:nil,environment:guarded,machine:{"synthetic-physical-a"})}catch{refused=true};guard refused,resolutions==0 else {throw CloudFailure("Torn append must refuse before resolution")}}
+    }
+
 
 }
 

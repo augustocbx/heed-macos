@@ -29,7 +29,7 @@ let libc:ReturnType<typeof openLibrary>|undefined;let shim:ReturnType<typeof ope
 function openShim(){return cc({source:new URL('./synchronization-device-files.c',import.meta.url),symbols:{qa_openat:{args:[FFIType.i32,FFIType.ptr,FFIType.i32,FFIType.i32],returns:FFIType.i32},qa_directory_name:{args:[FFIType.ptr,FFIType.ptr,FFIType.i32],returns:FFIType.i32}}});}
 function openLibrary(){return dlopen('/usr/lib/libSystem.B.dylib',{
  mkdirat:{args:[FFIType.i32,FFIType.ptr,FFIType.i32],returns:FFIType.i32},
- renameat:{args:[FFIType.i32,FFIType.ptr,FFIType.i32,FFIType.ptr],returns:FFIType.i32},
+ flock:{args:[FFIType.i32,FFIType.i32],returns:FFIType.i32},
  fdopendir:{args:[FFIType.i32],returns:FFIType.ptr},
  closedir:{args:[FFIType.ptr],returns:FFIType.i32},
  __error:{args:[],returns:FFIType.ptr}});}
@@ -56,20 +56,21 @@ class LocalChain {
 }
 function privateFile(fd:number,max:number){const s=fstatSync(fd);if(!s.isFile()||s.nlink!==1||s.uid!==process.getuid?.()||(s.mode&0o777)!==0o600||s.size>max||s.size<1)refuse('recovery-required');const out=Buffer.alloc(s.size+1);const read=readSync(fd,out,0,out.length,0);if(read!==s.size)refuse('identity-changed');return out.subarray(0,read);}
 export interface LocalBindingDescriptor {version:1;provider:'icloud'|'smb-direct';appPath:string;appIdentity:LocalIdentity;configIdentity:LocalIdentity;connectionId:string;generation:string}
-export type ResolvedLocalBinding={provider:'icloud';binding:CloudBinding;connectionId:string;generation:string}|{provider:'smb-direct';binding:DirectSmbBinding;credentials:DirectSmbCredentials;connectionId:string;generation:string};
-function selected(value:Record<string,unknown>,d:LocalBindingDescriptor):Omit<Extract<ResolvedLocalBinding,{provider:'icloud'}>,'provider'>|DirectSmbBinding {
+interface SelectedPreparation {disabled:boolean;drained:boolean}
+export type ResolvedLocalBinding={provider:'icloud';binding:CloudBinding;connectionId:string;generation:string;preparation:SelectedPreparation}|{provider:'smb-direct';binding:DirectSmbBinding;credentials:DirectSmbCredentials;connectionId:string;generation:string;preparation:SelectedPreparation};
+function selected(value:Record<string,unknown>,d:LocalBindingDescriptor):Omit<Extract<ResolvedLocalBinding,{provider:'icloud'}>,'provider'>|{binding:DirectSmbBinding;preparation:SelectedPreparation} {
  if(d.provider==='icloud'){
   const v=exact(value,['version','connection']);if(v.version!==1)refuse('recovery-required');const c=exact(v.connection,['id','name','enabled','binding','destinationId','destinationVersion']);
   if(c.id!==d.connectionId||!UUID.test(c.id)||!UUID.test(c.destinationId)||c.destinationVersion!==2||typeof c.enabled!=='boolean'||typeof c.name!=='string'||c.name!==c.name.trim()||c.name.length<1||c.name.length>80||/[\x00-\x1f\x7f]/.test(c.name))refuse('binding-unavailable');
-  const binding=cloudBinding(c.binding);const {name,enabled,...parts}=c;const generation=createHash('sha256').update(JSON.stringify(parts)).digest('hex');if(generation!==d.generation)refuse('identity-changed');return {binding,connectionId:c.id,generation};
+  const binding=cloudBinding(c.binding);const {name,enabled,...parts}=c;const generation=createHash('sha256').update(JSON.stringify(parts)).digest('hex');if(generation!==d.generation)refuse('identity-changed');return {binding,connectionId:c.id,generation,preparation:{disabled:!c.enabled,drained:!c.enabled}};
  }
  if(Object.hasOwn(value,'transition'))refuse('recovery-required');const v=exact(value,['version','connections','cleanup']);if(v.version!==1||!Array.isArray(v.connections)||v.connections.length>8||!Array.isArray(v.cleanup)||v.cleanup.length)refuse('recovery-required');
- const ids=new Set(),refs=new Set();let found:DirectSmbBinding|undefined;
+ const ids=new Set(),refs=new Set();let found:{binding:DirectSmbBinding;preparation:SelectedPreparation}|undefined;
  for(const raw of v.connections){const c=exact(raw,['uncertainty','binding','dialect','enabled','jobs','acknowledged','retryAt','failures','lastSync','imported','skipped','error']);const b=validateDirectBinding(c.binding);
   if(ids.has(b.id)||refs.has(b.credentialRef)||c.uncertainty!==null||typeof c.enabled!=='boolean'||!['3.0','3.0.2','3.1.1'].includes(c.dialect)||!c.jobs||typeof c.jobs!=='object'||Array.isArray(c.jobs)||Object.keys(c.jobs).length>10000||!Array.isArray(c.acknowledged)||c.acknowledged.length>10000||c.acknowledged.some((id:unknown)=>typeof id!=='string'||!UUID.test(id)))refuse('recovery-required');
   for(const [id,rawJob] of Object.entries(c.jobs)){const j=exact(rawJob,['attempts','next']);if(!UUID.test(id)||!Number.isInteger(j.attempts)||j.attempts<0||j.attempts>30||typeof j.next!=='number'||!Number.isFinite(j.next)||j.next<0)refuse('recovery-required');}
   if(['retryAt','failures','imported','skipped'].some(k=>!Number.isSafeInteger(c[k])||c[k]<0)||c.failures>30||(c.lastSync!==null&&(!Number.isSafeInteger(c.lastSync)||c.lastSync<0))||(c.error!==null&&typeof c.error!=='string'))refuse('recovery-required');
-  ids.add(b.id);refs.add(b.credentialRef);if(b.id===d.connectionId){if(b.readOnly||b.connectionGeneration!==d.generation)refuse('binding-unavailable');found=b;}
+  ids.add(b.id);refs.add(b.credentialRef);if(b.id===d.connectionId){if(b.readOnly||b.connectionGeneration!==d.generation)refuse('binding-unavailable');found={binding:b,preparation:{disabled:!c.enabled,drained:!c.enabled&&Object.keys(c.jobs).length===0}};}
  }
  return found??refuse('binding-unavailable');
 }
@@ -86,7 +87,7 @@ export async function withResolvedLocalBinding<T>(input:LocalBindingDescriptor,r
   const check=()=>{chain!.check();chain!.installed();transition();const current=relativeOpen(chain!.last,name,fileFlags);if(current<0)refuse('identity-changed');try{if(!same(identity(fstatSync(current,{bigint:true}) as any),d.configIdentity)||!privateFile(current,max).equals(bytes)||!privateFile(fd!,max).equals(bytes))refuse('identity-changed');}finally{closeSync(current);}};
   let binding:ResolvedLocalBinding;
   if(d.provider==='icloud')binding={provider:'icloud',...(local as Omit<Extract<ResolvedLocalBinding,{provider:'icloud'}>,'provider'>)};
-  else{if(!vault)refuse('binding-unavailable');const b=local as DirectSmbBinding;check();const credentials=validateDirectCredentials(await vault!.get(b.credentialRef));binding={provider:'smb-direct',binding:b,credentials,connectionId:b.id,generation:b.connectionGeneration};}
+  else{if(!vault)refuse('binding-unavailable');const {binding:b,preparation}=local as {binding:DirectSmbBinding;preparation:SelectedPreparation};check();const credentials=validateDirectCredentials(await vault!.get(b.credentialRef));binding={provider:'smb-direct',binding:b,credentials,connectionId:b.id,generation:b.connectionGeneration,preparation};}
   check();const result=await run(binding);check();return result;
  }catch(error){if(error instanceof AcceptanceError)throw error;const safe=new AcceptanceError('binding-unavailable');if(error instanceof Error&&Object.getOwnPropertyDescriptor(error,'guardianStopped')?.value===true)Object.defineProperty(safe,'guardianStopped',{value:true,enumerable:false});throw safe;}
  finally{if(fd!==undefined&&fd>=0)closeSync(fd);chain?.close();}
@@ -115,30 +116,60 @@ function fixedLedger(value:unknown,runId:string,paths:string[]){
  for(const [id,raw] of Object.entries(v.reservations)){const r=exact(raw,['bytes','paths']);const expected=id===`qa-bootstrap-${runId}`?{bytes:ACCEPTANCE_RECEIPT_BYTES,paths}:id===`qa-ledger-${runId}`?{bytes:ACCEPTANCE_LEDGER_BYTES,paths:[]}:null;if(!expected||JSON.stringify(r)!==JSON.stringify(expected))refuse('recovery-required');}
  if(Buffer.byteLength(JSON.stringify(v))>4096)refuse('recovery-required');return v;
 }
-/** A descriptor-only ledger adapter; unknown checkpoints remain retained and block restart. */
+function canonical(value:unknown):string {
+ if(Array.isArray(value))return '['+value.map(canonical).join(',')+']';
+ if(value&&typeof value==='object')return '{'+Object.keys(value).sort().map(key=>JSON.stringify(key)+':'+canonical((value as Record<string,unknown>)[key])).join(',')+'}';
+ return JSON.stringify(value);
+}
+function logFrames(bytes:Buffer,kind:'receipt'|'ledger'){
+ if(!bytes.length||bytes.at(-1)!==10)refuse('recovery-required');
+ const lines=bytes.toString('utf8').slice(0,-1).split('\n');if(lines.length<2||lines.length>(kind==='receipt'?5:3))refuse('recovery-required');
+ const frames=lines.map(line=>decodeFrame(Buffer.from(line)));
+ const header=exact(frames[0],kind==='receipt'?['format','version','identity','scope']:['format','version','identity']);
+ if(header.format!=='heed-qa-'+kind||header.version!==2)refuse('recovery-required');
+ return {header,records:frames.slice(1)};
+}
+/** Append only through the retained original file; never rename over a namespace entry. */
 class AcceptanceLedger implements QuotaLedgerStorage {
- private original:LocalIdentity|null=null;
+ private fd:number|undefined;private original:LocalIdentity|undefined;private committed=Buffer.alloc(0);private header:Record<string,unknown>|undefined;private records:Record<string,any>[]=[];
  constructor(readonly chain:LocalChain,readonly runId:string,readonly paths:string[]){}
- load():unknown|null {knownQuotaEntries(this.chain);const fd=relativeOpen(this.chain.last,'ledger',fileFlags);if(fd<0){if(lastErrno!==2)refuse('recovery-required');return null;}try{const result=fixedLedger(decodeFrame(privateFile(fd,4096)),this.runId,this.paths);this.original=identity(fstatSync(fd,{bigint:true}) as any);return result;}finally{closeSync(fd);}}
- save(input:unknown){
-  const value=fixedLedger(input,this.runId,this.paths);const bytes=Buffer.from(JSON.stringify(value));knownQuotaEntries(this.chain);
-  const current=relativeOpen(this.chain.last,'ledger',fileFlags);if(current>=0){try{if(!this.original||!same(this.original,identity(fstatSync(current,{bigint:true}) as any)))refuse('identity-changed');privateFile(current,4096);}finally{closeSync(current);}}else if(lastErrno!==2||this.original)refuse('identity-changed');
-  absent(this.chain.last,'checkpoint');const fd=relativeOpen(this.chain.last,'checkpoint',constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);if(fd<0)refuse('recovery-required');
-  try{let offset=0;while(offset<bytes.length){const written=writeSync(fd,bytes,offset,bytes.length-offset);if(written<=0)refuse('recovery-required');offset+=written;}fsyncSync(fd);this.chain.check();const from=Buffer.from('checkpoint\0'),to=Buffer.from('ledger\0');if(libc!.symbols.renameat(this.chain.last,ptr(from),this.chain.last,ptr(to))!==0)refuse('recovery-required');fsyncSync(this.chain.last);this.original=identity(fstatSync(fd,{bigint:true}) as any);this.chain.check();}
-  finally{closeSync(fd);} // A failed checkpoint is intentionally retained.
+ private lock(){if(libc!.symbols.flock(this.fd!,2|4)!==0)refuse('recovery-required');} // Darwin LOCK_EX | LOCK_NB; close releases only this owned FD.
+ private check(expected=this.committed){
+  this.chain.check();knownQuotaEntries(this.chain);const current=relativeOpen(this.chain.last,'ledger',fileFlags);if(current<0||this.fd===undefined)refuse('recovery-required');
+  try{for(const fd of [current,this.fd!]){const stat=fstatSync(fd,{bigint:true});if(!same(identity(stat as any),this.original!)||!stat.isFile()||stat.nlink!==1n||stat.uid!==BigInt(process.getuid!())||(stat.mode&0o777n)!==0o600n||stat.size!==BigInt(expected.length))refuse('identity-changed');const bytes=Buffer.alloc(expected.length+1);if(readSync(fd,bytes,0,bytes.length,0)!==expected.length||!bytes.subarray(0,expected.length).equals(expected))refuse('identity-changed');}}
+  finally{closeSync(current);}
  }
+ load():unknown|null {
+  if(this.fd!==undefined){this.check();return this.records.at(-1)??null;}
+  knownQuotaEntries(this.chain);this.fd=relativeOpen(this.chain.last,'ledger',constants.O_RDWR|constants.O_APPEND|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+  if(this.fd<0){if(lastErrno!==2)refuse('recovery-required');this.fd=relativeOpen(this.chain.last,'ledger',constants.O_RDWR|constants.O_APPEND|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);if(this.fd<0)refuse('recovery-required');this.lock();this.original=identity(fstatSync(this.fd,{bigint:true}) as any);this.header={format:'heed-qa-ledger',version:2,identity:this.original};this.check();return null;}
+  this.lock();this.original=identity(fstatSync(this.fd,{bigint:true}) as any);this.committed=privateFile(this.fd,4096);const {header,records}=logFrames(this.committed,'ledger');
+  if(!same(identityInput(header.identity),this.original))refuse('identity-changed');this.header=header;
+  for(let index=0;index<records.length;index++){const value=fixedLedger(records[index],this.runId,this.paths),ids=Object.keys(value.reservations);if(ids.length!==index+1||!ids.includes('qa-ledger-'+this.runId))refuse('recovery-required');this.records.push(structuredClone(value));}
+  this.check();fsyncSync(this.fd);fsyncSync(this.chain.last);this.check();return this.records.at(-1)!;
+ }
+ predict(values:unknown[]){if(!this.header)refuse('recovery-required');const bytes=Buffer.byteLength([this.header,...values].map(canonical).join('\n')+'\n');if(bytes>4096)refuse('recovery-required');}
+ save(input:unknown){
+  const value=fixedLedger(input,this.runId,this.paths);this.check();if(this.records.length&&canonical(this.records.at(-1))===canonical(value))return;
+  const ids=Object.keys(value.reservations);if(this.records.length>=2||ids.length!==this.records.length+1||!ids.includes('qa-ledger-'+this.runId))refuse('recovery-required');
+  const addition=Buffer.from((this.committed.length?'':canonical(this.header)+'\n')+canonical(value)+'\n'),expected=Buffer.concat([this.committed,addition]);if(expected.length>4096)refuse('recovery-required');
+  let offset=0;while(offset<addition.length){const written=writeSync(this.fd!,addition,offset,addition.length-offset);if(written<=0)refuse('recovery-required');offset+=written;}
+  fsyncSync(this.fd!);fsyncSync(this.chain.last);this.check(expected);this.committed=expected;this.records.push(structuredClone(value));
+ }
+ close(){if(this.fd!==undefined&&this.fd>=0){closeSync(this.fd);this.fd=undefined;}}
 }
 export function openAcceptanceQuota(descriptor:AcceptanceWorkspace,runId:string,limitBytes:number){
  if(!UUID.test(runId)||!Number.isSafeInteger(limitBytes)||limitBytes<ACCEPTANCE_RECEIPT_BYTES+ACCEPTANCE_LEDGER_BYTES)refuse();
- const workspace=new LocalChain(descriptor.path);let receipts:LocalChain|undefined,quota:LocalChain|undefined;
+ const workspace=new LocalChain(descriptor.path);let receipts:LocalChain|undefined,quota:LocalChain|undefined,ledgerStorage:AcceptanceLedger|undefined;
  try{workspace.private();receipts=new LocalChain(join(descriptor.path,'acceptance'));receipts.private();quota=new LocalChain(join(descriptor.path,'quota'));quota.private();
   const verifyIdentities=()=>{for(const [chain,expected] of [[workspace,descriptor.identity],[receipts!,descriptor.receipts],[quota!,descriptor.quota]] as const){chain.check();chain.private();if(!same(chain.identities.at(-1)!,identityInput(expected)))refuse('identity-changed');}};verifyIdentities();
   const paths=RECEIPT_NAMES.map(name=>join(descriptor.path,'acceptance',name)).sort();const expected={version:1,reservations:{[`qa-ledger-${runId}`]:{bytes:ACCEPTANCE_LEDGER_BYTES,paths:[]},[`qa-bootstrap-${runId}`]:{bytes:ACCEPTANCE_RECEIPT_BYTES,paths}},atomicWrites:{}};fixedLedger(expected,runId,paths);
-  const ledgerStorage=new AcceptanceLedger(quota,runId,paths);const managed=new ManagedQuota({ledgerPath:join(descriptor.path,'quota','ledger'),ledgerStorage,roots:{text:paths},getLimit:()=>limitBytes,setLimit:()=>refuse(),protectedPaths:()=>paths});
+  ledgerStorage=new AcceptanceLedger(quota,runId,paths);const managed=new ManagedQuota({ledgerPath:join(descriptor.path,'quota','ledger'),ledgerStorage,roots:{text:paths},getLimit:()=>limitBytes,setLimit:()=>refuse(),protectedPaths:()=>paths});
+  ledgerStorage.predict([{version:1,reservations:{[`qa-ledger-${runId}`]:{bytes:ACCEPTANCE_LEDGER_BYTES,paths:[]}},atomicWrites:{}},expected]);
   verifyIdentities();managed.reserve(`qa-ledger-${runId}`,ACCEPTANCE_LEDGER_BYTES,[]);verifyIdentities();managed.reserve(`qa-bootstrap-${runId}`,ACCEPTANCE_RECEIPT_BYTES,paths);verifyIdentities();
-  const verify=()=>{verifyIdentities();const ledger=fixedLedger(ledgerStorage.load(),runId,paths);if(Object.keys(ledger.reservations).length!==2)refuse('recovery-required');let size=0;for(const name of RECEIPT_NAMES){const fd=relativeOpen(receipts!.last,name,fileFlags);if(fd<0){if(lastErrno!==2)refuse('recovery-required');continue;}try{const max=name==='guard'?0:['receipt','checkpoint'].includes(name)?16384:150000;const info=fstatSync(fd);if(!info.isFile()||info.nlink!==1||info.uid!==process.getuid?.()||(info.mode&0o777)!==0o600||info.size>max)refuse('recovery-required');size+=info.size;}finally{closeSync(fd);}}if(size>ACCEPTANCE_RECEIPT_BYTES)refuse('recovery-required');verifyIdentities();};verify();
-  let closed=false;return {verify,snapshot:()=>{verify();const result=managed.snapshot();verify();return result;},close:()=>{if(!closed){closed=true;quota!.close();receipts!.close();workspace.close();}}};
- }catch(error){quota?.close();receipts?.close();workspace.close();throw error;}
+  const verify=()=>{verifyIdentities();const ledger=fixedLedger(ledgerStorage!.load(),runId,paths);if(Object.keys(ledger.reservations).length!==2)refuse('recovery-required');let size=0;for(const name of RECEIPT_NAMES){const fd=relativeOpen(receipts!.last,name,fileFlags);if(fd<0){if(lastErrno!==2)refuse('recovery-required');continue;}try{const max=name==='guard'?0:['receipt','checkpoint'].includes(name)?16384:150000;const info=fstatSync(fd);if(!info.isFile()||info.nlink!==1||info.uid!==process.getuid?.()||(info.mode&0o777)!==0o600||info.size>max)refuse('recovery-required');size+=info.size;}finally{closeSync(fd);}}if(size>ACCEPTANCE_RECEIPT_BYTES)refuse('recovery-required');verifyIdentities();};verify();
+  let closed=false;return {verify,snapshot:()=>{verify();const result=managed.snapshot();verify();return result;},close:()=>{if(!closed){closed=true;ledgerStorage!.close();quota!.close();receipts!.close();workspace.close();}}};
+ }catch(error){ledgerStorage?.close();quota?.close();receipts?.close();workspace.close();throw error;}
 }
 
 interface AcceptanceNatives {cloud?:CloudAcceptanceNative;smb?:DirectSmbAcceptanceNative;vault?:Pick<SecretVault,'get'>}
@@ -163,9 +194,9 @@ function localReceiptPreflight(workspace:AcceptanceWorkspace,runId:string){
   chain.private();if(!same(chain.identities.at(-1)!,workspace.receipts))refuse('identity-changed');absent(chain.last,'checkpoint');
   const fd=relativeOpen(chain.last,'receipt',fileFlags);
   if(fd<0){if(lastErrno!==2)refuse('recovery-required');for(const name of ['guard','parent-binding','child-binding'])absent(chain.last,name);return;}
-  let receipt:Record<string,unknown>;try{receipt=decodeFrame(privateFile(fd,16384));}finally{closeSync(fd);}
+  let receipt:Record<string,unknown>;try{const frames=logFrames(privateFile(fd,16384),'receipt');const own=identity(fstatSync(fd,{bigint:true}) as any),saved=frames.header.identity;if(!(Array.isArray(saved)?saved[0]===own.device&&saved[1]===own.inode:typeof saved==='string'&&saved.split(':')[0]===own.device&&saved.split(':')[1]===own.inode))refuse('ownership-unavailable');const scope=frames.header.scope as Record<string,unknown>;const phases=scope?.role==='creator'?['prepared','allocating','allocated','initialized']:['prepared','joined'];for(let index=0;index<frames.records.length;index++){const record=exact(frames.records[index],['phase','child','childFile']);if(record.phase!==phases[index])refuse('recovery-required');}receipt={...scope,...frames.records.at(-1)};}finally{closeSync(fd);}
   const origin=receipt.origin as Record<string,unknown>|undefined;const spec=receipt.spec as Record<string,unknown>|undefined;
-  if(receipt.version!==1||!origin||spec?.runId!==runId||!['creator','participant'].includes(String(receipt.role))||!['prepared','allocating','allocated','initialized','joined'].includes(String(receipt.phase)))refuse('recovery-required');
+  if(receipt.version!==2||!origin||spec?.runId!==runId||!['creator','participant'].includes(String(receipt.role))||!['prepared','allocating','allocated','initialized','joined'].includes(String(receipt.phase)))refuse('recovery-required');
   const guard=relativeOpen(chain.last,'guard',fileFlags);if(guard<0)refuse('recovery-required');try{const info=fstatSync(guard,{bigint:true});if(!info.isFile()||info.nlink!==1n||info.uid!==BigInt(process.getuid!())||(info.mode&0o777n)!==0o600n||info.size!==0n)refuse('recovery-required');
    const matches=(value:unknown,expected:LocalIdentity)=>Array.isArray(value)?value.length===3&&value[0]===expected.device&&value[1]===expected.inode:typeof value==='string'&&value.split(':')[0]===expected.device&&value.split(':')[1]===expected.inode;
    if(!matches(origin!.workspace,workspace.identity)||!matches(origin!.receipts,workspace.receipts)||!matches(origin!.guard,identity(info as any)))refuse('ownership-unavailable');
@@ -182,6 +213,7 @@ async function prepareOwnedChild(input:BootstrapInput,role:'creator'|'participan
  if(role==='participant'){const actual=exact(evidence,['runId','destinationId','provider','destinationVersion','child','initialized']);if(Object.entries(provisioningEvidence(spec)).some(([key,value])=>actual[key]!==value))refuse();}
  localReceiptPreflight(input.workspace,spec.runId);
  return withResolvedLocalBinding(input.descriptor,async local=>{
+  if(!local.preparation.disabled||!local.preparation.drained)refuse('binding-unavailable');
   localReceiptPreflight(input.workspace,spec.runId);const quota=openAcceptanceQuota(input.workspace,spec.runId,input.limitBytes);
   try{
    signal?.throwIfAborted();quota.verify();const action=role==='creator'?'qa-create-child':'qa-join-child',selectedScope=role==='creator'?'parent':'child';
