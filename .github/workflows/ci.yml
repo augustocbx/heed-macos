@@ -13,6 +13,8 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
+      - name: Install real audio fixture prerequisites
+        run: brew install ffmpeg
       - name: Server tests
         run: bun test packages/server/lib
       - name: Validated service configuration and safe process rollback tests

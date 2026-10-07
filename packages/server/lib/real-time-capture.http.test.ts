@@ -36,7 +36,7 @@ setInterval(()=>{if(existsSync(join(process.env.HEED_APP_DIR,'fail-capture')))pr
   app=Bun.spawn([process.execPath,join(source,'packages/server/server.ts')],{cwd:source,env,stdout:'ignore',stderr:'ignore'});
   const deadline=Date.now()+8000;while(Date.now()<deadline){try{if((await fetch(base+'/api/sessions')).ok)break;}catch{}await Bun.sleep(25);}
   const start=await request('/api/desktop/control/commands',{action:'start',mode:'both',requestId:'menu-off',realTimeTranscription:true});
-  expect(start.status).toBe(200);
+  expect(start.status,JSON.stringify(start.body).slice(0,1024)).toBe(200);
   const active=(await request('/api/recording/status')).body;expect(active).toMatchObject({state:'recording',realTimeTranscription:false});
   const changed=await request('/api/recording/settings',{enabled:true});expect(changed.body).toMatchObject({enabled:true,activeEnabled:false,engineState:'deferred'});
   await Bun.sleep(2600);
