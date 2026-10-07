@@ -19,7 +19,7 @@ for(const [locale,start,language,heading] of [
   expect(screen.getByRole('button',{name:start})).toBeInTheDocument();
   expect(screen.getByRole('heading',{name:heading})).toBeInTheDocument();
   expect(screen.getAllByText(new RegExp(language.replace(/[()]/g,'\\$&'))).length).toBeGreaterThan(0);
-  expect(screen.getByText('My unchanged meeting')).toBeInTheDocument();
+  expect(screen.getAllByText('My unchanged meeting')).toHaveLength(2);
   expect(screen.getByRole('option',{name:'Whisper small'})).toBeInTheDocument();
  });
 }
