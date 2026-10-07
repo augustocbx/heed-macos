@@ -199,7 +199,7 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
     },
     view: session => set(state => {
       const current = state.sessions.find(saved => saved.id === session?.id);
-      return { viewing: session && current ? mergeAcceptedSession(current, session) : session };
+      return { viewing: session && current && sessionVersion(session) <= sessionVersion(current) ? current : session };
     }),
   };
 });

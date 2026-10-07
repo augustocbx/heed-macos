@@ -72,3 +72,10 @@ test('a blocked tag assignment cannot invalidate an admitted notes save',async()
  finish({...meeting(),aiNotes:'Saved notes'});await pending;
  expect(useSessionsStore.getState().viewing?.aiNotes).toBe('Saved notes');
 });
+
+test('view navigation uses the equal-version accepted cache including independent metadata',()=>{
+ const current={...meeting(),title:'Renamed',transcriptEditing:{schemaVersion:1 as const,activeGenerationId:'g',generations:[],edits:[],candidates:[],candidateRequestReceipts:[]}};
+ const old={...current,title:'Old title',transcriptEditing:{...current.transcriptEditing,candidates:[{id:'discarded',requestId:'stage',requestSignature:'sig',createdAt:current.createdAt,baseGuard:{expectedTranscriptRevision:current.transcriptRevision!,expectedTranscriptVersion:1},transcript:'Old candidate',segments:[],speakers:[],language:'en',duration:1}]}};
+ useSessionsStore.setState({sessions:[current],viewing:null});useSessionsStore.getState().view(old);
+ expect(useSessionsStore.getState().viewing).toBe(current);expect(useSessionsStore.getState().sessions[0]).toBe(current);
+});
