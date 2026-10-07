@@ -5,12 +5,12 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Session, SessionPatch } from "../../shared/types/session";
 import type { AutomaticNotesSettings, NotesJob } from "../../shared/types/notes";
 import type { Template } from "../../shared/types/template";
-import { SessionTags, TagError, acceptedSourceChanged, checkTranscriptGuard, normalizeNotesSource, sourcePatch, speakerOnly } from "./session-tags";
+import { SessionTags, TagError, acceptedSourceChanged, acceptedTranscriptChanged, checkTranscriptGuard, normalizeNotesSource, sourcePatch, speakerOnly } from "./session-tags";
 import { applyCandidateAcceptance, transcriptOperationReceipt, validateTranscriptRequestId } from "./transcript-service";
 import type { TranscriptCommand, TranscriptGuard } from "../../shared/types/transcript-editing";
 import { applyTextCommand, normalizeTranscriptSession, renderAcceptedTranscript, transcriptCommandSignature } from "./transcript-editing";
 import { sanitizeTranscriptionDiagnostics } from "./final-recording";
-import { sourceRevision } from "../../shared/lib/transcript-source";
+import { sourceRevision, transcriptSourceIdentity } from "../../shared/lib/transcript-source";
 export { sourceRevision } from "../../shared/lib/transcript-source";
 
 export interface NotesGenerationInput {
@@ -86,7 +86,7 @@ export class AutomaticNotesService {
   if (session.segments.length) session.transcript = renderAcceptedTranscript(session.segments);
   session.transcriptRevision = sourceRevision(session);
   session.transcriptVersion = 1;
-  if (session.aiNotes) session.notesMetadata = { origin: "manual", stale: false, sourceRevision: session.transcriptRevision };
+  if (session.aiNotes) session.notesMetadata = { origin: "manual", stale: false, sourceRevision: session.transcriptRevision, sourceIdentity: transcriptSourceIdentity(session) };
   if (session.transcriptFinalized && this.options.getSettings().enabled) this.enqueue(session);
   session.updatedAt = this.timestamp(); return this.normalize(this.store.create(session));
  }
@@ -109,7 +109,7 @@ export class AutomaticNotesService {
   if (manual) {
    for (const job of Object.values(session.notesJobs || {})) if (activeStatuses.has(job.status)) { job.status = "superseded"; job.reason = "notes-changed"; job.updatedAt = this.timestamp(); }
    const known = patch.expectedTranscriptRevision !== undefined && patch.expectedTranscriptVersion !== undefined;
-   session.notesMetadata = { origin: "manual", sourceRevision: known ? session.transcriptRevision! : null, stale: !known };
+   session.notesMetadata = { origin: "manual", sourceRevision: known ? session.transcriptRevision! : null, ...(known ? {sourceIdentity:transcriptSourceIdentity(session)} : {}), stale: !known };
   }
   const saved = this.save(session);
   if (manual && this.active?.sessionId === id) this.active.controller.abort();
@@ -127,16 +127,16 @@ export class AutomaticNotesService {
   if (command.action === "accept-candidate") return this.replaceAccepted(id, command, current => applyCandidateAcceptance(current, command, this.timestamp()));
   return this.replaceAccepted(id, command, current => applyTextCommand(current, command, this.timestamp()));
  }
- replaceAccepted(id: string, guard: TranscriptGuard, build: (current: Session) => Session): Session {
+ replaceAccepted(id: string, guard: TranscriptGuard, build: (current: Session,now:string) => Session): Session {
   let changed = false;
   const saved = this.store.commitSource(id, guard, current => {
    if (!current) throw new TagError("Meeting not found", 404);
-   let next = build(current);
+   const now=this.timestamp();let next = build(current,now);
    if (acceptedSourceChanged(current, next) && next.segments?.length) next = { ...next, transcript: renderAcceptedTranscript(next.segments) };
-   changed = acceptedSourceChanged(current, next) || (!!current.transcriptEditing && !!next.transcriptEditing && current.transcriptEditing.activeGenerationId !== next.transcriptEditing.activeGenerationId);
+   changed = acceptedTranscriptChanged(current,next);
    if (!changed) return next;
    const diagnostics = sanitizeTranscriptionDiagnostics(next.transcriptionDiagnostics);
-   next = { ...next, transcriptionDiagnostics: diagnostics, transcriptRevision: sourceRevision(next), transcriptVersion: (current.transcriptVersion ?? 0) + 1, updatedAt: this.timestamp() };
+   next = { ...next, transcriptionDiagnostics: diagnostics, transcriptRevision: sourceRevision(next), transcriptVersion: (current.transcriptVersion ?? 0) + 1, updatedAt: now };
    for (const job of Object.values(next.notesJobs || {})) if (activeStatuses.has(job.status)) { job.status = "superseded"; job.reason = "transcript-changed"; job.updatedAt = this.timestamp(); }
    if (next.notesMetadata) next.notesMetadata = { ...next.notesMetadata, stale: true };
    if (next.transcriptFinalized && this.options.getSettings().enabled) this.enqueue(next);
@@ -229,7 +229,7 @@ export class AutomaticNotesService {
    if (!session || !job || job.status !== "running" || job.attempts !== expected.attempts || controller.signal.aborted) return;
    if (session.transcriptRevision !== expected.sourceRevision || session.transcriptVersion !== expected.sourceVersion || !session.transcriptFinalized || notesHash(session.aiNotes) !== expected.expectedNotesHash || (session.aiNotes.trim() && !expected.replaceExisting)) { job.status = "superseded"; job.reason = "transcript-changed"; this.save(session); return; }
    if (!text.trim()) throw new Error("incomplete-output");
-   session.aiNotes = text; session.notesMetadata = { origin: "automatic", sourceRevision: expected.sourceRevision, templateId: expected.templateId, templateName: expected.templateName, templateHash: expected.templateHash, model: expected.model, language: expected.language, generatedAt: this.timestamp(), stale: false };
+   session.aiNotes = text; session.notesMetadata = { origin: "automatic", sourceRevision: expected.sourceRevision, sourceIdentity: transcriptSourceIdentity(session), templateId: expected.templateId, templateName: expected.templateName, templateHash: expected.templateHash, model: expected.model, language: expected.language, generatedAt: this.timestamp(), stale: false };
    job.status = "completed"; job.retryable = false; job.generatedCharacters = text.length; job.updatedAt = this.timestamp(); delete job.reason; this.save(session);
   } catch (error) {
    const session = this.get(snapshot.id); const job = session?.notesJobs?.[expected.id];
