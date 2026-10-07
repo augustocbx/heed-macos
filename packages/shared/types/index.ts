@@ -30,3 +30,4 @@ export type * from './vocabulary';
 export type * from './media-import';
 export type * from './ai';
 export type * from './ai-cost';
+export type * from './ai-budget';
