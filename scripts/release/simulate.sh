@@ -206,27 +206,14 @@ check "initialized default is persisted" /usr/bin/python3 "$HEED_REPO_ROOT/scrip
 step "Existing checkout installation with recordings, transcripts, speaker names and settings"
 LEGACY="$SIM_HOME/heed-checkout"
 mkdir -p "$LEGACY/recordings" "$SIM_HOME/.heed-app/sessions" "$SIM_HOME/Applications/Heed.app/Contents/Resources"
-# Model a supported, migrated checkout with its real port and lifecycle helpers.
-mkdir -p "$LEGACY/config" "$LEGACY/scripts" "$LEGACY/packages/desktop"
-cp "$HEED_REPO_ROOT/config/service-ports.json" "$LEGACY/config/"
-cp "$HEED_REPO_ROOT/scripts/service_config.py" "$HEED_REPO_ROOT/scripts/service_runtime.py" "$LEGACY/scripts/"
-cp "$HEED_REPO_ROOT/packages/desktop/guard-lifecycle.py" "$LEGACY/packages/desktop/"
+# Keep this checkout unmigrated until its unsupported-installation refusal is checked.
 printf '{"name":"heed","private":true}\n' > "$LEGACY/package.json"
-# Model a checkout migrated to the current ownership/configuration contract.
-for SIM_HELPER in scripts/service_config.py scripts/service_runtime.py config/service-ports.json packages/desktop/guard-lifecycle.py; do
-    mkdir -p "$LEGACY/$(dirname "$SIM_HELPER")"
-    tar -xOf "$SIM_RELEASES/v$V1/heed-macos-$V1-arm64.tar.gz" "heed-macos-$V1-arm64/$SIM_HELPER" > "$LEGACY/$SIM_HELPER"
-done
-# Save the migrated checkout ports; never probe a live installation on the defaults.
-/usr/bin/python3 "$LEGACY/scripts/service_config.py" api --save > /dev/null
 
 head -c 48000 /dev/urandom > "$LEGACY/recordings/dual-capture-1.wav"
 printf '{"id":"session-1","title":"Planning","transcript":"Hello","speakers":["Ana"],"files":{"wav":"%s"}}\n' "$LEGACY/recordings/dual-capture-1.wav" \
     > "$SIM_HOME/.heed-app/sessions/session-1.json"
 printf '{"Ana":[0.1,0.2]}\n' > "$SIM_HOME/.heed-app/voices.json"
 printf '{"ui_locale":"pt-BR","storage_limit_bytes":3000000000}\n' > "$SIM_HOME/.heed-app/config.json"
-# A migrated checkout persists its selected ports before a release takes over.
-/usr/bin/python3 "$LEGACY/scripts/service_config.py" api --save >/dev/null
 printf '%s\n' "$LEGACY" > "$SIM_HOME/Applications/Heed.app/Contents/Resources/heed-root.txt"
 SIM_HOST="$SIM_HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/local.heed.meet.json"
 mkdir -p "$(dirname "$SIM_HOST")"
@@ -263,10 +250,10 @@ check "refusal performs no launchd, credential or permission operations" cmp -s 
 
 # The supported migration fixture has the real configuration and lifecycle helpers.
 # Keep the incompatible checkout control above rather than bypassing the installer gate.
-mkdir -p "$LEGACY/scripts" "$LEGACY/config" "$LEGACY/packages/desktop"
-cp "$HEED_REPO_ROOT/scripts/service_config.py" "$HEED_REPO_ROOT/scripts/service_runtime.py" "$HEED_REPO_ROOT/scripts/lifecycle_metadata.py" "$LEGACY/scripts/"
-cp "$HEED_REPO_ROOT/config/service-ports.json" "$LEGACY/config/"
-cp "$HEED_REPO_ROOT/packages/desktop/guard-lifecycle.py" "$LEGACY/packages/desktop/"
+for SIM_HELPER in scripts/service_config.py scripts/service_runtime.py scripts/lifecycle_metadata.py config/service-ports.json packages/desktop/guard-lifecycle.py; do
+    mkdir -p "$LEGACY/$(dirname "$SIM_HELPER")"
+    tar -xOf "$SIM_RELEASES/v$V1/heed-macos-$V1-arm64.tar.gz" "heed-macos-$V1-arm64/$SIM_HELPER" > "$LEGACY/$SIM_HELPER"
+done
 # This disposable device already uses the simulator's ports. Persist them so
 # migration never inspects another installation's production-default listeners.
 /usr/bin/python3 "$LEGACY/scripts/service_config.py" api --save >/dev/null
