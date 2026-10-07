@@ -1,3 +1,7 @@
+import {MediaImportController,MAX_IMPORT_FILE_BYTES} from './lib/media-import';
+import {mediaImportResponse} from './lib/media-import-http';
+import {transcribeImport} from './lib/media-import-transcription';
+import {cleanupMeetingAudio} from './lib/meeting-audio-cleanup';
 import type { AiWaitingReason } from "@heed/shared";
 import type { LanguageCapabilities, LiveCaptureOptions } from "@heed/shared";
 import {configuredLiveSpeechLanguage, recordingSettingsPatch, resolveLiveCaptureOptions, validatedLanguageCapabilities, rejectRecordingOverrides, previewResultMatches, LiveLanguageError} from "./lib/live-language";
@@ -42,7 +46,7 @@ import {validateProcessingWave} from "./lib/processing-wave.ts";
 import {reserveMediaWork} from "./lib/media-budget.ts";
 import { join, resolve, extname } from "node:path";
 import { homedir, cpus } from "node:os";
-import { downloadFromUrl, normalizeAudio } from "./lib/media.ts";
+import { downloadFromUrl, normalizeAudio, probeImportMedia } from "./lib/media.ts";
 import { APP_DIR, LIBRARY_DIR, CONFIG_PATH, SESSIONS_DIR, TEMPLATES_DIR, type TrxConfig, ensureAppDirs, loadConfig, saveConfig, micLabel, realTimeTranscription } from "./lib/app-config.ts";
 import { TRANSCRIPTION_SERVER, pyPost as postJSON } from "./lib/transcription-client.ts";
 import { track, gracefulStop, installShutdownHooks } from "./lib/process.ts";
@@ -63,6 +67,8 @@ import {createAppQuota} from './lib/app-storage.ts';
 import {reserveCapture,reserveFinalization,releaseCapture} from './lib/capture-quota.ts';
 import { type CaptureMode, nativeCaptureCommand, nativeRecordingCommand, verifyNativeHandshake, isNativeProtocolLine } from "./lib/native-capture.ts";
 const desktopPermissions = new DesktopPermissions();
+let mediaImports:MediaImportController|undefined;
+let mediaImportUnavailable=false;
 const retainedProcessing = new Map<string, number>();
 let captureLimitBytes=0;
 let recorderProc: ReturnType<typeof Bun.spawn> | null = null;
@@ -94,8 +100,8 @@ function localAiWaitingReason(includePendingChat = false): AiWaitingReason {
 }
 // These synchronous admission checks cover command-triggered and timer-triggered workers.
 function chatPending() { return chatService.pending || libraryChatService.pending; }
-function audioWorkBusy() {
- return !!(recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning || transcriptionRequests || recordingCoordinator.admissionPending
+function audioWorkBusy(includeImports=true) {
+ return !!((includeImports&&mediaImports?.busy) || recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning || transcriptionRequests || recordingCoordinator.admissionPending
   || ["starting", "stopping", "finalizing"].includes(recordingCoordinator.snapshot().state));
 }
 async function preemptNotes() {
@@ -166,7 +172,7 @@ const managedQuota=createAppQuota({
  recordingsDir:UPLOAD_DIR,
  disposableFiles:()=>quotaRetrievalOwner?.disposableFiles()??[],
  disposeFiles:paths=>{if(!quotaRetrievalOwner)throw Error('Retrieval cache is unavailable');meetingRetriever.invalidateCache();quotaRetrievalOwner.reclaim(paths);},
- protectedPaths:()=>[...captureProtectedPaths(),...synchronizationProtectedPaths()],
+ protectedPaths:()=>[...captureProtectedPaths(),...synchronizationProtectedPaths(),...(mediaImports?.protectedPaths()||[]),...(mediaImportUnavailable?[UPLOAD_DIR,join(LIBRARY_DIR,"staging")]:[])],
  onEvicted:paths=>{
   sessionTags.recover();
   for(const session of sessionTags.snapshot().sessions)if(session.files?.wav && paths.includes(session.files.wav)){
@@ -428,6 +434,7 @@ function serveStatic(path: string): Response | null {
 // --- Transcription (SSE) ---
 async function handleTranscribe(req: Request): Promise<Response> {
  if(!permissionRequestAllowed(req,PORT))return new Response(null,{status:403});
+ if(mediaImports?.busy)return Response.json({error:"Wait for the current media import to finish."},{status:409});
  if(recordingCoordinator.snapshot().maintenance)return Response.json({error:"Heed is being updated. Try again when the update finishes."},{status:409});
 	let input: string;
 	let language = "auto";
@@ -2268,7 +2275,7 @@ function handleListOrphaned(): Response {
 	const orphans: OrphanedRecording[] = [];
 	for (const f of wavFiles) {
 		const fullPath = join(UPLOAD_DIR, f);
-		if (sessionPaths.has(fullPath) || fullPath === recorderPath || retainedProcessing.get(fullPath) === Infinity) continue;
+		if (sessionPaths.has(fullPath) || fullPath === recorderPath || retainedProcessing.get(fullPath) === Infinity || mediaImportUnavailable || mediaImports?.protectedPaths().includes(fullPath)) continue;
 
 		const stat = Bun.file(fullPath);
 		const sizeBytes = stat.size;
@@ -2301,7 +2308,7 @@ function handleListOrphaned(): Response {
 function handleDiscardOrphaned(url: URL): Response {
 	const path = url.searchParams.get("path");
 	if (!path) return Response.json({ error: "No path" }, { status: 400 });
- if (resolve(path) === recorderPath || retainedProcessing.get(resolve(path)) === Infinity) return Response.json({error:"Audio is still recording or processing"}, {status:409});
+ if (resolve(path) === recorderPath || retainedProcessing.get(resolve(path)) === Infinity || mediaImportUnavailable || mediaImports?.protectedPaths().includes(resolve(path))) return Response.json({error:"Audio is still recording or processing"}, {status:409});
 	// Safety: only allow deleting files inside UPLOAD_DIR
 	if (!path.startsWith(UPLOAD_DIR)) return Response.json({ error: "Invalid path" }, { status: 400 });
 	try {
@@ -2556,6 +2563,17 @@ const tasksService: MeetingTasksService = new MeetingTasksService({
  isBusy:() => processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || chatService.busy || libraryChatService.busy || chatPending(),
  generate:(session,signal) => generateTaskSuggestions(session,signal,{baseUrl:OLLAMA_HOST,model:getCurrentModel() || "",numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))}),
 });
+try {
+ mediaImports=new MediaImportController({
+  jobsDirectory:join(LIBRARY_DIR,'catalog','imports'),recordingsDirectory:UPLOAD_DIR,stagingDirectory:join(LIBRARY_DIR,'staging'),quota:managedQuota,
+  isBusy:()=>processingMaintenance.blocked()||audioWorkBusy(false)||recordingCoordinator.snapshot().state==='recording',
+  probe:probeImportMedia,
+  normalize:async(source,wav,maxBytes,signal)=>{await normalizeAudio(source,wav,{directory:wav,maxBytes,signal},true);},
+  transcribe:async(wav,work,config,onPhase,vocabulary)=>{await preemptNotes();return transcribeImport(wav,work,config,onPhase,vocabulary);},
+  save:session=>notesService.create(session),readSession:id=>notesService.get(id),
+  cleanup:(session,wav,work)=>cleanupMeetingAudio({sessionId:session.id,readSession:id=>notesService.get(id),saveSession:value=>notesService.normalize(sessionTags.save(value)),audioPath:wav,workDirectory:work,recordingsRoots:[UPLOAD_DIR],stagingRoot:join(LIBRARY_DIR,'staging')}),
+ });
+} catch {mediaImportUnavailable=true;console.error('Media imports require recovery. Preserve import journals and protected audio.');}
 const transcriptService = new TranscriptService({notes:notesService,store:sessionTags});
 notesService.recover();
 function retrievalMandatoryBusy(){return processingMaintenance.blocked()||audioWorkBusy()||recordingCoordinator.snapshot().state==='recording'||!!manualNotesController||notesService.busy||tasksService.busy;}
@@ -2603,7 +2621,7 @@ const recordingCoordinator = new RecordingCoordinator({
  },
  adapter:{
   async start(mode, _meetingId, attachPath, liveOptions) {
-   if (transcriptionRequests || recordingFinalizationRunning) throw new Error("Wait for the current transcription to finish");
+   if (mediaImports?.busy || transcriptionRequests || recordingFinalizationRunning) throw new Error("Wait for the current transcription to finish");
    recorderStarting = true;
    try {
     await preemptNotes();
@@ -2695,6 +2713,7 @@ async function withProcessingAdmission(req:Request, run:()=>Promise<Response>):P
 const server = Bun.serve({
 	hostname: "127.0.0.1",
 	port: PORT,
+	maxRequestBodySize:MAX_IMPORT_FILE_BYTES+1_000_000,
 	idleTimeout: 255, // max allowed — pyannote + whisper can take a while
 	async fetch(req, httpServer) {
   return withProcessingAdmission(req, async () => {
@@ -2702,6 +2721,8 @@ const server = Bun.serve({
 		const method = req.method;
   if(url.pathname === "/.well-known/heed-service")return desktopRequestAllowed(req)?Response.json(API_IDENTITY,{headers:{"Cache-Control":"no-store"}}):new Response(null,{status:403});
   if(url.pathname === "/.well-known/heed-services")return desktopRequestAllowed(req)&&method==='GET'?Response.json(await serviceDiagnostics.get(url.searchParams.get('refresh')==='1'),{headers:{'Cache-Control':'no-store'}}):new Response(null,{status:403});
+  if(url.pathname.startsWith('/api/media/imports')&&mediaImportUnavailable)return Response.json({error:'Media imports require recovery. Preserve the library and its pending recordings.'},{status:503});
+  if(mediaImports){const imported=await mediaImportResponse(req,mediaImports,desktopRequestAllowed(req));if(imported)return imported;}
   const chatResponse=await chatApiResponse(req,chatService,()=>listLocalChatModels(OLLAMA_HOST),desktopRequestAllowed(req));
   if(chatResponse)return chatResponse;
   const libraryChatResult=await libraryChatResponse(req,libraryChatService,desktopRequestAllowed(req));

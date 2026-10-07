@@ -25,3 +25,4 @@ export * from '../lib/cloud-connections';
 export * from '../lib/service-config';
 export * from '../lib/service-identity';
 export type * from './retrieval';
+export type * from './media-import';
