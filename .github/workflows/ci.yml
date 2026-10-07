@@ -77,3 +77,7 @@ jobs:
         run: |
           bunx playwright install chromium
           node scripts/qa/transcript-corrections-ui.mjs --output "$RUNNER_TEMP/transcript-corrections-ui"
+      - name: Production scoped retrieval browser and public lexical corpus
+        run: |
+          node scripts/qa/retrieval-ui.mjs --output "$RUNNER_TEMP/retrieval-ui"
+          bun scripts/benchmark-retrieval.ts --output "$RUNNER_TEMP/retrieval-lexical.json" --seed 69 --meetings 1,100,1000 --iterations 1

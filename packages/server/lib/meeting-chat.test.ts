@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AiWaitingReason, Session } from "@heed/shared";
 import { sourceRevision } from "./automatic-notes";
-import { MeetingChatService, transcriptEvidence, answerMeetingQuestion } from "./meeting-chat";
+import { MeetingChatService, transcriptEvidence, answerMeetingQuestion as answerRetrieved } from "./meeting-chat";
+import {controlledChatRetrieval,testCoverage} from './chat-retrieval-test-utils';
+const answerMeetingQuestion=({sessions,...input}:any)=>{const evidence=sessions.flatMap(transcriptEvidence).slice(0,32);return answerRetrieved({...input,evidence,coverage:testCoverage(evidence)});};
 const dirs: string[] = [];
 const directory = () => { const d = mkdtempSync(join(tmpdir(), "heed-chat-test-")); dirs.push(d); return d; };
 afterEach(() => dirs.splice(0).forEach(d => rmSync(d, { recursive: true, force: true })));
@@ -25,21 +27,20 @@ test("answers reject invented citations and factual claims without evidence", as
  const s = meeting();
  await expect(answerMeetingQuestion({sessions:[s],question:"Budget?",history:[],model:"local",generate:async()=>result("invented")})).rejects.toThrow("invalid-evidence");
  await expect(answerMeetingQuestion({sessions:[s],question:"Budget?",history:[],model:"local",generate:async()=>JSON.stringify({claims:[{text:"Approved",evidenceIds:[]}],notFound:false})})).rejects.toThrow("invalid-evidence");
- const answer = await answerMeetingQuestion({sessions:[s],question:"Budget?",history:[],model:"local",generate:async input=>result(input.evidence[0]!.id)});
+ const answer = await answerMeetingQuestion({sessions:[s],question:"Budget?",history:[],model:"local",generate:async (input:any)=>result(input.evidence[0]!.id)});
  expect(answer.claims[0]!.citations[0]!.quote).toBe("O orçamento não foi aprovado.");
- expect(answer.coverage.complete).toBe(true);
+ expect(answer.coverage.complete).toBe(false);
 });
 
-test("long transcript scanning reaches evidence at the end and discloses bounded partial coverage", async () => {
- const s = meeting(); s.segments = Array.from({length:9},(_,i)=>({speaker:"Ana",start:i,end:i+1,text:i===8 ? "Budget approved at the end." : "Unrelated context ".repeat(100)})); s.transcriptRevision=sourceRevision(s);
- const input = {sessions:[s],question:"Budget?",history:[],model:"local",chunkCharacters:1800,generate:async (request:any)=>JSON.stringify({claims:request.evidence.filter((e:any)=>e.quote.includes("approved")).map((e:any)=>({text:"Budget approved.",evidenceIds:[e.id]})),notFound:false})};
- const full = await answerMeetingQuestion(input); expect(full.claims[0]!.citations[0]!.segmentIndex).toBe(8); expect(full.coverage.complete).toBe(true);
- const partial = await answerMeetingQuestion({...input,maxChunks:2}); expect(partial.coverage.complete).toBe(false); expect(partial.coverage.reviewedChunks).toBe(2); expect(partial.coverage.totalChunks).toBeGreaterThan(2);
+test("generation respects the retrieved excerpt set and discloses context/model-call limits",async()=>{
+ const s=meeting();s.segments=Array.from({length:32},(_,i)=>({speaker:'Ana',start:i,end:i+1,text:i===31?'Budget approved at the end.':'Budget context '.repeat(85)}));s.transcriptRevision=sourceRevision(s);
+ const inputs:any[]=[];const value=await answerMeetingQuestion({sessions:[s],question:'Budget?',history:[],model:'local',generate:async(request:any)=>{inputs.push(request);return JSON.stringify({claims:[],notFound:true});}});
+ expect(value.coverage.complete).toBe(false);expect(value.coverage.reviewedChunks).toBeLessThanOrEqual(4);expect(value.coverage.totalChunks).toBeGreaterThan(value.coverage.reviewedChunks);expect(value.coverage.retrieval!.partialReasons).toContain('generation-limit');for(const input of inputs)expect(Buffer.byteLength(JSON.stringify(input.data))).toBeLessThanOrEqual(5500);
 });
 
 test("accepted question retries are idempotent and history survives service restart", async () => {
  const s=meeting(); const d=directory(); let calls=0;
- const options={directory:d,getSession:()=>s,isBusy:()=>false,generate:async(input:any)=>{calls++;return result(input.evidence[0].id);}};
+ const options={...controlledChatRetrieval(()=>[s]),directory:d,getSession:()=>s,isBusy:()=>false,generate:async(input:any)=>{calls++;return result(input.evidence[0].id);}};
  const service=new MeetingChatService(options); const command={action:"send" as const,requestId:"request-a",question:"Budget?",model:"local",expectedSourceRevision:s.transcriptRevision!};
  service.command(s.id,command); await flush();
  const saved=service.get(s.id); expect(saved.turns).toHaveLength(1); expect(saved.turns[0]!.status).toBe("completed");
@@ -49,7 +50,7 @@ test("accepted question retries are idempotent and history survives service rest
 });
 
 test("clear and cancel prevent late answers, retry reuses the original turn", async () => {
- const s=meeting(); let finish:(s:string)=>void=()=>{}; const service=new MeetingChatService({directory:directory(),getSession:()=>s,isBusy:()=>false,generate:()=>new Promise(resolve=>{finish=resolve;})});
+ const s=meeting(); let finish:(s:string)=>void=()=>{}; const service=new MeetingChatService({...controlledChatRetrieval(()=>s?[s]:[]),directory:directory(),getSession:()=>s,isBusy:()=>false,generate:()=>new Promise(resolve=>{finish=resolve;})});
  service.command(s.id,{action:"send",requestId:"request-a",question:"Budget?",model:"local",expectedSourceRevision:s.transcriptRevision!}); await flush();
  const turnId=service.get(s.id).turns[0]!.id;
  service.command(s.id,{action:"cancel",turnId}); finish(result(transcriptEvidence(s)[0]!.id)); await flush(); expect(service.get(s.id).turns[0]!.status).toBe("cancelled");
@@ -59,7 +60,7 @@ test("clear and cancel prevent late answers, retry reuses the original turn", as
 
 test("changed sources mark stored answers stale and block late generation", async () => {
  let s=meeting(); let finish:(s:string)=>void=()=>{};
- const service=new MeetingChatService({directory:directory(),getSession:()=>s,isBusy:()=>false,generate:()=>new Promise(resolve=>{finish=resolve;})});
+ const service=new MeetingChatService({...controlledChatRetrieval(()=>s?[s]:[]),directory:directory(),getSession:()=>s,isBusy:()=>false,generate:()=>new Promise(resolve=>{finish=resolve;})});
  service.command(s.id,{action:"send",requestId:"a",question:"Budget?",model:"local",expectedSourceRevision:s.transcriptRevision!}); await flush();
  const evidence=transcriptEvidence(s)[0]!.id; s={...s,transcript:"Edited"};s.transcriptRevision=sourceRevision(s);finish(result(evidence));await flush();
  expect(service.get(s.id).turns[0]!.status).toBe("failed");expect(service.get(s.id).turns[0]!.reason).toBe("source-changed");
@@ -67,14 +68,14 @@ test("changed sources mark stored answers stale and block late generation", asyn
 
 test("recording priority queues chat and preemption cancels before returning", async () => {
  const s=meeting(); let busy=true; let aborted=false;
- const service=new MeetingChatService({directory:directory(),getSession:()=>s,isBusy:()=>busy,generate:input=>new Promise((_,reject)=>input.signal!.addEventListener("abort",()=>{aborted=true;reject(new Error("aborted"));}))});
+ const service=new MeetingChatService({...controlledChatRetrieval(()=>s?[s]:[]),directory:directory(),getSession:()=>s,isBusy:()=>busy,generate:input=>new Promise((_,reject)=>input.signal!.addEventListener("abort",()=>{aborted=true;reject(new Error("aborted"));}))});
  service.command(s.id,{action:"send",requestId:"a",question:"Budget?",model:"local",expectedSourceRevision:s.transcriptRevision!}); await flush(); expect(service.get(s.id).turns[0]!.status).toBe("waiting");
  busy=false;void service.tick();await flush(); await service.preempt();expect(aborted).toBe(true);expect(service.get(s.id).turns[0]!.status).toBe("cancelled");
 });
 
 test("saved answers become stale without mutating their citations", async () => {
  let s=meeting();const original=transcriptEvidence(s)[0]!.id;
- const service=new MeetingChatService({directory:directory(),getSession:()=>s,isBusy:()=>false,generate:async()=>result(original)});
+ const service=new MeetingChatService({...controlledChatRetrieval(()=>s?[s]:[]),directory:directory(),getSession:()=>s,isBusy:()=>false,generate:async()=>result(original)});
  service.command(s.id,{action:"send",requestId:"a",question:"Budget?",model:"local",expectedSourceRevision:s.transcriptRevision!});await flush();
  s={...s,segments:s.segments.map(v=>({...v,speaker:"Renamed"}))};s.transcriptRevision=sourceRevision(s);
  expect(service.get(s.id).turns[0]!.stale).toBe(true);expect(service.get(s.id).turns[0]!.answer!.claims[0]!.citations[0]!.id).toBe(original);
@@ -82,14 +83,14 @@ test("saved answers become stale without mutating their citations", async () => 
 
 test("meeting deletion removes chat and cannot resurrect a late answer", async () => {
  let s:Session|null=meeting();let finish:(v:string)=>void=()=>{};const d=directory();
- const service=new MeetingChatService({directory:d,getSession:()=>s,isBusy:()=>false,generate:()=>new Promise(resolve=>{finish=resolve;})});
+ const service=new MeetingChatService({...controlledChatRetrieval(()=>s?[s]:[]),directory:d,getSession:()=>s,isBusy:()=>false,generate:()=>new Promise(resolve=>{finish=resolve;})});
  service.command(s.id,{action:"send",requestId:"a",question:"Budget?",model:"local",expectedSourceRevision:s.transcriptRevision!});await flush();
  const ref=transcriptEvidence(s)[0]!.id;service.remove(s.id);s=null;finish(result(ref));await flush();expect(()=>service.get("meeting-a")).toThrow("meeting-not-found");
- expect(new MeetingChatService({directory:d,getSession:()=>s,isBusy:()=>false,generate:async()=>""}).busy).toBe(false);
+ expect(new MeetingChatService({...controlledChatRetrieval(()=>s?[s]:[]),directory:d,getSession:()=>s,isBusy:()=>false,generate:async()=>""}).busy).toBe(false);
 });
 
 test("chat API rejects untrusted requests, serves saved history, and validates methods", async () => {
- const { chatApiResponse }=await import("./meeting-chat");const s=meeting();const service=new MeetingChatService({directory:directory(),getSession:()=>s,isBusy:()=>true,generate:async()=>""});
+ const { chatApiResponse }=await import("./meeting-chat");const s=meeting();const service=new MeetingChatService({...controlledChatRetrieval(()=>s?[s]:[]),directory:directory(),getSession:()=>s,isBusy:()=>true,generate:async()=>""});
  const url="http://localhost/api/sessions/meeting-a/chat";
  expect((await chatApiResponse(new Request(url),service,async()=>["local"],false))!.status).toBe(403);
  expect((await chatApiResponse(new Request(url),service,async()=>["local"],true))!.status).toBe(200);
@@ -102,13 +103,13 @@ test("chat API rejects untrusted requests, serves saved history, and validates m
 
 test("a persistent storage failure cannot leave a recovered answer running forever", async () => {
  const {atomicWriteJson}=await import("./atomic-json");const s=meeting();let blocked=false;
- const service=new MeetingChatService({directory:directory(),getSession:()=>s,isBusy:()=>false,write:(path,value)=>{if(blocked)throw new Error("disk-full");atomicWriteJson(path,value);},generate:async input=>{blocked=true;return result(input.evidence[0]!.id);}});
+ const service=new MeetingChatService({...controlledChatRetrieval(()=>s?[s]:[]),directory:directory(),getSession:()=>s,isBusy:()=>false,write:(path,value)=>{if(blocked)throw new Error("disk-full");atomicWriteJson(path,value);},generate:async input=>{blocked=true;return result(input.evidence[0]!.id);}});
  service.command(s.id,{action:"send",requestId:"a",question:"Budget?",model:"local",expectedSourceRevision:s.transcriptRevision!});await flush();blocked=false;
  expect(service.get(s.id).turns[0]!.status).toBe("failed");expect(service.get(s.id).turns[0]!.reason).toBe("interrupted");
 });
 
 test("retry can explicitly select another compatible installed model while preserving request identity", async () => {
- const s=meeting();const service=new MeetingChatService({directory:directory(),getSession:()=>s,isBusy:()=>false,generate:async input=>{if(input.model==="missing")throw new Error("model-missing");return result(input.evidence[0]!.id);}});
+ const s=meeting();const service=new MeetingChatService({...controlledChatRetrieval(()=>s?[s]:[]),directory:directory(),getSession:()=>s,isBusy:()=>false,generate:async input=>{if(input.model==="missing")throw new Error("model-missing");return result(input.evidence[0]!.id);}});
  const command={action:"send" as const,requestId:"a",question:"Budget?",model:"missing",expectedSourceRevision:s.transcriptRevision!};service.command(s.id,command);await flush();const turn=service.get(s.id).turns[0]!;expect(turn.status).toBe("failed");
  service.command(s.id,{action:"retry",turnId:turn.id,model:"installed"});await flush();expect(service.get(s.id).turns[0]!.status).toBe("completed");expect(service.get(s.id).turns[0]!.model).toBe("installed");expect(service.command(s.id,command).turns).toHaveLength(1);
 });
@@ -134,7 +135,7 @@ test('decoder compatibility never removes strict postdecode claim and citation l
 
 test("waiting chat reports the live blocker without rewriting durable history", async () => {
  const s=meeting(); let blocker:AiWaitingReason="tasks";
- const service=new MeetingChatService({directory:directory(),getSession:()=>s,isBusy:()=>true,waitingReason:()=>blocker,generate:async()=>result(transcriptEvidence(s)[0]!.id)});
+ const service=new MeetingChatService({...controlledChatRetrieval(()=>s?[s]:[]),directory:directory(),getSession:()=>s,isBusy:()=>true,waitingReason:()=>blocker,generate:async()=>result(transcriptEvidence(s)[0]!.id)});
  service.command(s.id,{action:"send",requestId:"waiting-reason",question:"Budget?",model:"local",expectedSourceRevision:s.transcriptRevision!});
  const first=service.get(s.id); expect(first.turns[0]).toMatchObject({status:"waiting",waitingReason:"tasks"});
  blocker="recording";const next=service.get(s.id);expect(next.turns[0]).toMatchObject({status:"waiting",waitingReason:"recording"});expect(next.revision).toBe(first.revision);
@@ -144,7 +145,7 @@ test("waiting chat reports the live blocker without rewriting durable history", 
 
 test('stale pending chat fails and releases admission for background work',async()=>{
  let s=meeting(),busy=true;
- const service=new MeetingChatService({directory:directory(),getSession:()=>s,isBusy:()=>busy,generate:async()=>{throw new Error('Stale source must not generate');}});
+ const service=new MeetingChatService({...controlledChatRetrieval(()=>s?[s]:[]),directory:directory(),getSession:()=>s,isBusy:()=>busy,generate:async()=>{throw new Error('Stale source must not generate');}});
  service.command(s.id,{action:'send',requestId:'stale-pending',question:'Budget?',model:'local',expectedSourceRevision:s.transcriptRevision!});
  expect(service.pending).toBe(true);s={...s,transcript:'Changed source'};busy=false;
  await service.tick();expect(service.get(s.id).turns[0]).toMatchObject({status:'failed',reason:'source-changed'});expect(service.pending).toBe(false);

@@ -1,3 +1,4 @@
+import { RetrievalCoverageView, retrievalEmptyMessage } from './RetrievalCoverage';
 import {aiWaitingMessage} from '@/lib/ai-waiting';
 import {useEffect,useRef,useState} from 'react';
 import {tagKey,type LibraryChatScope,type LibraryChatContext,type ChatCommand,type LibraryChatTurn,type TranscriptEvidence} from '@heed/shared';
@@ -58,9 +59,13 @@ export function LibraryChat(){
    <details><summary>{tr('Sources when this question was asked')}</summary><ul>{turn.snapshot.sources.map(source=><li key={source.sessionId}>{source.title} · {source.tags.join(' · ')}</li>)}</ul></details>
    {(turn.status==='running'||turn.status==='waiting')&&<div><p role="status">{tr(turn.status==='waiting'?aiWaitingMessage(turn.waitingReason):'Reviewing transcript evidence…')}</p><button disabled={saving} onClick={()=>void mutate({action:'cancel',turnId:turn.id})}>{tr('Cancel answer')}</button></div>}
    {(turn.status==='failed'||turn.status==='cancelled')&&<div><p role="status">{errorText(turn.reason||'interrupted')}</p><button disabled={saving||turn.stale} onClick={()=>void mutate({action:'retry',turnId:turn.id,...(model?{model}:{})})}>{tr('Retry answer')}</button></div>}
-   {turn.status==='completed'&&turn.answer&&<div>{!turn.answer.claims.length&&<p>{tr(turn.answer.coverage.complete?'Not found in the selected meetings.':'No supporting evidence found in the reviewed excerpts.')}</p>}
+   {turn.status==='completed'&&turn.answer&&<div>{!turn.answer.claims.length&&<p>{tr(turn.answer.coverage.retrieval?.version===1 ? retrievalEmptyMessage(turn.answer.coverage.retrieval) : turn.answer.coverage.complete?'Not found in the selected meetings.':'No supporting evidence found in the reviewed excerpts.')}</p>}
     {turn.answer.claims.map((claim,index)=><div className={styles.claim} key={index}><p>{claim.text}</p><div className={styles.citations}>{claim.citations.map(citation=><details key={citation.id}><summary>{turn.snapshot.sources.find(source=>source.sessionId===citation.sessionId)?.title} · {citation.speaker||tr('Transcript')}</summary><blockquote>{citation.quote}</blockquote><button disabled={saving||turn.stale} onClick={()=>void openCitation(turn,citation)}>{turn.snapshot.sources.find(source=>source.sessionId===citation.sessionId)?.title} · {citation.start===null?tr('Open source text'):fmtDuration(Math.floor(citation.start))}</button></details>)}</div></div>)}
-    <p className={styles.hint}>{tr('Reviewed {reviewed} of {total} transcript chunks.',{reviewed:turn.answer.coverage.reviewedChunks,total:turn.answer.coverage.totalChunks})}</p>{!turn.answer.coverage.complete&&<p className={styles.warning}>{tr('Coverage is partial. Evidence was sampled across the selected meetings; missing topics may exist in unreviewed excerpts.')}</p>}{turn.answer.coverage.answerLimited&&<p className={styles.warning}>{tr('The displayed answer was limited to 40 supported statements. Ask a narrower question.')}</p>}
+     {turn.answer.coverage.retrieval?.version === 1 ? (
+      <RetrievalCoverageView coverage={turn.answer.coverage.retrieval}/>
+     ) : <>
+    <p className={styles.hint}>{tr('Reviewed {reviewed} of {total} transcript chunks.',{reviewed:turn.answer.coverage.reviewedChunks,total:turn.answer.coverage.totalChunks})}</p>{!turn.answer.coverage.complete&&<p className={styles.warning}>{tr('Coverage is partial. Evidence was sampled across the selected meetings; missing topics may exist in unreviewed excerpts.')}</p>}     </>}
+     {turn.answer.coverage.answerLimited&&<p className={styles.warning}>{tr('The displayed answer was limited to 40 supported statements. Ask a narrower question.')}</p>}
    </div>}
   </article>)}</div>
   <form onSubmit={event=>{event.preventDefault();void send();}}><label htmlFor="library-question">{tr('Question across selected meetings')}</label><textarea id="library-question" value={question} maxLength={2000} rows={3} disabled={saving} onChange={event=>setQuestion(event.target.value)}/><button type="submit" disabled={!context?.preview.ready||!question.trim()||!models.includes(model)||saving||running}>{tr('Send question')}</button></form>

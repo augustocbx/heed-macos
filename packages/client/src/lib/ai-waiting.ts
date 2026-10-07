@@ -1,6 +1,7 @@
 import type { AiWaitingReason } from '@heed/shared';
 
 const messages: Record<AiWaitingReason, string> = {
+ retrieval: 'Waiting for the local transcript catalog to become ready.',
  recording: 'Waiting for recording to finish.',
  transcription: 'Waiting for transcription to finish.',
  notes: 'Waiting for notes generation to finish.',
