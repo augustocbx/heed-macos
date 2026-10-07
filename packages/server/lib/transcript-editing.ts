@@ -119,7 +119,7 @@ export function transcriptCommandSignature(command: TranscriptCommand): string {
   case "accept-candidate": return hash({ ...guard, action: command.action, candidateId: command.candidateId });
  }
 }
-function recoveryState(session: Session, now: string): TranscriptEditingState {
+export function transcriptRecoveryState(session: Session, now: string): TranscriptEditingState {
  if (session.transcriptEditing) {
   const state = session.transcriptEditing;
   if (state.schemaVersion !== 1 || !state.generations.some(generation => generation.id === state.activeGenerationId)) return invalid("Invalid transcript recovery state");
@@ -167,7 +167,7 @@ export function applyTextCommand(session: Session, command: TextOnlyCommand, now
  const segments = session.segments.map((segment, index) => bySegment.has(index) ? { ...segment, text: bySegment.get(index)! } : segment);
  const transcript = segments.length ? renderAcceptedTranscript(segments) : changes[0]!.after;
  const next = { ...session, segments, transcript };
- const state = recoveryState(session, now);
+ const state = transcriptRecoveryState(session, now);
  const requestSignature = transcriptCommandSignature(command);
  const afterRevision = sourceRevision(next);
  const editing: TranscriptEditingState = { ...state, edits: [...state.edits, { id: `edit-${hash({ requestId: command.requestId, requestSignature, now })}`, requestId: command.requestId, requestSignature,

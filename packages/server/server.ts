@@ -50,6 +50,8 @@ import type { FinalCapture, RecordingSnapshot } from "../shared/types/recording-
 import { DesktopPermissions, permissionRecoverySummary, desktopRequestAllowed as permissionRequestAllowed, permissionAction, permissionReport } from "./lib/desktop-permissions.ts";
 import { removeChannelCopies } from "./lib/audio-retention.ts";
 import {validManagedLimit} from './lib/managed-quota.ts';
+import {TranscriptService} from './lib/transcript-service.ts';
+import {transcriptEditingResponse} from './lib/transcript-editing-http.ts';
 import {createAppQuota} from './lib/app-storage.ts';
 import {reserveCapture,reserveFinalization,releaseCapture} from './lib/capture-quota.ts';
 import { type CaptureMode, nativeCaptureCommand, nativeRecordingCommand, verifyNativeHandshake, isNativeProtocolLine } from "./lib/native-capture.ts";
@@ -2494,6 +2496,7 @@ const tasksService: MeetingTasksService = new MeetingTasksService({
  isBusy:() => processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || chatService.busy || libraryChatService.busy || chatPending(),
  generate:(session,signal) => generateTaskSuggestions(session,signal,{baseUrl:OLLAMA_HOST,model:getCurrentModel() || "",numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))}),
 });
+const transcriptService = new TranscriptService({notes:notesService,store:sessionTags});
 notesService.recover();
 const chatService: MeetingChatService = new MeetingChatService({
  directory:join(APP_DIR,"chat"), getSession:id=>notesService.get(id),
@@ -2625,6 +2628,8 @@ const server = Bun.serve({
   if(chatResponse)return chatResponse;
   const libraryChatResult=await libraryChatResponse(req,libraryChatService,desktopRequestAllowed(req));
   if(libraryChatResult)return libraryChatResult;
+  const transcriptResult=await transcriptEditingResponse(req,transcriptService,desktopRequestAllowed(req));
+  if(transcriptResult)return transcriptResult;
 
   if (url.pathname === "/api/tasks") return tasksResponse(req,tasksService,PORT);
   if (url.pathname === "/api/recording/settings") return handleRecordingSettings(req);
