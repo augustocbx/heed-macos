@@ -42,6 +42,28 @@ def fixture_root(path):
     return root,marker
 
 
+def menu_permissions(root):
+    """Read only the explicit QA scenario; never infer real macOS permissions."""
+    default={'microphone':'denied','screenCapture':False,'slackLogs':False}
+    path=root/'menu-state.json'
+    try:
+        descriptor=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    except FileNotFoundError:
+        return default
+    with os.fdopen(descriptor,'rb') as file:
+        info=os.fstat(file.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_size>16384:
+            raise ValueError('Invalid QA menu state file.')
+        scenario=json.load(file)
+    if (not isinstance(scenario,dict) or set(scenario)!={'control','fresh','microphone','screenCapture','services'}
+        or scenario['control'] is not None and not isinstance(scenario['control'],dict)
+        or type(scenario['fresh']) is not bool or type(scenario['screenCapture']) is not bool
+        or scenario['microphone'] not in ['authorized','denied','restricted','notDetermined','unknown']
+        or not isinstance(scenario['services'],list) or not all(isinstance(item,dict) for item in scenario['services'])):
+        raise ValueError('Invalid QA menu state fields.')
+    return {**default,'microphone':scenario['microphone'],'screenCapture':scenario['screenCapture']}
+
+
 class AssetResponse(io.BytesIO):
     status=200
     headers={}
@@ -114,7 +136,7 @@ def main():
     if args.command in ['status','permissions'] and args.menu_pid:
         atomic(report_path,{'controllerConnected':True,'updatedAt':time.time()*1000,'pid':int(args.menu_pid),
                           'build':{'version':args.version,'commit':args.commit,'instanceId':args.instance_id},
-                          'permissions':{'microphone':'denied','screenCapture':False,'slackLogs':False}})
+                          'permissions':menu_permissions(root)})
     def stop_menu():
         if not report_path.exists():return
         pid=json.loads(report_path.read_text())['pid']
@@ -165,9 +187,14 @@ def main():
         state=run_update(context,release,dependencies,transaction=state['transactionId'],inherited_fd=int(os.environ['HEED_INSTALL_LOCK_FD']))
     elif args.command=='permissions':state=save(context,{**state,**permission_outcome(json.loads(report_path.read_text()),'0.1.1','b'*40)})
     elif args.command=='verify':
-        assert state['phase']=='completed' and state['verifiedVersion']=='0.1.1' and state['permissionState']=='attention',state
+        report=json.loads(report_path.read_text())
+        expected=menu_permissions(root)
+        assert all(report['permissions'][key]==value for key,value in expected.items()),report
+        outcome=permission_outcome(report,'0.1.1','b'*40,now=report['updatedAt']/1000)
+        assert state['phase']=='completed' and state['verifiedVersion']=='0.1.1',state
+        assert state['permissionState']==outcome['permissionState'] and state['missingPermissions']==outcome['missingPermissions'],state
         assert all(hashlib.sha256((data/name).read_bytes()).hexdigest()==digest for name,digest in marker['sentinels'].items())
-        print('QA menu replacement, matching fresh report, permission attention and synthetic data preservation passed.');return
+        print('QA menu replacement, matching permission report and synthetic data preservation passed.');return
     elif args.command=='stop':stop_menu();return
     print(json.dumps(state))
 

@@ -18,10 +18,12 @@ func updateClientSelfTests() throws {
     try updateClientConfigurationSelfTests()
     try updateClientPollingSelfTests()
     try updateClientForcedRefreshSelfTests()
+    try updateClientCheckingSelfTests()
 }
 
 func updateSelfTests() throws {
     installedVersionMenuSelfTests()
+    updateMenuStateSelfTests()
     let available = try JSONDecoder().decode(UpdateSnapshot.self, from: Data(#"{"schema":1,"state":"available","targetVersion":"1.2.0","release":{"manifest":{"version":"1.2.0","tag":"v1.2.0"},"notesURL":"https://github.com/augustocbx/heed-macos/releases/tag/v1.2.0"}}"#.utf8))
     precondition(UpdatePresentation.status(available) == "Update available")
     precondition(available.canInstall)
@@ -40,11 +42,56 @@ func updateSelfTests() throws {
     precondition(!ReleaseUpdateClient.automaticCheckDue(lastAttempt: 1000, now: 1001))
     precondition(ReleaseUpdateClient.automaticCheckDue(lastAttempt: 1000, now: 87400))
     precondition(ReleaseUpdateClient.automaticCheckDue(lastAttempt: nil, now: 1000))
-    for permission in ["unknown", "attention", "restricted", "authorized"] {
-        var snapshot = available; snapshot.permissionState = permission
-        precondition(!UpdatePresentation.permission(snapshot).isEmpty)
-    }
     precondition(UpdatePresentation.status(UpdateSnapshot()) == "Updates not checked")
+}
+
+private func updateMenuStateSelfTests() {
+    let root = NSMenu()
+    let updates = UpdateMenu()
+    root.addItem(updates.item)
+    let build = InstalledMenuBuild(version: "1.0.1", commit: String(repeating: "a", count: 40))
+    var snapshot = UpdateSnapshot()
+    func titles() -> [String] { updates.item.submenu?.items.filter { !$0.isSeparatorItem }.map(\.title) ?? [] }
+    func action(_ title: String) -> NSMenuItem? { updates.item.submenu?.items.first { $0.title == title } }
+
+    updates.render(snapshot, build: build, locale: "en")
+    precondition(titles() == ["Updates not checked", "Check for updates…"], "An unchecked menu needs only its status and next action")
+    let statusRow = updates.item.submenu!.items[0]
+    updates.render(snapshot, build: build, locale: "en")
+    precondition(updates.item.submenu!.items[0] === statusRow, "Unchanged refreshes must preserve menu navigation")
+
+    snapshot.state = "checking"
+    updates.render(snapshot, build: build, locale: "en")
+    precondition(titles()[0] == "Checking for updates…" && action("Check for updates…")?.isEnabled == false)
+    precondition(updates.item.submenu!.items[0] === statusRow, "Status changes must preserve the current menu row")
+
+    snapshot.state = "available"
+    snapshot.release = SelectedUpdateRelease(manifest: UpdateManifest(version: "1.0.2", tag: "v1.0.2"), notesURL: "https://github.com/augustocbx/heed-macos/releases/tag/v1.0.2")
+    updates.render(snapshot, build: build, locale: "en")
+    precondition(titles().contains("Available version: 1.0.2") && action("Update…")?.isEnabled == true)
+    precondition(action("Release notes")?.isEnabled == true)
+
+    snapshot.phase = "installing"
+    updates.render(snapshot, build: build, locale: "en")
+    precondition(titles()[0] == "Preparing update…" && action("Update…") == nil, "An active install must show progress without a disabled install action")
+
+    snapshot.phase = "completed"
+    snapshot.release = SelectedUpdateRelease(manifest: UpdateManifest(version: "1.0.1", tag: "v1.0.1"), notesURL: "https://github.com/augustocbx/heed-macos/releases/tag/v1.0.1")
+    updates.render(snapshot, build: build, locale: "en")
+    precondition(titles()[0] == "Update installed")
+    precondition(!titles().contains("Available version: 1.0.1") && action("Update…") == nil, "An installed release is not an available upgrade")
+    precondition(action("Release notes")?.isEnabled == true, "Completed-release notes remain reachable")
+    precondition(action("Check permissions again") == nil, "Ongoing permission controls belong in Settings, not Updates")
+
+    snapshot.phase = "failed"
+    snapshot.errorCode = "installation-failed"
+    snapshot.release = SelectedUpdateRelease(manifest: UpdateManifest(version: "1.0.2", tag: "v1.0.2"), notesURL: "https://github.com/augustocbx/heed-macos/releases/tag/v1.0.2")
+    snapshot.logPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".heed/updates/fixture/update.log").path
+    updates.render(snapshot, build: build, locale: "en")
+    precondition(action("Retry update")?.isEnabled == true && action("View update log…")?.isEnabled == true)
+    snapshot.recovery = "recoveryRequired"
+    updates.render(snapshot, build: build, locale: "en")
+    precondition(action("Retry recovery")?.isEnabled == true && action("Retry update") == nil)
 }
 
 
@@ -164,6 +211,17 @@ private func updateClientForcedRefreshSelfTests() throws {
     try first.unblock(); awaitUpdateClient { !client.inFlight }
     precondition(replacement.requests.count == 1, "Service retries during a request must preserve and coalesce a forced status refresh")
     precondition(client.snapshot.targetVersion == "1.0.2" && client.snapshot.recovery == "recoveryRequired", "Forced retry must promptly discover recovery with the new configuration")
+}
+
+private func updateClientCheckingSelfTests() throws {
+    let fixture = try UpdateHelperFixture(version: "1.0.1")
+    try fixture.setSnapshot(#"{"schema":1,"state":"available","phase":"completed","release":{"manifest":{"version":"1.0.1","tag":"v1.0.1"},"notesURL":"https://github.com/augustocbx/heed-macos/releases/tag/v1.0.1"}}"#)
+    let client = ReleaseUpdateClient(endpoints: { fixture.endpoints })
+    client.refreshStatus(); awaitUpdateClient { !client.inFlight }
+    try fixture.block()
+    client.check(manual: true)
+    precondition(client.snapshot.state == "checking" && client.snapshot.phase == nil, "A new check must not display the previous completed phase")
+    try fixture.unblock(); awaitUpdateClient { !client.inFlight }
 }
 
 

@@ -37,7 +37,77 @@ struct ControlStatus: Decodable {
     var canStop: Bool { recording && !processing && !pending && starting != true && meetingId != nil }
     var canQuit: Bool { !recording && !processing && !pending && starting != true }
 }
+struct MenuQAState: Decodable {
+    let control: ControlStatus?
+    let fresh: Bool
+    let microphone: String
+    let screenCapture: Bool
+    let services: [ServiceNoticeInfo]
+
+    static func load(root: URL) -> Self? {
+        let file = root.appendingPathComponent("menu-state.json")
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size]) as? NSNumber,
+              size.intValue <= 16_384, let data = try? Data(contentsOf: file) else { return nil }
+        return try? JSONDecoder().decode(Self.self, from: data)
+    }
+}
 struct APIError: Decodable { let error: String }
+struct RecordingMenuPresentation {
+    let status: String
+    let blocker: String?
+    let recovery: String?
+    let canStart: Bool
+    let canStop: Bool
+
+    static func evaluate(_ state: ControlStatus?, fresh: Bool, microphone: String,
+                         screenCapture: Bool, services: [ServiceNoticeInfo], sending: Bool) -> Self {
+        let unavailable = services.filter { $0.state != "ready" }
+        let servicesReady = ServiceNoticeInfo.permitsVerifiedStart(unavailable, freshController: fresh)
+        if state?.recording == true {
+            return Self(status: "Recording", blocker: nil, recovery: nil, canStart: false,
+                        canStop: !sending && state?.canStop == true)
+        }
+        if state?.processing == true { return Self(status: "Processing meeting…", blocker: "Processing meeting…", recovery: nil, canStart: false, canStop: false) }
+        if state?.pending == true || state?.starting == true || sending {
+            return Self(status: "Waiting for the interface…", blocker: "Waiting for the interface…", recovery: nil, canStart: false, canStop: false)
+        }
+        if fresh && state?.state == "failed" && state?.path != nil {
+            return Self(status: "Recording needs recovery", blocker: "Recording needs recovery",
+                        recovery: "Open recording recovery…", canStart: false, canStop: false)
+        }
+        if microphone == "unknown" {
+            return Self(status: "Could not verify permissions", blocker: "Could not verify permissions",
+                        recovery: "Check permissions again", canStart: false, canStop: false)
+        }
+        if microphone != "authorized" {
+            let restricted = microphone == "restricted"
+            return Self(status: restricted ? "Microphone restricted by device policy" : "Microphone permission needed",
+                        blocker: restricted ? "Microphone restricted by device policy" : "Microphone permission needed",
+                        recovery: restricted ? "Settings and permissions…" : "Open Microphone settings…", canStart: false, canStop: false)
+        }
+        if !screenCapture {
+            return Self(status: "Screen & System Audio Recording permission needed",
+                        blocker: "Screen & System Audio Recording permission needed",
+                        recovery: "Open Screen Recording settings…", canStart: false, canStop: false)
+        }
+        guard fresh, let state = state else {
+            return Self(status: "Service unavailable — open the interface", blocker: "Could not verify recording status", recovery: "Check recording status again", canStart: false, canStop: false)
+        }
+        if !servicesReady {
+            return Self(status: "Preparing services…", blocker: "Services are not ready", recovery: "Retry service startup", canStart: false, canStop: false)
+        }
+        if state.maintenance == true {
+            return Self(status: "Preparing update…", blocker: "Preparing update…", recovery: nil, canStart: false, canStop: false)
+        }
+        if !state.ready {
+            return Self(status: "Recording unavailable", blocker: "Recording unavailable", recovery: nil, canStart: false, canStop: false)
+        }
+        if !state.canStart {
+            return Self(status: "Recording unavailable", blocker: "Recording unavailable", recovery: nil, canStart: false, canStop: false)
+        }
+        return Self(status: "Ready to record", blocker: nil, recovery: nil, canStart: true, canStop: false)
+    }
+}
 func responseError(_ data: Data?, status: Int) -> String {
     if let data = data, let decoded = try? JSONDecoder().decode(APIError.self, from: data) { return decoded.error }
     return "Communication failed (HTTP \(status))"
@@ -60,6 +130,16 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private let statusMenu = NSMenuItem(title: "Preparing services…", action: nil, keyEquivalent: "")
     private let startMenu = NSMenuItem(title: "Start recording", action: #selector(startRecording), keyEquivalent: "")
     private let stopMenu = NSMenuItem(title: "Stop recording", action: #selector(stopRecording), keyEquivalent: "")
+    private let recoveryMenu = NSMenuItem(title: "", action: #selector(recoverRecording), keyEquivalent: "")
+    private let automaticMenu = NSMenuItem(title: "Automatic recording", action: nil, keyEquivalent: "")
+    private let settingsMenu = NSMenuItem(title: "Settings and permissions", action: nil, keyEquivalent: "")
+    private let diagnosticsMenu = NSMenuItem(title: "Diagnostics", action: nil, keyEquivalent: "")
+    private let permissionStatusMenu = NSMenuItem(title: "Could not verify permissions", action: nil, keyEquivalent: "")
+    private let microphoneMenu = NSMenuItem(title: "Open Microphone settings…", action: #selector(openMicrophoneSettings), keyEquivalent: "")
+    private let screenMenu = NSMenuItem(title: "Open Screen Recording settings…", action: #selector(openScreenSettings), keyEquivalent: "")
+    private let recheckPermissionsMenu = NSMenuItem(title: "Check permissions again", action: #selector(recheckPermissions), keyEquivalent: "")
+    private let permissionHelpMenu = NSMenuItem(title: "Permission help…", action: #selector(showPermissionHelp), keyEquivalent: "")
+    private var recoveryKind: String?
     private var locale = "en"
     private lazy var liveLanguageClient = LiveLanguageClient(session:session,endpoints:{ [weak self] in self?.endpoints })
     private var liveLanguageSettings: LiveLanguageSettings?
@@ -84,6 +164,8 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private let menuInstanceID = UUID().uuidString
     private var updateTimer: Timer?
     private var state: ControlStatus?
+    private var qaState: MenuQAState?
+    private var statusMessage: (text: String, until: Date)?
     private var freshProtectedStatus = false
     private var sending = false
     private var polling = false
@@ -95,8 +177,9 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private var detectionMenus: [String: NSMenuItem] = [:]
     private var detectionStates: [String: NSMenuItem] = [:]
     private let accessibilityMenu = NSMenuItem(title: "Authorize Accessibility", action: #selector(authorizeAccessibility), keyEquivalent: "")
-    private let slackAutoMenu = NSMenuItem(title: "Automatically record Slack meetings", action: #selector(toggleSlackAuto), keyEquivalent: "")
-    private let slackStateMenu = NSMenuItem(title: "Slack: waiting for the next meeting", action: nil, keyEquivalent: "")
+    private let slackAutoMenu = NSMenuItem(title: "Slack", action: #selector(toggleSlackAuto), keyEquivalent: "")
+    private let slackStateMenu = NSMenuItem(title: "Slack: Not checked", action: nil, keyEquivalent: "")
+    private let detectionErrorMenu = NSMenuItem(title: "Detection unavailable — use manual recording", action: #selector(showDetectionError), keyEquivalent: "")
     private var lastSlackObservation: String?
     private let slackLogAccess = SlackLogAccess()
     private let smbFolderAccess = SmbFolderAccess()
@@ -104,7 +187,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private var promptedForSlackAccess = false
     private var permissionCommandID: String?
     private var lastPermissionCommandID: String?
-    private var reportingPermissions = false
+    private let permissionReports = SerializedPermissionReports()
     private var screenCaptureRecovery = ScreenCaptureRecovery(arguments: CommandLine.arguments)
     private let slackAccessMenu = NSMenuItem(title: "Allow Slack log access…", action: #selector(authorizeSlackLogs), keyEquivalent: "")
     private let session: URLSession = {
@@ -114,58 +197,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
     }()
     func applicationDidFinishLaunching(_ notification: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        statusMenu.isEnabled = false
-        menu.addItem(statusMenu)
-        noticeMenu.target=self;menu.addItem(noticeMenu)
-        retryMenu.target=self;menu.addItem(retryMenu)
-        storageMenu.isEnabled = false;menu.addItem(storageMenu)
-        menu.addItem(NSMenuItem.separator())
-        for entry in [startMenu, stopMenu] { entry.target = self; entry.isEnabled = false; menu.addItem(entry) }
-        let speechMenu = NSMenu()
-        for (title,code) in [("English","en"),("Brazilian Portuguese","pt")] {
-            let entry = NSMenuItem(title:title,action:#selector(selectLiveLanguage(_:)),keyEquivalent:"")
-            entry.target = self; entry.representedObject = code; speechMenu.addItem(entry); liveLanguageItems.append(entry)
-        }
-        liveLanguageMenu.submenu = speechMenu; menu.addItem(liveLanguageMenu)
-        liveLanguageStateMenu.isEnabled = false; menu.addItem(liveLanguageStateMenu)
-        finalOnlyMenu.target = self; finalOnlyMenu.isHidden = true; menu.addItem(finalOnlyMenu)
-        let open = NSMenuItem(title: "Open interface", action: #selector(openInterface), keyEquivalent: "")
-        open.target = self; menu.addItem(open)
-        let settings = NSMenuItem(title: "Settings and permissions…", action: #selector(openSettings), keyEquivalent: "")
-        settings.target = self; menu.addItem(settings)
-        slackAutoMenu.target = self; menu.addItem(slackAutoMenu)
-        slackStateMenu.isEnabled = false; menu.addItem(slackStateMenu)
-        slackAccessMenu.target = self; menu.addItem(slackAccessMenu)
-        for app in ["zoom", "teams", "meet"] {
-            let key = app == "zoom" ? "Automatically record Zoom meetings" : app == "teams" ? "Automatically record Teams meetings" : "Automatically record Google Meet meetings"
-            let toggle = NSMenuItem(title: key, action: #selector(toggleMeetingAuto(_:)), keyEquivalent: "")
-            toggle.target = self; toggle.representedObject = app; menu.addItem(toggle); detectionMenus[app] = toggle
-            let status = NSMenuItem(title: "", action: nil, keyEquivalent: ""); status.isEnabled = false; menu.addItem(status); detectionStates[app] = status
-        }
-        accessibilityMenu.target = self; menu.addItem(accessibilityMenu)
-        menu.addItem(NSMenuItem.separator())
-        let quit = NSMenuItem(title: "Quit menu app", action: #selector(quitApp), keyEquivalent: "")
-        menu.addItem(updatesMenu.item)
-        quit.target = self; menu.addItem(quit)
-        localizedItems = [(liveLanguageMenu,"Live speech language"),(finalOnlyMenu,"Record final-only (keeps real-time off)"),(startMenu, "Start recording"), (stopMenu, "Stop recording"),
-            (open, "Open interface"), (settings, "Settings and permissions…"),
-            (slackAutoMenu, "Automatically record Slack meetings"),
-            (slackAccessMenu, "Allow Slack log access…"), (quit, "Quit menu app")]
-        let languageMenu = NSMenu()
-        for (title, code) in [("English", "en"), ("Português (Brasil)", "pt-BR"), ("Français", "fr"), ("Deutsch", "de")] {
-            let entry = NSMenuItem(title: title, action: #selector(selectLocale(_:)), keyEquivalent: "")
-            entry.target = self; entry.representedObject = code
-            languageMenu.addItem(entry); localeItems.append(entry)
-        }
-        let language = NSMenuItem(title: "Interface language", action: nil, keyEquivalent: "")
-        language.submenu = languageMenu; menu.insertItem(language, at: 6)
-        localizedItems.append((language, "Interface language"))
-        localizedItems.append((retryMenu,"Retry service startup"))
-        localizedItems.append((accessibilityMenu, "Authorize Accessibility"))
-        for (app, entry) in detectionMenus { localizedItems.append((entry, app == "zoom" ? "Automatically record Zoom meetings" : app == "teams" ? "Automatically record Teams meetings" : "Automatically record Google Meet meetings")) }
-        item.menu = menu
+        item.menu = makeMenu()
         if updateQARoot() == nil {
             if let folder = slackLogAccess.restore() { slackDetector.setAuthorizedLogRoot(folder) }
             smbFolderAccess.restore()
@@ -173,9 +205,6 @@ final class MenuController: NSObject, NSApplicationDelegate {
         updatesMenu.check = { [weak self] in self?.releaseUpdates.check(manual: true) }
         updatesMenu.install = { [weak self] in self?.confirmUpdate() }
         updatesMenu.retry = { [weak self] in self?.releaseUpdates.retry() }
-        updatesMenu.permissions = { [weak self] in self?.reportPermissions(); self?.releaseUpdates.checkPermissions() }
-        updatesMenu.settings = { [weak self] in self?.openSettings() }
-        updatesMenu.guidance = { [weak self] in self?.showUpdatePermissionHelp() }
         var firstUpdateStatus = true
         releaseUpdates.onChange = { [weak self] snapshot in
             guard let self = self else { return }
@@ -186,6 +215,75 @@ final class MenuController: NSObject, NSApplicationDelegate {
         updateTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.releaseUpdates.check(manual: false) }
         updateMenu(); bootServices(); poll()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.poll() }
+    }
+    func makeMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        statusMenu.isEnabled = false
+        menu.addItem(statusMenu)
+        for entry in [startMenu, stopMenu] { entry.target = self; entry.isEnabled = false; menu.addItem(entry) }
+        recoveryMenu.target = self; recoveryMenu.isHidden = true; menu.addItem(recoveryMenu)
+        let open = NSMenuItem(title: "Open interface", action: #selector(openInterface), keyEquivalent: "")
+        open.target = self; menu.addItem(open)
+        menu.addItem(.separator())
+        let automatic = NSMenu(); automatic.autoenablesItems = false
+        automaticMenu.submenu = automatic; menu.addItem(automaticMenu)
+        let settingsGroup = NSMenu(); settingsGroup.autoenablesItems = false
+        settingsMenu.submenu = settingsGroup; menu.addItem(settingsMenu)
+        let settings = NSMenuItem(title: "Open settings…", action: #selector(openSettings), keyEquivalent: "")
+        settings.target = self; settingsGroup.addItem(settings)
+        permissionStatusMenu.isEnabled = false; settingsGroup.addItem(permissionStatusMenu)
+        for entry in [microphoneMenu, screenMenu, recheckPermissionsMenu, permissionHelpMenu] { entry.target = self; settingsGroup.addItem(entry) }
+        settingsGroup.addItem(.separator())
+        let speechMenu = NSMenu()
+        for (title,code) in [("English","en"),("Brazilian Portuguese","pt")] {
+            let entry = NSMenuItem(title:title,action:#selector(selectLiveLanguage(_:)),keyEquivalent:"")
+            entry.target = self; entry.representedObject = code; speechMenu.addItem(entry); liveLanguageItems.append(entry)
+        }
+        liveLanguageMenu.submenu = speechMenu; settingsGroup.addItem(liveLanguageMenu)
+        liveLanguageStateMenu.isEnabled = false; settingsGroup.addItem(liveLanguageStateMenu)
+        finalOnlyMenu.target = self; finalOnlyMenu.isHidden = true; menu.insertItem(finalOnlyMenu, at: 3)
+        slackAutoMenu.target = self; automatic.addItem(slackAutoMenu)
+        slackStateMenu.isEnabled = false; automatic.addItem(slackStateMenu)
+        slackAccessMenu.target = self; automatic.addItem(slackAccessMenu)
+        detectionErrorMenu.target = self; detectionErrorMenu.isHidden = true; automatic.addItem(detectionErrorMenu)
+        for app in ["zoom", "teams", "meet"] {
+            let key = app == "zoom" ? "Zoom" : app == "teams" ? "Teams" : "Google Meet"
+            let toggle = NSMenuItem(title: key, action: #selector(toggleMeetingAuto(_:)), keyEquivalent: "")
+            toggle.target = self; toggle.representedObject = app; automatic.addItem(.separator()); automatic.addItem(toggle); detectionMenus[app] = toggle
+            let status = NSMenuItem(title: "\(key): Not checked", action: nil, keyEquivalent: ""); status.isEnabled = false; automatic.addItem(status); detectionStates[app] = status
+        }
+        accessibilityMenu.target = self; automatic.addItem(accessibilityMenu)
+        let diagnostics = NSMenu(); diagnostics.autoenablesItems = false
+        diagnosticsMenu.submenu = diagnostics
+        noticeMenu.target = self; diagnostics.addItem(noticeMenu)
+        retryMenu.target = self; diagnostics.addItem(retryMenu)
+        storageMenu.isEnabled = false; diagnostics.addItem(storageMenu)
+        menu.addItem(updatesMenu.item)
+        menu.addItem(diagnosticsMenu)
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "Quit menu app", action: #selector(quitApp), keyEquivalent: "")
+        quit.target = self; menu.addItem(quit)
+        localizedItems = [(liveLanguageMenu,"Live speech language"),(finalOnlyMenu,"Record final-only (keeps real-time off)"),(startMenu, "Start recording"), (stopMenu, "Stop recording"),
+            (open, "Open interface"), (settings, "Open settings…"), (automaticMenu, "Automatic recording"),
+            (settingsMenu, "Settings and permissions"), (diagnosticsMenu, "Diagnostics"),
+            (microphoneMenu, "Open Microphone settings…"), (screenMenu, "Open Screen Recording settings…"),
+            (recheckPermissionsMenu, "Check permissions again"), (permissionHelpMenu, "Permission help…"),
+            (slackAutoMenu, "Slack"), (slackAccessMenu, "Allow Slack log access…"),
+            (detectionErrorMenu, "Detection unavailable — use manual recording"), (quit, "Quit menu app")]
+        let languageMenu = NSMenu()
+        for (title, code) in [("English", "en"), ("Português (Brasil)", "pt-BR"), ("Français", "fr"), ("Deutsch", "de")] {
+            let entry = NSMenuItem(title: title, action: #selector(selectLocale(_:)), keyEquivalent: "")
+            entry.target = self; entry.representedObject = code
+            languageMenu.addItem(entry); localeItems.append(entry)
+        }
+        let language = NSMenuItem(title: "Interface language", action: nil, keyEquivalent: "")
+        language.submenu = languageMenu; settingsGroup.addItem(language)
+        localizedItems.append((language, "Interface language"))
+        localizedItems.append((retryMenu,"Retry service startup"))
+        localizedItems.append((accessibilityMenu, "Authorize Accessibility"))
+        for (app, entry) in detectionMenus { localizedItems.append((entry, app == "zoom" ? "Zoom" : app == "teams" ? "Teams" : "Google Meet")) }
+        return menu
     }
     private func bootServices() {
         if updateQARoot() != nil {return}
@@ -214,6 +312,15 @@ final class MenuController: NSObject, NSApplicationDelegate {
     }
     private func poll() {
         releaseUpdates.refreshStatus()
+        if let root = updateQARoot() {
+            qaState = MenuQAState.load(root: root)
+            state = qaState?.control
+            freshProtectedStatus = qaState?.fresh == true
+            serviceNotices = qaState?.services ?? []
+            locale = MenuLocalization.normalize(qaState?.control?.uiLocale)
+            updateMenu()
+            return
+        }
         refreshLiveLanguageSettings()
         guard !polling else { return }
         refreshServiceNotices()
@@ -230,16 +337,14 @@ final class MenuController: NSObject, NSApplicationDelegate {
                     self.state = state
                     self.freshProtectedStatus=true
                     self.locale = MenuLocalization.normalize(state.uiLocale)
-                    self.statusMenu.title = state.error.map { MenuLocalization.message($0, locale: self.locale) } ?? (state.recording ? "\(state.captureLabel(locale: self.locale)) • \(state.seconds / 60):\(String(format: "%02d", state.seconds % 60))" : state.processing ? self.text("Processing meeting…") : state.pending ? self.text("Waiting for the interface…") : state.ready ? self.text("Ready to record") : self.text("Preparing services…"))
                 } else {
                     self.state = nil
                     self.freshProtectedStatus=false
-                    self.statusMenu.title = self.text("Service unavailable — open the interface")
                 }
-                self.updateMenu()
                 if let request = self.state?.permissionRequest { self.executePermissionRequest(request) }
                 if let command = self.state?.smbCommand { self.smbFolderAccess.execute(command, locale: self.locale) }
                 self.checkMeetings()
+                self.updateMenu()
                 self.reportPermissions()
             }
         }
@@ -251,7 +356,25 @@ final class MenuController: NSObject, NSApplicationDelegate {
         noticeMenu.title=notice?.message(locale:locale) ?? text("Service status…")
         noticeMenu.isEnabled=true
         retryMenu.isEnabled = !booting && !sending && state?.canQuit != false
-        if let notice=notice,state?.recording != true && state?.processing != true && state?.pending != true {statusMenu.title=notice.message(locale:locale)}
+        let presentation = RecordingMenuPresentation.evaluate(state, fresh: freshProtectedStatus,
+            microphone: microphonePermission, screenCapture: screenCaptureAuthorized,
+            services: serviceNotices, sending: sending)
+        let microphone = microphonePermission
+        permissionStatusMenu.title = text(microphone == "unknown" ? "Could not verify permissions" :
+            microphone == "restricted" ? "Microphone restricted by device policy" :
+            microphone != "authorized" || !screenCaptureAuthorized ? "Permissions need attention" : "Capture permissions allowed")
+        microphoneMenu.isHidden = microphone == "authorized"
+        screenMenu.isHidden = screenCaptureAuthorized
+        if let current = state, current.recording {
+            statusMenu.title = "\(current.captureLabel(locale: locale)) • \(current.seconds / 60):\(String(format: "%02d", current.seconds % 60))"
+        } else if presentation.blocker == "Services are not ready", let notice = notice {
+            statusMenu.title = notice.message(locale: locale)
+        } else { statusMenu.title = text(presentation.status) }
+        if state?.recording != true && state?.processing != true, let message = statusMessage {
+            if message.until > Date() { statusMenu.title = message.text }
+            else { statusMessage = nil }
+        }
+        applyRecordingActions(presentation)
         if let storage = state?.storage {
             let number = NumberFormatter();number.locale = Locale(identifier: locale);number.maximumFractionDigits = 3
             let used = number.string(from: NSNumber(value: Double(storage.usedBytes) / 1_000_000_000)) ?? "?"
@@ -270,18 +393,33 @@ final class MenuController: NSObject, NSApplicationDelegate {
         finalOnlyMenu.isHidden = !liveAdmissionUnavailable && !["unsupported","unavailable"].contains(liveLanguageSettings?.liveLanguageState ?? "")
         slackAutoMenu.state = slackAutoEnabled ? .on : .off
         slackAutoMenu.isEnabled = state?.meetingDetection != nil
+        if state?.meetingDetection == nil { slackStateMenu.title = "Slack: \(text("Not checked"))" }
+        detectionErrorMenu.isHidden = state?.meetingDetection?.error == nil
         for (app, entry) in detectionMenus {
             entry.state = state?.meetingDetection?.enabled[app] == true ? .on : .off
             entry.isEnabled = state?.meetingDetection != nil
         }
-        startMenu.isEnabled = !sending && (state?.canStart ?? false) && captureAuthorized && ServiceNoticeInfo.permitsVerifiedStart(unavailable,freshController:freshProtectedStatus)
-        finalOnlyMenu.isEnabled = startMenu.isEnabled
-        stopMenu.isEnabled = !sending && (state?.canStop ?? false)
+        if state?.meetingDetection == nil {
+            for (app, entry) in detectionStates {
+                entry.title = "\(app == "meet" ? "Google Meet" : app == "teams" ? "Teams" : "Zoom"): \(text("Not checked"))"
+            }
+        }
         let recording = state?.recording ?? false
         item.button?.image = recordingStatusImage(recording, locale: locale)
         item.button?.contentTintColor = recording ? .systemRed : nil
         item.button?.toolTip = "Heed — \(statusMenu.title)"
-        if updateQARoot() != nil {statusMenu.title = "Heed Update QA — simulated services"; item.button?.toolTip = "Heed Update QA"}
+        if updateQARoot() != nil {
+            if qaState == nil { statusMenu.title = "Heed QA — simulated services" }
+            item.button?.toolTip = "Heed QA — \(statusMenu.title)"
+        }
+    }
+    func applyRecordingActions(_ presentation: RecordingMenuPresentation) {
+        recoveryMenu.isHidden = presentation.recovery == nil
+        recoveryMenu.title = presentation.recovery.map { text($0) } ?? ""
+        recoveryKind = presentation.recovery
+        startMenu.isEnabled = presentation.canStart
+        finalOnlyMenu.isEnabled = presentation.canStart
+        stopMenu.isEnabled = presentation.canStop
     }
     private var slackAutoEnabled: Bool {
         if !UserDefaults.standard.bool(forKey: "HeedDetectionSettingsMigrated"), UserDefaults.standard.object(forKey: "HeedSlackAutoRecord") != nil { return UserDefaults.standard.bool(forKey: "HeedSlackAutoRecord") }
@@ -318,10 +456,18 @@ final class MenuController: NSObject, NSApplicationDelegate {
             let key = detection.enabled[app] != true ? "disabled" : sources.contains(where: { $0.suppressed }) ? "Paused for this call" : sources.contains(where: { $0.capability == "permission-required" }) ? "Accessibility permission needed" : sources.contains(where: { $0.capability != "ready" }) ? "Detection unavailable — use manual recording" : sources.contains(where: { $0.state == "active" }) ? "meeting detected" : sources.isEmpty ? "Not checked" : "waiting for the next meeting"
             entry.title = "\(app == "meet" ? "Google Meet" : app == "teams" ? "Teams" : "Zoom"): \(text(key))"
         }
-        if let seconds = detection.reconnectSeconds, seconds > 0 { statusMenu.title = MenuLocalization.format("Waiting for reconnect — %@s", locale: locale, value: String(seconds)) }
-        if let error = detection.error { statusMenu.title = MenuLocalization.message(error, locale: locale) }
+        // Detector errors affect automatic recording, not manual readiness.
+    }
+    @objc private func showDetectionError() {
+        guard let error = state?.meetingDetection?.error else { return }
+        let alert = NSAlert()
+        alert.messageText = text("Automatic recording")
+        alert.informativeText = MenuLocalization.message(error, locale: locale)
+        alert.addButton(withTitle: text("Close"))
+        alert.runModal()
     }
     private var microphonePermission: String {
+        if let qaState = qaState { return qaState.microphone }
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: return "authorized"
         case .denied: return "denied"
@@ -330,23 +476,63 @@ final class MenuController: NSObject, NSApplicationDelegate {
         @unknown default: return "unknown"
         }
     }
-    private var captureAuthorized: Bool { microphonePermission == "authorized" && CGPreflightScreenCaptureAccess() }
-    private func reportPermissions(commandID: String? = nil, error: String? = nil) {
-        guard let endpoints = endpoints, !reportingPermissions || commandID != nil else { return }
-        reportingPermissions = true
-        var payload: [String: Any] = ["recoverySupported": true, "permissions": ["microphone": microphonePermission,
-            "screenCapture": CGPreflightScreenCaptureAccess(), "slackLogs": slackAutoEnabled ? slackDetector.canReadLogs as Any : NSNull(),
-            "slackAutoRecord": slackAutoEnabled]]
-        if let build = releaseUpdates.build {
-            payload["build"] = ["version": build.version, "commit": build.commit as Any? ?? NSNull(), "instanceId": menuInstanceID]
+    private var screenCaptureAuthorized: Bool { qaState?.screenCapture ?? CGPreflightScreenCaptureAccess() }
+    private func reportPermissions(commandID: String? = nil, error: String? = nil, completion: ((Bool) -> Void)? = nil) {
+        permissionReports.enqueue(keepIfBusy: commandID != nil || completion != nil) { [weak self] finish in
+            guard let self = self, let endpoints = self.endpoints else { finish(); completion?(false); return }
+            var payload: [String: Any] = ["recoverySupported": true, "permissions": ["microphone": self.microphonePermission,
+                "screenCapture": self.screenCaptureAuthorized, "slackLogs": self.slackAutoEnabled ? self.slackDetector.canReadLogs as Any : NSNull(),
+                "slackAutoRecord": self.slackAutoEnabled]]
+            if let build = self.releaseUpdates.build {
+                payload["build"] = ["version": build.version, "commit": build.commit as Any? ?? NSNull(), "instanceId": self.menuInstanceID]
+            }
+            if let commandID = commandID { payload["commandId"] = commandID }
+            if let error = error { payload["error"] = error }
+            var request = URLRequest(url: endpoints.apiURL("/api/desktop/permissions/report"))
+            request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+            endpoints.perform(session: self.session, request: request) { _, response, _ in
+                DispatchQueue.main.async {
+                    finish()
+                    completion?((response as? HTTPURLResponse)?.statusCode == 200)
+                }
+            }
         }
-        if let commandID = commandID { payload["commandId"] = commandID }
-        if let error = error { payload["error"] = error }
-        var request = URLRequest(url: endpoints.apiURL("/api/desktop/permissions/report"))
-        request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-        endpoints.perform(session: session, request: request) { [weak self] _, _, _ in
-            DispatchQueue.main.async { self?.reportingPermissions = false }
+    }
+    @objc private func openMicrophoneSettings() {
+        if updateQARoot() != nil { poll(); return }
+        if microphonePermission == "notDetermined" {
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] _ in DispatchQueue.main.async { self?.recheckPermissions() } }
+        } else { openPrivacyPane("Privacy_Microphone") }
+    }
+    @objc private func openScreenSettings() {
+        if updateQARoot() != nil { poll(); return }
+        if !screenCaptureAuthorized { _ = CGRequestScreenCaptureAccess() }
+        openPrivacyPane("Privacy_ScreenCapture")
+    }
+    @objc private func recheckPermissions() {
+        if updateQARoot() != nil {
+            poll()
+            releaseUpdates.checkPermissions()
+            return
+        }
+        refreshServiceNotices(force: true)
+        poll()
+        reportPermissions { [weak self] reported in
+            if reported { self?.releaseUpdates.checkPermissions() }
+            self?.updateMenu()
+        }
+    }
+    @objc private func recoverRecording() {
+        switch recoveryKind {
+        case "Open Microphone settings…": openMicrophoneSettings()
+        case "Open Screen Recording settings…": openScreenSettings()
+        case "Retry service startup": retryServices()
+        case "Check recording status again": recheckPermissions()
+        case "Check permissions again": recheckPermissions()
+        case "Open recording recovery…": openInterface()
+        case "Settings and permissions…": openSettings()
+        default: openInterface()
         }
     }
     private func executePermissionRequest(_ request: PermissionRequest) {
@@ -429,7 +615,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
                 if accepted {
                     self.poll()
                 } else {
-                    self.statusMenu.title = MenuLocalization.message(error?.localizedDescription ?? responseError(data, status: (response as? HTTPURLResponse)?.statusCode ?? 0), locale: self.locale)
+                    self.showStatusMessage(MenuLocalization.message(error?.localizedDescription ?? responseError(data, status: (response as? HTTPURLResponse)?.statusCode ?? 0), locale: self.locale))
                     self.updateMenu()
                 }
             }
@@ -447,7 +633,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
                    let data = data, let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    let saved = body["locale"] as? String {
                     self.locale = MenuLocalization.normalize(saved); self.updateMenu(); self.poll()
-                } else { self.statusMenu.title = self.text("Could not save the interface language. Try again.") }
+                } else { self.showStatusMessage(self.text("Could not save the interface language. Try again.")) }
             }
         }
     }
@@ -468,8 +654,8 @@ final class MenuController: NSObject, NSApplicationDelegate {
         liveLanguageClient.save(language:language) { [weak self] result in
             guard let self = self else { return }; self.sending = false
             switch result {
-            case .success(let action): self.liveLanguageSettings = action.settings; self.statusMenu.title = self.text("Saved. Live speech language applies to the next recording.")
-            case .failure: self.statusMenu.title = self.text("Could not save live speech language. Try again.")
+            case .success(let action): self.liveLanguageSettings = action.settings; self.showStatusMessage(self.text("Saved. Live speech language applies to the next recording."))
+            case .failure: self.showStatusMessage(self.text("Could not save live speech language. Try again."))
             }
             self.updateMenu()
         }
@@ -487,7 +673,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
             case .failure(let error):
                 if let failure = error as? LiveLanguageClientError, ["live-language-unsupported","live-capabilities-unavailable"].contains(failure.code ?? "") { self.liveAdmissionUnavailable = true }
                 let message = MenuLocalization.message(error.localizedDescription,locale:self.locale)
-                self.statusMenu.title = message
+                self.showStatusMessage(message)
                 if let failure = error as? LiveLanguageClientError, failure.persistedOff {
                     self.showLiveLanguageFeedback(message + "\n\n" + self.text("Real-time transcription is now off for future recordings. Change it in Settings to turn it on again."))
                 } else { self.showLiveLanguageFeedback(message) }
@@ -503,6 +689,10 @@ final class MenuController: NSObject, NSApplicationDelegate {
     @objc private func startRecording() { startCapture(finalOnly:false) }
     @objc private func recordFinalOnly() { startCapture(finalOnly:true) }
     @objc private func stopRecording() { command("stop") }
+    private func showStatusMessage(_ message: String) {
+        statusMessage = (message, Date().addingTimeInterval(8))
+        statusMenu.title = message
+    }
     private func openVerifiedInterface(settings: Bool) {
         bootServices()
         guard let endpoints = endpoints else { statusMenu.title = text("Service unavailable — open the interface"); return }
@@ -524,10 +714,10 @@ final class MenuController: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: text("Update")); alert.addButton(withTitle: text("Cancel"))
         if alert.runModal() == .alertFirstButtonReturn { releaseUpdates.install() }
     }
-    private func showUpdatePermissionHelp() {
+    @objc private func showPermissionHelp() {
         let alert = NSAlert()
-        alert.messageText = text("Permissions after updating")
-        alert.informativeText = text("Enable Heed under System Settings > Privacy & Security > Microphone and Screen & System Audio Recording. If capture still fails after updating, turn the affected permission off and on, then quit and reopen Heed. A restricted microphone requires your device administrator. Reauthorize Slack or shared folders only if their access no longer works. Heed never resets permissions automatically.")
+        alert.messageText = text("Recording permissions")
+        alert.informativeText = text("Enable Heed under System Settings > Privacy & Security > Microphone and Screen & System Audio Recording. If capture remains unavailable, turn the affected permission off and on, then quit and reopen Heed. A restricted microphone requires your device administrator. Reauthorize Slack or shared folders only if their access no longer works. Heed never resets permissions automatically.")
         alert.addButton(withTitle: text("Settings and permissions…")); alert.addButton(withTitle: text("Close"))
         if alert.runModal() == .alertFirstButtonReturn {openSettings()}
     }
@@ -601,10 +791,70 @@ if CommandLine.arguments.contains("--update-client-self-test") {
     print("Heed update client fixture self-tests passed")
 } else if CommandLine.arguments.contains("--self-test") {
     permissionRecoverySelfTests()
+    serializedPermissionReportSelfTests()
     try updateSelfTests()
     try serviceNoticeSelfTests()
     func status(_ recording: Bool = false, _ processing: Bool = false, _ ready: Bool = true, _ pending: Bool = false) -> ControlStatus {
         ControlStatus(recording: recording, processing: processing, seconds: 0, ready: ready, clientConnected: true, error: nil, pending: pending, starting: false, meetingId: recording ? "fixture" : nil)
+    }
+    let menuController = MenuController()
+    let menu = menuController.makeMenu()
+    let top = menu.items.filter { !$0.isSeparatorItem && !$0.isHidden }.map(\.title)
+    precondition(top.prefix(4).elementsEqual(["Preparing services…", "Start recording", "Stop recording", "Open interface"]),
+                 "Readiness, adjacent recording actions, and interface must lead the menu")
+    precondition(top.suffix(4).elementsEqual(["Settings and permissions", "Updates", "Diagnostics", "Quit menu app"]))
+    let automatic = menu.items.first { $0.title == "Automatic recording" }!.submenu!
+    precondition(automatic.items.filter { !$0.isSeparatorItem }.map(\.title).contains("Slack"))
+    precondition(["Zoom", "Teams", "Google Meet"].allSatisfy { title in automatic.items.contains { $0.title == title } })
+    let detectionWarning = automatic.items.first { $0.title == "Detection unavailable — use manual recording" }!
+    precondition(detectionWarning.action != nil && detectionWarning.isEnabled,
+                 "An automation failure needs a focusable, actionable warning")
+    let settings = menu.items.first { $0.title == "Settings and permissions" }!.submenu!
+    precondition(settings.items.contains { $0.title == "Interface language" })
+    precondition(settings.items.contains { $0.title == "Check permissions again" })
+    let diagnostics = menu.items.first { $0.title == "Diagnostics" }!.submenu!
+    precondition(diagnostics.items.contains { $0.title == "Local meeting storage" })
+    let readyPresentation = RecordingMenuPresentation.evaluate(status(), fresh: true, microphone: "authorized", screenCapture: true, services: [], sending: false)
+    precondition(readyPresentation.status == "Ready to record" && readyPresentation.canStart && readyPresentation.blocker == nil)
+    let missingScreen = RecordingMenuPresentation.evaluate(status(), fresh: true, microphone: "authorized", screenCapture: false, services: [], sending: false)
+    precondition(missingScreen.status == "Screen & System Audio Recording permission needed" && !missingScreen.canStart && missingScreen.recovery == "Open Screen Recording settings…",
+                 "Disabled Start cannot coexist with Ready to record when capture permission is missing")
+    menuController.applyRecordingActions(missingScreen)
+    precondition(menu.items.first { $0.title == "Start recording" }?.isEnabled == false)
+    let recoveryAction = menu.items.first { $0.title == "Open Screen Recording settings…" }!
+    precondition(recoveryAction.isHidden == false,
+                 "Permission blocker needs a visible main-menu recovery action")
+    menuController.applyRecordingActions(readyPresentation)
+    precondition(menu.items.first { $0.title == "Start recording" }?.isEnabled == true)
+    precondition(recoveryAction.isHidden == true,
+                 "Resolved warnings must clear after a fresh status")
+    let missingMic = RecordingMenuPresentation.evaluate(status(), fresh: true, microphone: "denied", screenCapture: true, services: [], sending: false)
+    precondition(missingMic.status == "Microphone permission needed" && !missingMic.canStart && missingMic.recovery == "Open Microphone settings…")
+    let unknownPermission = RecordingMenuPresentation.evaluate(status(), fresh: true, microphone: "unknown", screenCapture: true, services: [], sending: false)
+    precondition(unknownPermission.status == "Could not verify permissions" && unknownPermission.recovery == "Check permissions again" && !unknownPermission.canStart)
+    let unknown = RecordingMenuPresentation.evaluate(status(), fresh: false, microphone: "authorized", screenCapture: true, services: [], sending: false)
+    precondition(unknown.status == "Service unavailable — open the interface" && !unknown.canStart && unknown.recovery == "Check recording status again")
+    let conflict = ServiceNoticeInfo(service: "api", port: 48100, state: "conflict", application: "OtherApp")
+    let unavailable = RecordingMenuPresentation.evaluate(status(), fresh: true, microphone: "authorized", screenCapture: true, services: [conflict], sending: false)
+    precondition(!unavailable.canStart && unavailable.recovery == "Retry service startup")
+    let failedRecording = try JSONDecoder().decode(ControlStatus.self, from: Data("{\"recording\":false,\"processing\":false,\"seconds\":0,\"ready\":false,\"clientConnected\":true,\"pending\":false,\"state\":\"failed\",\"path\":\"/tmp/retained.wav\",\"error\":\"Finalization failed\"}".utf8))
+    let failedPresentation = RecordingMenuPresentation.evaluate(failedRecording, fresh: true, microphone: "denied", screenCapture: false, services: [conflict], sending: false)
+    precondition(failedPresentation.status == "Recording needs recovery" && failedPresentation.recovery == "Open recording recovery…" && !failedPresentation.canStart)
+    menuController.applyRecordingActions(failedPresentation)
+    precondition(menu.items.first { $0.title == "Open recording recovery…" }?.isHidden == false)
+    let active = RecordingMenuPresentation.evaluate(status(true), fresh: true, microphone: "denied", screenCapture: false, services: [conflict], sending: false)
+    precondition(active.status == "Recording" && active.canStop && !active.canStart, "Active recording remains visible during another warning")
+    menuController.applyRecordingActions(active)
+    precondition(menu.items.first { $0.title == "Stop recording" }?.isEnabled == true)
+    let saving = RecordingMenuPresentation.evaluate(status(false, true), fresh: true, microphone: "denied", screenCapture: false, services: [], sending: false)
+    precondition(saving.status == "Processing meeting…" && !saving.canStart)
+    for locale in MenuLocalization.locales {
+        for key in ["Automatic recording", "Settings and permissions", "Diagnostics", "Open Microphone settings…", "Open Screen Recording settings…", "Check recording status again", "Recording needs recovery", "Open recording recovery…"] {
+            precondition(!MenuLocalization.text(key, locale: locale).isEmpty)
+            if locale != "en" && !(locale == "fr" && key == "Diagnostics") {
+                precondition(MenuLocalization.text(key, locale: locale) != key)
+            }
+        }
     }
     precondition(recordingStatusImage(false)?.isTemplate == true)
     precondition(recordingStatusImage(true)?.isTemplate == false)
