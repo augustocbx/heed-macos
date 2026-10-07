@@ -1,4 +1,5 @@
 export const LIVE_LANGUAGE_TRANSLATIONS: Record<string,Record<"pt-BR"|"fr"|"de",string>> = {
+ "Live preview is unavailable. Capture continues; the final transcript will be processed after stopping.": {"pt-BR":"A prévia ao vivo está indisponível. A gravação continua; a transcrição final será processada após parar.","fr":"L’aperçu en direct est indisponible. L’enregistrement continue ; la transcription finale sera traitée après l’arrêt.","de":"Die Live-Vorschau ist nicht verfügbar. Die Aufnahme läuft weiter; die finale Transkription wird nach dem Stoppen verarbeitet."},
  "Recording final-only turns real-time transcription off for future recordings. Turn it back on in Settings.": {"pt-BR":"Gravar apenas para transcrição final desativa o tempo real para as próximas gravações. Ative-o novamente em Configurações.","fr":"L’enregistrement pour la transcription finale uniquement désactive le temps réel pour les prochains enregistrements. Réactivez-le dans les paramètres.","de":"Eine rein finale Aufnahme schaltet Echtzeit für zukünftige Aufnahmen aus. Aktivieren Sie sie wieder in den Einstellungen."},
  "Live speech language": {
   "pt-BR": "Idioma da fala ao vivo",

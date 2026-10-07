@@ -1706,6 +1706,7 @@ async function processFullLive(
 					body: JSON.stringify({ wav_path: outPath, language: lang, task:"transcribe", audio_s: dur }),
                     signal: liveAbort.signal,
 				});
+				if (!res.ok) previewUnavailable();
 				if (res.ok) {
 					const tx = await res.json() as { text?: string; quality?: { ok: boolean; reason: string; hint: string } };
                     if(!acceptLiveResult(tx))continue;
@@ -1889,8 +1890,9 @@ const liveListeners = new Set<(event: string, data: unknown) => void>();
 async function postLiveJSON(path: string, body: unknown): Promise<any> {
  try {
   const response = await fetch(`${TRANSCRIPTION_SERVER}${path}`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body), signal:liveAbort.signal});
-  return response.ok ? await response.json() : null;
- } catch { return null; }
+  if(!response.ok){if(path.startsWith('/stream/'))previewUnavailable();return null;}
+  return await response.json();
+ } catch { if(path.startsWith('/stream/'))previewUnavailable();return null; }
 }
 function startLiveTranscribe() {
  if (recordingCoordinator.snapshot().realTimeTranscription === false || !recorderProc || !recorderPath || liveTranscribeInterval || liveFirstTimeout) return;
@@ -2004,6 +2006,7 @@ function startLiveTranscribe() {
 					}
 
 					console.log(`[heed] live: whisper responded in ${whisperMs}ms, status=${txRes.status}`);
+					if (!txRes.ok) previewUnavailable();
 					if (txRes.ok) {
 						const tx = await txRes.json() as { text?: string; srt_path?: string; gov?: { interval_ms?: number; live_model?: string; changed?: boolean; reason?: string } };
                         if(!acceptLiveResult(tx))return;
@@ -2048,6 +2051,7 @@ function startLiveTranscribe() {
 								body: JSON.stringify({ wav_path: sysChunkPath, language: lang, task:"transcribe" }),
                                 signal: liveAbort.signal,
 							});
+							if (!sysRes.ok) previewUnavailable();
 							if (sysRes.ok) {
 								const sysTx = await sysRes.json() as { text?: string };
                                 if(!acceptLiveResult(sysTx))return;
@@ -2070,6 +2074,7 @@ function startLiveTranscribe() {
 					// Cleanup chunk file
 					try { unlinkSync(chunkPath); } catch {}
 				} catch (e) {
+                    previewUnavailable();
 					const errMsg = (e as Error).message;
 					console.log(`[heed] live chunk error: ${errMsg}`);
 					if (errMsg.includes("Unable to connect") || errMsg.includes("ECONNREFUSED")) {
