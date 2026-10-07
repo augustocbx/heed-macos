@@ -1,6 +1,7 @@
 import {afterEach, expect, test} from 'bun:test';
 import {lstatSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
+import {createHash} from 'node:crypto';
 import {AiConnections} from './connections';
 
 import {fixture, cleanupFixtures} from './connection-fixtures';
@@ -89,4 +90,22 @@ test('FIFO settings fail closed promptly instead of blocking server startup',asy
  const child=Bun.spawn([process.execPath,'-e',source],{stdout:'pipe',stderr:'pipe'});let timer:ReturnType<typeof setTimeout>|undefined;
  try{const completed=await Promise.race([child.exited.then(()=>true),new Promise<boolean>(resolve=>{timer=setTimeout(()=>resolve(false),1500);})]);expect(completed).toBe(true);expect(await new Response(child.stdout).text()).toBe('true\n');}
  finally{clearTimeout(timer);child.kill('SIGKILL');await child.exited;}
+});
+function padConfiguration(record:any,targetBytes:number){
+ record.connections[0].endpoint='https://model.lan/';const bytes=Buffer.byteLength(JSON.stringify(record,null,2),'utf8');record.connections[0].endpoint+='x'.repeat(targetBytes-bytes);return JSON.stringify(record,null,2);
+}
+test('journal growth is rejected before replacement puts a credential even when final replacement would shrink',async()=>{
+ const f=fixture();const c=await f.manager.register(custom as any);await f.manager.validate(c.id);const selected={provider:'compatible' as const,connectionId:c.id,model:c.model};f.manager.saveSelection('chat',selected);
+ const path=join(f.root,'ai','connections.json'),record=JSON.parse(readFileSync(path,'utf8'));writeFileSync(path,padConfiguration(record,999_980));const restarted=new AiConnections(f.options);const checkpoint=(await restarted.resolve(selected)).checkpoint;
+ const digest=()=>createHash('sha256').update(readFileSync(path)).digest('hex'),before=digest();let puts=0;const put=f.vault.put;f.vault.put=async(...args)=>{puts++;return put(...args);};
+ await expect(restarted.replace(c.id,custom as any)).rejects.toThrow('invalid-request');expect(puts).toBe(0);expect(digest()).toBe(before);expect(()=>restarted.assertCurrent(checkpoint)).not.toThrow();expect(new AiConnections(f.options).snapshot().unavailable).toBe(false);
+});
+test('selection changes during a protected put must fit both journal and reserved committed configuration',async()=>{
+ const f=fixture();const c=await f.manager.register(custom as any);await f.manager.validate(c.id);const selected={provider:'compatible' as const,connectionId:c.id,model:c.model};f.manager.saveSelection('chat',selected);
+ const path=join(f.root,'ai','connections.json'),record=JSON.parse(readFileSync(path,'utf8'));const template=fixture();await template.manager.register(openai);const added=JSON.parse(readFileSync(join(template.root,'ai','connections.json'),'utf8')).connections[0];
+ const extra=Buffer.byteLength(JSON.stringify({...record,version:record.version+1,connections:[...record.connections,added]},null,2),'utf8')-Buffer.byteLength(JSON.stringify(record,null,2),'utf8');writeFileSync(path,padConfiguration(record,999_980-extra));const restarted=new AiConnections(f.options);const checkpoint=(await restarted.resolve(selected)).checkpoint;
+ let release!:()=>void;const put=f.vault.put;f.vault.put=async(value,reference)=>{await new Promise<void>(resolve=>release=resolve);return put(value,reference);};const registering=restarted.register(openai);while(!release)await Bun.sleep(1);
+ try{expect(()=>restarted.saveSelection('notes',{provider:'ollama',connectionId:null,model:'s'.repeat(200)})).toThrow('invalid-request');expect(()=>restarted.assertCurrent(checkpoint)).not.toThrow();}
+ finally{release();await registering;}
+ expect(statSync(path).size).toBeLessThanOrEqual(1_000_000);expect(new AiConnections(f.options).snapshot().unavailable).toBe(false);
 });

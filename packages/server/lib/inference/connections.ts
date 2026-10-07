@@ -11,6 +11,7 @@ import {AI_ENDPOINTS, requestJson, validateRemoteEndpoint} from './transport';
 import {MODEL_METADATA_VERIFIED_AT, modelCapabilities} from './model-metadata';
 
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+const MAX_CONFIGURATION_BYTES=1_000_000;
 const features:AiFeature[]=['notes','tasks','chat','library-chat'];
 const providers:Exclude<AiProviderId,'ollama'>[]=['openai','anthropic','deepseek','xai','compatible'];
 const validationEndpoints={openai:'https://api.openai.com/v1/models',anthropic:'https://api.anthropic.com/v1/models',deepseek:'https://api.deepseek.com/models',xai:'https://api.x.ai/v1/models'};
@@ -30,6 +31,7 @@ function capabilities(value:unknown):AiCapabilities {
 }
 interface PrivateConnection extends AiConnectionSnapshot {credentialReference:string;}
 interface Configuration {schema:1;version:number;selections:Record<AiFeature,AiSelection>;connections:PrivateConnection[];pendingCleanup:string[];}
+interface PendingStore {connection:PrivateConnection;previousReference?:string;}
 /** Server-only proof; it deliberately carries no Keychain reference. */
 export interface AiConnectionCheckpoint {settingsVersion:number;connectionId:string|null;connectionGeneration:number;credentialGeneration:number;trustVersion:number;}
 export interface ResolvedAiConnection {selection:AiSelection;endpoint:string;key?:string;capabilities?:AiCapabilities;checkpoint:AiConnectionCheckpoint;}
@@ -47,12 +49,13 @@ export class AiConnections {
  private state:Configuration=defaults();private failed=false;
  private readonly path:string;private readonly localEndpoint:string;
  private mutation:Promise<unknown>=Promise.resolve();private listeners=new Set<()=>void>();
+ private pendingStore?:PendingStore;
  constructor(private readonly options:AiConnectionsOptions){
   this.path=join(options.appDir,'ai','connections.json');this.localEndpoint=localServiceUrl(options.localEndpoint??AI_ENDPOINTS.ollama,'Local Ollama');
   try{
    const directory=join(options.appDir,'ai');mkdirSync(directory,{recursive:true,mode:0o700});if(lstatSync(directory).isSymbolicLink())throw Error();chmodSync(directory,0o700);
    const stat=lstatSync(this.path,{throwIfNoEntry:false});
-   if(stat){if(!stat.isFile())throw Error();const value=readPrivateJson(this.path,1_000_000);this.checkConfiguration(value);this.state=value;chmodSync(this.path,0o600);}
+   if(stat){if(!stat.isFile())throw Error();const value=readPrivateJson(this.path,MAX_CONFIGURATION_BYTES);this.checkConfiguration(value);this.state=value;chmodSync(this.path,0o600);}
   }catch{this.failed=true;}
  }
  private checkConfiguration(value:any):asserts value is Configuration {
@@ -70,7 +73,26 @@ export class AiConnections {
   // selection as unavailable until the user separately chooses another one.
  }
  private available(){if(this.failed)reject('settings-recovery');}
- private write(next:Configuration){try{atomicWriteJson(this.path,next);this.state=next;}catch{this.failed=true;this.changed();reject('settings-recovery');}}
+ private ensureWritable(next:Configuration):void {
+  // Match atomicWriteJson's actual UTF-8 pretty JSON, including journal references.
+  if(Buffer.byteLength(JSON.stringify(next,null,2),'utf8')>MAX_CONFIGURATION_BYTES)reject('invalid-request');
+  try{this.checkConfiguration(next);}catch{reject('invalid-request');}
+ }
+ private committed(base:Configuration,pending:PendingStore):Configuration {
+  const connection=pending.connection;
+  return {...base,version:base.version+1,
+   connections:[...base.connections.filter(c=>c.id!==connection.id),connection],
+   pendingCleanup:[...base.pendingCleanup.filter(ref=>ref!==connection.credentialReference),...(pending.previousReference?[pending.previousReference]:[])],
+  };
+ }
+ private write(next:Configuration){
+  this.ensureWritable(next);
+  // Selection changes remain synchronous during vault.put, but must also fit the
+  // eventual commit. Reject them before writing or invalidating any checkpoint.
+  if(this.pendingStore)this.ensureWritable(this.committed(next,this.pendingStore));
+  try{atomicWriteJson(this.path,next);this.state=next;}
+  catch{this.failed=true;this.changed();reject('settings-recovery');}
+ }
  private serial<T>(operation:()=>Promise<T>):Promise<T>{const work=this.mutation.then(()=>{this.available();return operation();});this.mutation=work.catch(()=>{});return work;}
  private changed(){for(const listener of this.listeners)try{listener();}catch{/* An observer cannot undo durable invalidation. */}}
  subscribe(listener:()=>void):()=>void {this.listeners.add(listener);return()=>{this.listeners.delete(listener);};}
@@ -99,13 +121,23 @@ export class AiConnections {
   // Clone before any asynchronous boundary; the caller cannot mutate accepted trust.
   let accepted:ReturnType<AiConnections['prepare']>;let key:string;try{accepted=this.prepare(input);key=input.key;}catch(error){return Promise.reject(error instanceof AiConnectionError?error:new AiConnectionError('invalid-endpoint'));}
   return this.serial(async()=>{
-   await this.cleanup();if(this.state.pendingCleanup.length>=1000)reject('credential-unavailable');
    const previous=id?this.find(id):undefined;if(!previous&&this.state.connections.length>=100)reject('invalid-request');const reference=randomUUID();
-   this.write({...this.state,pendingCleanup:[...this.state.pendingCleanup,reference]});
-   try{const stored=await this.options.vault.put(key,reference);if(stored!==reference)throw Error();}catch{await this.cleanup();return reject('credential-unavailable');}
    const next:PrivateConnection={...accepted,id:previous?.id??randomUUID(),credentialReference:reference,connectionGeneration:(previous?.connectionGeneration??0)+1,credentialGeneration:(previous?.credentialGeneration??0)+1,trustVersion:(previous?.trustVersion??0)+1};
-   this.write({...this.state,version:this.state.version+1,connections:[...this.state.connections.filter(c=>c.id!==next.id),next],pendingCleanup:[...this.state.pendingCleanup.filter(ref=>ref!==reference),...(previous?[previous.credentialReference]:[])]});this.changed();await this.cleanup();
-   return this.safe(next.id);
+   const pending:PendingStore={connection:next,...(previous?{previousReference:previous.credentialReference}:{})};
+   const preflight=()=>{
+    const journal={...this.state,pendingCleanup:[...this.state.pendingCleanup,reference]};
+    this.ensureWritable(journal);this.ensureWritable(this.committed(journal,pending));return journal;
+   };
+   // Check both crash-recovery and committed states before any vault side effect.
+   preflight();await this.cleanup();const journal=preflight();
+   this.pendingStore=pending;
+   try{
+    this.write(journal);
+    try{const stored=await this.options.vault.put(key,reference);if(stored!==reference)throw Error();}
+    catch{this.pendingStore=undefined;await this.cleanup();return reject('credential-unavailable');}
+    const committed=this.committed(this.state,pending);this.pendingStore=undefined;
+    this.write(committed);this.changed();await this.cleanup();return this.safe(next.id);
+   }finally{this.pendingStore=undefined;}
   });
  }
  private safe(id:string):AiConnectionSnapshot {const {credentialReference,...safe}=this.find(id);return structuredClone(safe);}
