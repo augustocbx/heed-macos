@@ -763,6 +763,13 @@ final class MenuController: NSObject, NSApplicationDelegate {
         if alert.runModal() == .alertFirstButtonReturn { releaseUpdates.install() }
     }
     @objc private func showPermissionHelp() {
+        if UpdatePermissionHelpRoute.forHelp(screenAuthorized: screenCaptureAuthorized,
+            missing: releaseUpdates.snapshot.missingPermissions,
+            reportVersion: releaseUpdates.snapshot.permissionVersion,
+            installedVersion: releaseUpdates.build?.version) == .screenGuide {
+            showScreenPermissionGuide(openPane: false)
+            return
+        }
         let alert = NSAlert()
         alert.messageText = text("Recording permissions")
         alert.informativeText = text("Enable Heed under System Settings > Privacy & Security > Microphone and Screen & System Audio Recording. If capture remains unavailable, turn the affected permission off and on, then quit and reopen Heed. A restricted microphone requires your device administrator. Reauthorize Slack or shared folders only if their access no longer works. Heed never resets permissions automatically.")

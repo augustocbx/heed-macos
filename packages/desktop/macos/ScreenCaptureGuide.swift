@@ -16,6 +16,12 @@ enum UpdatePermissionHelpRoute {
     static func forMissing(_ missing: [String]?) -> Self {
         missing?.contains("screenCapture") == true ? .screenGuide : .general
     }
+
+    static func forHelp(screenAuthorized: Bool, missing: [String]?, reportVersion: String?, installedVersion: String?) -> Self {
+        if !screenAuthorized { return .screenGuide }
+        guard let reportVersion, reportVersion == installedVersion else { return .general }
+        return forMissing(missing)
+    }
 }
 
 enum ScreenCaptureGuideLocalization {
