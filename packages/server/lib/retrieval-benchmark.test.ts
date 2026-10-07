@@ -5,6 +5,7 @@ import {
   scoreRetrieval,
 } from '../../../scripts/qa/retrieval-corpus';
 import { transcriptEvidence } from './meeting-chat';
+import { benchmarkCohort } from '../../../scripts/benchmark-retrieval';
 
 test('public corpus is deterministic and expected IDs refer to exact current EN/PT evidence', () => {
   const a = createRetrievalCorpus(100, 69),
@@ -64,4 +65,21 @@ test('contradictory and dated expectations retain both sides rather than declari
   ).toHaveLength(3);
   expect(corpus.questions.find((question) => question.kind === 'dated')!.relevantEvidenceIds).toHaveLength(2);
   expect(() => createRetrievalCorpus(1001)).toThrow();
+});
+test('actual SQLite benchmark recovers between-sample evidence and excludes negative sources without a generator', async () => {
+  const result = await benchmarkCohort(1, 69, 2);
+  const en = result.questions.find((question) => question.id === 'between-samples-en')!;
+  const pt = result.questions.find((question) => question.id === 'between-samples-pt')!;
+  expect(en.lexical[8].recall).toBe(1);
+  expect(pt.lexical[8].recall).toBe(1);
+  expect(en.legacySupplied.recall).toBe(0);
+  expect(pt.legacySupplied.recall).toBe(0);
+  expect(
+    result.questions
+      .filter((question) => question.kind === 'negative' || question.kind === 'excluded-only')
+      .every((question) => question.lexicalIds.length === 0),
+  ).toBe(true);
+  expect(result.reservedQuotaBytes).toBe(0);
+  expect(result.databaseBytes).toBeGreaterThan(4096);
+  expect(result.workingDiskBytes).toBeLessThanOrEqual(result.policy.workingDiskBytes);
 });
