@@ -36,7 +36,7 @@ export interface GuardedSessionPatch extends SessionPatch {
 export interface NotesRetryOptions { jobId?: string; replaceExisting?: boolean; expectedNotesHash?: string; }
 export function notesHash(text: string): string { return createHash("sha256").update(text).digest("hex"); }
 export function renderNotesTranscript(session: Session): string {
- return session.segments?.length ? session.segments.map(segment => `[${segment.speaker || "Unknown speaker"}] ${segment.text}`).join("\n") : session.transcript;
+ return session.segments?.length ? session.segments.filter(segment => segment.text.trim()).map(segment => `[${segment.speaker || "Unknown speaker"}] ${segment.text}`).join("\n") : session.transcript;
 }
 const activeStatuses = new Set(["queued", "waiting", "running"]);
 const allowedLanguages = new Set(["en", "pt", "fr", "de"]);
