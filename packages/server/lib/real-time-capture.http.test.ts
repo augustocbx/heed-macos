@@ -20,13 +20,14 @@ console.error(JSON.stringify({ready:true,sample_rate:16000,channels,mode}));
 const pcm=Buffer.alloc(3200*channels);for(let i=0;i<1600;i++)for(let ch=0;ch<channels;ch++)pcm.writeInt16LE(Math.round(3000*Math.sin(i/8+ch)),(i*channels+ch)*2);
 setInterval(()=>{if(existsSync(join(process.env.HEED_APP_DIR,'fail-capture')))process.exit(1);process.stdout.write(pcm);},100);
 `,{mode:0o700});
+ const speech={engine:'mlx',model:'base',modelIdentity:'mlx:mlx-community/whisper-base-mlx',modelRevision:null,state:'loaded',supportedLanguages:['en','pt'],automatic:{modelSupported:true,pipelineAvailable:true,offered:false},mixedLanguage:'unverified',mode:'chunk',adaptiveModels:[]};
  let sidecarPid=process.pid;const jobs:string[]=[];const configurations:boolean[]=[];let app:Bun.Subprocess|undefined;
  const sidecar=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(req){
   const path=new URL(req.url).pathname;if(req.method==='POST')jobs.push(path);
   if(path==='/preview/configure')configurations.push((await req.json()).enabled);
   if(path==='/finalize')return Response.json({finalized:true,duration:2.5,language:'pt',model:'fixture-final',turns:[{speaker:'Me',channel:'mic',text:'Synthetic microphone',start:0,end:1},{speaker:'Speaker 1',channel:'sys',text:'Synthetic system',start:1,end:2.5}],embeddings:{'Speaker 1':[1,2]}});
-  if(path==='/transcribe-live')return Response.json({text:'Preview fixture',language:'en',segments:[]});
-  return Response.json({service:'heed-transcription',protocolVersion:1,checkoutRoot:source,pid:sidecarPid,ready:true,pyannote:true,whisper:true,warm:true,live_tuning:{mode:'chunk',chunk_s:2,interval_ms:500},models:[]});
+  if(path==='/transcribe-live')return Response.json({text:'Preview fixture',language:'en',task:'transcribe',engine:'mlx',model:'base',modelIdentity:speech.modelIdentity,segments:[]});
+  return Response.json({service:'heed-transcription',protocolVersion:1,checkoutRoot:source,pid:sidecarPid,ready:true,pyannote:true,whisper:true,warm:true,live_tuning:{mode:'chunk',chunk_s:2,interval_ms:500},models:[],languageCapabilities:{schemaVersion:1,capabilityKey:'a'.repeat(64),live:speech,final:{...speech,mode:'full'}}});
  }});
  const lease=Bun.serve({hostname:'127.0.0.1',port:0,fetch:()=>new Response()});const base=`http://127.0.0.1:${lease.port}`;lease.stop(true);
  const request=async(path:string,body?:unknown)=>{const response=await fetch(base+path,{method:body===undefined?'GET':'POST',headers:{'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});return {status:response.status,body:await response.json()};};
@@ -35,7 +36,8 @@ setInterval(()=>{if(existsSync(join(process.env.HEED_APP_DIR,'fail-capture')))pr
   for(const name of ['HEED_API_PORT','HEED_UI_PORT','HEED_TRANSCRIPTION_PORT','HEED_SERVICE_CONFIG_ROOT'])delete env[name];
   app=Bun.spawn([process.execPath,join(source,'packages/server/server.ts')],{cwd:source,env,stdout:'ignore',stderr:'ignore'});
   const deadline=Date.now()+8000;while(Date.now()<deadline){try{if((await fetch(base+'/api/sessions')).ok)break;}catch{}await Bun.sleep(25);}
-  const start=await request('/api/desktop/control/commands',{action:'start',mode:'both',requestId:'menu-off',realTimeTranscription:true});
+  expect((await request('/api/desktop/control/commands',{action:'start',mode:'both',requestId:'menu-override',realTimeTranscription:true})).status).toBe(400);
+  const start=await request('/api/desktop/control/commands',{action:'start',mode:'both',requestId:'menu-off'});
   expect(start.status,JSON.stringify(start.body).slice(0,1024)).toBe(200);
   const active=(await request('/api/recording/status')).body;expect(active).toMatchObject({state:'recording',realTimeTranscription:false});
   const changed=await request('/api/recording/settings',{enabled:true});expect(changed.body).toMatchObject({enabled:true,activeEnabled:false,engineState:'deferred'});
@@ -47,7 +49,8 @@ setInterval(()=>{if(existsSync(join(process.env.HEED_APP_DIR,'fail-capture')))pr
   expect(JSON.parse(probe.stdout.toString()).streams[0]).toMatchObject({channels:2,sample_rate:'16000'});
   expect(jobs.filter(path=>!['/preview/configure','/finalize'].includes(path))).toEqual([]);
   jobs.length=0;
-  const next=await request('/api/sysrecord/start',{mode:'both',requestId:'browser-on',realTimeTranscription:false});expect(next.body.snapshot.realTimeTranscription).toBe(true);
+  expect((await request('/api/sysrecord/start',{mode:'both',requestId:'browser-override',realTimeTranscription:false})).status).toBe(400);
+  const next=await request('/api/sysrecord/start',{mode:'both',requestId:'browser-on'});expect(next.body.snapshot.realTimeTranscription).toBe(true);
   await request('/api/recording/settings',{enabled:false});
   const until=Date.now()+6000;while(!jobs.includes('/transcribe-live') && Date.now()<until)await Bun.sleep(50);
   expect(jobs).toContain('/transcribe-live');

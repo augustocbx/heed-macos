@@ -9,6 +9,7 @@ export function applyRecordingSnapshot(snapshot:RecordingSnapshot) {
   // Revisions belong to the durable coordinator, including across meetings/restarts.
   if(snapshot.revision<local.coordinatorRevision)return;
   if(local.coordinatorMeetingId===snapshot.meetingId && local.coordinatorState==="completed" && snapshot.state==="completed" && snapshot.revision===local.coordinatorRevision)return;
+  if(local.coordinatorMeetingId===snapshot.meetingId && local.coordinatorState==="completed" && ["starting","recording","stopping","finalizing"].includes(snapshot.state))return;
   if(snapshot.state==="idle"){
     if(local.coordinatorState!=="idle")local.reset();
     useRecordingStore.setState({coordinatorMeetingId:snapshot.meetingId,coordinatorRevision:snapshot.revision,coordinatorState:"idle",coordinatorError:null,coordinatorPath:null});
@@ -23,6 +24,7 @@ export function applyRecordingSnapshot(snapshot:RecordingSnapshot) {
   const segments=saved?session.segments:snapshot.segments;
   useRecordingStore.setState({
     realTimeTranscription:snapshot.realTimeTranscription !== false,
+    liveOptions:snapshot.liveOptions || null,liveSpeechLanguage:snapshot.liveSpeechLanguage || "en",liveModel:snapshot.liveModel || snapshot.liveOptions?.initialModel || null,
     coordinatorMeetingId:snapshot.meetingId,coordinatorRevision:snapshot.revision,
     coordinatorState:snapshot.state,coordinatorError:snapshot.error,coordinatorPath:snapshot.path,
     ...(active?{dismissedMeetingId:null}:{}),

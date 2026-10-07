@@ -1,5 +1,6 @@
 import type { Segment, TranscriptionDiagnostics } from "./speaker.ts";
 import type { Session } from "./session.ts";
+import type { LanguageCapabilities, LiveCaptureOptions, LiveSpeechLanguage } from "./live-language.ts";
 
 export type CaptureMode = "both" | "mic" | "system";
 export type CoordinatorState = "idle" | "starting" | "recording" | "stopping" | "finalizing" | "completed" | "failed";
@@ -22,6 +23,8 @@ export interface RecordingSnapshot {
   liveModel?: string;
   /** Effective mode at admission; missing legacy manifests mean enabled. */
   realTimeTranscription?: boolean;
+  liveSpeechLanguage?: LiveSpeechLanguage;
+  liveOptions?: LiveCaptureOptions;
   seconds: number;
   mode: CaptureMode;
   segments: Segment[];
@@ -33,6 +36,10 @@ export interface RecordingSnapshot {
 }
 
 export interface RecordingSettings {
+  liveLanguage?: LiveSpeechLanguage;
+  activeLiveLanguage?: LiveSpeechLanguage | null;
+  languageCapabilities?: LanguageCapabilities | null;
+  liveLanguageState?: "supported" | "unsupported" | "unavailable";
   enabled: boolean;
   activeEnabled: boolean | null;
   appliesTo: "next-recording";

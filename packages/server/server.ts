@@ -1,4 +1,6 @@
 import type { AiWaitingReason } from "@heed/shared";
+import type { LanguageCapabilities, LiveCaptureOptions } from "@heed/shared";
+import {configuredLiveSpeechLanguage, recordingSettingsPatch, resolveLiveCaptureOptions, validatedLanguageCapabilities, rejectRecordingOverrides, previewResultMatches, LiveLanguageError} from "./lib/live-language";
 import {configuredServicePorts} from './lib/service-ports';
 import { meetingExportResponse } from './lib/meeting-export-http';
 import {ServiceDiagnostics} from './lib/service-diagnostics';
@@ -77,7 +79,7 @@ function localAiWaitingReason(includePendingChat = false): AiWaitingReason {
  if (!localAiReady) return "queued";
  const state = recordingCoordinator.snapshot().state;
  if (recordingFinalizationRunning || transcriptionRequests || state === "finalizing") return "transcription";
- if (recorderProc || recorderStarting || recorderStopping || ["starting", "recording", "stopping"].includes(state)) return "recording";
+ if (recorderProc || recorderStarting || recorderStopping || recordingCoordinator.admissionPending || ["starting", "recording", "stopping"].includes(state)) return "recording";
  if (manualNotesController || notesService.busy) return "notes";
  if (tasksService.busy) return "tasks";
  if (chatService.busy || libraryChatService.busy || (includePendingChat && chatPending())) return "chat";
@@ -86,7 +88,7 @@ function localAiWaitingReason(includePendingChat = false): AiWaitingReason {
 // These synchronous admission checks cover command-triggered and timer-triggered workers.
 function chatPending() { return chatService.pending || libraryChatService.pending; }
 function audioWorkBusy() {
- return !!(recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning || transcriptionRequests
+ return !!(recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning || transcriptionRequests || recordingCoordinator.admissionPending
   || ["starting", "stopping", "finalizing"].includes(recordingCoordinator.snapshot().state));
 }
 async function preemptNotes() {
@@ -1350,18 +1352,19 @@ async function handleSysRecordStart(req: Request): Promise<Response> {
  if (!desktopRequestAllowed(req)) return new Response(null, {status:403});
  try {
   const body = await req.json();
+  rejectRecordingOverrides(body);
   const state = hydratedRecordingSnapshot(await recordingCoordinator.start(controlRequestId(body), body.mode ?? "both"));
   if (state.state === "recording") meetingDetection.manualOverride();
-  return Response.json({...state, snapshot:state, recording:state.state === "recording", path:state.path, language:"en"});
+  return Response.json({...state, snapshot:state, recording:state.state === "recording", path:state.path, language:state.liveOptions?.effectiveLanguage ?? null});
  } catch (error) { return recordingControlError(error); }
 }
 
 function captureMetadataPaths(id:string){return [join(SESSIONS_DIR,`${id}.json`),join(APP_DIR,'recording-manifest.json'),join(APP_DIR,'recording-recovery',`${id}.json`)];}
 
-async function beginSysRecording(mode: CaptureMode, attachPath: (path: string) => void): Promise<Response> {
- const preview = recordingCoordinator.snapshot().realTimeTranscription !== false;
+async function beginSysRecording(mode: CaptureMode, attachPath: (path: string) => void, liveOptions:LiveCaptureOptions): Promise<Response> {
+ const preview = liveOptions.realTimeTranscription;
  await configurePreview(preview);
- recordingLanguage = "en";
+ recordingLanguage = liveOptions.effectiveLanguage;
 
 	if (syscapProc) {
 		try { syscapProc.kill(); } catch {}
@@ -1618,6 +1621,18 @@ let liveTurns: Array<{ id: number; channel: "mic" | "sys"; speaker: string; base
 // Whisper keeps the safe 3s/2000ms cadence so slow CPUs never starve. Defaults are safe.
 let recordingLiveModel: string | undefined;
 let recordingLiveGeneration:number|undefined;
+let liveUnavailableReported=false;
+function previewUnavailable(){
+ if(liveUnavailableReported||liveAbort.signal.aborted)return;
+ liveUnavailableReported=true;
+ for(const listener of liveListeners)listener("quality",{ok:false,reason:"unavailable",hint:"Live preview is unavailable. Capture continues; the final transcript will be processed after stopping."});
+}
+function acceptLiveResult(value:any):boolean {
+ const options=recordingCoordinator.snapshot().liveOptions;
+ if(!options || !previewResultMatches(options,value)){previewUnavailable();return false;}
+ if(liveUnavailableReported){liveUnavailableReported=false;for(const listener of liveListeners)listener("quality",{ok:true});}
+ recordingLiveModel=value.model;recordingCoordinator.updateLiveModel(value.model);return true;
+}
 let liveTuning = { chunk_s: 3.0, interval_ms: 2000, mode: "chunk" as "chunk" | "full" | "stream" };
 async function refreshLiveTuning() {
 	try {
@@ -1626,9 +1641,10 @@ async function refreshLiveTuning() {
 			const h = await r.json() as { live_tuning?: { chunk_s?: number; interval_ms?: number; mode?: "chunk" | "full" | "stream"; model?: string }; whisper_info?: {live_model?: string} };
 			if(!isTranscriptionHealth(h))return;
 			recordingLiveGeneration=Number(h.pid);
-            recordingLiveModel = h.live_tuning?.model || h.whisper_info?.live_model;
+            const capabilities=validatedLanguageCapabilities((h as any).languageCapabilities),options=recordingCoordinator.snapshot().liveOptions;
+            if(capabilities&&options?.compatibleModels.includes(capabilities.live.modelIdentity!))recordingLiveModel=capabilities.live.model || undefined;
 			if (h.live_tuning?.chunk_s && h.live_tuning?.interval_ms) {
-				liveTuning = { chunk_s: h.live_tuning.chunk_s, interval_ms: h.live_tuning.interval_ms, mode: h.live_tuning.mode || "chunk" };
+				liveTuning = { chunk_s: h.live_tuning.chunk_s, interval_ms: h.live_tuning.interval_ms, mode: recordingCoordinator.snapshot().liveOptions?.mode || h.live_tuning.mode || "chunk" };
 				console.log(`[heed] live: mode=${liveTuning.mode} interval=${liveTuning.interval_ms}ms`);
 			}
 		}
@@ -1641,13 +1657,15 @@ async function ensureLiveGeneration():Promise<boolean> {
  try{
   const response=await fetch(`${TRANSCRIPTION_SERVER}/health`,{signal:AbortSignal.any([signal,AbortSignal.timeout(2000)])});
   const health=await response.json();
-  if(!response.ok || !isTranscriptionHealth(health) || !health.whisper)return false;
+  if(!response.ok || !isTranscriptionHealth(health) || !health.whisper){previewUnavailable();return false;}
+  const options=recordingCoordinator.snapshot().liveOptions,capabilities=validatedLanguageCapabilities(health.languageCapabilities);
+  if(!options || !capabilities || capabilities.live.engine!==options.engine || capabilities.live.mode!==options.mode || !capabilities.live.supportedLanguages.includes(options.effectiveLanguage!) || !options.compatibleModels.includes(capabilities.live.modelIdentity!)){previewUnavailable();return false;}
   if(recordingLiveGeneration!==health.pid){
    await configurePreview(recordingCoordinator.snapshot().realTimeTranscription !== false);
    recordingLiveGeneration=health.pid;
   }
   return !signal.aborted;
- }catch{return false;}
+ }catch{previewUnavailable();return false;}
 }
 
 // Live "full" mode (Parakeet/MLX): re-transcribe the whole growing audio each tick and emit a
@@ -1686,11 +1704,13 @@ async function processFullLive(
 			if (existsSync(outPath) && Bun.file(outPath).size > 1000) {
 				const res = await fetch(`${TRANSCRIPTION_SERVER}/transcribe-live`, {
 					method: "POST", headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ wav_path: outPath, language: lang, audio_s: dur }),
+					body: JSON.stringify({ wav_path: outPath, language: lang, task:"transcribe", audio_s: dur }),
                     signal: liveAbort.signal,
 				});
+				if (!res.ok) previewUnavailable();
 				if (res.ok) {
 					const tx = await res.json() as { text?: string; quality?: { ok: boolean; reason: string; hint: string } };
+                    if(!acceptLiveResult(tx))continue;
 					const text = (tx.text || "").trim();
 					// Emit even when empty so the client can clear a stale line; client ignores tiny noise.
 					send("live", { speaker: c.speaker, channel: c.label, text, start: 0, end: fileDurationS, live: true });
@@ -1740,10 +1760,10 @@ async function processStreamLive(
 		} catch { return; }
 	}
 	if (!streamStarted) {
-		const ok = await postLiveJSON("/stream/start", { language: lang, channel: "mic" });
+		const ok = await postLiveJSON("/stream/start", { language: lang, task:"transcribe", channel: "mic" });
 		if (!ok) return;
 		if (isDual) {
-			await postLiveJSON("/stream/start", { language: lang, channel: "sys" });
+			await postLiveJSON("/stream/start", { language: lang, task:"transcribe", channel: "sys" });
 			await postLiveJSON("/diar/start", {});
 		}
 		streamStarted = true;
@@ -1871,17 +1891,20 @@ const liveListeners = new Set<(event: string, data: unknown) => void>();
 async function postLiveJSON(path: string, body: unknown): Promise<any> {
  try {
   const response = await fetch(`${TRANSCRIPTION_SERVER}${path}`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body), signal:liveAbort.signal});
-  return response.ok ? await response.json() : null;
- } catch { return null; }
+  if(!response.ok){if(path.startsWith('/stream/'))previewUnavailable();return null;}
+  return await response.json();
+ } catch { if(path.startsWith('/stream/'))previewUnavailable();return null; }
 }
 function startLiveTranscribe() {
  if (recordingCoordinator.snapshot().realTimeTranscription === false || !recorderProc || !recorderPath || liveTranscribeInterval || liveFirstTimeout) return;
  liveAbort = new AbortController();
+ liveUnavailableReported=false;
  const wavPath = recorderPath;
  const isDual = wavPath.includes("dual-capture-");
  const LIVE_CHUNK = liveTuning.chunk_s;
  let interval = liveTuning.interval_ms;
- const lang = "en";
+ const lang = recordingCoordinator.snapshot().liveOptions?.effectiveLanguage;
+ if(!lang)return;
  const send = (event: string, data: unknown) => {
   if (!recorderProc || recorderPath !== wavPath || liveAbort.signal.aborted) return;
   recordingCoordinator.live(event, data);
@@ -1969,7 +1992,7 @@ function startLiveTranscribe() {
 					const txRes = await fetch(`${TRANSCRIPTION_SERVER}/transcribe-live`, {
 						method: "POST",
 						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify({ wav_path: chunkPath, language: lang, audio_s: chunkDur }),
+						body: JSON.stringify({ wav_path: chunkPath, language: lang, task:"transcribe", audio_s: chunkDur }),
                         signal: liveAbort.signal,
 					});
 					const whisperMs = Date.now() - whisperStart;
@@ -1984,8 +2007,10 @@ function startLiveTranscribe() {
 					}
 
 					console.log(`[heed] live: whisper responded in ${whisperMs}ms, status=${txRes.status}`);
+					if (!txRes.ok) previewUnavailable();
 					if (txRes.ok) {
 						const tx = await txRes.json() as { text?: string; srt_path?: string; gov?: { interval_ms?: number; live_model?: string; changed?: boolean; reason?: string } };
+                        if(!acceptLiveResult(tx))return;
 						const gov = tx.gov;
 							if (gov?.interval_ms && gov.interval_ms !== interval && liveTranscribeInterval) {
 								clearInterval(liveTranscribeInterval);
@@ -2024,11 +2049,13 @@ function startLiveTranscribe() {
 							const sysRes = await fetch(`${TRANSCRIPTION_SERVER}/transcribe-live`, {
 								method: "POST",
 								headers: { "Content-Type": "application/json" },
-								body: JSON.stringify({ wav_path: sysChunkPath, language: lang }),
+								body: JSON.stringify({ wav_path: sysChunkPath, language: lang, task:"transcribe" }),
                                 signal: liveAbort.signal,
 							});
+							if (!sysRes.ok) previewUnavailable();
 							if (sysRes.ok) {
 								const sysTx = await sysRes.json() as { text?: string };
+                                if(!acceptLiveResult(sysTx))return;
 								const sysText = (sysTx.text || "").trim();
 								if (sysText && sysText.length > 3) {
 									send("segment", {
@@ -2048,6 +2075,7 @@ function startLiveTranscribe() {
 					// Cleanup chunk file
 					try { unlinkSync(chunkPath); } catch {}
 				} catch (e) {
+                    previewUnavailable();
 					const errMsg = (e as Error).message;
 					console.log(`[heed] live chunk error: ${errMsg}`);
 					if (errMsg.includes("Unable to connect") || errMsg.includes("ECONNREFUSED")) {
@@ -2109,7 +2137,7 @@ function controlRequestId(body: any): string {
  return body.requestId;
 }
 function recordingControlError(error: unknown): Response {
- return Response.json({error:error instanceof Error ? error.message : String(error)}, {status:409});
+ return Response.json({error:error instanceof Error ? error.message : String(error),...(error instanceof LiveLanguageError?{code:error.code}:{})}, {status:(error as {status?:number})?.status === 400?400:409});
 }
 async function handleSysRecordStop(req: Request): Promise<Response> {
  if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
@@ -2299,6 +2327,7 @@ async function handleHealth(refresh=false): Promise<Response> {
 		whisper_info: txServer.whisper_info || null,
 		pyannote_info: txServer.pyannote_info || null,
 		languages: txServer.languages || null,  // engine-aware language support (Parakeet=28, Whisper=all)
+		languageCapabilities: txServer.languageCapabilities || null,
 	});
 }
 
@@ -2327,7 +2356,12 @@ function configurePreview(enabled:boolean):Promise<void> {
  // An admitted recording takes precedence over a pending idle-settings request.
  const snapshot=recordingCoordinator.snapshot();
  const effective=["starting","recording","stopping"].includes(snapshot.state)?snapshot.realTimeTranscription !== false:enabled;
- const response = await fetch(`${TRANSCRIPTION_SERVER}/preview/configure`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:effective}),signal:AbortSignal.timeout(30000)});
+ let liveOptions=snapshot.liveOptions;
+ if(!["starting","recording","stopping"].includes(snapshot.state)){
+  const capabilities=await fetchLanguageCapabilities(),config=loadConfig(),requested=configuredLiveSpeechLanguage(config);
+  try{liveOptions=resolveLiveCaptureOptions(effective,requested,capabilities);}catch{liveOptions=resolveLiveCaptureOptions(false,requested,null);}
+ }
+ const response = await fetch(`${TRANSCRIPTION_SERVER}/preview/configure`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:liveOptions?.realTimeTranscription ?? effective,liveOptions}),signal:AbortSignal.timeout(30000)});
  if (!response.ok) throw new Error("Could not prepare real-time transcription. Check the transcription service and retry.");
  liveWarmLatched = false;
  });
@@ -2338,31 +2372,41 @@ async function applySavedPreview() {
  if(liveWorker)await liveWorker;
  try{await configurePreview(realTimeTranscription());}catch(error){console.error("Preview preference could not be applied:",error);}
 }
+async function fetchLanguageCapabilities():Promise<LanguageCapabilities|null>{
+ try{
+  const response=await fetch(`${TRANSCRIPTION_SERVER}/health`,{signal:AbortSignal.timeout(2000)});
+  const health=await response.json();
+  return response.ok&&isTranscriptionHealth(health)?validatedLanguageCapabilities(health.languageCapabilities):null;
+ }catch{return null;}
+}
 async function handleRecordingSettings(req:Request):Promise<Response> {
  if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
  if (!["GET","POST","PATCH"].includes(req.method)) return new Response(null,{status:405});
  const state=recordingCoordinator.snapshot();
- const active=["starting","recording","stopping"].includes(state.state);
+ const active=["starting","recording","stopping"].includes(state.state)||recordingCoordinator.admissionPending;
  let engineState:"ready"|"unavailable"|"deferred"=active?"deferred":"ready";
  if (req.method !== "GET") {
   let body;try {body=await req.json();} catch {return Response.json({error:"Choose a valid real-time transcription setting."},{status:400});}
-  if (typeof body?.enabled !== "boolean") return Response.json({error:"Choose a valid real-time transcription setting."},{status:400});
-  saveConfig({real_time_transcription:body.enabled});
+  let patch;try{patch=recordingSettingsPatch(body);}catch(error){return Response.json({error:(error as Error).message},{status:400});}
+  saveConfig(patch);
   // Recheck after the synchronous durable write: another admitted start may now own preview.
   const current=recordingCoordinator.snapshot();
-  if (!["starting","recording","stopping"].includes(current.state)) {
+  if (!["starting","recording","stopping"].includes(current.state)&&!recordingCoordinator.admissionPending) {
    try {await configurePreview(realTimeTranscription());} catch {engineState="unavailable";}
   } else engineState="deferred";
  }
  const current=recordingCoordinator.snapshot();
- return Response.json({enabled:realTimeTranscription(),activeEnabled:["starting","recording","stopping"].includes(current.state)?current.realTimeTranscription !== false:null,appliesTo:"next-recording",engineState});
+ const languageCapabilities=await fetchLanguageCapabilities(),liveLanguage=configuredLiveSpeechLanguage(loadConfig());
+ const latest=recordingCoordinator.snapshot(),isActive=["starting","recording","stopping"].includes(latest.state);
+ const liveLanguageState=!languageCapabilities||languageCapabilities.live.state==="unavailable"?"unavailable":languageCapabilities.live.supportedLanguages.includes(liveLanguage)?"supported":"unsupported";
+ return Response.json({enabled:realTimeTranscription(),activeEnabled:isActive?latest.realTimeTranscription !== false:null,liveLanguage,activeLiveLanguage:isActive?latest.liveOptions?.effectiveLanguage ?? null:null,languageCapabilities,liveLanguageState,appliesTo:"next-recording",engineState});
 }
 async function handleRecordingControl(req: Request, pathname: string): Promise<Response> {
  if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
  try {
   if (req.method === "GET" && pathname === "/api/recording/status") {
    const snapshot=hydratedRecordingSnapshot();
-   if(new URL(req.url).searchParams.get("inference")==="1")return Response.json({meetingId:snapshot.meetingId,state:snapshot.state,revision:snapshot.revision,realTimeTranscription:snapshot.realTimeTranscription !== false});
+   if(new URL(req.url).searchParams.get("inference")==="1")return Response.json({meetingId:snapshot.meetingId,state:snapshot.state,revision:snapshot.revision,realTimeTranscription:snapshot.realTimeTranscription !== false,liveSpeechLanguage:snapshot.liveSpeechLanguage,liveOptions:snapshot.liveOptions});
    return Response.json(snapshot);
   }
   if (req.method !== "POST") return new Response(null,{status:405});
@@ -2406,6 +2450,7 @@ async function handleDesktopControl(req: Request, pathname: string): Promise<Res
   const body = await req.json();
   if (pathname.endsWith("/commands")) {
    if (!["start","stop"].includes(body.action)) return Response.json({error:"Choose start or stop"},{status:400});
+   if(body.action==="start")rejectRecordingOverrides(body);
    const id = controlRequestId(body);
    const previous = recordingCoordinator.snapshot();
    const manualStop = body.action === "stop" && previous.meetingId === body.meetingId && ["starting","recording"].includes(previous.state);
@@ -2525,13 +2570,18 @@ const recordingCoordinator = new RecordingCoordinator({
  manifestPath:join(APP_DIR,"recording-manifest.json"),
  maintenanceBlocked:()=>processingMaintenance.blocked(),
  realTimeTranscription,
+ async resolveLiveOptions(){
+  const capabilities=await fetchLanguageCapabilities();
+  const config=loadConfig();
+  return resolveLiveCaptureOptions(realTimeTranscription(config),configuredLiveSpeechLanguage(config),capabilities);
+ },
  adapter:{
-  async start(mode, _meetingId, attachPath) {
+  async start(mode, _meetingId, attachPath, liveOptions) {
    if (transcriptionRequests || recordingFinalizationRunning) throw new Error("Wait for the current transcription to finish");
    recorderStarting = true;
    try {
     await preemptNotes();
-    const response = await beginSysRecording(mode,attachPath);
+    const response = await beginSysRecording(mode,attachPath,liveOptions);
     const result = await response.json();
     if (!response.ok || !result.recording) throw new Error(result.error || "Capture permissions are required");
     return {path:result.path,liveModel:recordingLiveModel};
@@ -2693,7 +2743,7 @@ const server = Bun.serve({
 		if (method === "POST" && url.pathname === "/api/sysrecord/start") return handleSysRecordStart(req);
 		if (method === "POST" && url.pathname === "/api/sysrecord/stop") { httpServer.timeout(req, 0); return handleSysRecordStop(req); }
 		if (method === "GET" && url.pathname === "/api/sysrecord/levels") return desktopRequestAllowed(req) ? handleSysLevelsSSE() : new Response(null,{status:403});
-		if (method === "GET" && url.pathname === "/api/sysrecord/live") return desktopRequestAllowed(req) ? handleLiveTranscribe() : new Response(null,{status:403});
+		if (method === "GET" && url.pathname === "/api/sysrecord/live") return !desktopRequestAllowed(req)?new Response(null,{status:403}):url.searchParams.has("lang")?Response.json({error:"Live speech language comes from recording settings."},{status:400}):handleLiveTranscribe();
 		if (method === "GET" && url.pathname === "/api/health") return handleHealth(url.searchParams.get('refresh')==='1');
 		if (method === "GET" && url.pathname === "/api/version") return Response.json(RELEASE_INFO);
 		if (method === "GET" && url.pathname === "/api/recovery/list") return handleListOrphaned();

@@ -53,10 +53,11 @@ class NativeWorker:
             for pipe in (self.proc.stdin, self.proc.stdout):
                 os.set_blocking(pipe.fileno(), False)
             deadline = time.monotonic() + startup_timeout
-            while self._response(deadline).get('ready') is not True:
+            self.ready_info = self._response(deadline)
+            while self.ready_info.get('ready') is not True:
                 # Model initialization can emit noise or unrelated JSON telemetry.
                 # Only explicit protocol readiness admits requests; no line resets time.
-                pass
+                self.ready_info = self._response(deadline)
         except BaseException:
             if self.proc is not None:
                 self.close()

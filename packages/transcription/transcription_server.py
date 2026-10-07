@@ -22,7 +22,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from preview_preference import saved_preview_preference, startup_preview_policy
+from preview_preference import saved_preview_preference, startup_preview_snapshot, saved_live_language
+from live_language import validate_live_options, registered_identity, model_supports_language
 
 # Threading HTTP server so health/hardware checks don't block while whisper is processing.
 # Without this, the server is single-threaded and ANY request during transcription hangs.
@@ -40,7 +41,7 @@ preview_lock = threading.RLock()
 preview_condition = threading.Condition(preview_lock)
 preview_configuration_lock = threading.Lock()
 preview_users = 0
-preview_enabled, preview_startup_pending = startup_preview_policy()
+preview_enabled, preview_startup_pending, preview_live_options = startup_preview_snapshot()
 
 @contextmanager
 def preview_lease():
@@ -56,11 +57,23 @@ def preview_lease():
             preview_users -= 1
             preview_condition.notify_all()
 
-def configure_preview(enabled):
-    global preview_enabled, preview_startup_pending, whisper_model_live, live_governor, models_warm
+def configure_preview(enabled, live_options=None):
+    global preview_enabled, preview_startup_pending, preview_live_options, whisper_model_live, live_governor, models_warm
     if not isinstance(enabled, bool):
         raise ValueError("Choose a valid real-time transcription setting.")
+    options = validate_live_options(live_options, enabled) if live_options is not None else None
     with preview_configuration_lock, preview_condition:
+        if preview_live_options != options:
+            preview_enabled = False
+            preview_condition.wait_for(lambda: preview_users == 0)
+            owned = whisper_model_live
+            identity = registered_identity(getattr(owned, "kind", None), getattr(owned, "model_name", None))
+            if options is not None and enabled and identity not in options["compatibleModels"]:
+                whisper_model_live = None
+                if owned is not None and owned is not whisper_model:
+                    close = getattr(owned, "close", None)
+                    if close: close()
+        preview_live_options = options
         preview_enabled = enabled
         preview_startup_pending = False
         if not enabled:
@@ -76,7 +89,7 @@ def configure_preview(enabled):
             _arm_live_governor()
         # Re-enabling is lazy; no wait for a warm-only flag can deadlock capture.
         models_warm = True
-        return {"enabled":preview_enabled, "warm":models_warm}
+        return {"enabled":preview_enabled, "warm":models_warm, "liveOptions":preview_live_options}
 
 warnings.filterwarnings("ignore")
 # HF_HUB_OFFLINE is set AFTER model loading in load_models() so that
@@ -897,12 +910,16 @@ def _load_whisper_with_fallback(model_name, devices, warmup_path, label="whisper
 
 def _load_preview_with_fallback(model_name, devices, warmup_path, label="live"):
     from preview_worker import PreviewWhisper
-    start = _WHISPER_FALLBACK_ORDER.index(model_name) if model_name in _WHISPER_FALLBACK_ORDER else 2
-    for name in _WHISPER_FALLBACK_ORDER[start:]:
+    kind = _preview_kind()
+    if not _compatible_preview_model(model_name):
+        raise ValueError("Incompatible preview model")
+    start = _WHISPER_FALLBACK_ORDER.index(model_name) if model_name in _WHISPER_FALLBACK_ORDER else None
+    names = _WHISPER_FALLBACK_ORDER[start:] if start is not None else [model_name]
+    for name in (name for name in names if _compatible_preview_model(name)):
         preview = None
         try:
-            preview = PreviewWhisper(name, active_engine, devices)
-            list(preview.transcribe(warmup_path, language="en")[0])
+            preview = PreviewWhisper(name, kind, devices)
+            list(preview.transcribe(warmup_path, language=_preview_language(), task="transcribe")[0])
             return preview, name
         except Exception as error:
             if preview is not None: preview.close()
@@ -912,18 +929,21 @@ def _load_preview_with_fallback(model_name, devices, warmup_path, label="live"):
 
 def _arm_live_governor():
     global live_governor
-    if active_engine == "parakeet":
+    if _preview_kind() == "parakeet":
         live_governor = None
         return
     from governor import RuntimeGovernor
-    live_governor = RuntimeGovernor(start_model=whisper_model_live_name,
-                                    ceiling=live_governor_ceiling or whisper_model_live_name, floor="tiny")
+    start = whisper_model_live_name or ("base" if active_engine == "parakeet" else "small")
+    live_governor = RuntimeGovernor(start_model=start,
+                                    ceiling=live_governor_ceiling or (preview_live_options or {}).get("initialModel") or start, floor="tiny")
 
 
 def _swap_live_model(new_model):
     """Hot-swap the live preview model when the governor decides to degrade/recover.
     Loads + warms the new model OUTSIDE the transcribe lock, then swaps the reference under it."""
     global whisper_model_live, whisper_model_live_name
+    if not _compatible_preview_model(new_model):
+        return False
     try:
         eng, name = _load_preview_with_fallback(new_model, _devices, _warmup_path, "live-swap")
         with whisper_live_lock:
@@ -1033,7 +1053,7 @@ def _load_models():
         print(f"[heed] Whisper final={whisper_model_name} ready in {time.time()-t:.1f}s ({engine_kind})", flush=True)
         # Live preview: a SEPARATE, lighter model for low latency. Reuse the final instance if they
         # ended up the same name (saves memory). Live also degrades gracefully on its own.
-        if preview_enabled and whisper_model_live_name and whisper_model_live_name != whisper_model_name:
+        if preview_enabled and whisper_model_live_name and (preview_live_options is not None or whisper_model_live_name != whisper_model_name):
             t_live = time.time()
             print(f"[heed] Loading live whisper {whisper_model_live_name} ({engine_kind})...", flush=True)
             whisper_model_live, whisper_model_live_name = _load_preview_with_fallback(whisper_model_live_name, devices, _warmup_path, "live")
@@ -1075,7 +1095,7 @@ def _load_models():
                 live = _ensure_whisper_live()
                 if have_clip:
                     with whisper_live_lock:
-                        list(live.transcribe(warm_clip, language="en")[0])
+                        list(live.transcribe(warm_clip, language=_preview_language(), task="transcribe")[0])
                 # Warm the DEDICATED diarization sidecar (GPU) — the live /diar/live path is the offline
                 # `diarize`. Runs in parallel with ASR so warming it doesn't stall the ASR warm.
                 try:
@@ -1252,15 +1272,32 @@ def _ensure_whisper_live():
             current.close()
             whisper_model_live = None
         if whisper_model_live is None:
-            if active_engine == "parakeet":
+            if active_engine == "parakeet" and preview_live_options is None:
                 from preview_worker import PreviewWhisper
                 whisper_model_live = PreviewWhisper("base", active_engine, _devices)
                 whisper_model_live_name = "base"
             else:
                 whisper_model_live, whisper_model_live_name = _load_preview_with_fallback(
-                    whisper_model_live_name or "base", _devices, _warmup_path, "live-lazy")
+                    preview_live_options["initialModel"] if preview_live_options else whisper_model_live_name or "base", _devices, _warmup_path, "live-lazy")
                 _arm_live_governor()
         return whisper_model_live
+
+
+def _preview_kind():
+    return preview_live_options["engine"] if preview_live_options else ("mlx" if active_engine == "parakeet" else active_engine)
+
+
+def _preview_language(body=None):
+    language = preview_live_options["effectiveLanguage"] if preview_live_options else saved_live_language()
+    if body is not None and (body.get("language") != language or body.get("task", "transcribe") != "transcribe"):
+        raise ValueError("Live language and transcribe task must match admitted recording options")
+    return language
+
+
+def _compatible_preview_model(model):
+    kind = _preview_kind()
+    identity = registered_identity(kind, model)
+    return bool(identity and model_supports_language(kind, model, _preview_language()) and (preview_live_options is None or identity in preview_live_options["compatibleModels"]))
 
 
 def transcribe(wav_path, language="auto", srt_output=None):
@@ -1299,6 +1336,20 @@ def transcribe(wav_path, language="auto", srt_output=None):
         "language": info.language if info else language,
         "model": whisper_model_name,
     }
+
+
+def _language_capabilities():
+    from live_language import path_capability, language_capabilities
+    current = whisper_model_live
+    kind = getattr(current, "kind", None) or ("mlx" if active_engine == "parakeet" else active_engine)
+    model = getattr(current, "model_name", None) or ("base" if active_engine == "parakeet" else whisper_model_live_name)
+    if preview_live_options and preview_live_options.get("mode") == "stream":
+        kind, model = preview_live_options["engine"], preview_live_options["initialModel"]
+    live = path_capability(kind, model, (preview_live_options or {}).get("mode") or live_tuning.get("mode", "chunk"), current is not None, enabled=preview_enabled)
+    if current is not None and getattr(current, "alive", True) is False:
+        live["state"] = "unavailable"
+    final = path_capability(active_engine, "parakeet-v3" if active_engine == "parakeet" else whisper_model_name, "full", models_ready["whisper"])
+    return language_capabilities(live, final)
 
 
 def _language_support():
@@ -2509,12 +2560,14 @@ class Handler(BaseHTTPRequestHandler):
                 "ready": all(models_ready.values()),
                 "warm": models_warm,
                 "preview_enabled":preview_enabled,
+                "liveOptions":preview_live_options,
                 "preview_state":"awaiting-capture" if preview_startup_pending else "disabled" if not preview_enabled else "lazy" if whisper_model_live is None else "failed" if getattr(whisper_model_live,"alive",True) is False else "loaded",
                 **models_ready,
                 "whisper_info": whisper_runtime_info,
                 "pyannote_info": pyannote_runtime_info,
                 "live_tuning": live_tuning,
                 "languages": _language_support(),
+                "languageCapabilities": _language_capabilities(),
                 "load_error": load_error,
             })
         elif self.path == "/voices":
@@ -2542,7 +2595,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/preview/configure":
             try:
-                self._json(configure_preview(body.get("enabled")))
+                self._json(configure_preview(body.get("enabled"), body.get("liveOptions")))
             except ValueError as error:
                 self._json({"error":str(error)}, 400)
             return
@@ -2563,9 +2616,14 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/stream/start":
             # Open/reset the live streaming ASR session for a channel ("mic" | "sys").
             try:
+                language = _preview_language(body)
+            except ValueError as error:
+                self._json({"error":str(error)},400)
+                return
+            try:
                 import engines
                 ch = body.get("channel") or "mic"
-                ok = engines.get_parakeet().stream_start(body.get("language") or "en", ch) if active_engine == "parakeet" else False
+                ok = engines.get_parakeet().stream_start(language, ch) if _preview_kind() == "parakeet" else False
                 _last_partial[ch] = ""  # fresh session → no stale gated text
                 if ch == "mic":
                     _reset_apm()   # new recording → fresh AEC filter
@@ -2623,12 +2681,12 @@ class Handler(BaseHTTPRequestHandler):
                     if relative_echo or absolute_low or not_owner:
                         partial = _last_partial.get(ch, "")
                     else:
-                        partial = engines.get_parakeet().stream_feed(wav_path, ch) if active_engine == "parakeet" else ""
+                        partial = engines.get_parakeet().stream_feed(wav_path, ch) if _preview_kind() == "parakeet" else ""
                         _last_partial[ch] = partial
                 else:
                     # System channel: always transcribe (that's the other speaker), no AEC/gate.
                     _rms, _peak = _wav_rms_peak(wav_path)
-                    partial = engines.get_parakeet().stream_feed(wav_path, ch) if active_engine == "parakeet" else ""
+                    partial = engines.get_parakeet().stream_feed(wav_path, ch) if _preview_kind() == "parakeet" else ""
                 if _aec_tmp:
                     try: os.remove(_aec_tmp)
                     except Exception: pass
@@ -2641,7 +2699,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 import engines
                 ch = body.get("channel") or "mic"
-                text = engines.get_parakeet().stream_finish(ch) if active_engine == "parakeet" else ""
+                text = engines.get_parakeet().stream_finish(ch) if _preview_kind() == "parakeet" else ""
                 self._json({"ok": True, "text": text})
             except Exception as e:
                 self._json({"ok": False, "error": str(e)[:120]}, 200)
@@ -2704,6 +2762,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": False, "error": str(e)[:120]}, 200)
 
         elif self.path == "/transcribe-live":
+            try:
+                lang = _preview_language(body)
+            except ValueError as error:
+                self._json({"error":str(error)}, 400)
+                return
             # Live transcription using the auto-picked live model (non-parakeet chunk mode only).
             _ensure_whisper_live()  # parakeet boot skips Whisper; load on demand if this path is hit
             if not whisper_model_live:
@@ -2723,15 +2786,23 @@ class Handler(BaseHTTPRequestHandler):
                 _step = max(1, len(_samples) // 50000)  # cap work ~50k samples regardless of length
                 _peak = max((abs(s) for s in _samples[::_step]), default=0)
                 if _peak < 500:  # truly silent everywhere
-                    self._json({"text": "", "language": "auto", "time_ms": 0, "skipped": "silence"})
+                    model = whisper_model_live
+                    kind = getattr(model, "kind", _preview_kind())
+                    name = getattr(model, "model_name", whisper_model_live_name)
+                    self._json({"text": "", "language": lang, "task":"transcribe", "engine":kind, "model":name, "modelIdentity":registered_identity(kind,name), "time_ms": 0, "skipped": "silence"})
                     return
             except Exception:
                 pass  # if check fails, proceed with the engine
             t = time.time()
-            lang = body.get("language", "auto")
-            lang = None if lang == "auto" else lang
             with whisper_live_lock:
-                segments_gen, info = whisper_model_live.transcribe(body["wav_path"], language=lang, **WHISPER_OPTS)
+                model_used = whisper_model_live
+                engine_used = getattr(model_used, "kind", _preview_kind())
+                name_used = getattr(model_used, "model_name", whisper_model_live_name)
+                identity_used = registered_identity(engine_used, name_used)
+                if not _compatible_preview_model(name_used) or engine_used != _preview_kind():
+                    self._json({"error":"Preview model does not match admitted identity"}, 409)
+                    return
+                segments_gen, info = model_used.transcribe(body["wav_path"], language=lang, task="transcribe", **WHISPER_OPTS)
                 segments_list = list(segments_gen)
             lines = []
             for seg in segments_list:
@@ -2744,7 +2815,7 @@ class Handler(BaseHTTPRequestHandler):
             # self-correct — hot-swap to a lighter live model if we're falling behind under
             # contention, or recover toward the ceiling when there's headroom.
             gov_info = {}
-            if live_governor is not None and active_engine != "parakeet":
+            if live_governor is not None and _preview_kind() != "parakeet":
                 audio_s = float(body.get("audio_s", 3.0)) or 3.0
                 dec = live_governor.observe(audio_s, process_s)
                 if dec.changed and dec.live_model != whisper_model_live_name:
@@ -2756,7 +2827,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json({
                 "text": _live_text,
                 "language": info.language if info else "auto",
-                "model": whisper_model_live_name,
+                "model": name_used,
+                "engine": engine_used,
+                "modelIdentity": identity_used,
+                "task": "transcribe",
                 "time_ms": int(process_s * 1000),
                 "gov": gov_info,
                 "quality": assess_audio_quality(_live_text, float(body.get("audio_s", 0) or 0), _peak),
