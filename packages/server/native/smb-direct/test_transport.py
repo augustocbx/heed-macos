@@ -553,6 +553,7 @@ class SdkBoundaryTests(unittest.TestCase):
         encrypt_tree=None,
         async_response=False,
         status=0,
+        payload=None,
     ):
         """Run the real SDK worker on a single in-memory server packet."""
         import logging
@@ -619,7 +620,9 @@ class SdkBoundaryTests(unittest.TestCase):
             header["flags"].set_flag(Smb2Flags.SMB2_FLAGS_ASYNC_COMMAND)
             header["reserved"] = 7
             header["tree_id"] = 0
-        if status and status != 0xC0000016:
+        if payload is not None:
+            pass
+        elif status and status != 0xC0000016:
             payload = SMB2ErrorResponse()
         elif expected == Commands.SMB2_NEGOTIATE:
             payload = SMB2NegotiateResponse()
@@ -882,38 +885,103 @@ class SdkBoundaryTests(unittest.TestCase):
         with self.assertRaises(SmbError):
             c.verify_signature(response, 1, force=True)
 
-    def test_root_write_access_comes_from_the_actual_access_query(self):
-        from smbprotocol.file_info import FileAccessInformation
+    def maximal_access_backend(self, values, *, tamper=False, signed=True, actual=None, sid=None, tid=None):
+        from unittest.mock import patch
+        from smbprotocol.header import Commands
+        from smbprotocol.open import Open, SMB2CreateResponse, SMB2CreateRequest
+        from smbprotocol.create_contexts import SMB2CreateContextRequest
 
+        payload = SMB2CreateResponse()
+        payload["file_id"] = b"m" * 16
+        if values:
+            payload["buffer"] = SMB2CreateContextRequest.pack_multiple(values)
+        captured, closed = [], []
+        connection = SimpleNamespace(dialect=0x300)
+        session = SimpleNamespace(connection=connection, username="public fixture", session_id=1, open_table={})
+        tree = SimpleNamespace(session=session, share_name="public fixture", tree_connect_id=2)
         backend = SmbProtocolBackend()
-        handle = SimpleNamespace()
-        observed = []
-
-        def opened(path, **kwargs):
-            observed.append(kwargs)
-            return handle
-
-        backend.open = opened
-        backend.close_handle = lambda h: observed.append("closed")
+        backend.tree = tree
         backend.metadata = lambda h: dict(
-            objectId="0000000000000010",
-            created="01db000000000002",
-            volumeSerial="00000001",
-            volumeCreated="01db000000000001",
-            directory=True,
-            reparse=False,
-            deletePending=False,
-            links=1,
-            bytes=0,
+            objectId="0000000000000010", created="01db000000000002", volumeSerial="00000001",
+            volumeCreated="01db000000000001", directory=True, reparse=False, deletePending=False, links=1, bytes=0,
         )
-        backend.query = lambda h, kind: (
-            dict(access_flags=0x1) if kind is FileAccessInformation else None
-        )
-        self.assertTrue(backend.root_access("Heed/library")["readOnly"])
-        self.assertEqual(observed[0]["access"], "maximum")
-        self.assertEqual(observed[-1], "closed")
-        backend.query = lambda h, kind: dict(access_flags=0x7)
-        self.assertFalse(backend.root_access("Heed/library")["readOnly"])
+
+        def sent(message, *args, **kwargs):
+            wire = SMB2CreateRequest()
+            wire.unpack(message.pack())
+            captured.append(wire)
+            _, request, response = self.worker_response(
+                Commands.SMB2_CREATE, actual if actual is not None else Commands.SMB2_CREATE,
+                payload=payload, signed=signed, tamper=tamper, sid=sid, tid=tid,
+            )
+            connection.response = response
+            return request
+
+        connection.send = sent
+        connection.receive = lambda *_: connection.response
+        def close(handle):
+            closed.append(handle.file_id)
+            session.open_table.pop(handle.file_id, None)
+            handle._connected = False
+        return backend, captured, closed, patch.object(Open, "close", close)
+
+    def maximal_context(self, rights=0x7, status=0, name=b"MxAc"):
+        from smbprotocol.create_contexts import SMB2CreateContextRequest, SMB2CreateQueryMaximalAccessResponse
+        value = SMB2CreateQueryMaximalAccessResponse()
+        value["query_status"], value["maximal_access"] = status, rights
+        context = SMB2CreateContextRequest()
+        context["buffer_name"], context["buffer_data"] = name, value.pack()
+        return context
+
+    def test_root_write_access_comes_from_current_read_only_mxac_create(self):
+        for rights, read_only in ((0x1, True), (0x7, False)):
+            with self.subTest(rights=rights):
+                backend, captured, closed, closing = self.maximal_access_backend([self.maximal_context(rights)])
+                with closing:
+                    self.assertEqual(backend.root_access("Heed/library")["readOnly"], read_only)
+                wire = captured[0]
+                self.assertEqual(wire["desired_access"].get_value(), 0x81)
+                self.assertEqual(wire["share_access"].get_value(), 0x1)
+                self.assertEqual(wire["create_disposition"].get_value(), 1)
+                self.assertEqual(wire["create_options"].get_value(), 0x00200001)
+                self.assertEqual(wire["requested_oplock_level"].get_value(), 0)
+                contexts = wire["buffer_contexts"].get_value()
+                self.assertEqual(len(contexts), 1)
+                self.assertEqual(contexts[0]["buffer_name"].get_value(), b"MxAc")
+                self.assertEqual(contexts[0]["data_length"].get_value(), 0)
+                self.assertEqual(contexts[0]["buffer_data"].get_value(), b"")
+                self.assertEqual(closed, [b"m" * 16])
+                self.assertEqual(backend.handles, [])
+
+    def test_invalid_maximal_response_refuses_and_closes_its_opened_handle(self):
+        malformed = self.maximal_context()
+        malformed["buffer_data"] = b"bad"
+        cases = ([], [malformed], [self.maximal_context(name=b"bad!")],
+                 [self.maximal_context(), self.maximal_context()],
+                 [self.maximal_context(status=0xC0000073)])
+        for values in cases:
+            with self.subTest(contexts=len(values)):
+                backend, _, closed, closing = self.maximal_access_backend(values)
+                with closing, self.assertRaises(SmbError) as caught:
+                    backend.root_access("Heed/library")
+                self.assertEqual(caught.exception.code, "unsupported-namespace")
+                self.assertEqual(closed, [b"m" * 16])
+                self.assertEqual(backend.handles, [])
+
+    def test_maximal_response_requires_actual_signed_associated_untampered_create(self):
+        from smbprotocol.header import Commands
+        from smbprotocol.exceptions import SMBException
+        for fields in (dict(tamper=True), dict(signed=False), dict(actual=Commands.SMB2_QUERY_INFO), dict(sid=2), dict(tid=3)):
+            with self.subTest(fields=fields):
+                backend, _, closed, closing = self.maximal_access_backend([self.maximal_context()], **fields)
+                with closing, self.assertRaises((SmbError, SMBException)) as caught:
+                    backend.root_access("Heed/library")
+                if isinstance(caught.exception, SmbError):
+                    self.assertEqual(caught.exception.code, "unsupported-security")
+                else:
+                    self.assertTrue(fields.get("tamper"))
+                self.assertEqual(closed, [])
+                self.assertEqual(backend.handles, [])
 
     def test_unsupported_identity_query_is_a_typed_refusal(self):
         from smbprotocol.open import SMB2QueryInfoResponse

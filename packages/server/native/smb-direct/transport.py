@@ -199,7 +199,7 @@ class SmbProtocolBackend:
             encrypted=encrypted,
         )
 
-    def open(self, path, directory=False, access="read", exclusive=False, verification=False):
+    def open(self, path, directory=False, access="read", exclusive=False, verification=False, maximal_access=False):
         from smbprotocol.open import (
             Open,
             ImpersonationLevel,
@@ -217,6 +217,8 @@ class SmbProtocolBackend:
         )
 
         validate_path(path, directory)
+        if maximal_access and (not directory or access != "read" or exclusive or verification):
+            raise SmbError("invalid-input")
         if len(self.handles) >= MAX_HANDLES:
             raise SmbError("bounds-exceeded")
         if access not in ("read", "write", "delete", "write-delete", "maximum"):
@@ -234,8 +236,15 @@ class SmbProtocolBackend:
             if directory
             else CreateOptions.FILE_NON_DIRECTORY_FILE
         )
+        contexts = None
+        if maximal_access:
+            from smbprotocol.create_contexts import SMB2CreateContextRequest, CreateContextName
+            context = SMB2CreateContextRequest()
+            context["buffer_name"] = CreateContextName.SMB2_CREATE_QUERY_MAXIMAL_ACCESS_REQUEST
+            context["buffer_data"] = b""  # No timestamp: request unconditional current access.
+            contexts = [context]
         try:
-            h.create(
+            responses = h.create(
                 ImpersonationLevel.Impersonation,
                 mask,
                 FileAttributes.FILE_ATTRIBUTE_NORMAL,
@@ -246,6 +255,7 @@ class SmbProtocolBackend:
                 ),
                 (CreateDisposition.FILE_CREATE if exclusive else CreateDisposition.FILE_OPEN),
                 options,
+                **({"create_contexts": contexts} if maximal_access else {}),
             )
         except AccessDenied:
             raise SmbError("access-denied") from None
@@ -255,21 +265,37 @@ class SmbProtocolBackend:
             raise FileNotFoundError() from None
         except SharingViolation:
             raise SmbError("destination-busy") from None
+        except Exception:
+            # SDK context unpacking may fail after CREATE issued a real file ID.
+            if maximal_access and getattr(h, "connected", False):
+                self.handles.append(h)
+                self.close_handle(h)
+                raise SmbError("unsupported-namespace") from None
+            raise
         self.handles.append(h)
+        if maximal_access:
+            try:
+                from smbprotocol.create_contexts import SMB2CreateQueryMaximalAccessResponse
+                if (not isinstance(responses, list) or len(responses) != 1 or
+                    type(responses[0]) is not SMB2CreateQueryMaximalAccessResponse or
+                    responses[0]["query_status"].get_value() != 0):
+                    raise SmbError("unsupported-namespace")
+                observed = responses[0]["maximal_access"].get_value()
+                if type(observed) is not int or not 0 <= observed <= 0xffffffff:
+                    raise SmbError("unsupported-namespace")
+                h.maximal_access = observed
+            except BaseException:
+                self.close_handle(h)
+                raise
         return h
 
     def root_access(self, path):
-        from smbprotocol.file_info import FileAccessInformation
-
-        # This short-lived capability handle is closed before the sole retained
-        # root pin, avoiding contradictory sharing against our own WRITE access.
-        h = self.open(path, directory=True, access="maximum")
+        # MxAc observes effective capability without acquiring WRITE/DELETE rights,
+        # so existing read-only namespace pins remain compatible and excluded.
+        h = self.open(path, directory=True, access="read", maximal_access=True)
         try:
             metadata = validate_metadata(self.metadata(h), True)
-            access = self.query(h, FileAccessInformation)["access_flags"]
-            if type(access) is not int:
-                raise SmbError("unsupported-namespace")
-            return dict(readOnly=(access & 0x7) != 0x7, metadata=metadata)
+            return dict(readOnly=(h.maximal_access & 0x7) != 0x7, metadata=metadata)
         finally:
             self.close_handle(h)
 

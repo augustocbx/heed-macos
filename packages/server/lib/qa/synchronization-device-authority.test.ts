@@ -44,3 +44,11 @@ test('oversized startup output reaps only its owned helper and preserves an unre
  const owned=Bun.spawn([process.execPath,'-e',"for await(const chunk of Bun.stdin.stream()){console.log('x'.repeat(150001));await new Promise(()=>{});}"],{stdin:'pipe',stdout:'pipe',stderr:'pipe'});
  try{let failure:any;try{await api.openNativeAuthoritySession(()=>owned,{action:'qa-open-owned-authority'});}catch(error){failure=error;}expect(failure).toBeDefined();expect(Object.getOwnPropertyDescriptor(failure,'guardianStopped')?.value).toBe(true);expect(()=>process.kill(owned.pid,0)).toThrow();expect(unrelated.exitCode).toBeNull();expect(()=>process.kill(unrelated.pid,0)).not.toThrow();}finally{for(const child of [owned,unrelated]){if(child.exitCode===null)child.kill();await child.exited;}expect(()=>process.kill(unrelated.pid,0)).toThrow();}
 });
+
+
+test('successful authority close requires complete strict stdout framing through EOF',async()=>{
+ for(const trailing of ['incomplete-frame','{"sequence":2,"ok":true}\n']){
+  const child=Bun.spawn([process.execPath,'-e',`let first=true;for await(const chunk of Bun.stdin.stream()){if(first){first=false;console.log(JSON.stringify({ok:true,value:{role:'creator',binding:${JSON.stringify(binding)},generation:'${randomUUID()}'}}));}else{console.log(JSON.stringify({sequence:1,ok:true}));process.stdout.write(${JSON.stringify(trailing)});process.exit(0);}}`],{stdin:'pipe',stdout:'pipe',stderr:'pipe'});
+  try{const session=await api.openNativeAuthoritySession(()=>child,{action:'qa-open-owned-authority'});let failure:any;try{await session.close();}catch(error){failure=error;}expect(failure).toBeDefined();expect(failure.message).not.toContain(trailing.trim());expect(Object.getOwnPropertyDescriptor(failure,'guardianStopped')?.value).toBe(true);expect(child.exitCode).toBe(0);expect(()=>process.kill(child.pid,0)).toThrow();await expect(session.close()).rejects.toThrow();}finally{if(child.exitCode===null)child.kill();await child.exited;}
+ }
+});
