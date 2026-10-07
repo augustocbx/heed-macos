@@ -225,6 +225,38 @@ class ServiceIntegrationTest(unittest.TestCase):
         result=subprocess.run(['bash','-u','-c','cleanup() {'+cleanup+'\n(exit 1)\ncleanup'],env=environment,capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr);self.assertFalse(calls.exists())
 
+    def test_failed_ack_cleanup_uses_original_attempt_owner_and_retains_unverified_stage(self):
+        script=(ROOT/'scripts/release/install.sh').read_text()
+        selection=script[script.index('# The guard imports'):script.index('HEED_GUARD_HELD=1',script.index('# The guard imports'))]
+        cleanup=script.split('cleanup() {',1)[1].split('\ntrap cleanup EXIT',1)[0]
+        for refused_release,transaction in [(False,''),(True,''),(False,'12345678-1234-1234-1234-123456789abc')]:
+            with self.subTest(refused_release=refused_release,transaction=bool(transaction)):
+                stage=self.directory/('stage-'+str(refused_release)+str(bool(transaction)))
+                guard=stage/'packages/desktop/guard-lifecycle.py';guard.parent.mkdir(parents=True)
+                calls=stage/'calls.json';held=stage/'held';calls.write_text('[]')
+                guard.write_text('import os,pathlib,json,sys\n'
+                    'p=pathlib.Path(os.environ["CALLS"]);calls=json.loads(p.read_text());calls.append({"args":sys.argv[1:],"owner":os.environ.get("HEED_LIFECYCLE_GUARD_TOKEN"),"transaction":os.environ.get("HEED_UPDATE_TRANSACTION_ID")});p.write_text(json.dumps(calls))\n'
+                    'if sys.argv[1]=="acquire":pathlib.Path(os.environ["HELD"]).touch();sys.exit(1)\n'
+                    'if os.environ["REFUSE_RELEASE"]=="1":sys.exit(1)\n'
+                    'pathlib.Path(os.environ["RELEASED"]).write_text("released")\n')
+                temporary=self.directory/('tmp-'+stage.name);temporary.mkdir()
+                released=self.directory/('released-'+stage.name)
+                environment={**self.env,'HEED_STAGE':str(stage),'HEED_TEMP':str(temporary),
+                    'HEED_PREVIOUS_DIR':str(self.directory/'old'),'HEED_LEGACY_ROOT':'','HEED_API_PORT':'48310','HEED_PREVIOUS_PORTS':'48210 48211 48212',
+                    'HEED_GUARD_HELD':'0','HEED_GUARD_ATTEMPTED':'0','HEED_COMMITTED':'0','HEED_SWITCHED':'0','HEED_KEEP_STAGE':'0',
+                    'HEED_LIFECYCLE_GUARD_TOKEN':'original-owner','HEED_UPDATE_TRANSACTION_ID':transaction,
+                    'CALLS':str(calls),'HELD':str(held),'RELEASED':str(released),'REFUSE_RELEASE':'1' if refused_release else '0'}
+                command='cleanup() {'+cleanup+'\ntrap cleanup EXIT\nfail() { exit 1; }\n'+selection
+                result=subprocess.run(['bash','-eu','-c',command],env=environment,capture_output=True,text=True)
+                self.assertEqual(result.returncode,1,result.stderr)
+                self.assertEqual(released.exists(),not refused_release and not transaction)
+                self.assertEqual(stage.exists(),refused_release)
+                if refused_release:
+                    self.assertTrue(held.exists())
+                    recorded=json.loads(calls.read_text())
+                    self.assertEqual(recorded[1],{'args':['release','--expected-root',str(self.directory/'old'),'--base-url','http://127.0.0.1:48210'],'owner':'original-owner','transaction':''})
+                self.assertEqual(temporary.exists(),refused_release)
+
     def test_locked_installer_wrapper_preserves_the_child_outcome_and_exit_status(self):
         script=(ROOT/'scripts/release/install.sh').read_text()
         cleanup=script.split('cleanup() {',1)[1].split('\ntrap cleanup EXIT',1)[0]

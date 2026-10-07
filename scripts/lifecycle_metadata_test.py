@@ -38,6 +38,21 @@ class ProjectionTest(unittest.TestCase):
         escaped=''.join('\\u%04x'%ord(char) for char in 'maintenanceRecovery')
         self.assertEqual(self.project(('{"maintenance":true,"maintenanceProtocol":2,"updateTransactionId":null,"processingKinds":["'+escaped+'"]}').encode())['processingKinds'],['maintenanceRecovery'])
 
+    def test_legacy_summary_ack_context_does_not_relax_authoritative_projection(self):
+        summary={'maintenance':True,'maintenanceProtocol':2,'updateTransactionId':None}
+        body=json.dumps(summary).encode()
+        with self.assertRaises(ValueError): self.project(body)
+        self.assertEqual(self.project(body,_maintenance_ack=True),summary)
+        for change in [{'maintenanceProtocol':True},{'maintenanceProtocol':3},{'updateTransactionId':'wrong'},
+                       {'processingKinds':['unknown']},{'processingKinds':['notes','notes']}]:
+            with self.subTest(change=change),self.assertRaises(ValueError):
+                self.project(json.dumps({**summary,**change}).encode(),_maintenance_ack=True)
+        for missing in summary:
+            with self.assertRaises(ValueError):
+                self.project(json.dumps({k:v for k,v in summary.items() if k!=missing}).encode(),_maintenance_ack=True)
+        for raw in [body+b'junk',b'{"maintenance":true,"maintenance":false,"maintenanceProtocol":2,"updateTransactionId":null}']:
+            with self.assertRaises(ValueError): self.project(raw,_maintenance_ack=True)
+
 
 # Real loopback listener with the exact supported Bun API entrypoint. This tests
 # ownership, HTTP negotiation and guard effects together, without mock authority.
@@ -68,10 +83,29 @@ class HTTPTest(unittest.TestCase):
 import {readFileSync,writeFileSync} from 'node:fs';
 const root=process.cwd();
 const server=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(req){
- const path=new URL(req.url).pathname;
- const calls=JSON.parse(readFileSync('requests.json','utf8'));calls.push({path,method:req.method,body:req.method==='POST'?await req.json():null});writeFileSync('requests.json',JSON.stringify(calls));
+ const url=new URL(req.url),path=url.pathname;
+ const calls=JSON.parse(readFileSync('requests.json','utf8'));calls.push({path,query:url.search,method:req.method,body:req.method==='POST'?await req.json():null});writeFileSync('requests.json',JSON.stringify(calls));
  const routes=JSON.parse(readFileSync('routes.json','utf8'));
  if(path==='/.well-known/heed-service')return Response.json(routes.identity||{service:'heed-api',protocolVersion:1,checkoutRoot:root,pid:process.pid});
+ const old=routes.oldProtocolTwo;
+ if(old && path==='/api/desktop/control/status'){
+  const value={service:'heed-api',protocolVersion:1,checkoutRoot:root,pid:process.pid,recording:false,processing:false,pending:false,starting:false,audioWork:false,
+   maintenance:!!old.owner,maintenanceProtocol:2,processingKinds:[],updateTransactionId:old.transaction??null,session:{transcript:'SYNTHETIC_PRIVATE_SENTINEL'},...(old.applied?old.afterStatus:{})};
+  if(old.applied)for(const key of old.omitAfter??[])delete value[key];
+  return Response.json(value);
+ }
+ if(old && path==='/api/recording/maintenance'){
+  const body=calls.at(-1).body;
+  if(old.owner && old.owner!==body.owner || !body.acquire && body.transactionId!==undefined && old.transaction!==body.transactionId)return new Response(null,{status:409});
+  old.owner=body.acquire?body.owner:null;old.transaction=body.acquire?(body.transactionId??old.transaction):null;old.applied=true;
+  if(old.afterIdentity)routes.identity=old.afterIdentity;
+  writeFileSync('routes.json',JSON.stringify(routes));
+  // Exact public b04 contracts: default hydrated snapshot, or existing three-field summary.
+  const summary={maintenance:!!old.owner,maintenanceProtocol:2,updateTransactionId:old.transaction??null};
+  const hydrated={meetingId:null,state:'idle',revision:1,startedAt:null,path:null,seconds:0,mode:'both',segments:[],speakerNames:{},session:{transcript:'SYNTHETIC_PRIVATE_SENTINEL'},error:null,...summary};
+  if(old.delay)await Bun.sleep(old.delay);
+  return new Response(old.ackRaw??JSON.stringify({...(url.searchParams.has('summary')?summary:hydrated),...old.ackChanges}));
+ }
  const route=routes[path];if(!route)return new Response(null,{status:405});
  if(route.delay)await Bun.sleep(route.delay);
  const raw=route.raw??JSON.stringify(route.body);
@@ -105,6 +139,72 @@ console.log(JSON.stringify({pid:process.pid,port:server.port}));
 
     def guard(self, action='acquire', root=None, **env):
         return subprocess.run([sys.executable,str(ROOT/'packages/desktop/guard-lifecycle.py'),action,'--base-url',self.base,'--expected-root',str(root or self.root),'--owner','synthetic-owner'],env={**os.environ,**env},capture_output=True,text=True,timeout=10)
+
+    def test_old_protocol_two_summary_roundtrip_requires_fresh_authoritative_status(self):
+        self.configure(oldProtocolTwo={'owner':None})
+        for action in ['acquire','release']:
+            result=self.guard(action)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertNotIn('SYNTHETIC_PRIVATE_SENTINEL',result.stdout+result.stderr)
+            calls=json.loads(self.log.read_text());post=max(i for i,c in enumerate(calls) if c['method']=='POST')
+            self.assertEqual(calls[post]['query'],'?summary=1')
+            self.assertTrue(any(c['path']=='/api/desktop/control/status' for c in calls[post+1:]))
+        self.assertIsNone(json.loads(self.routes.read_text())['oldProtocolTwo']['owner'])
+
+    def test_old_protocol_two_summary_preserves_transaction_roundtrip(self):
+        transaction='12345678-1234-1234-1234-123456789abc'
+        self.configure(oldProtocolTwo={'owner':None})
+        for action in ['acquire','release']:
+            result=self.guard(action,HEED_UPDATE_TRANSACTION_ID=transaction)
+            self.assertEqual(result.returncode,0,result.stderr)
+            state=json.loads(self.routes.read_text())['oldProtocolTwo']
+            self.assertEqual(state['transaction'],transaction if action=='acquire' else None)
+            posts=[c for c in json.loads(self.log.read_text()) if c['method']=='POST']
+            self.assertEqual(posts[-1]['body']['transactionId'],transaction)
+            self.assertEqual(posts[-1]['query'],'?summary=1')
+        self.configure(oldProtocolTwo={'owner':'synthetic-owner','transaction':transaction})
+        result=self.guard('release',HEED_UPDATE_TRANSACTION_ID='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(json.loads(self.routes.read_text())['oldProtocolTwo']['transaction'],transaction)
+
+    def test_old_protocol_two_summary_uses_compact_bound_and_deadline(self):
+        summary={'maintenance':True,'maintenanceProtocol':2,'updateTransactionId':None}
+        for case in [{'ackRaw':json.dumps({**summary,'session':{'transcript':self.private}})}, {'delay':6000}]:
+            with self.subTest(case=list(case)):
+                self.configure(oldProtocolTwo={'owner':None,**case})
+                started=time.monotonic();result=self.guard()
+                self.assertNotEqual(result.returncode,0)
+                self.assertLess(time.monotonic()-started,8)
+                self.assertNotIn('SYNTHETIC_PRIVATE_SENTINEL',result.stdout+result.stderr)
+                self.assertEqual(json.loads(self.routes.read_text())['oldProtocolTwo']['owner'],'synthetic-owner')
+
+    def test_legacy_summary_malformed_or_changed_authority_refuses_after_mutation(self):
+        cases=[{'ackRaw':'{"maintenance":true'}, {'ackChanges':{'maintenanceProtocol':3}},
+               {'ackChanges':{'updateTransactionId':'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'}},
+               {'afterStatus':{'processingKinds':['notes']}}, {'afterStatus':{'audioWork':True}},
+               {'omitAfter':['processingKinds']}, {'afterStatus':{'maintenance':False}},
+               {'afterStatus':{'pid':1}}, {'afterStatus':{'checkoutRoot':'/wrong'}},
+               {'afterIdentity':{**self.identity,'pid':1}}]
+        for case in cases:
+            with self.subTest(case=case):
+                self.configure(oldProtocolTwo={'owner':None,**case})
+                self.assertNotEqual(self.guard().returncode,0)
+                self.assertEqual(json.loads(self.routes.read_text())['oldProtocolTwo']['owner'],'synthetic-owner')
+        self.configure(oldProtocolTwo={'owner':'foreign-owner'})
+        self.assertNotEqual(self.guard().returncode,0)
+        self.assertEqual(json.loads(self.routes.read_text())['oldProtocolTwo']['owner'],'foreign-owner')
+
+    def test_standalone_guard_never_mutates_an_existing_durable_transaction(self):
+        for action in ['acquire','release']:
+            self.configure(oldProtocolTwo={'owner':'synthetic-owner','transaction':'12345678-1234-1234-1234-123456789abc'})
+            self.assertNotEqual(self.guard(action).returncode,0)
+            self.assertFalse(any(c['method']=='POST' for c in json.loads(self.log.read_text())))
+
+    def test_compact_protocol_two_summary_cannot_downgrade_to_legacy_ack(self):
+        status={**self.identity,**self.idle,'maintenance':False,'maintenanceProtocol':2,'processingKinds':[],'updateTransactionId':None}
+        self.configure(**{'/api/recording/lifecycle':{'body':status},'/api/recording/maintenance':{'body':{'maintenance':True,'maintenanceProtocol':2,'updateTransactionId':None}}})
+        self.assertNotEqual(self.guard().returncode,0)
+        self.assertFalse(any(c['path']=='/api/desktop/control/status' for c in json.loads(self.log.read_text())))
 
 
     def test_protocol_two_guard_forwards_transaction_and_refuses_other_acknowledgements(self):

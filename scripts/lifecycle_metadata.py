@@ -24,11 +24,12 @@ ERROR = 'Could not verify bounded Heed lifecycle metadata. No services were chan
 class Projector:
     def __init__(self, stream, max_bytes=16*1024*1024, max_depth=64,
                  max_tokens=100000, max_key=4096, max_keys=128,
-                 max_string=8*1024*1024, deadline=None):
+                 max_string=8*1024*1024, deadline=None, _maintenance_ack=False):
         self.stream = stream
         self.max_bytes, self.max_depth, self.max_tokens = max_bytes, max_depth, max_tokens
         self.max_key, self.max_keys, self.max_string = max_key, max_keys, max_string
         self.deadline = time.monotonic()+5 if deadline is None else deadline
+        self._maintenance_ack = _maintenance_ack
         self.chunk = b''
         self.offset = self.total = self.tokens = 0
         self.result = {}
@@ -181,8 +182,10 @@ class Projector:
         if self.peek() != 123: raise ValueError(ERROR)
         self.value(); self.whitespace()
         if self.peek() != -1: raise ValueError(ERROR)
-        if any(key in self.result for key in UPDATE_FIELDS):
-            if not all(key in self.result for key in (*UPDATE_FIELDS, 'maintenance')) or type(self.result['maintenance']) is not bool or self.result['maintenanceProtocol'] != 2:
+        if self._maintenance_ack or any(key in self.result for key in UPDATE_FIELDS):
+            # Only a negotiated legacy protocol-2 maintenance summary may omit kinds.
+            required = UPDATE_FIELDS[:2] if self._maintenance_ack else UPDATE_FIELDS
+            if not all(key in self.result for key in (*required, 'maintenance')) or type(self.result['maintenance']) is not bool or self.result['maintenanceProtocol'] != 2:
                 raise ValueError(ERROR)
             if self.result['updateTransactionId'] is not None and not self.result['maintenance']: raise ValueError(ERROR)
         return self.result
@@ -213,7 +216,11 @@ class DeadlineSocket:
     def close(self): pass  # request() owns the socket until the response is consumed.
 
 
-def request(base, path, body=None, max_bytes=16*1024*1024, timeout=5):
+def request(base, path, body=None, max_bytes=16*1024*1024, timeout=5, _maintenance_ack=False):
+    if _maintenance_ack and (path != '/api/recording/maintenance?summary=1' or not isinstance(body, dict)
+                            or type(body.get('acquire')) is not bool or not isinstance(body.get('owner'), str)
+                            or max_bytes != 65536 or timeout > 5):
+        raise ValueError(ERROR)
     parsed = urlsplit(base)
     if parsed.scheme != 'http' or parsed.hostname not in ('127.0.0.1', 'localhost') or not parsed.port or parsed.path not in ('', '/') or parsed.query or parsed.fragment or parsed.username or parsed.password:
         raise ValueError(ERROR)
@@ -228,7 +235,7 @@ def request(base, path, body=None, max_bytes=16*1024*1024, timeout=5):
         connection.request('GET' if body is None else 'POST', path, payload, {'Content-Type':'application/json', 'Connection':'close'})
         with connection.getresponse() as response:
             if response.status != 200: return response.status, None
-            result = project(response, max_bytes=max_bytes, deadline=deadline)
+            result = project(response, max_bytes=max_bytes, deadline=deadline, _maintenance_ack=_maintenance_ack)
             if response.length not in (None, 0): raise ValueError(ERROR)
             return response.status, result
     except (OSError, http.client.HTTPException, ValueError, TypeError):

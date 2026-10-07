@@ -27,24 +27,39 @@ def guard(action, base_url, owner, expected_root=None, transaction_id=None):
     identity = verified_api_identity(base_url, root)
     state, legacy_negotiated = read_status_with_capability(base_url, identity)
     if transaction_id is not None and state.get('maintenanceProtocol') != 2: raise ValueError('This backend does not support durable update maintenance.')
+    if transaction_id is None and state.get('updateTransactionId') is not None:
+        raise ValueError('A durable update transaction prevents standalone maintenance.')
+    legacy_protocol_two = legacy_negotiated and state.get('maintenanceProtocol') == 2
     if action == 'acquire' and (any(state[key] for key in BUSY_KEYS) or state.get('processingKinds')):
         raise ValueError('An active meeting prevents installing or updating Heed.')
     # Recheck the independently expected PID/root immediately before mutation.
     if verified_api_identity(base_url, root) != identity:
         raise ValueError('The Heed listener changed. No control request was sent.')
-    code, state = request(base_url, '/api/recording/maintenance',
+    code, state = request(base_url, '/api/recording/maintenance?summary=1' if legacy_protocol_two else '/api/recording/maintenance',
                           {'acquire':action == 'acquire','owner':owner,'projection':'lifecycle',**({'transactionId':transaction_id} if transaction_id is not None else {})},
-                          max_bytes=16*1024*1024 if legacy_negotiated else 65536)
+                          max_bytes=16*1024*1024 if legacy_negotiated and not legacy_protocol_two else 65536,
+                          _maintenance_ack=legacy_protocol_two)
     # A compact-capable backend cannot downgrade its acknowledgement by omitting identity.
     if not legacy_negotiated or (state and any(key in state for key in IDENTITY_KEYS)):
         if not valid_identity(state,root,identity['pid']) or not all(type(state.get(key)) is bool for key in BUSY_KEYS) or (action == 'acquire' and (any(state[key] for key in BUSY_KEYS) or state.get('processingKinds'))):
             raise ValueError('The backend returned an invalid compact maintenance acknowledgement.')
-    if transaction_id is not None and (not state or state.get('maintenanceProtocol') != 2 or state.get('updateTransactionId') != (transaction_id if action == 'acquire' else None)):
+    if (transaction_id is not None or legacy_protocol_two or state and state.get('maintenanceProtocol') == 2) and (not state or state.get('maintenanceProtocol') != 2 or state.get('updateTransactionId') != (transaction_id if action == 'acquire' else None)):
         raise ValueError('The backend did not acknowledge durable update maintenance.')
     if code != 200 or not state or state.get('maintenance') is not (action == 'acquire'):
         # No non-atomic success fallback: a backend without maintenance must be
         # upgraded through a supported path before service replacement.
         raise ValueError('An active meeting, another maintenance owner or unsupported guard prevents installing or updating Heed.')
+    if legacy_protocol_two:
+        # A summary acknowledges only mutation; strict fresh GET supplies actual busy/identity metadata.
+        if verified_api_identity(base_url, root) != identity:
+            raise ValueError('The Heed listener changed after maintenance.')
+        current, _ = read_status_with_capability(base_url, identity)
+        if verified_api_identity(base_url, root) != identity:
+            raise ValueError('The Heed listener changed after maintenance.')
+        if (current.get('maintenanceProtocol') != 2 or current.get('maintenance') is not (action == 'acquire')
+                or current.get('updateTransactionId') != (transaction_id if action == 'acquire' else None)
+                or action == 'acquire' and (any(current[key] for key in BUSY_KEYS) or current.get('processingKinds'))):
+            raise ValueError('The backend did not confirm maintenance in fresh authoritative status.')
 
 
 if __name__ == '__main__':

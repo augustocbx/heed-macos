@@ -71,9 +71,11 @@ exec > >(tee -a "$HEED_LOG") 2>&1
 HEED_TEMP="$(mktemp -d -t heed-install)"
 HEED_STAGE=""
 HEED_GUARD_HELD=0
+HEED_GUARD_ATTEMPTED=0
 HEED_COMMITTED=0
 HEED_SWITCHED=0
 HEED_KEEP_STAGE=0
+HEED_KEEP_TEMP=0
 HEED_RECOVERY=notReplaced
 
 cleanup() {
@@ -83,8 +85,12 @@ cleanup() {
     fi
     if [ "$status" != 0 ] && [ "$HEED_COMMITTED" = 0 ]; then
         # The running version was never stopped: give it back its recording ability first.
-        if [ -z "${HEED_UPDATE_TRANSACTION_ID:-}" ] && [ "$HEED_GUARD_HELD" = 1 ] && [ "$HEED_SWITCHED" = 0 ] && [ -f "$HEED_GUARD_SCRIPT" ]; then
-            /usr/bin/python3 "$HEED_GUARD_SCRIPT" release --expected-root "$HEED_GUARD_ROOT" --base-url "$HEED_GUARD_URL" >/dev/null 2>&1 || true
+        if [ -z "${HEED_UPDATE_TRANSACTION_ID:-}" ] && { [ "$HEED_GUARD_HELD" = 1 ] || [ "${HEED_GUARD_ATTEMPTED:-0}" = 1 ]; } && [ "$HEED_SWITCHED" = 0 ] && [ -f "$HEED_GUARD_SCRIPT" ]; then
+            if ! /usr/bin/python3 "$HEED_GUARD_SCRIPT" release --expected-root "$HEED_GUARD_ROOT" --base-url "$HEED_GUARD_URL" >/dev/null 2>&1; then
+                HEED_KEEP_STAGE=1
+                HEED_KEEP_TEMP=1
+                printf 'Maintenance release could not be verified. The prepared stage and installation evidence were preserved for recovery.\n' >&2
+            fi
         fi
         if [ "$HEED_SWITCHED" = 1 ]; then rollback; fi
         if [ "$HEED_KEEP_STAGE" != 1 ] && [ -n "$HEED_STAGE" ] && [ -d "$HEED_STAGE" ]; then rm -rf "$HEED_STAGE"; fi
@@ -93,7 +99,7 @@ cleanup() {
     if [ -n "${HEED_UPDATE_TRANSACTION_ID:-}" ] && [ -n "${HEED_HELPER:-}" ] && [ -n "${HEED_INSTALL_LOCK_FD:-}" ]; then
         /usr/bin/python3 "$HEED_HELPER" update-result --exit-code "$status" --recovery "$HEED_RECOVERY" || true
     fi
-    rm -rf "$HEED_TEMP"
+    if [ "${HEED_KEEP_TEMP:-0}" != 1 ]; then rm -rf "$HEED_TEMP"; fi
 }
 trap cleanup EXIT
 
@@ -300,6 +306,7 @@ HEED_GUARD_PORT="$HEED_API_PORT"
 if [ -n "${HEED_PREVIOUS_PORTS:-}" ]; then read -r HEED_GUARD_PORT _ _ <<< "$HEED_PREVIOUS_PORTS"; fi
 HEED_GUARD_URL="http://127.0.0.1:$HEED_GUARD_PORT"
 export HEED_LIFECYCLE_GUARD_TOKEN="${HEED_LIFECYCLE_GUARD_TOKEN:-$(/usr/bin/uuidgen)}"
+HEED_GUARD_ATTEMPTED=1
 /usr/bin/python3 "$HEED_GUARD_SCRIPT" acquire --expected-root "$HEED_GUARD_ROOT" --base-url "$HEED_GUARD_URL" \
     || fail 'Heed is recording, saving or transcribing. Wait until it finishes, then run the installer again.'
 HEED_GUARD_HELD=1
