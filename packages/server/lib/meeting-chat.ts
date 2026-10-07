@@ -13,21 +13,31 @@ const revisionOf = (session: Session) => sourceRevision(session);
 const validId = (id: string) => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(id);
 
 /** Split oversized source text too; no paragraph can silently exhaust the context. */
-export function transcriptEvidence(session: Session): TranscriptEvidence[] {
+export function* iterateTranscriptEvidence(session: Session): IterableIterator<TranscriptEvidence> {
  const revision = revisionOf(session);
- const sources = session.segments?.length
-  ? session.segments.map((segment, index) => ({ text: segment.text, speaker: segment.speaker, segmentIndex: index, paragraphIndex: null, start: Number.isFinite(segment.start) && segment.start >= 0 ? segment.start : null, end: Number.isFinite(segment.end) && segment.end >= segment.start ? segment.end : null }))
-  : session.transcript.split(/\n\s*\n/).map((text, index) => ({ text, speaker: "", segmentIndex: null, paragraphIndex: index, start: null, end: null }));
- return sources.flatMap((source, index) => {
-  const references: TranscriptEvidence[] = [];
+ function* sources() {
+  if (session.segments?.length) {
+   for (const [index, segment] of session.segments.entries()) yield { text: segment.text, speaker: segment.speaker, segmentIndex: index, paragraphIndex: null, start: Number.isFinite(segment.start) && segment.start >= 0 ? segment.start : null, end: Number.isFinite(segment.end) && segment.end >= segment.start ? segment.end : null };
+  } else {
+   const delimiters = /\n\s*\n/g; let offset = 0, index = 0, match: RegExpExecArray | null;
+   while ((match = delimiters.exec(session.transcript))) {
+    yield { text: session.transcript.slice(offset, match.index), speaker: "", segmentIndex: null, paragraphIndex: index++, start: null, end: null };
+    offset = match.index + match[0].length;
+   }
+   yield { text: session.transcript.slice(offset), speaker: "", segmentIndex: null, paragraphIndex: index, start: null, end: null };
+  }
+ }
+ let index = 0;
+ for (const source of sources()) {
   for (let offset = 0; offset < source.text.length; offset += 1200) {
    const quote = source.text.slice(offset, offset + 1200);
    if (!quote.trim()) continue;
-   references.push({ id: `${session.id}:${revision}:${index}:${offset}`, sessionId: session.id, sourceRevision: revision, segmentIndex: source.segmentIndex, paragraphIndex: source.paragraphIndex, speaker: source.speaker, quote, start: source.start, end: source.end });
+   yield { id: `${session.id}:${revision}:${index}:${offset}`, sessionId: session.id, sourceRevision: revision, segmentIndex: source.segmentIndex, paragraphIndex: source.paragraphIndex, speaker: source.speaker, quote, start: source.start, end: source.end };
   }
-  return references;
- });
+  index++;
+ }
 }
+export function transcriptEvidence(session: Session): TranscriptEvidence[] { return [...iterateTranscriptEvidence(session)]; }
 
 export interface ChatGenerationRequest {
  model: string; question: string; history: Array<{ question: string; answer?: ChatAnswer }>;
