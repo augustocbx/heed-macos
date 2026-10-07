@@ -5,6 +5,7 @@ import type { Session, Segment } from "@heed/shared";
 import type { CaptureMode, FinalCapture, RecordingSnapshot } from "../../shared/types/recording-coordinator";
 import { atomicWriteJson } from "./atomic-json";
 import { applySpeakerNames, reconcileSpeakerNames } from "../../shared/lib/speaker-names";
+import { sanitizeTranscriptionDiagnostics } from "./final-recording";
 
 export interface RecordingAdapter {
   start(mode: CaptureMode, meetingId: string, attachPath: (path: string) => void): Promise<{ path: string; liveModel?: string }>;
@@ -150,15 +151,18 @@ export class RecordingCoordinator {
     if(!result || !["en","pt"].includes(result.language) || !result.model || !Array.isArray(result.turns)
       || !Number.isFinite(result.duration) || result.duration<0 || result.path!==this.value.path)throw new Error("Final transcription did not return an authoritative recording result");
     const names=reconcileSpeakerNames(this.value.segments,result.turns,this.value.speakerNames);
-    this.change({state:"finalizing",finalCapture:structuredClone({...result,liveModel:result.liveModel || this.value.liveModel}),speakerNames:names,seconds:result.duration});
+    const {transcriptionDiagnostics:rawDiagnostics,...capture}=result;
+    const transcriptionDiagnostics=sanitizeTranscriptionDiagnostics(rawDiagnostics);
+    this.change({state:"finalizing",finalCapture:structuredClone({...capture,liveModel:result.liveModel || this.value.liveModel,...(transcriptionDiagnostics ? {transcriptionDiagnostics} : {})}),speakerNames:names,seconds:result.duration});
   }
   private saveFinal():RecordingSnapshot {
     const result=this.value.finalCapture!;
     const fields=applySpeakerNames(result.turns,[...new Set(result.turns.map(s=>s.speaker))],result.embeddings || {},this.value.speakerNames);
     const transcript=fields.segments.map(s=>s.text).join("\n");const words=transcript.split(/\s+/).filter(Boolean);
+    const transcriptionDiagnostics=sanitizeTranscriptionDiagnostics(result.transcriptionDiagnostics);
     const session=this.options.adapter.save({id:this.value.meetingId!,title:words.length ? words.slice(0,8).join(" ")+(words.length>8?"...":"") : "Recording without detected speech",
       createdAt:new Date(this.value.startedAt || this.now()).toISOString(),duration:result.duration,language:result.language,transcriptionModel:result.model,liveModel:result.liveModel,
-      transcript,...fields,transcriptFinalized:true,files:{wav:result.path,srt:"",txt:""},aiNotes:"",summary:"",tags:[],pinned:false});
+      transcript,...fields,transcriptFinalized:true,...(transcriptionDiagnostics ? {transcriptionDiagnostics} : {}),files:{wav:result.path,srt:"",txt:""},aiNotes:"",summary:"",tags:[],pinned:false});
     if(!session?.id || !session.transcriptFinalized)throw new Error("Final recording persistence did not confirm a saved meeting");
     this.change({state:"completed",session,segments:session.segments,seconds:result.duration,error:null});return this.snapshot();
   }

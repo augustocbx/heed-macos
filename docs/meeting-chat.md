@@ -17,3 +17,9 @@ Recording and final transcription take priority. Starting those operations cance
 Synthetic server, real isolated HTTP, and interface tests cover durable history, repeated requests, cancel/retry/clear, restart, source edits/deletion, persistence failure, local-only and compatible-model guards, hostile origins, invalid citations, long-transcript end evidence, partial coverage, polling races and four-locale interface copy. HTTP tests use a separate `HEED_APP_DIR` and fake loopback Ollama; they never capture audio or use personal meetings.
 
 Citation validation guarantees that a reference resolves to supplied source evidence. It does not prove semantic entailment of arbitrary model-generated prose. Check the quoted transcript before relying on a decision or deadline. Real-model relevance, bilingual semantic quality, M1/M4 resource behavior and physical audio playback require acceptance on both specified Macs. Native compile/self-tests with a macOS 14 deployment target do not validate every supported OS release.
+
+## Local AI queue
+
+Accepted questions for saved final transcripts take the next available local AI slot ahead of newly starting automatic notes or task suggestions. Already-running generation may finish; pending chat does not interrupt it. Meeting chat is checked before label-scoped chat when both are waiting. Recording and final transcription retain priority and their existing cancellation/retry behavior.
+
+Waiting status identifies recording, transcription, notes generation, task suggestions, another chat answer, or a queued request. This status reflects current resource ownership and does not change the saved source or conversation revision. A finalized transcript does not need to be retranscribed merely because chat is queued.

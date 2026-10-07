@@ -1,3 +1,4 @@
+import type { AiWaitingReason } from "@heed/shared";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -6,6 +7,7 @@ import type { AutomaticNotesSettings, NotesJob } from "../../shared/types/notes"
 import type { Template } from "../../shared/types/template";
 import type { SessionTags } from "./session-tags";
 import { atomicWriteJson } from "./atomic-json";
+import { sanitizeTranscriptionDiagnostics } from "./final-recording";
 
 export interface NotesGenerationInput {
  session: Session;
@@ -20,6 +22,7 @@ export interface AutomaticNotesOptions {
  loadTemplate: (id: string) => Template | undefined;
  generate: (input: NotesGenerationInput) => Promise<string>;
  isBusy: () => boolean;
+ waitingReason?: () => AiWaitingReason;
  now?: () => Date;
 }
 export interface GuardedSessionPatch extends SessionPatch {
@@ -48,7 +51,7 @@ export class AutomaticNotesService {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/.test(id)) throw new Error("Invalid session id");
   return join(this.sessionsDir, `${id}.json`);
  }
- private save(session: Session): Session { session.updatedAt = this.timestamp(); if (this.options.sessionStore) return this.options.sessionStore.save(session); atomicWriteJson(this.path(session.id), session); return session; }
+ private save(session: Session): Session { for(const job of Object.values(session.notesJobs || {}))delete job.waitingReason; session.updatedAt = this.timestamp(); if (this.options.sessionStore) return this.options.sessionStore.save(session); atomicWriteJson(this.path(session.id), session); return session; }
  get(id: string): Session | null {
   this.path(id);
   if (this.options.sessionStore) { const session = this.options.sessionStore.read(id); return session ? this.normalize(session) : null; }
@@ -61,6 +64,10 @@ export class AutomaticNotesService {
   // Normalize legacy records for guarded editing without enqueueing or writing them on read.
   session.transcriptRevision ||= sourceRevision(session);
   if (session.aiNotes?.trim() && !session.notesMetadata) session.notesMetadata = { origin: "manual", sourceRevision: session.transcriptRevision, stale: false };
+  for(const job of Object.values(session.notesJobs || {})) {
+   if (["queued", "waiting"].includes(job.status) && this.options.getSettings().enabled) job.waitingReason = this.options.waitingReason?.();
+   else delete job.waitingReason;
+  }
   return session;
  }
  list(): Session[] {
@@ -75,7 +82,9 @@ export class AutomaticNotesService {
   if (input.files?.wav) { const existingRecording = this.list().find(session => session.files?.wav === input.files!.wav); if (existingRecording) return existingRecording; }
   const id = input.id || (input.files?.wav ? `recording-${notesHash(input.files.wav).slice(0, 32)}` : `session-${randomUUID()}`);
   const existing = this.get(id); if (existing) return existing;
+  const transcriptionDiagnostics=sanitizeTranscriptionDiagnostics(input.transcriptionDiagnostics);
   const session: Session = { id, title: input.title || "Untitled meeting", createdAt: input.createdAt || this.timestamp(), duration: input.duration || 0, language: input.language || "en", transcript: input.transcript || "", speakers: input.speakers || [], segments: input.segments || [], aiNotes: input.aiNotes || "", summary: input.summary || "", tags: input.tags || [], pinned: !!input.pinned, files: input.files, embeddings: input.embeddings, transcriptionModel: input.transcriptionModel, liveModel: input.liveModel, transcriptFinalized: input.transcriptFinalized === true };
+  if(transcriptionDiagnostics) session.transcriptionDiagnostics=transcriptionDiagnostics;
   session.transcriptRevision = sourceRevision(session);
   if (session.aiNotes) session.notesMetadata = { origin: "manual", stale: false, sourceRevision: session.transcriptRevision };
   if (session.transcriptFinalized && this.options.getSettings().enabled) this.enqueue(session);
@@ -89,6 +98,9 @@ export class AutomaticNotesService {
   if (patch.expectedNotes !== undefined && patch.expectedNotes !== existing.aiNotes) throw new Error("Notes changed; reload before saving notes");
   const { id: _id, createdAt: _created, transcriptRevision: _revision, notesJobs: _jobs, notesMetadata: _metadata, expectedTranscriptRevision: _expectedRevision, expectedNotes: _expectedNotes, ...mutable } = patch as GuardedSessionPatch & { id?: string; createdAt?: string };
   const session = { ...existing, ...mutable };
+  const transcriptionDiagnostics=sanitizeTranscriptionDiagnostics(session.transcriptionDiagnostics);
+  if(transcriptionDiagnostics) session.transcriptionDiagnostics=transcriptionDiagnostics;
+  else delete session.transcriptionDiagnostics;
   session.transcriptRevision = sourceRevision(session);
   const revised = session.transcriptRevision !== existing.transcriptRevision;
   const manual = Object.hasOwn(mutable, "aiNotes");

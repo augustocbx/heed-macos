@@ -1,3 +1,5 @@
+import type { AiWaitingReason } from "./chat";
+
 export type NotesLanguagePolicy = "meeting" | "en" | "pt" | "fr" | "de";
 
 export interface AutomaticNotesSettings {
@@ -22,6 +24,7 @@ export interface NotesJob {
  attempts: number;
  generatedCharacters: number;
  reason?: string;
+ waitingReason?: AiWaitingReason;
  retryable: boolean;
  updatedAt: string;
  expectedNotesHash: string;

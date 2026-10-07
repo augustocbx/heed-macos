@@ -2,13 +2,14 @@ import { useState } from 'react';
 import type { Session, NotesJob } from '@heed/shared';
 import { automaticNotesApi } from '@/api/automaticNotes';
 import { useSessionsStore } from '@/stores/sessions';
+import { aiWaitingMessage } from '@/lib/ai-waiting';
 import { useLocale } from '@/lib/i18n';
 import styles from './AutomaticNotes.module.css';
 const labels = {
  queued: 'Automatic notes queued', waiting: 'Automatic notes waiting', running: 'Generating automatic notes', completed: 'Automatic notes ready', failed: 'Automatic notes failed', cancelled: 'Automatic notes cancelled', superseded: 'Automatic notes superseded',
 };
 const reasons: Record<string, string> = {
- 'resources-busy': 'Waiting for recording or transcription to finish.',
+ 'resources-busy': 'Waiting for recording, transcription or local AI resources.',
  disabled: 'Automatic notes are disabled.',
  'ollama-unavailable': 'Local notes model unavailable. Start Ollama and retry.',
  'local-only': 'Choose a local notes model. Cloud models are not supported.',
@@ -43,11 +44,13 @@ export function NotesJobStatus({ session, compact = false }: { session: Session;
   } catch { setError(true); }
   finally { setBusy(false); }
  };
+ const waiting = job && ['queued', 'waiting'].includes(job.status);
+ const reason = waiting && job.waitingReason ? aiWaitingMessage(job.waitingReason) : job?.reason ? reasons[job.reason] || 'Automatic notes need attention.' : waiting ? aiWaitingMessage() : undefined;
  const source = metadata?.sourceRevision || job?.sourceRevision;
  const provenance = metadata?.origin === 'automatic' ? metadata : job;
  return <div className={compact ? styles.compact : styles.status}>
   {job && <div role="status">{tr(labels[job.status])}{job.status === 'running' && !compact && <span> · {tr('{count} characters generated', { count: job.generatedCharacters })}</span>}</div>}
-  {job?.reason && <p>{tr(reasons[job.reason] || 'Automatic notes need attention.')}</p>}
+  {reason && <p>{tr(reason)}</p>}
   {stale && <p>{tr('Notes are stale: the transcript or speakers changed.')}</p>}
   {!compact && <>
 

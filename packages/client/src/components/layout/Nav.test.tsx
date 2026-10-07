@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelsResponse, SetupCheckResult } from "@heed/shared";
 import { healthApi } from "@/api/health";
 import { modelsApi } from "@/api/models";
@@ -33,6 +33,8 @@ const setup: SetupCheckResult = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	vi.stubEnv("VITE_HEED_VERSION", "0.8.2");
+	vi.stubEnv("DEV", false);
 	useLocaleStore.getState().sync("en");
 	useUIStore.setState({ currentPage: "record" });
 	useModelsStore.setState({ data: null, pickerOpen: false, error: null, loading: false });
@@ -48,7 +50,37 @@ beforeEach(() => {
 	vi.mocked(desktopApi.float).mockResolvedValue({ ok: true });
 });
 
+afterEach(() => vi.unstubAllEnvs());
+
 describe("header navigation", () => {
+	it("keeps the build version visible across pages even when services are offline", async () => {
+		vi.mocked(healthApi.check).mockRejectedValue(new Error("Offline"));
+		await act(async () => { render(<Nav />); });
+		const header = screen.getByRole("banner");
+		expect(within(header).getByRole("note", { name: "Installed version: 0.8.2" })).toHaveTextContent("v0.8.2");
+		const user = userEvent.setup();
+		await user.click(screen.getByRole("button", { name: "Settings" }));
+		expect(within(header).getByText("v0.8.2")).toBeVisible();
+		expect(screen.queryByRole("dialog")).toBeNull();
+	});
+
+	it.each([
+		["en", "Development build"], ["pt-BR", "Versão de desenvolvimento"],
+		["fr", "Version de développement"], ["de", "Entwicklungsversion"],
+	] as const)("identifies development builds in %s", async (locale, label) => {
+		vi.stubEnv("DEV", true);
+		useLocaleStore.getState().sync(locale);
+		await act(async () => { render(<Nav />); });
+		expect(within(screen.getByRole("banner")).getByText(`v0.8.2 · ${label}`)).toBeVisible();
+		expect(within(screen.getByRole("banner")).getByRole("note")).toHaveAccessibleName(expect.stringContaining(label));
+	});
+
+	it.each([undefined, "", "latest"])("does not invent a version when build metadata is %s", async (version) => {
+		vi.stubEnv("VITE_HEED_VERSION", version);
+		await act(async () => { render(<Nav />); });
+		expect(within(screen.getByRole("banner")).getByText("Version unavailable")).toBeVisible();
+	});
+
 	it.each([
 		["en", ["Record", "Meetings", "Tasks", "Meeting chat", "Settings"]],
 		["pt-BR", ["Gravar", "Reuniões", "Tarefas", "Conversa sobre a reunião", "Configurações"]],

@@ -1,3 +1,4 @@
+import type { AiWaitingReason } from "@heed/shared";
 import {randomUUID} from 'node:crypto';
 import {existsSync,lstatSync,mkdirSync,readdirSync,readFileSync} from 'node:fs';
 import {join} from 'node:path';
@@ -14,7 +15,7 @@ export function normalizeChatScope(value:unknown):LibraryChatScope {
  return {mode:scope.mode,labels,match:scope.mode==='all'?'any':scope.match};
 }
 const scopeId=(scope:LibraryChatScope)=>notesHash(JSON.stringify(scope));
-interface Options {directory:string;listSessions:()=>Session[];isBusy:()=>boolean;generate:ChatGenerator;write?:typeof atomicWriteJson;}
+interface Options {directory:string;listSessions:()=>Session[];isBusy:()=>boolean;waitingReason?:()=>AiWaitingReason;generate:ChatGenerator;write?:typeof atomicWriteJson;}
 
 /** Selection filtering precedes evidence extraction, history selection and generation. */
 export class LibraryChatService {
@@ -40,7 +41,7 @@ export class LibraryChatService {
   if(!thread||thread.id!==id||scopeId(normalizeChatScope(thread.scope))!==id||typeof thread.revision!=='string'||!Array.isArray(thread.turns)||thread.turns.some(turn=>!turn.snapshot||turn.sourceRevision!==turn.snapshot.key||!Array.isArray(turn.snapshot.sources)))throw new ChatError('invalid-chat-file',500);
   return thread;
  }
- private save(thread:LibraryChatThread){thread.revision=randomUUID();(this.options.write||atomicWriteJson)(this.path(thread.id),thread);return thread;}
+ private save(thread:LibraryChatThread){for(const turn of thread.turns)delete turn.waitingReason;thread.revision=randomUUID();(this.options.write||atomicWriteJson)(this.path(thread.id),thread);return thread;}
  get(value:LibraryChatScope):LibraryChatContext{
   const preview=this.preview(value);const thread=this.read(scopeId(preview.snapshot.scope),preview.snapshot.scope);let changed=false;
   for(const turn of thread.turns){
@@ -48,9 +49,10 @@ export class LibraryChatService {
    if((turn.status==='waiting'||turn.status==='running')&&turn.snapshot.key!==preview.snapshot.key){turn.status='failed';turn.reason='scope-changed';changed=true;if(this.active?.id===thread.id&&this.active.turnId===turn.id)this.active.controller.abort();}
   }
   if(changed)this.save(thread);
-  return {preview,thread:{...thread,turns:thread.turns.map(turn=>({...turn,stale:turn.snapshot.key!==preview.snapshot.key}))}};
+  return {preview,thread:{...thread,turns:thread.turns.map(turn=>({...turn,stale:turn.snapshot.key!==preview.snapshot.key,waitingReason:turn.status==='waiting'?this.options.waitingReason?.():undefined}))}};
  }
  get busy(){return !!this.active;}
+ get pending():boolean{return readdirSync(this.options.directory).filter(file=>file.endsWith('.json')).some(file=>this.read(file.slice(0,-5)).turns.some(turn=>turn.status==='waiting'));}
  command(value:LibraryChatScope,command:ChatCommand):LibraryChatThread{
   const {preview,thread}=this.get(value);if(!command||typeof command!=='object')throw new ChatError('invalid-command');
   if(command.action==='clear'){

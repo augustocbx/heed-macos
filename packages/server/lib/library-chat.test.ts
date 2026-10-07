@@ -81,3 +81,12 @@ test('recording preemption cancels the scoped worker before releasing its busy s
 test('restart makes waiting scoped requests retryable without silently resuming them',async()=>{
  const f=fixture();const scope=labels('Entrevistas');f.hold();send(f,scope);const restarted=new LibraryChatService(f.options);const interrupted=restarted.get(scope).thread.turns[0];expect(interrupted).toMatchObject({status:'failed',reason:'interrupted'});f.release();restarted.command(scope,{action:'retry',turnId:interrupted.id});for(let i=0;i<100&&restarted.get(scope).thread.turns[0].status!=='completed';i++)await Bun.sleep(2);expect(restarted.get(scope).thread.turns[0].status).toBe('completed');
 });
+
+test('waiting scope status changes without rewriting history and stale scope releases its queue',()=>{
+ const f=fixture();f.hold();send(f,labels('Entrevistas'));
+ let blocker:'tasks'|'recording'='tasks';Object.assign(f.options,{waitingReason:()=>blocker});
+ const file=join(f.directory,`${f.service.get(labels('Entrevistas')).thread.id}.json`),bytes=readFileSync(file,'utf8');
+ const first=f.service.get(labels('Entrevistas'));expect(first.thread.turns[0]).toMatchObject({waitingReason:'tasks'});blocker='recording';
+ const next=f.service.get(labels('Entrevistas'));expect(next.thread.turns[0]).toMatchObject({waitingReason:'recording'});expect(next.thread.revision).toBe(first.thread.revision);expect(readFileSync(file,'utf8')).toBe(bytes);
+ expect(f.service.pending).toBe(true);f.meetings[0]!.transcript='Changed';expect(f.service.get(labels('Entrevistas')).thread.turns[0]).toMatchObject({status:'failed',reason:'scope-changed'});expect(f.service.pending).toBe(false);
+});

@@ -56,7 +56,7 @@ export function RecoveryBanner() {
     ...(rec.recoveryMeetingId ? {id:rec.recoveryMeetingId} : {}),
     title: `Recovered ${fmtDate(rec.created)}`, createdAt: rec.created,
     duration: result.duration ?? rec.duration_estimate_s, language: result.metadata.language,
-    transcriptionModel: result.metadata.model, transcriptFinalized: true,
+    transcriptionModel: result.metadata.model, transcriptFinalized: true, transcriptionDiagnostics: result.transcriptionDiagnostics,
     transcript: result.text,...restored,
     files: { wav: rec.path, srt: result.files?.srt || "", txt: result.files?.txt || "" },
     aiNotes: "", summary: "", tags: [], pinned: false,
