@@ -309,6 +309,18 @@ async function start() {
     return true;
   }, "Owned API readiness timeout");
 }
+async function assertNativeSeek(citation) {
+  const event = await wait(async () => {
+    const latest = await page.evaluate(() => window.__heedQaSeeks.at(-1));
+    return latest?.source.endsWith(`/api/sessions/${citation.sessionId}/audio`) && latest;
+  }, 'Native audio seeking event was not observed');
+  assert.ok(Math.abs(event.seconds - citation.start) < 0.3,
+    `Wrong native seek target: ${JSON.stringify({event, expected: citation.start})}`);
+  const laterClock = await page.locator('audio').evaluate(node => node.currentTime);
+  manifest.audioSeekChecks ??= [];
+  manifest.audioSeekChecks.push({sessionId: citation.sessionId, expected: citation.start,
+    nativeSeekingSeconds: event.seconds, laterPlaybackSeconds: laterClock});
+}
 async function shot(name) {
   const filename = name + ".png";
   await page.screenshot({ path: join(output, filename), fullPage: false });
@@ -493,6 +505,12 @@ try {
     viewport: { width: 1100, height: 850 },
   });
   await context.addInitScript((selection) => {
+    window.__heedQaSeeks = [];
+    document.addEventListener('seeking', (event) => {
+      if (event.target instanceof HTMLAudioElement) window.__heedQaSeeks.push({
+        source: event.target.currentSrc, seconds: event.target.currentTime,
+      });
+    }, true);
     localStorage.setItem("heed-setup-skipped", "1");
     localStorage.setItem("heed-tour-done", "1");
     if (!localStorage.getItem("heed-locale"))
@@ -551,6 +569,7 @@ try {
     .locator("article")
     .filter({ has: page.getByText("Delivery rollout?", { exact: true }) });
   await article.locator("summary").first().click();
+  await page.evaluate(() => { window.__heedQaSeeks = []; });
   await article
     .getByRole("button", {
       name: `${cite.speaker} · ${cite.start}s`,
@@ -561,12 +580,7 @@ try {
   await wait(() =>
     page.locator("audio").evaluate((node) => Number.isFinite(node.duration)),
   );
-  assert.ok(
-    Math.abs(
-      (await page.locator("audio").evaluate((node) => node.currentTime)) -
-        cite.start,
-    ) < 0.3,
-  );
+  await assertNativeSeek(cite);
   assert.ok(
     (await page.locator('[aria-current="true"]').allTextContents())
       .join(" ")
@@ -612,6 +626,7 @@ try {
     .filter({ hasText: `QA Português ação · ${pcite.speaker}` })
     .click();
   assert.equal(pcite.sessionId, "qa-pt");
+  await page.evaluate(() => { window.__heedQaSeeks = []; });
   await libraryArticle
     .getByRole("button", {
       name: `QA Português ação · ${pcite.start}s`,
@@ -622,12 +637,7 @@ try {
   await wait(() =>
     page.locator("audio").evaluate((node) => Number.isFinite(node.duration)),
   );
-  assert.ok(
-    Math.abs(
-      (await page.locator("audio").evaluate((node) => node.currentTime)) -
-        pcite.start,
-    ) < 0.3,
-  );
+  await assertNativeSeek(pcite);
   assert.ok(
     (await page.locator('[aria-current="true"]').allTextContents())
       .join(" ")
@@ -703,6 +713,7 @@ try {
     .filter({ has: page.getByText("João corrigido?", { exact: true }) });
   await currentArticle.locator("summary").first().click();
   const currentCitation = corrected.answer.claims[0].citations[0];
+  await page.evaluate(() => { window.__heedQaSeeks = []; });
   await currentArticle
     .getByRole("button", {
       name: `${currentCitation.speaker} · ${currentCitation.start}s`,
@@ -712,12 +723,7 @@ try {
   await wait(() =>
     page.locator("audio").evaluate((node) => Number.isFinite(node.duration)),
   );
-  assert.ok(
-    Math.abs(
-      (await page.locator("audio").evaluate((node) => node.currentTime)) -
-        currentCitation.start,
-    ) < 0.3,
-  );
+  await assertNativeSeek(currentCitation);
   assert.ok(
     (await page.locator('[aria-current="true"]').allTextContents())
       .join(" ")
