@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 import transcription_server as server
+from live_language import path_capability
+READY = json.dumps({"ready":True,"capability":path_capability("mlx","base","chunk",True)})
 
 
 class PreviewPreferenceTests(unittest.TestCase):
@@ -57,15 +59,17 @@ class PreviewPreferenceTests(unittest.TestCase):
         try:
             for active,saved in [(False,True),(True,False)]:
                 with self.subTest(active=active,saved=saved),tempfile.TemporaryDirectory() as directory:
-                    Path(directory,'config.json').write_text(json.dumps({'real_time_transcription':saved}))
+                    Path(directory,'config.json').write_text(json.dumps({'real_time_transcription':saved,'live_speech_language':'en'}))
                     snapshot={'state':'recording','meetingId':'active-fixture','revision':5,'startedAt':100,
                               'path':str(Path(directory,'capture.wav')),'seconds':1,'mode':'both','segments':[],
                               'speakerNames':{},'session':None,'error':None,'maintenance':False,'realTimeTranscription':active}
+                    options={'realTimeTranscription':active,'requestedLanguage':'pt','effectiveLanguage':'pt' if active else None,'engine':'mlx' if active else None,'mode':'chunk' if active else None,'initialModel':'base' if active else None,'initialModelIdentity':'mlx:mlx-community/whisper-base-mlx' if active else None,'capabilityKey':'a'*64 if active else None,'compatibleModels':['mlx:mlx-community/whisper-base-mlx'] if active else []}
+                    snapshot['liveOptions']=options
                     owner_snapshot.update(snapshot)
                     Path(directory,'recording-manifest.json').write_text(json.dumps({'version':1,'snapshot':snapshot,'receipts':{}}))
-                    result=subprocess.run([sys.executable,'-c','import transcription_server as s;print(s.preview_enabled)'],
+                    result=subprocess.run([sys.executable,'-c','import transcription_server as s;print(s.preview_enabled,(s.preview_live_options or {}).get(\"effectiveLanguage\"))'],
                         env=dict(os.environ,HEED_APP_DIR=directory,HEED_API_PORT=str(owner.server_address[1]),PYTHONPATH=str(Path(__file__).parent)),capture_output=True,text=True,check=True,timeout=5)
-                    self.assertEqual(result.stdout.strip(),str(active))
+                    self.assertEqual(result.stdout.strip(),str(active)+(' pt' if active else ' None'))
         finally:owner.shutdown();owner.server_close();thread.join(1)
 
     def test_unverified_active_manifest_cannot_warm_stale_preview_resources(self):
@@ -172,9 +176,9 @@ class PreviewHTTPTests(unittest.TestCase):
         import subprocess
         import sys
         from preview_worker import PreviewWhisper
-        script = 'import sys,json;print(json.dumps({"ready":True}),flush=True)\nfor line in sys.stdin:\n body=json.loads(line);print(json.dumps({"ok":True,"language":body["language"],"segments":[{"start":1.25,"end":2.75,"text":"Fixture words"}]}),flush=True)'
+        script = 'import sys,json;print(READY_PAYLOAD,flush=True)\nfor line in sys.stdin:\n body=json.loads(line);print(json.dumps({"ok":True,"language":body["language"],"segments":[{"start":1.25,"end":2.75,"text":"Fixture words"}]}),flush=True)'
         popen = subprocess.Popen
-        def fixture(_command, **kwargs): return popen([sys.executable, '-u', '-c', script], **kwargs)
+        def fixture(_command, **kwargs): return popen([sys.executable, '-u', '-c', script.replace('READY_PAYLOAD', repr(READY))], **kwargs)
         server.configure_preview(True)
         with patch('native_worker.subprocess.Popen', side_effect=fixture):
             model = PreviewWhisper('base', 'mlx', {})
@@ -213,9 +217,9 @@ class PreviewWorkerOwnershipTests(unittest.TestCase):
         import subprocess
         import sys
         from preview_worker import PreviewWhisper
-        script = 'import sys,time;print("{\\"ready\\":true}",flush=True);sys.stdin.readline();time.sleep(30)'
+        script = 'import sys,time;print('+repr(READY)+',flush=True);sys.stdin.readline();time.sleep(30)'
         popen = subprocess.Popen
-        with patch('native_worker.subprocess.Popen', side_effect=lambda _command,**kwargs:popen([sys.executable,'-u','-c',script],**kwargs)):
+        with patch('native_worker.subprocess.Popen', side_effect=lambda _command,**kwargs:popen([sys.executable,'-u','-c',script.replace('READY_PAYLOAD', repr(READY))],**kwargs)):
             return PreviewWhisper('base','mlx',{})
 
     def test_preview_deadline_reaps_only_its_owned_process(self):
@@ -237,11 +241,11 @@ class PreviewWorkerOwnershipTests(unittest.TestCase):
         failed=self.make_hung_preview()
         with patch('preview_worker.NATIVE_LIVE_TIMEOUT_SECONDS',.1):
             with self.assertRaises(TimeoutError):failed.transcribe('fixture.wav',language='en')
-        script='import sys,json;print(json.dumps({"ready":True}),flush=True)\nfor line in sys.stdin:\n print(json.dumps({"ok":True,"language":"en","segments":[{"start":0,"end":1,"text":"Recovered preview"}]}),flush=True)'
+        script='import sys,json;print(READY_PAYLOAD,flush=True)\nfor line in sys.stdin:\n print(json.dumps({"ok":True,"language":"en","segments":[{"start":0,"end":1,"text":"Recovered preview"}]}),flush=True)'
         popen=subprocess.Popen
         server.configure_preview(True)
         with patch.object(server,'whisper_model_live',failed),patch.object(server,'active_engine','parakeet'), \
-             patch('native_worker.subprocess.Popen',side_effect=lambda _command,**kwargs:popen([sys.executable,'-u','-c',script],**kwargs)):
+             patch('native_worker.subprocess.Popen',side_effect=lambda _command,**kwargs:popen([sys.executable,'-u','-c',script.replace('READY_PAYLOAD', repr(READY))],**kwargs)):
             replacement=None
             try:
                 with server.preview_lease():

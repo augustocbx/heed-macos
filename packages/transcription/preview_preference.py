@@ -43,27 +43,45 @@ def _active_owner_snapshot(root):
     except (OSError,ValueError,AttributeError,TypeError,KeyError):return None
 
 
-def startup_preview_policy():
+def startup_preview_snapshot():
     """An active checkpoint needs a verified owner; stale/unavailable ownership stays lazy."""
     saved = saved_preview_preference()
     try:
         root = os.environ.get('HEED_APP_DIR', os.path.expanduser('~/.heed-app'))
         with open(os.path.join(root, 'recording-manifest.json')) as source:manifest=json.load(source)
         snapshot = manifest.get('snapshot')
-        if type(manifest.get('version')) is not int or manifest['version'] != 1 or not isinstance(snapshot, dict):return saved,False
-        if snapshot.get('state') not in ('starting','recording','stopping'):return saved,False
+        if type(manifest.get('version')) is not int or manifest['version'] != 1 or not isinstance(snapshot, dict):return saved,False,None
+        if snapshot.get('state') not in ('starting','recording','stopping'):return saved,False,None
         if (not isinstance(snapshot.get('meetingId'), str) or not snapshot['meetingId']
                 or type(snapshot.get('revision')) is not int or snapshot['revision'] < 0
                 or not isinstance(snapshot.get('segments'), list)
-                or snapshot.get('mode') not in ('both','mic','system')):return saved,False
+                or snapshot.get('mode') not in ('both','mic','system')):return saved,False,None
         owner=_active_owner_snapshot(root)
-        if not isinstance(owner,dict):return False,True
-        if owner.get('state') in ('idle','failed','completed','finalizing'):return saved,False
+        if not isinstance(owner,dict):return False,True,None
+        if owner.get('state') in ('idle','failed','completed','finalizing'):return saved,False,None
         if (owner.get('meetingId')!=snapshot['meetingId'] or type(owner.get('revision')) is not int
                 or owner['revision']<snapshot['revision'] or owner.get('state') not in ('starting','recording','stopping')
-                or not isinstance(owner.get('realTimeTranscription'),bool)):return False,True
-        return owner['realTimeTranscription'],False
-    except (OSError,ValueError,AttributeError,TypeError):return saved,False
+                or not isinstance(owner.get('realTimeTranscription'),bool)):return False,True,None
+        options=owner.get('liveOptions')
+        if options is not None:
+            from live_language import validate_live_options
+            try:options=validate_live_options(options,owner['realTimeTranscription'])
+            except ValueError:return False,True,None
+        return owner['realTimeTranscription'],False,options
+    except (OSError,ValueError,AttributeError,TypeError):return saved,False,None
+
+
+def startup_preview_policy():
+    return startup_preview_snapshot()[:2]
+
+
+def saved_live_language():
+    try:
+        root = os.environ.get('HEED_APP_DIR', os.path.expanduser('~/.heed-app'))
+        with open(os.path.join(root, 'config.json')) as source:
+            return 'pt' if json.load(source).get('live_speech_language') == 'pt' else 'en'
+    except (OSError, ValueError, AttributeError):
+        return 'en'
 
 
 def startup_preview_preference():

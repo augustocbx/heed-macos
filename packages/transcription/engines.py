@@ -73,15 +73,7 @@ def mlx_available():
 
 
 # Logical model name -> mlx-community HF repo (public, no token).
-_MLX_REPOS = {
-    "tiny": "mlx-community/whisper-tiny-mlx",
-    "base": "mlx-community/whisper-base-mlx",
-    "small": "mlx-community/whisper-small-mlx",
-    "medium": "mlx-community/whisper-medium-mlx",
-    # 4-bit large-v3: measured same accuracy as fp16 but ~1.5x faster and ~1/3 the memory
-    # on Apple Silicon — lets more machines afford the most accurate tier.
-    "large-v3": "mlx-community/whisper-large-v3-mlx-4bit",
-}
+from live_language import MLX_REPOS as _MLX_REPOS
 
 # faster-whisper-specific kwargs that mlx_whisper.transcribe does not accept.
 _MLX_DROP = {"vad_filter", "vad_parameters", "beam_size", "best_of", "compute_type", "device"}
@@ -110,10 +102,12 @@ class MLXEngine:
     kind = "mlx"
 
     def __init__(self, model_name):
+        if model_name not in _MLX_REPOS:
+            raise ValueError("Unknown MLX model")
         import mlx_whisper
         self._mlx = mlx_whisper
         self.model_name = model_name
-        self.repo = _MLX_REPOS.get(model_name, _MLX_REPOS["small"])
+        self.repo = _MLX_REPOS[model_name]
 
     def transcribe(self, wav_path, language=None, **opts):
         kwargs = {k: v for k, v in opts.items() if k not in _MLX_DROP}

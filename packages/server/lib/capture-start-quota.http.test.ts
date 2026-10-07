@@ -28,7 +28,8 @@ writeFileSync(snapshot.path,Buffer.from(${JSON.stringify(retainedAudio.toString(
 writeFileSync(join(process.env.HEED_APP_DIR,'library/staging','capture-'+snapshot.meetingId,'checkpoint.txt'),'Retained synthetic capture checkpoint');
 console.error(JSON.stringify({error:'Synthetic startup failure after retained audio'}));\n`,{mode:0o700});
  }
- const sidecar=Bun.serve({hostname:'127.0.0.1',port:0,fetch:()=>Response.json({service:'heed-transcription',whisper:true,warm:true,models:[]})});
+ const speech={engine:'mlx',model:'base',modelIdentity:'mlx:mlx-community/whisper-base-mlx',modelRevision:null,state:'loaded',supportedLanguages:['en','pt'],automatic:{modelSupported:true,pipelineAvailable:true,offered:false},mixedLanguage:'unverified',mode:'chunk',adaptiveModels:[]};
+ const sidecar=Bun.serve({hostname:'127.0.0.1',port:0,fetch:()=>Response.json({service:'heed-transcription',protocolVersion:1,pid:process.pid,checkoutRoot:source,ready:true,pyannote:true,whisper:true,warm:true,models:[],languageCapabilities:{schemaVersion:1,capabilityKey:'a'.repeat(64),live:speech,final:{...speech,mode:'full'}}})});
  let app:Bun.Subprocess|undefined,base='',diagnostics:Promise<string>|undefined;
  const stop=async()=>{if(app){app.kill();await app.exited;app=undefined;await diagnostics;}};
  const start=async()=>{

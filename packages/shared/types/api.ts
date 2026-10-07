@@ -8,6 +8,7 @@ export interface ServiceDiagnostic {
 }
 
 export interface HealthResponse {
+ languageCapabilities?: import("./live-language").LanguageCapabilities | null;
  services?: ServiceDiagnostic[];
 	ollama: boolean;
 	whisper: boolean;

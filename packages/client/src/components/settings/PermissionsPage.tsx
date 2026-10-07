@@ -6,6 +6,7 @@ import { permissionsApi, type PermissionAction, type PermissionSnapshot } from '
 import styles from './PermissionsPage.module.css';
 import {StorageLibrarySettings} from "./StorageLibrarySettings";
 import { AutomaticNotesSettings } from '@/components/ai-notes/AutomaticNotesSettings';
+import {LiveSpeechLanguageSettings} from "./LiveSpeechLanguageSettings";
 import {RealTimeTranscriptionSettings} from "./RealTimeTranscriptionSettings";
 import {StorageSettings} from './StorageSettings';
 import {RemoteStorageSettings} from './RemoteStorageSettings';
@@ -96,7 +97,7 @@ export function PermissionsPage() {
    {savingLocale && <p role="status">{tr("Saving…")}</p>}
    {localeError && <p role="alert">{tr("Could not save interface language. Check that Heed is running and try again.")}</p>}
   </article>
-  <RealTimeTranscriptionSettings />
+  <RealTimeTranscriptionSettings /><LiveSpeechLanguageSettings />
   <AutomaticNotesSettings />
   <RemoteStorageSettings onProviderChanged={()=>setLibrarySelection(value=>value+1)}/>
   <MeetingDetectionSettings />

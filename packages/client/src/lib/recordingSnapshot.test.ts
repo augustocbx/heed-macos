@@ -49,3 +49,13 @@ it("restores the admitted final-only mode independently of later preferences",()
  applyRecordingSnapshot(snapshot({realTimeTranscription:false,segments:[]}));
  expect(useRecordingStore.getState().realTimeTranscription).toBe(false);
 });
+it('tracks provisional PT and runtime adaptation without changing final detected language',()=>{
+ const options={enabled:true,requestedLanguage:'pt',effectiveLanguage:'pt',engine:'mlx',mode:'chunk',initialModel:'base',initialModelIdentity:'mlx:base',capabilityKey:'a',compatibleModels:[]};
+ applyRecordingSnapshot(snapshot({liveOptions:options as never,liveSpeechLanguage:'pt',liveModel:'tiny'}));
+ expect(useRecordingStore.getState()).toMatchObject({liveSpeechLanguage:'pt',liveModel:'tiny',liveOptions:options,resultLanguage:'en'});
+ const session={id:'meeting-1',title:'Meeting',createdAt:'2026-10-06',aiNotes:'',summary:'',tags:[],pinned:false,duration:31,transcriptFinalized:true,transcript:'Final English',segments:[],speakers:[],language:'en'} as Session;
+ applyRecordingSnapshot(snapshot({revision:2,state:'completed',liveOptions:options as never,session}));
+ useRecordingStore.setState({transcript:'Corrected English'});
+ applyRecordingSnapshot(snapshot({revision:3,liveOptions:options as never}));
+ expect(useRecordingStore.getState()).toMatchObject({recording:false,transcript:'Corrected English',resultLanguage:'en',coordinatorState:'completed'});
+});

@@ -4,7 +4,7 @@ import { useHealthStore } from "@/stores/health";
 import { applyRecordingSnapshot } from "@/lib/recordingSnapshot";
 
 /** Browser clients observe capture; menu commands execute entirely in the backend. */
-export function useDesktopControl(_controls:{start:(language?:string)=>Promise<boolean>;stop:(language?:string)=>Promise<boolean>},_setLanguage:(language:string)=>void) {
+export function useDesktopControl() {
   useEffect(()=>{
     const client=crypto.randomUUID();let disposed=false;let busy=false;
     const poll=async()=>{
