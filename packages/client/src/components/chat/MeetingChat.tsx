@@ -1,3 +1,4 @@
+import { RetrievalCoverageView, retrievalEmptyMessage } from './RetrievalCoverage';
 import { aiWaitingMessage } from "@/lib/ai-waiting";
 import {chatErrorMessages} from "./chat-errors";
 import { useEffect, useRef, useState } from "react";
@@ -75,14 +76,18 @@ export function MeetingChat({session,onCitation}:Props) {
     {(turn.status==="waiting"||turn.status==="running")&&<div><p role="status">{tr(turn.status==="waiting" ? aiWaitingMessage(turn.waitingReason) : "Reviewing transcript evidence…")}</p><button onClick={()=>void mutate({action:"cancel",turnId:turn.id})} disabled={saving}>{tr("Cancel answer")}</button></div>}
     {(turn.status==="failed"||turn.status==="cancelled")&&<div><p role="status">{turn.status==="cancelled"&&!turn.reason ? tr("Answer cancelled.") : errorText(turn.reason||"interrupted")}</p><button onClick={()=>void mutate({action:"retry",turnId:turn.id,...(model ? {model} : {})})} disabled={saving}>{tr("Retry answer")}</button></div>}
     {turn.status==="completed"&&turn.answer&&<div>
-     {!turn.answer.claims.length&&<p>{tr(turn.answer.coverage.complete ? "Not found in this meeting." : "No supporting evidence found in the reviewed excerpts.")}</p>}
+     {!turn.answer.claims.length&&<p>{tr(turn.answer.coverage.retrieval?.version===1 ? retrievalEmptyMessage(turn.answer.coverage.retrieval) : turn.answer.coverage.complete ? "Not found in this meeting." : "No supporting evidence found in the reviewed excerpts.")}</p>}
      {turn.answer.claims.map((claim,index)=><div key={index} className={styles.claim}><p>{claim.text}</p><div className={styles.citations}>{claim.citations.map(citation=><details key={citation.id}>
       <summary>{tr("Transcript evidence")} · {citation.speaker||tr("Transcript")}</summary>
       <blockquote>{citation.quote}</blockquote>
       <button disabled={turn.stale||citation.sourceRevision!==session.transcriptRevision} onClick={()=>onCitation(citation)}>{citation.speaker||tr("Transcript")} · {citation.start===null ? tr("Open source text") : fmtDuration(Math.floor(citation.start))}</button>
      </details>)}</div></div>)}
+     {turn.answer.coverage.retrieval?.version === 1 ? (
+      <RetrievalCoverageView coverage={turn.answer.coverage.retrieval}/>
+     ) : <>
      <p className={styles.hint}>{tr("Reviewed {reviewed} of {total} transcript chunks.",{reviewed:turn.answer.coverage.reviewedChunks,total:turn.answer.coverage.totalChunks})}</p>
      {!turn.answer.coverage.complete&&<p className={styles.warning}>{tr("Coverage is partial. Evidence was sampled across the recording; missing topics may exist in unreviewed excerpts.")}</p>}
+     </>}
      {turn.answer.coverage.answerLimited&&<p className={styles.warning}>{tr("The displayed answer was limited to 40 supported statements. Ask a narrower question.")}</p>}
     </div>}
    </article>)}

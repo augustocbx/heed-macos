@@ -1,4 +1,9 @@
 export const chatErrorMessages:Record<string,string>={
+ 'retrieval-not-ready':'Local transcripts are still being discovered. Wait, then refresh chat.',
+ 'retrieval-capacity':'The local transcript catalog reached its capacity. Reduce the stored meeting collection and refresh chat.',
+ 'retrieval-unavailable':'Local transcript retrieval is unavailable. Refresh chat and retry.',
+ 'question-context-too-large':'This question or its required evidence exceeds the local model input budget. Ask a shorter or narrower question.',
+
  "cancelled":"Answer cancelled.",
  "context-limit":"The model context limit was reached. Ask a shorter or narrower question.",
  "source-changed":"The transcript changed. Refresh before asking or retrying.",
