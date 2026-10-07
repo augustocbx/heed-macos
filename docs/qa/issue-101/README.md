@@ -39,7 +39,18 @@ The fixture helper reads the same validated file when generating its synthetic p
 
 Capture the actual menu while it is open. On the primary display, `/usr/sbin/screencapture -x -D 1 /path/to/capture.png` records the native status menu; inspect and crop or redact other desktop content before adding an image to this directory. Record the Mac model, macOS version, physical resolution, “Looks like” scaling, locale, QA binary commit, scenario, and whether keyboard or VoiceOver interaction was actually tested. Capture both the main menu and relevant submenus, including the permission blocker beside disabled **Start recording**. Exercise keyboard navigation and VoiceOver separately; a screenshot alone does not establish either behavior.
 
-For a baseline, build the older commit in its own worktree, then pass that binary to `/usr/bin/python3 scripts/release/menu_update_qa.py prepare /path/to/older/Heed`. Launch only the resulting `Heed QA.app/Contents/MacOS/Heed --update-qa <QA folder>` with `HEED_HOME=<QA folder>/home/.heed` and `HEED_APP_DIR=<QA folder>/home/app`. The wrapper script has no older-binary option and builds the current checkout into a shared `${TMPDIR:-/tmp}/heed-menubar-build/Heed`; use separate build directories or serialize builds. Record the code commit separately: both bundles display synthetic fixture versions 0.1.0→0.1.1 regardless of their source commit. The pre-change binary does **not** read `menu-state.json`; this procedure alone cannot produce seven before-state screenshots. Capture those states under observed real conditions or from a separately documented instrumented baseline, and label any instrumentation. Never label fixture screenshots as production behavior.
+The unmodified pre-change binary does **not** read `menu-state.json`, so merely launching it cannot produce seven before-state screenshots. For a reproducible, test-only baseline, extract the exact pre-change commit and apply [the baseline instrumentation patch](baseline-instrumentation.patch). It adds only isolated scenario inputs to the old menu; it does not change its layout or readiness rules:
+
+```sh
+BASELINE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/heed-menu-baseline-XXXXXX")
+git archive a4a0e982704a43d7381a9cbdfcf7b425b811cee6 packages/desktop/macos | tar -x -C "$BASELINE_DIR"
+patch -d "$BASELINE_DIR" -p1 < docs/qa/issue-101/baseline-instrumentation.patch
+swiftc -target arm64-apple-macosx14.0 "$BASELINE_DIR"/packages/desktop/macos/*.swift -o "$BASELINE_DIR"/Heed -framework AppKit
+"$BASELINE_DIR"/Heed --self-test
+/usr/bin/python3 scripts/release/menu_update_qa.py prepare "$BASELINE_DIR"/Heed
+```
+
+Launch only the resulting `Heed QA.app/Contents/MacOS/Heed --update-qa <QA folder>` with `HEED_HOME=<QA folder>/home/.heed` and `HEED_APP_DIR=<QA folder>/home/app`, then use the same scenario file as above. Record the old commit, patch hash, binary hash, and QA bundle ID; label every baseline capture **instrumented baseline**, not production behavior. The wrapper script has no older-binary option and builds the current checkout into a shared `${TMPDIR:-/tmp}/heed-menubar-build/Heed`; use separate build directories or serialize builds. Both bundles display synthetic fixture versions 0.1.0→0.1.1 regardless of their source commit. Remove only the private baseline and QA folders after retaining the evidence. Never label fixture screenshots as production behavior.
 
 The fixture update action supplies the available, installation, completed, and permission-attention views. Installation can finish too quickly for a reliable in-progress screenshot; record that state as unverified unless it is visibly captured. The seven requested scenario labels are ready idle, recording, saving/processing, service unavailable, update in progress, update completed, and permission attention. Check the console and observed menu before assigning each label; switching a fixture file does not itself prove the native menu refreshed.
 

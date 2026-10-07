@@ -1,0 +1,78 @@
+--- a/packages/desktop/macos/main.swift
++++ b/packages/desktop/macos/main.swift
+@@ -37,6 +37,19 @@
+     var canStop: Bool { recording && !processing && !pending && starting != true && meetingId != nil }
+     var canQuit: Bool { !recording && !processing && !pending && starting != true }
+ }
++struct MenuQAState: Decodable {
++    let control: ControlStatus?
++    let fresh: Bool
++    let microphone: String
++    let screenCapture: Bool
++    let services: [ServiceNoticeInfo]
++    static func load(root: URL) -> Self? {
++        let file = root.appendingPathComponent("menu-state.json")
++        guard let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size]) as? NSNumber,
++              size.intValue <= 16_384, let data = try? Data(contentsOf: file) else { return nil }
++        return try? JSONDecoder().decode(Self.self, from: data)
++    }
++}
+ struct APIError: Decodable { let error: String }
+ func responseError(_ data: Data?, status: Int) -> String {
+     if let data = data, let decoded = try? JSONDecoder().decode(APIError.self, from: data) { return decoded.error }
+@@ -84,6 +97,7 @@
+     private let menuInstanceID = UUID().uuidString
+     private var updateTimer: Timer?
+     private var state: ControlStatus?
++    private var qaState: MenuQAState?
+     private var freshProtectedStatus = false
+     private var sending = false
+     private var polling = false
+@@ -214,6 +228,21 @@
+     }
+     private func poll() {
+         releaseUpdates.refreshStatus()
++        if let root = updateQARoot() {
++            qaState = MenuQAState.load(root: root)
++            state = qaState?.control
++            freshProtectedStatus = qaState?.fresh == true
++            serviceNotices = qaState?.services ?? []
++            locale = MenuLocalization.normalize(state?.uiLocale)
++            if let state = state {
++                statusMenu.title = state.error.map { MenuLocalization.message($0, locale: locale) } ??
++                    (state.recording ? "\(state.captureLabel(locale: locale)) • \(state.seconds / 60):\(String(format: "%02d", state.seconds % 60))" :
++                     state.processing ? text("Processing meeting…") : state.pending ? text("Waiting for the interface…") :
++                     state.ready ? text("Ready to record") : text("Preparing services…"))
++            } else { statusMenu.title = text("Service unavailable — open the interface") }
++            updateMenu()
++            return
++        }
+         refreshLiveLanguageSettings()
+         guard !polling else { return }
+         refreshServiceNotices()
+@@ -281,7 +310,7 @@
+         item.button?.image = recordingStatusImage(recording, locale: locale)
+         item.button?.contentTintColor = recording ? .systemRed : nil
+         item.button?.toolTip = "Heed — \(statusMenu.title)"
+-        if updateQARoot() != nil {statusMenu.title = "Heed Update QA — simulated services"; item.button?.toolTip = "Heed Update QA"}
++        if updateQARoot() != nil { item.button?.toolTip = "Heed QA baseline — " + statusMenu.title }
+     }
+     private var slackAutoEnabled: Bool {
+         if !UserDefaults.standard.bool(forKey: "HeedDetectionSettingsMigrated"), UserDefaults.standard.object(forKey: "HeedSlackAutoRecord") != nil { return UserDefaults.standard.bool(forKey: "HeedSlackAutoRecord") }
+@@ -322,6 +351,7 @@
+         if let error = detection.error { statusMenu.title = MenuLocalization.message(error, locale: locale) }
+     }
+     private var microphonePermission: String {
++        if let qaState = qaState { return qaState.microphone }
+         switch AVCaptureDevice.authorizationStatus(for: .audio) {
+         case .authorized: return "authorized"
+         case .denied: return "denied"
+@@ -330,7 +360,7 @@
+         @unknown default: return "unknown"
+         }
+     }
+-    private var captureAuthorized: Bool { microphonePermission == "authorized" && CGPreflightScreenCaptureAccess() }
++    private var captureAuthorized: Bool { microphonePermission == "authorized" && (qaState?.screenCapture ?? CGPreflightScreenCaptureAccess()) }
+     private func reportPermissions(commandID: String? = nil, error: String? = nil) {
+         guard let endpoints = endpoints, !reportingPermissions || commandID != nil else { return }
+         reportingPermissions = true
