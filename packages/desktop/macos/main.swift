@@ -25,8 +25,13 @@ struct ControlStatus: Decodable {
     var maintenance: Bool? = nil
     var path: String? = nil
     var realTimeTranscription: Bool? = nil
+    var liveOptions: AdmittedLiveOptions? = nil
+    var liveModel: String? = nil
     func captureLabel(locale: String) -> String {
-        MenuLocalization.text(realTimeTranscription == false ? "Recording • live text off; transcript after stop" : "Recording", locale: locale)
+        if realTimeTranscription == false { return MenuLocalization.text("Recording • live text off; transcript after stop",locale:locale) }
+        guard let language = liveOptions?.effectiveLanguage else { return MenuLocalization.text("Recording",locale:locale) }
+        let label = MenuLocalization.text(language == "pt" ? "Brazilian Portuguese" : "English",locale:locale)
+        return "\(MenuLocalization.text("Recording",locale:locale)) • \(label) • \(liveOptions?.engine ?? "?") / \(liveModel ?? liveOptions?.initialModel ?? "?")"
     }
     var canStart: Bool { ready && !recording && !processing && !pending && starting != true && maintenance != true && (state != "failed" || path == nil) }
     var canStop: Bool { recording && !processing && !pending && starting != true && meetingId != nil }
@@ -56,6 +61,15 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private let startMenu = NSMenuItem(title: "Start recording", action: #selector(startRecording), keyEquivalent: "")
     private let stopMenu = NSMenuItem(title: "Stop recording", action: #selector(stopRecording), keyEquivalent: "")
     private var locale = "en"
+    private lazy var liveLanguageClient = LiveLanguageClient(session:session,endpoints:{ [weak self] in self?.endpoints })
+    private var liveLanguageSettings: LiveLanguageSettings?
+    private var liveLanguageItems: [NSMenuItem] = []
+    private let liveLanguageMenu = NSMenuItem(title:"Live speech language",action:nil,keyEquivalent:"")
+    private let liveLanguageStateMenu = NSMenuItem(title:"",action:nil,keyEquivalent:"")
+    private let finalOnlyMenu = NSMenuItem(title:"Record final-only (keeps real-time off)",action:#selector(recordFinalOnly),keyEquivalent:"")
+    private var languageSettingsGeneration = 0
+    private var languageSettingsLoading = false
+    private var liveAdmissionUnavailable = false
     private var localizedItems: [(NSMenuItem, String)] = []
     private var localeItems: [NSMenuItem] = []
     private func text(_ key: String) -> String { MenuLocalization.text(key, locale: locale) }
@@ -109,6 +123,14 @@ final class MenuController: NSObject, NSApplicationDelegate {
         storageMenu.isEnabled = false;menu.addItem(storageMenu)
         menu.addItem(NSMenuItem.separator())
         for entry in [startMenu, stopMenu] { entry.target = self; entry.isEnabled = false; menu.addItem(entry) }
+        let speechMenu = NSMenu()
+        for (title,code) in [("English","en"),("Brazilian Portuguese","pt")] {
+            let entry = NSMenuItem(title:title,action:#selector(selectLiveLanguage(_:)),keyEquivalent:"")
+            entry.target = self; entry.representedObject = code; speechMenu.addItem(entry); liveLanguageItems.append(entry)
+        }
+        liveLanguageMenu.submenu = speechMenu; menu.addItem(liveLanguageMenu)
+        liveLanguageStateMenu.isEnabled = false; menu.addItem(liveLanguageStateMenu)
+        finalOnlyMenu.target = self; finalOnlyMenu.isHidden = true; menu.addItem(finalOnlyMenu)
         let open = NSMenuItem(title: "Open interface", action: #selector(openInterface), keyEquivalent: "")
         open.target = self; menu.addItem(open)
         let settings = NSMenuItem(title: "Settings and permissions…", action: #selector(openSettings), keyEquivalent: "")
@@ -127,7 +149,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         let quit = NSMenuItem(title: "Quit menu app", action: #selector(quitApp), keyEquivalent: "")
         menu.addItem(updatesMenu.item)
         quit.target = self; menu.addItem(quit)
-        localizedItems = [(startMenu, "Start recording"), (stopMenu, "Stop recording"),
+        localizedItems = [(liveLanguageMenu,"Live speech language"),(finalOnlyMenu,"Record final-only (keeps real-time off)"),(startMenu, "Start recording"), (stopMenu, "Stop recording"),
             (open, "Open interface"), (settings, "Settings and permissions…"),
             (slackAutoMenu, "Automatically record Slack meetings"),
             (slackAccessMenu, "Allow Slack log access…"), (quit, "Quit menu app")]
@@ -192,6 +214,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
     }
     private func poll() {
         releaseUpdates.refreshStatus()
+        refreshLiveLanguageSettings()
         guard !polling else { return }
         refreshServiceNotices()
         guard let endpoints = endpoints else { self.state = nil; self.statusMenu.title = self.text("Service unavailable — open the interface"); self.updateMenu(); return }
@@ -237,6 +260,14 @@ final class MenuController: NSObject, NSApplicationDelegate {
         } else { storageMenu.title = text("Local meeting storage") }
         for (entry, key) in localizedItems { entry.title = text(key) }
         for entry in localeItems { entry.state = (entry.representedObject as? String) == locale ? .on : .off }
+        for entry in liveLanguageItems {
+            let language = entry.representedObject as? String
+            entry.title = text(language == "pt" ? "Brazilian Portuguese" : "English")
+            entry.state = language == (liveLanguageSettings?.liveLanguage ?? "en") ? .on : .off
+            entry.isEnabled = liveLanguageSettings != nil && !sending
+        }
+        liveLanguageStateMenu.title = state?.recording == true ? state!.captureLabel(locale:locale) : text("Live speech language") + ": " + text(liveLanguageSettings?.liveLanguage == "pt" ? "Brazilian Portuguese" : "English")
+        finalOnlyMenu.isHidden = !liveAdmissionUnavailable && !["unsupported","unavailable"].contains(liveLanguageSettings?.liveLanguageState ?? "")
         slackAutoMenu.state = slackAutoEnabled ? .on : .off
         slackAutoMenu.isEnabled = state?.meetingDetection != nil
         for (app, entry) in detectionMenus {
@@ -244,6 +275,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
             entry.isEnabled = state?.meetingDetection != nil
         }
         startMenu.isEnabled = !sending && (state?.canStart ?? false) && captureAuthorized && ServiceNoticeInfo.permitsVerifiedStart(unavailable,freshController:freshProtectedStatus)
+        finalOnlyMenu.isEnabled = startMenu.isEnabled
         stopMenu.isEnabled = !sending && (state?.canStop ?? false)
         let recording = state?.recording ?? false
         item.button?.image = recordingStatusImage(recording, locale: locale)
@@ -386,7 +418,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 600
-        var payload: [String: Any] = ["action": action, "language": "en", "requestId": UUID().uuidString]
+        var payload: [String: Any] = ["action": action, "requestId": UUID().uuidString]
         if action == "stop", let meetingId = state?.meetingId { payload["meetingId"] = meetingId }
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         endpoints.perform(session: session, request: request) { [weak self] data, response, error in
@@ -419,7 +451,57 @@ final class MenuController: NSObject, NSApplicationDelegate {
             }
         }
     }
-    @objc private func startRecording() { command("start") }
+    private func refreshLiveLanguageSettings() {
+        guard !languageSettingsLoading, !sending else { return }
+        languageSettingsLoading = true; let generation = languageSettingsGeneration
+        liveLanguageClient.load { [weak self] result in
+            guard let self = self else { return }; self.languageSettingsLoading = false
+            guard generation == self.languageSettingsGeneration else { return }
+            if case .success(let settings) = result { self.liveLanguageSettings = settings }
+            else { self.liveLanguageSettings = nil; self.liveAdmissionUnavailable = true }
+            self.updateMenu()
+        }
+    }
+    @objc private func selectLiveLanguage(_ sender:NSMenuItem) {
+        guard !sending, let language = sender.representedObject as? String else { return }
+        sending = true; languageSettingsGeneration += 1; updateMenu()
+        liveLanguageClient.save(language:language) { [weak self] result in
+            guard let self = self else { return }; self.sending = false
+            switch result {
+            case .success(let action): self.liveLanguageSettings = action.settings; self.statusMenu.title = self.text("Saved. Live speech language applies to the next recording.")
+            case .failure: self.statusMenu.title = self.text("Could not save live speech language. Try again.")
+            }
+            self.updateMenu()
+        }
+    }
+    private func startCapture(finalOnly:Bool) {
+        guard !sending, startMenu.isEnabled else { return }
+        sending = true; languageSettingsGeneration += 1; updateMenu()
+        liveLanguageClient.start(finalOnly:finalOnly) { [weak self] result in
+            guard let self = self else { return }; self.sending = false
+            switch result {
+            case .success(let action):
+                self.liveAdmissionUnavailable = false
+                self.poll()
+                if action.persistedOff { self.showLiveLanguageFeedback(self.text("Real-time transcription is now off for future recordings. Change it in Settings to turn it on again.")) }
+            case .failure(let error):
+                if let failure = error as? LiveLanguageClientError, ["live-language-unsupported","live-capabilities-unavailable"].contains(failure.code ?? "") { self.liveAdmissionUnavailable = true }
+                let message = MenuLocalization.message(error.localizedDescription,locale:self.locale)
+                self.statusMenu.title = message
+                if let failure = error as? LiveLanguageClientError, failure.persistedOff {
+                    self.showLiveLanguageFeedback(message + "\n\n" + self.text("Real-time transcription is now off for future recordings. Change it in Settings to turn it on again."))
+                } else { self.showLiveLanguageFeedback(message) }
+                self.refreshLiveLanguageSettings()
+            }
+            self.updateMenu()
+        }
+    }
+    private func showLiveLanguageFeedback(_ message:String) {
+        let alert = NSAlert(); alert.messageText = text("Live speech language"); alert.informativeText = message
+        alert.addButton(withTitle:text("Close")); alert.runModal()
+    }
+    @objc private func startRecording() { startCapture(finalOnly:false) }
+    @objc private func recordFinalOnly() { startCapture(finalOnly:true) }
     @objc private func stopRecording() { command("stop") }
     private func openVerifiedInterface(settings: Bool) {
         bootServices()
@@ -542,6 +624,11 @@ if CommandLine.arguments.contains("--update-client-self-test") {
     precondition(finalOnly.captureLabel(locale: "en") == "Recording • live text off; transcript after stop")
     for locale in ["pt-BR", "fr", "de"] { precondition(finalOnly.captureLabel(locale: locale) != finalOnly.captureLabel(locale: "en")) }
     precondition(status(true).captureLabel(locale: "en") == "Recording")
+    let portuguese = try JSONDecoder().decode(ControlStatus.self,from:Data("{\"recording\":true,\"processing\":false,\"seconds\":12,\"ready\":true,\"clientConnected\":false,\"pending\":false,\"liveModel\":\"tiny\",\"liveOptions\":{\"effectiveLanguage\":\"pt\",\"engine\":\"mlx\",\"initialModel\":\"base\"}}".utf8))
+    for locale in MenuLocalization.locales {
+        precondition(portuguese.captureLabel(locale:locale).contains(MenuLocalization.text("Brazilian Portuguese",locale:locale)))
+        precondition(portuguese.captureLabel(locale:locale).contains("mlx / tiny"))
+    }
     precondition(status().canStart && !status().canStop)
     precondition(!status(true).canStart && status(true).canStop)
     precondition(!status(false, true).canStart)
@@ -561,6 +648,7 @@ if CommandLine.arguments.contains("--update-client-self-test") {
     try accessibleMeetingDetectorSelfTests()
     try serviceEndpointsSelfTests()
     try meetingDetectionClientSelfTests()
+    try liveLanguageClientSelfTests()
     try smbFolderAccessSelfTests()
     print("Heed menubar self-tests passed")
 } else {

@@ -2,9 +2,14 @@ import type { SystemRecordStartResponse, RecordingSnapshot } from "@heed/shared"
 import { apiClient } from "./client.ts";
 
 export const recordingApi = {
-	start: (mode: "mic" | "system" | "both" = "both", language?:string, requestId=crypto.randomUUID()) =>
-		apiClient.post<SystemRecordStartResponse & {snapshot?:RecordingSnapshot}>("/api/sysrecord/start", { mode, language, requestId }),
-	stop: (meetingId:string,requestId=crypto.randomUUID()) => apiClient.post<{
+	start: (mode: "mic" | "system" | "both" = "both", requestId:string=crypto.randomUUID()) =>
+		apiClient.post<SystemRecordStartResponse & {snapshot?:RecordingSnapshot}>("/api/sysrecord/start", { mode, requestId }),
+ recordFinalOnly: async (mode: "mic" | "system" | "both" = "both", requestId:string=crypto.randomUUID()) => {
+  await apiClient.post("/api/recording/settings", {enabled:false});
+  try{return await recordingApi.start(mode,requestId);}
+  catch(error){if(error instanceof Error)Object.assign(error,{persistedOff:true});throw error;}
+ },
+	stop: (meetingId:string,requestId:string=crypto.randomUUID()) => apiClient.post<{
 		path: string;
   finalized: boolean;
   duration?: number;
@@ -19,8 +24,8 @@ export const recordingApi = {
   snapshot?:RecordingSnapshot;
 	}>("/api/sysrecord/stop", {meetingId,requestId}),
  status:()=>apiClient.get<RecordingSnapshot>("/api/recording/status"),
- abandon:(meetingId:string,requestId=crypto.randomUUID())=>apiClient.post<RecordingSnapshot>("/api/recording/abandon",{meetingId,requestId}),
+ abandon:(meetingId:string,requestId:string=crypto.randomUUID())=>apiClient.post<RecordingSnapshot>("/api/recording/abandon",{meetingId,requestId}),
  rename:(meetingId:string,expectedRevision:number,speakerNames:Record<string,string>)=>apiClient.post<RecordingSnapshot>("/api/recording/speakers",{meetingId,expectedRevision,speakerNames}),
- retry:(meetingId:string,requestId=crypto.randomUUID())=>apiClient.post<RecordingSnapshot>("/api/recording/retry",{meetingId,requestId}),
+ retry:(meetingId:string,requestId:string=crypto.randomUUID())=>apiClient.post<RecordingSnapshot>("/api/recording/retry",{meetingId,requestId}),
 	levelsUrl: () => "/api/sysrecord/levels",
 };

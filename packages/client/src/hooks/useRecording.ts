@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { ApiError } from "@/api/client";
 import { recordingApi } from "@/api/recording";
 import { applyRecordingSnapshot } from "@/lib/recordingSnapshot";
 import { useRecordingStore } from "@/stores/recording";
@@ -9,18 +10,19 @@ import { tr } from "@/lib/i18n";
 interface UseRecordingOptions {
   micBars: React.RefObject<HTMLDivElement[] | null>;
   systemBars: React.RefObject<HTMLDivElement[] | null>;
-  getLanguage: () => string;
 }
 
 /** Commands the backend; browser lifetimes affect visualization subscriptions only. */
 export function useRecording({micBars,systemBars}:UseRecordingOptions) {
+  const [liveStartError,setLiveStartError]=useState<string|null>(null);
+  const [starting,setStarting]=useState(false);
   const recording=useRecordingStore(s=>s.recording);
   const levels=useRef<number[]>(new Array(24).fill(0));
   const meters=useRef<HTMLDivElement[]>([]);
   meters.current=systemBars.current || [];
   useEffect(()=>{
     if(!recording)return;
-    const live=new EventSource("/api/sysrecord/live?lang=en");
+    const live=new EventSource("/api/sysrecord/live");
     const source=new EventSource("/api/sysrecord/levels");
     const onSnapshot=(event:Event)=>{
       try {applyRecordingSnapshot(JSON.parse((event as MessageEvent).data));} catch { /* Reconnect and status polling restore authoritative state. */ }
@@ -52,16 +54,24 @@ export function useRecording({micBars,systemBars}:UseRecordingOptions) {
       micBars.current?.forEach(bar=>{if(bar)bar.style.height="2px";});meters.current.forEach(bar=>{if(bar)bar.style.height="2px";});};
   },[recording,micBars]);
 
-  const start=async(_language?:string)=>{
+  const begin=async(finalOnly:boolean)=>{
+    if(starting)return false;
+    setStarting(true);setLiveStartError(null);
     try {
-      const data=await recordingApi.start("both","en",crypto.randomUUID());
+      const data=await (finalOnly?recordingApi.recordFinalOnly("both",crypto.randomUUID()):recordingApi.start("both",crypto.randomUUID()));
+      if(finalOnly)useUIStore.getState().showToast(tr("Real-time transcription is now off for future recordings. Change it in Settings to turn it on again."));
       if(data.permissionNeeded){useUIStore.getState().showToast(tr("Allow Screen Recording in the Settings window, then try recording again"));return false;}
       if(data.error)throw new Error(data.error);
       if(data.snapshot)applyRecordingSnapshot(data.snapshot);else useRecordingStore.getState().startRecording();
       return true;
-    }catch(error){useUIStore.getState().showToast(tr("Error: {message}",undefined,{message:tr((error as Error).message)}));return false;}
+    }catch(error){
+      if(error instanceof ApiError && ["live-language-unsupported","live-capabilities-unavailable"].includes(error.code || ""))setLiveStartError(error.code!);
+      if(error instanceof Error && 'persistedOff' in error && error.persistedOff===true)useUIStore.getState().showToast(tr('Real-time transcription is now off for future recordings. Change it in Settings to turn it on again.')+' '+tr(error.message));
+      else useUIStore.getState().showToast(tr("Error: {message}",undefined,{message:tr((error as Error).message)}));return false;}finally{setStarting(false);}
   };
-  const stop=async(_language?:string)=>{
+  const start=()=>begin(false);
+  const recordFinalOnly=()=>begin(true);
+  const stop=async()=>{
     const meetingId=useRecordingStore.getState().coordinatorMeetingId;
     try {
       if(!meetingId)throw new Error("The active meeting changed; reload before issuing this command");
@@ -71,5 +81,5 @@ export function useRecording({micBars,systemBars}:UseRecordingOptions) {
       applyRecordingSnapshot(result.snapshot);void useSessionsStore.getState().load();return true;
     }catch(error){useRecordingStore.setState({processing:false});useUIStore.getState().showToast(tr("Stop failed: {message}",undefined,{message:tr((error as Error).message)}));return false;}
   };
-  return {start,stop};
+  return {start,stop,recordFinalOnly,liveStartError,starting};
 }
