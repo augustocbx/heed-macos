@@ -97,3 +97,10 @@ test('explicit ledger storage keeps construction and reservation off the pathnam
 test('default pathname ledger keeps rejecting an existing null document',()=>{
  const s=setup();writeFileSync(s.options.ledgerPath,'null');expect(()=>new ManagedQuota(s.options)).toThrow();
 });
+
+test('opted-in quota uses original inventory and refuses ungranted reservation without fallback',()=>{
+ const s=setup();writeFileSync(join(s.media,'a.wav'),'foreign visible bytes');
+ const localIo={inventory(){return [];},owns(){return false;},exists(){throw new Error('Original descriptor refused');},stat(){throw new Error('Original descriptor refused');},unlink(){throw new Error('Original descriptor refused');},removeStaging(){throw new Error('Original descriptor refused');}};
+ const quota=new ManagedQuota({...s.options,ledgerStorage:{load:()=>null,save(){}},localIo});
+ expect(quota.snapshot().usedBytes).toBe(0);expect(()=>quota.reserve('x',1,[join(s.media,'a.wav')])).toThrow('Invalid quota reservation');
+});

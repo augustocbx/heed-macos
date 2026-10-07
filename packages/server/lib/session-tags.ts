@@ -4,6 +4,8 @@ import { dirname, join } from "node:path";
 import {reserveAtomicWrite} from './atomic-json';
 import { normalizeTag, tagKey, uniqueTags, type Session, type SessionPatch, type TagMutation, type TagSnapshot } from "@heed/shared";
 
+import type {SessionLocalIo} from './local-store-io';
+
 export class TagError extends Error {
   constructor(message: string, public status = 400) { super(message); }
 }
@@ -30,21 +32,26 @@ const assignmentRevision = (session: Session) => hash(session.tags ?? []);
 /** All operations are synchronous after request parsing, so one server cannot interleave commits. */
 export class SessionTags {
   private journal: string;
-  constructor(private directory: string, private io = { writeAtomic: atomicWrite }) {
+  constructor(private directory: string, private io = { writeAtomic: atomicWrite }, private readonly localIo?: SessionLocalIo) {
     this.journal = join(directory, ".tag-transaction");
   }
+
+  private exists(path:string){return this.localIo ? this.localIo.exists(path) : existsSync(path);}
+  private stat(path:string){return this.localIo ? this.localIo.stat(path) : lstatSync(path);}
+  private unlink(path:string){if(this.localIo)this.localIo.unlink(path);else unlinkSync(path);}
+  private readText(path:string,maximum:number){return this.localIo ? this.localIo.readFile(path,maximum).toString('utf8') : readFileSync(path,'utf8');}
 
   private path(id: string): string {
     if (typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(id)) throw new TagError("Invalid meeting ID");
     const path = join(this.directory, `${id}.json`);
-    if (existsSync(path) && !lstatSync(path).isFile()) throw new TagError("Invalid meeting file", 500);
+    if (this.exists(path) && !this.stat(path).isFile()) throw new TagError("Invalid meeting file", 500);
     return path;
   }
 
   recover(): void {
-    if (!existsSync(this.journal)) return;
-    if (!lstatSync(this.journal).isFile()) throw new TagError("Invalid tag transaction", 500);
-    const journal: Journal = JSON.parse(readFileSync(this.journal, "utf8"));
+    if (!this.exists(this.journal)) return;
+    if (!this.stat(this.journal).isFile()) throw new TagError("Invalid tag transaction", 500);
+    const journal: Journal = JSON.parse(this.readText(this.journal, 131_072));
     if (!Array.isArray(journal.entries) || typeof journal.committed !== "boolean") throw new TagError("Invalid tag transaction", 500);
     // Validate the entire journal before restoring any file.
     for (const entry of journal.entries) {
@@ -53,18 +60,18 @@ export class SessionTags {
     }
     if (!journal.committed) {
       for (const entry of journal.entries) this.io.writeAtomic(this.path(entry.id), entry.before);
-      unlinkSync(this.journal);
+      this.unlink(this.journal);
     } else {
       // The commit is durable; a cleanup failure must not turn success into a false failed save.
-      try { unlinkSync(this.journal); } catch { /* Retry cleanup on the next request. */ }
+      try { this.unlink(this.journal); } catch { /* Retry cleanup on the next request. */ }
     }
   }
 
   read(id: string): Session | null {
     this.recover();
     const path = this.path(id);
-    if (!existsSync(path)) return null;
-    const session = JSON.parse(readFileSync(path, "utf8")) as Session;
+    if (!this.exists(path)) return null;
+    const session = JSON.parse(this.readText(path, 65_536)) as Session;
     if (!session || session.id !== id || (session.tags !== undefined && (!Array.isArray(session.tags) || session.tags.some(t => typeof t !== "string")))) {
       throw new TagError("Invalid meeting file", 500);
     }
@@ -73,7 +80,7 @@ export class SessionTags {
 
   snapshot(): TagSnapshot {
     this.recover();
-    const sessions = readdirSync(this.directory).filter(f => f.endsWith(".json")).sort().map(file => this.read(file.slice(0, -5))!);
+    const sessions = (this.localIo ? this.localIo.list(this.directory,512) : readdirSync(this.directory)).filter(f => f.endsWith(".json")).sort().map(file => this.read(file.slice(0, -5))!);
     const tags = new Map<string, { name: string; meetingCount: number }>();
     for (const session of sessions) {
       for (const name of uniqueTags(session.tags)) {
@@ -92,7 +99,7 @@ export class SessionTags {
   create(session: Session): Session {
     this.recover();
     const path = this.path(session.id);
-    if (existsSync(path)) throw new TagError("Meeting already exists", 409);
+    if (this.exists(path)) throw new TagError("Meeting already exists", 409);
     const tags = uniqueTags(session.tags ?? [], this.snapshot().tags.map(t => t.name));
     this.io.writeAtomic(path, JSON.stringify({ ...session, tags, tagsRevision: undefined }, null, 2));
     return this.read(session.id)!;
@@ -126,7 +133,7 @@ export class SessionTags {
   remove(id: string): void {
     this.recover();
     const path = this.path(id);
-    if (existsSync(path)) unlinkSync(path);
+    if (this.exists(path)) this.unlink(path);
   }
 
   mutate(input: TagMutation): TagSnapshot {
@@ -155,7 +162,7 @@ export class SessionTags {
       else if (hasTag) tags = tags.filter(t => tagKey(t) !== key);
       if (JSON.stringify(tags) === JSON.stringify(session.tags)) continue;
       const path = this.path(session.id);
-      entries.push({ id: session.id, before: readFileSync(path, "utf8"), after: JSON.stringify({ ...session, tags, tagsRevision: undefined, updatedAt: new Date().toISOString() }, null, 2) });
+      entries.push({ id: session.id, before: this.readText(path, 65_536), after: JSON.stringify({ ...session, tags, tagsRevision: undefined, updatedAt: new Date().toISOString() }, null, 2) });
     }
     if (!entries.length) return snapshot;
     // One durable journal stages every original and replacement before the first change.

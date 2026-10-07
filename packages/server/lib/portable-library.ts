@@ -8,10 +8,11 @@ import {encode,makeBundle,MAX_ARTIFACT_BYTES,portableMeeting,revisionPath,sha256
 import {coordinatedProvider,providerPath,type LibraryProvider,type QuotaBudget,type RemoteTransaction,type TransactionContext} from './portable-provider';
 import {RemoteDeletion} from './remote-deletion';
 import {revisionKey,validateRevisionFence,validateDeletionRecord,validateRevisionDescriptor} from './portable-deletion-schema';
+import type {PortableLocalIo} from './local-store-io';
 interface OptionalTask {controller:AbortController;done:Promise<void>;finish:()=>void}
 interface Entry {localPublications?:Record<string,true>;providerId?:string;audioSource?:string;audioHash?:string;marker:PortableCommit;manifest:PortableManifest;preview:LibraryPreview;sessionId?:string;payloadHash?:string;commitIntent?:boolean;commitState?:PublicationState}
 interface Catalog {version:1;libraryId:string;deviceId:string;aliases:Record<string,string>;heads:Record<string,string>;entries:Record<string,Entry>;complete:boolean;imported:number;skipped:number;error?:string;tombstones?:Record<string,true>;remoteDeletions?:Record<string,RevisionDescriptor>}
-export interface PortableLibraryOptions {root:string;sessions:SessionTags;sessionsDir:string;quota:QuotaBudget;recordingsDir?:string;provider?:LibraryProvider;write?:typeof atomicWriteJson}
+export interface PortableLibraryOptions {localIo?:PortableLocalIo;root:string;sessions:SessionTags;sessionsDir:string;quota:QuotaBudget;recordingsDir?:string;provider?:LibraryProvider;write?:typeof atomicWriteJson}
 const entryKey=(m:PortableManifest|PortableCommit)=>`${m.libraryId}/${m.meetingId}/${m.revisionId}`;
 const meetingKey=(m:PortableManifest|PortableCommit)=>`${m.libraryId}/${m.meetingId}`;
 /** A complete SessionTags write is the only AI visibility boundary; remote previews never enter it. */
@@ -20,38 +21,51 @@ export class PortableLibrary {
  // Nested defaults may reuse only the exact live lease and provider transaction.
  private transactionContext=new AsyncLocalStorage<{lease:symbol;provider:LibraryProvider;context:TransactionContext}>();
  private deletion?:RemoteDeletion;
+ private readonly localIo:PortableLocalIo|undefined;
  constructor(private options:PortableLibraryOptions){
-  for(const category of ['catalog','media','indexes','staging'])mkdirSync(join(options.root,category),{recursive:true,mode:0o700});
+  this.localIo=options.localIo;
+  for(const category of ['catalog','media','indexes','staging'])this.mkdir(join(options.root,category));
   this.statePath=join(options.root,'catalog','state.json');
-  if(existsSync(this.statePath)&&lstatSync(this.statePath).size>64_000_000)throw new Error('Invalid oversized private library catalog');
-  this.state=existsSync(this.statePath)?JSON.parse(readFileSync(this.statePath,'utf8')):{version:1,libraryId:randomUUID(),deviceId:randomUUID(),aliases:{},heads:{},entries:{},complete:true,imported:0,skipped:0};
+  if(this.exists(this.statePath)&&this.stat(this.statePath).size>64_000_000)throw new Error('Invalid oversized private library catalog');
+  this.state=this.exists(this.statePath)?JSON.parse(this.read(this.statePath,1_048_576).toString('utf8')):{version:1,libraryId:randomUUID(),deviceId:randomUUID(),aliases:{},heads:{},entries:{},complete:true,imported:0,skipped:0};
   if(this.state.version!==1||!UUID.test(this.state.libraryId)||!UUID.test(this.state.deviceId)||!this.state.aliases||!this.state.heads||!this.state.entries)throw new Error('Invalid private library catalog; preserve it for recovery');
   if(Object.keys(this.state.entries).length>10000)throw new Error('Private library catalog limit reached');
   if(this.state.remoteDeletions){if(Object.keys(this.state.remoteDeletions).length>10000)throw new Error('Remote deletion catalog limit reached');Object.values(this.state.remoteDeletions).forEach(validateRevisionDescriptor);}
-  for(const entry of Object.values(this.state.entries)){validateCommit(entry.marker);validateManifest(entry.manifest);if(!entry.audioHash&&existsSync(join(this.canonical(entry),'meeting.json')))entry.audioHash=this.payload(entry).audio?.sha256;}
-  if(!existsSync(this.statePath))this.persist(this.state);
+  for(const entry of Object.values(this.state.entries)){validateCommit(entry.marker);validateManifest(entry.manifest);if(!entry.audioHash&&this.exists(join(this.canonical(entry),'meeting.json')))entry.audioHash=this.payload(entry).audio?.sha256;}
+  if(!this.exists(this.statePath))this.persist(this.state);
   for(const entry of Object.values(this.state.entries).filter(e=>e.commitIntent&&e.sessionId)){
    const session=options.sessions.read(entry.sessionId!);if(!session)continue;const payload=this.payload(entry);const matches=sha256(encode(portableMeeting(session,entry.manifest.meetingId,payload.audio)))===entry.payloadHash;
    this.edit(next=>{const item=next.entries[entryKey(entry.manifest)]!;item.preview.state=matches?(item.commitState||'verified'):'conflict';item.preview.local=true;delete item.commitIntent;delete item.commitState;next.heads[meetingKey(entry.manifest)]=entry.manifest.revisionId;});
   }
   // Previous process jobs cannot be running; discard only our bounded staging directories and claims.
-  for(const name of readdirSync(join(options.root,'staging'))){if(!UUID.test(name))continue;const path=join(options.root,'staging',name);if(!lstatSync(path).isDirectory())continue;rmSync(path,{recursive:true});options.quota.release(`library-${name}`);}
+  for(const name of this.list(join(options.root,'staging'))){if(!UUID.test(name))continue;const path=join(options.root,'staging',name);if(!this.stat(path).isDirectory())continue;this.removeStaging(path);options.quota.release(`library-${name}`);}
  }
- private persist(next:Catalog){if(Object.keys(next.entries).length>10000||encode(next).length>64_000_000)throw new Error('Private library catalog limit reached');(this.options.write||atomicWriteJson)(this.statePath,next);this.state=next;}
+ private exists(path:string){return this.localIo ? this.localIo.exists(path) : existsSync(path);}
+ private stat(path:string){return this.localIo ? this.localIo.stat(path) : lstatSync(path);}
+ private read(path:string,maximum:number){return this.localIo ? this.localIo.readFile(path,maximum) : readFileSync(path);}
+ private list(path:string){return this.localIo ? this.localIo.list(path,512) : readdirSync(path);}
+ private mkdir(path:string){if(this.localIo)this.localIo.mkdir(path);else mkdirSync(path,{recursive:true,mode:0o700});}
+ private realpath(path:string){return this.localIo ? this.localIo.canonical(path) : realpathSync(path);}
+ private writeText(path:string,data:string){if(this.localIo)this.localIo.writeAtomic(path,data);else atomicWrite(path,data);}
+ private jobJson(path:string,value:unknown){if(this.localIo)this.localIo.writeAtomic(path,JSON.stringify(value,null,2));else atomicWriteJson(path,value);}
+ private removeStaging(path:string,force=false){if(this.localIo)this.localIo.removeStaging(path);else rmSync(path,{recursive:true,force});}
+ private stream(path:string,maximum:number,signal?:AbortSignal){return this.localIo ? this.localIo.stream(path,maximum,signal) : createReadStream(path);}
+ private writeJson(path:string,value:unknown){if(this.options.write)this.options.write(path,value);else if(this.localIo)this.localIo.writeAtomic(path,JSON.stringify(value,null,2));else atomicWriteJson(path,value);}
+ private persist(next:Catalog){if(Object.keys(next.entries).length>10000||encode(next).length>64_000_000)throw new Error('Private library catalog limit reached');this.writeJson(this.statePath,next);this.state=next;}
  private edit(change:(state:Catalog)=>void){const next=structuredClone(this.state);change(next);this.persist(next);}
  private canonical(entry:Entry){return join(this.options.root,'catalog','revisions',entry.manifest.libraryId,entry.manifest.meetingId,entry.manifest.revisionId);}
- private payload(entry:Entry):PortableMeeting{return validateBundle(entry.marker,entry.manifest,readFileSync(join(this.canonical(entry),'meeting.json')));}
- private saveArtifacts(entry:Entry,payload:PortableMeeting){const directory=this.canonical(entry);mkdirSync(directory,{recursive:true,mode:0o700});
-  for(const [name,value] of [['meeting.json',payload],['manifest.json',entry.manifest]] as const){const path=join(directory,name);if(existsSync(path)){if(sha256(encode(JSON.parse(readFileSync(path,'utf8'))))!==sha256(encode(value)))throw new Error('Immutable local revision collision');}else atomicWrite(path,encode(value).toString('utf8'));}
-  const commits=join(this.options.root,'catalog','commits',entry.marker.deviceId);mkdirSync(commits,{recursive:true,mode:0o700});(this.options.write||atomicWriteJson)(join(commits,`${entry.marker.revisionId}.json`),entry.marker);
+ private payload(entry:Entry):PortableMeeting{return validateBundle(entry.marker,entry.manifest,this.read(join(this.canonical(entry),'meeting.json'),65_536));}
+ private saveArtifacts(entry:Entry,payload:PortableMeeting){const directory=this.canonical(entry);this.mkdir(directory);
+  for(const [name,value] of [['meeting.json',payload],['manifest.json',entry.manifest]] as const){const path=join(directory,name);if(this.exists(path)){if(sha256(encode(JSON.parse(this.read(path,65_536).toString('utf8'))))!==sha256(encode(value)))throw new Error('Immutable local revision collision');}else this.writeText(path,encode(value).toString('utf8'));}
+  const commits=join(this.options.root,'catalog','commits',entry.marker.deviceId);this.mkdir(commits);this.writeJson(join(commits,`${entry.marker.revisionId}.json`),entry.marker);
  }
  private safeAudioSource(path:string):string {
-  if(!isAbsolute(path)||!existsSync(path)||lstatSync(path).isSymbolicLink()||!lstatSync(path).isFile())throw new Error('Local archived audio is unavailable');const actual=realpathSync(path);
-  const roots=[join(this.options.root,'media'),...(this.options.recordingsDir?[this.options.recordingsDir]:[])];if(!roots.some(root=>{if(!existsSync(root))return false;const child=relative(realpathSync(root),actual);return !!child&&!isAbsolute(child)&&child!=='..'&&!child.startsWith(`..${sep}`);}))throw new Error('Audio is outside managed recording roots; migrate it before publication');return actual;
+  if(!isAbsolute(path)||!this.exists(path)||this.stat(path).isSymbolicLink()||!this.stat(path).isFile())throw new Error('Local archived audio is unavailable');const actual=this.realpath(path);
+  const roots=[join(this.options.root,'media'),...(this.options.recordingsDir?[this.options.recordingsDir]:[])];if(!roots.some(root=>{if(!this.exists(root))return false;const child=relative(this.realpath(root),actual);return !!child&&!isAbsolute(child)&&child!=='..'&&!child.startsWith(`..${sep}`);}))throw new Error('Audio is outside managed recording roots; migrate it before publication');return actual;
  }
  private async inspectAudio(path:string,signal?:AbortSignal):Promise<{bytes:number;hash:string}> {
-  const source=this.safeAudioSource(path),stat=lstatSync(source),hash=createHash('sha256');let bytes=0;
-  for await(const chunk of createReadStream(source)){signal?.throwIfAborted();bytes+=chunk.length;if(bytes>stat.size)throw new Error('Audio changed during integrity verification');hash.update(chunk);}signal?.throwIfAborted();const after=lstatSync(source);if(bytes!==stat.size||after.size!==stat.size||after.mtimeMs!==stat.mtimeMs||after.ino!==stat.ino)throw new Error('Audio changed during integrity verification');return {bytes,hash:hash.digest('hex')};
+  const source=this.safeAudioSource(path),stat=this.stat(source),hash=createHash('sha256');let bytes=0;
+  for await(const chunk of this.stream(source,stat.size,signal)){signal?.throwIfAborted();bytes+=chunk.length;if(bytes>stat.size)throw new Error('Audio changed during integrity verification');hash.update(chunk);}signal?.throwIfAborted();const after=this.stat(source);if(bytes!==stat.size||after.size!==stat.size||after.mtimeMs!==stat.mtimeMs||after.ino!==stat.ino)throw new Error('Audio changed during integrity verification');return {bytes,hash:hash.digest('hex')};
  }
  private task():OptionalTask {let finish!:()=>void;return {controller:new AbortController(),done:new Promise<void>(resolve=>finish=resolve),finish:()=>finish()};}
  private signal(controller:AbortController,external?:AbortSignal,lease?:AbortSignal):AbortSignal {return AbortSignal.any([controller.signal,...(external?[external]:[]),...(lease?[lease]:[])]);}
@@ -283,15 +297,15 @@ export class PortableLibrary {
  private sessionFor(entry:Entry,payload:PortableMeeting):Session {const alias=this.state.aliases[meetingKey(entry.manifest)]||payload.meetingId;const {schemaVersion,meetingId,audio,...fields}=payload;return {...fields,id:alias,files:undefined,audioArchived:!!audio};}
  private quotaJob(entry:Entry,session:Session):{id:string;path:string;finish:()=>void}{const job=randomUUID(),id=`library-${job}`,path=join(this.options.root,'staging',job);const sessionPath=join(this.options.sessionsDir,`${session.id}.json`);const bytes=4*entry.preview.bytes+2*encode(session).length+4*encode(this.state).length+131072;
   this.options.quota.reserve(id,bytes,[path,this.canonical(entry),sessionPath,this.statePath,join(this.options.root,'catalog','commits',entry.marker.deviceId,`${entry.marker.revisionId}.json`)]);
-  try{mkdirSync(path,{recursive:true,mode:0o700});atomicWriteJson(join(path,'job.json'),{version:1,id,revisionId:entry.manifest.revisionId});}catch(error){this.options.quota.release(id);throw error;}
-  return {id,path,finish:()=>{rmSync(path,{recursive:true,force:true});this.options.quota.release(id);}};
+  try{this.mkdir(path);this.jobJson(join(path,'job.json'),{version:1,id,revisionId:entry.manifest.revisionId});}catch(error){this.options.quota.release(id);throw error;}
+  return {id,path,finish:()=>{this.removeStaging(path,true);this.options.quota.release(id);}};
  }
  async importSelected(revisionIds?:string[],signal?:AbortSignal):Promise<LibrarySnapshot>{return this.operation(async(signal,tx)=>{
   const provider=this.provider();let imported=0,skipped=0;
   const entries=Object.values(this.state.entries).filter(e=>(!e.providerId||e.providerId===provider.id)&&(!revisionIds||revisionIds.includes(e.manifest.revisionId))&&!this.remoteDeleted(e.manifest)).sort((a,b)=>Date.parse(b.preview.createdAt)-Date.parse(a.preview.createdAt)||a.manifest.meetingId.localeCompare(b.manifest.meetingId)||a.manifest.revisionId.localeCompare(b.manifest.revisionId));
   for(const entry of entries){signal?.throwIfAborted();const deletedKey=meetingKey(entry.manifest);if(entry.sessionId&&!this.options.sessions.read(entry.sessionId))this.markDeleted(entry.sessionId);if(this.state.tombstones?.[deletedKey]&&!revisionIds){skipped++;continue;}if(entry.sessionId&&this.options.sessions.read(entry.sessionId))continue;let job:ReturnType<PortableLibrary['quotaJob']>|undefined;
    try {const estimate=this.sessionFor(entry,{...({} as PortableMeeting),meetingId:entry.manifest.meetingId});job=this.quotaJob(entry,estimate);
-    const bytes=await provider.read(providerPath(`${revisionPath(entry.manifest.meetingId,entry.manifest.revisionId)}/meeting.json`),entry.manifest.artifacts[0]!.bytes,signal);signal?.throwIfAborted();const payload=validateBundle(entry.marker,entry.manifest,bytes);atomicWrite(join(job.path,'meeting.json'),Buffer.from(bytes).toString('utf8'));this.saveArtifacts(entry,payload);
+    const bytes=await provider.read(providerPath(`${revisionPath(entry.manifest.meetingId,entry.manifest.revisionId)}/meeting.json`),entry.manifest.artifacts[0]!.bytes,signal);signal?.throwIfAborted();const payload=validateBundle(entry.marker,entry.manifest,bytes);this.writeText(join(job.path,'meeting.json'),Buffer.from(bytes).toString('utf8'));this.saveArtifacts(entry,payload);
     const key=meetingKey(entry.manifest),head=this.state.heads[key],previous=head?this.state.entries[`${key}/${head}`]:undefined;const current=previous?.sessionId?this.options.sessions.read(previous.sessionId):null;
     const changed=!!current&&sha256(encode(portableMeeting(current,entry.manifest.meetingId,this.payload(previous!).audio)))!==previous!.payloadHash;
     if(previous&&current&&!changed&&this.descends(previous,entry.manifest.revisionId)){this.edit(next=>{const item=next.entries[entryKey(entry.manifest)]!;item.preview.state='verified';item.sessionId=current.id;item.payloadHash=sha256(bytes);});continue;}
@@ -312,7 +326,7 @@ export class PortableLibrary {
   if(previous&&this.remoteDeleted(previous.manifest)&&!explicit)throw new Error('This remote revision was deleted; create a fresh revision explicitly before publishing');
   let inspectionId:string|undefined;try{
   let audio=previous?this.payload(previous).audio:undefined,audioSource=previous?.audioSource;
-  if(session.files?.wav){audioSource=session.files.wav;this.safeAudioSource(audioSource);const claim=`library-inspect-${randomUUID()}`;this.options.quota.reserve(claim,lstatSync(audioSource).size,[audioSource]);inspectionId=claim;const inspected=await this.inspectAudio(audioSource,signal);signal?.throwIfAborted();if(inspected.bytes<12)throw new Error('Invalid local WAV');const header=Buffer.alloc(12),fd=openSync(audioSource,'r');try{readSync(fd,header,0,12,0);}finally{closeSync(fd);}if(!['RIFF','RF64'].includes(header.toString('ascii',0,4))||header.toString('ascii',8,12)!=='WAVE')throw new Error('Invalid local WAV');audio={sha256:inspected.hash,bytes:inspected.bytes,format:'wav',mode:'archived',objectPath:`objects/${inspected.hash}`};}
+  if(session.files?.wav){audioSource=session.files.wav;this.safeAudioSource(audioSource);const claim=`library-inspect-${randomUUID()}`;this.options.quota.reserve(claim,this.stat(audioSource).size,[audioSource]);inspectionId=claim;const inspected=await this.inspectAudio(audioSource,signal);signal?.throwIfAborted();if(inspected.bytes<12)throw new Error('Invalid local WAV');let header:Buffer;if(this.localIo){const handle=this.localIo.openRead(audioSource,262_144);try{header=handle.readAt(0,12);}finally{handle.close();}}else{header=Buffer.alloc(12);const fd=openSync(audioSource,'r');try{readSync(fd,header,0,12,0);}finally{closeSync(fd);}}if(!['RIFF','RF64'].includes(header.toString('ascii',0,4))||header.toString('ascii',8,12)!=='WAVE')throw new Error('Invalid local WAV');audio={sha256:inspected.hash,bytes:inspected.bytes,format:'wav',mode:'archived',objectPath:`objects/${inspected.hash}`};}
   const current=this.options.sessions.read(sessionId);if(!current||JSON.stringify(portableMeeting(current,meetingId))!==JSON.stringify(portableMeeting(session,meetingId)))throw new Error('Local meeting changed during publication preparation; retry');
   const payload=portableMeeting(session,meetingId,audio),hash=sha256(encode(payload));if(previous?.payloadHash===hash&&!this.remoteDeleted(previous.manifest)){if(this.state.tombstones?.[key])this.edit(next=>{delete next.tombstones![key];});if(audioSource&&previous.audioSource!==audioSource)this.edit(next=>{next.entries[entryKey(previous.manifest)]!.audioSource=audioSource;});if(audio&&!session.audioArchived)this.options.sessions.save({...session,audioArchived:true});return previous.preview;}
   const bundle=makeBundle(libraryId,this.state.deviceId,payload,head?[head]:[]);const entry:Entry={marker:bundle.marker,manifest:bundle.manifest,payloadHash:hash,sessionId,audioSource,audioHash:audio?.sha256,preview:{libraryId,meetingId,revisionId:bundle.manifest.revisionId,title:session.title,createdAt:session.createdAt,bytes:encode(payload).length,local:true,state:'pending',audio:!!payload.audio}};
@@ -340,7 +354,7 @@ export class PortableLibrary {
    if(tx&&entry.localPublications?.[publication]){const confirmation=await provider.confirm(entry.marker,signal);await verifyPublished();this.edit(next=>{const saved=next.entries[entryKey(entry.manifest)]!;saved.preview.state=confirmation==='remote-confirmed'?'verified':'pending';delete saved.preview.error;});return this.snapshot();}
    // V2 exclusive canonical admission fences stale publishers before any payload or media writes.
    if(tx){await provider.writeImmutable(entry.marker.manifestPath,encode(entry.manifest),signal);await tx.writePending(intent,signal);}
-   if(payload.audio){const path=this.safeAudioSource(entry.audioSource||join(this.options.root,'media',`${payload.audio.sha256}.wav`));if(!existsSync(path)||lstatSync(path).size!==payload.audio.bytes)throw new Error('Archived audio unavailable locally');await provider.writeObjectImmutable(providerPath(payload.audio.objectPath),payload.audio.bytes,payload.audio.sha256,createReadStream(path),signal);}
+   if(payload.audio){const path=this.safeAudioSource(entry.audioSource||join(this.options.root,'media',`${payload.audio.sha256}.wav`));if(!this.exists(path)||this.stat(path).size!==payload.audio.bytes)throw new Error('Archived audio unavailable locally');await provider.writeObjectImmutable(providerPath(payload.audio.objectPath),payload.audio.bytes,payload.audio.sha256,this.stream(path,payload.audio.bytes,signal),signal);}
    await provider.writeImmutable(providerPath(`${prefix}/meeting.json`),encode(payload),signal);if(!tx)await provider.writeImmutable(entry.marker.manifestPath,encode(entry.manifest),signal);signal.throwIfAborted();this.requireLocal(entry);await provider.writeImmutable(providerPath(`commits/${entry.marker.deviceId}/${entry.marker.revisionId}.json`),encode(entry.marker),signal);
    const confirmation=await provider.confirm(entry.marker,signal);signal.throwIfAborted();this.edit(next=>{next.entries[entryKey(entry.manifest)]!.preview.state=confirmation==='remote-confirmed'?'provider-confirmed':'pending';});
    if(confirmation==='remote-confirmed'||tx&&confirmation==='local-only'){await verifyPublished();this.edit(next=>{const saved=next.entries[entryKey(entry.manifest)]!;saved.preview.state=confirmation==='remote-confirmed'?'verified':'pending';saved.localPublications||={};saved.localPublications[publication]=true;delete saved.preview.error;});if(tx&&confirmation==='remote-confirmed')await tx.retirePending(intent,signal);}
@@ -350,12 +364,12 @@ export class PortableLibrary {
  async requestAudio(sessionId:string,signal?:AbortSignal):Promise<string>{return this.operation(async(signal)=>{
   const key=Object.keys(this.state.aliases).find(key=>this.state.aliases[key]===sessionId),head=key&&this.state.heads[key],entry=key&&head&&this.state.entries[`${key}/${head}`];if(!entry)throw new Error('No archived audio reference');this.requireLocal(entry);const payload=this.payload(entry),audio=payload.audio;if(!audio)throw new Error('No archived audio reference');const path=join(this.options.root,'media',`${audio.sha256}.wav`);
   const apply=()=>{const session=this.options.sessions.read(sessionId);if(!session)throw new Error('Meeting not found');const restored={...session,files:{...session.files,wav:path},audioArchived:true};delete (restored as any).audioExpired;delete (restored as any).audioRemovedAt;this.options.sessions.save(restored);return path;};
-  if(existsSync(path)){const inspected=await this.inspectAudio(path,signal);if(inspected.bytes===audio.bytes&&inspected.hash===audio.sha256)return apply();throw new Error('Cached audio integrity verification failed');}
+  if(this.exists(path)){const inspected=await this.inspectAudio(path,signal);if(inspected.bytes===audio.bytes&&inspected.hash===audio.sha256)return apply();throw new Error('Cached audio integrity verification failed');}
   const provider=this.provider(),job=randomUUID(),id=`library-${job}`,staging=join(this.options.root,'staging',job);this.options.quota.reserve(id,audio.bytes*2+4*encode(this.state).length+131072,[staging,path,join(this.options.sessionsDir,`${sessionId}.json`)]);
-  try{mkdirSync(staging,{recursive:true,mode:0o700});const file=join(staging,'verified.wav'),fd=openSync(file,'wx',0o600),hash=createHash('sha256');let received=0;
-   try{for await(const chunk of provider.stream(providerPath(audio.objectPath),audio.bytes,signal)){signal?.throwIfAborted();received+=chunk.length;if(received>audio.bytes)throw new Error('Audio transfer exceeded declared size');hash.update(chunk);writeFileSync(fd,chunk);}signal.throwIfAborted();if(received!==audio.bytes||hash.digest('hex')!==audio.sha256)throw new Error('Audio integrity verification failed');fsyncSync(fd);}finally{closeSync(fd);}
-   renameSync(file,path);const dir=openSync(dirname(path),'r');try{fsyncSync(dir);}finally{closeSync(dir);}return apply();
-  }finally{rmSync(staging,{recursive:true,force:true});this.options.quota.release(id);}
+  try{this.mkdir(staging);const file=join(staging,'verified.wav'),handle=this.localIo?.createFile(file,audio.bytes),fd=this.localIo?undefined:openSync(file,'wx',0o600),hash=createHash('sha256');let received=0;
+   try{for await(const chunk of provider.stream(providerPath(audio.objectPath),audio.bytes,signal)){signal?.throwIfAborted();received+=chunk.length;if(received>audio.bytes)throw new Error('Audio transfer exceeded declared size');hash.update(chunk);if(handle)handle.append(chunk);else writeFileSync(fd!,chunk);}signal.throwIfAborted();if(received!==audio.bytes||hash.digest('hex')!==audio.sha256)throw new Error('Audio integrity verification failed');if(handle)handle.sync();else fsyncSync(fd!);}finally{if(handle)handle.close();else closeSync(fd!);}
+   if(this.localIo){this.localIo.promote(file,path);this.localIo.syncDirectory(dirname(path));}else{renameSync(file,path);const dir=openSync(dirname(path),'r');try{fsyncSync(dir);}finally{closeSync(dir);}}return apply();
+  }finally{this.removeStaging(staging,true);this.options.quota.release(id);}
  },signal);}
  protectedPaths(revisionIds?:string[]):string[]{const requested=new Set(revisionIds);return Object.values(this.state.entries).filter(e=>!this.state.tombstones?.[meetingKey(e.manifest)]&&(e.preview.state!=='verified'||requested.has(e.manifest.revisionId))).flatMap(e=>{try{const hash=e.audioHash;return hash?[join(this.options.root,'media',`${hash}.wav`),...(e.audioSource?[e.audioSource]:[])]:[];}catch{return [];}});}
 }

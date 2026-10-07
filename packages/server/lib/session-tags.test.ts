@@ -105,3 +105,11 @@ test("HTTP operations expose committed tags and distinguish collisions from stal
   const stale = await sessionResponse(new Request("http://localhost/api/sessions?id=a", { method: "PATCH", body: JSON.stringify({ tags: [] }) }), store);
   expect(stale.status).toBe(409);
 });
+
+test('opted-in store absent-file and refusal never fall back to a present pathname',()=>{
+ const {dir}=fixture();const localIo={exists(){return false;},list(){return [];},stat(){throw new Error('Original descriptor refused');},readFile(){throw new Error('Original descriptor refused');},unlink(){throw new Error('Original descriptor refused');}};
+ const store=new SessionTags(dir,{writeAtomic:atomicWrite},localIo);
+ expect(store.read('a')).toBe(null);
+ localIo.exists=()=>{throw new Error('Original descriptor refused');};
+ expect(()=>store.read('a')).toThrow('Original descriptor refused');
+});

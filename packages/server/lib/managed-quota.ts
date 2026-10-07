@@ -3,6 +3,8 @@ import {basename,dirname, join, relative, resolve, sep} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {atomicWriteJson} from './atomic-json';
 
+import type {QuotaLocalIo} from './local-store-io';
+
 export const DEFAULT_MANAGED_LIMIT=2_000_000_000;
 export const MIN_MANAGED_LIMIT=1_048_576;
 export const MAX_MANAGED_LIMIT=8_000_000_000_000;
@@ -23,6 +25,7 @@ export interface QuotaSnapshot {
 export interface QuotaPreview extends QuotaSnapshot {requestedLimit:number;removals:Array<{path:string;bytes:number}>;token:string}
 export interface QuotaLedgerStorage {load():unknown|null;save(value:unknown):void}
 interface Options {
+ localIo?:QuotaLocalIo;
  ledgerStorage?:QuotaLedgerStorage;
  ledgerPath:string;roots:Partial<Record<ManagedCategory,string[]>>;getLimit:()=>number;setLimit:(bytes:number)=>void;
  protectedPaths:()=>string[];onEvicted?:(paths:string[])=>void;
@@ -32,7 +35,10 @@ interface Options {
 export class ManagedQuota {
  private reservations:Record<string,Reservation>={};
  private atomicWrites:Record<string,{path:string;temporary:string;allocationId:string}>={};
+ private readonly localIo:QuotaLocalIo|undefined;
  constructor(private options:Options){
+  this.localIo=options.localIo;
+  if(this.localIo&&!options.ledgerStorage)throw new Error('Descriptor quota requires original ledger storage');
   if(!options.ledgerStorage)mkdirSync(dirname(options.ledgerPath),{recursive:true,mode:0o700});
   const pathnameExists=options.ledgerStorage?false:existsSync(options.ledgerPath);
   const stored=options.ledgerStorage?options.ledgerStorage.load():pathnameExists?JSON.parse(readFileSync(options.ledgerPath,'utf8')):null;
@@ -54,22 +60,27 @@ export class ManagedQuota {
    let recovered=false;
    for(const [id,item] of Object.entries(this.reservations))if(id.startsWith('write-')){
     const primary=item.paths[0];
-    for(const path of item.paths.slice(1))if(path.startsWith(`${primary}.`) && /^\.[0-9a-f-]{36}\.tmp$/.test(path.slice(primary.length)) && existsSync(path) && lstatSync(path).isFile())unlinkSync(path);
+    for(const path of item.paths.slice(1))if(path.startsWith(`${primary}.`) && /^\.[0-9a-f-]{36}\.tmp$/.test(path.slice(primary.length)) && this.exists(path) && this.stat(path).isFile())this.unlink(path);
     delete this.reservations[id];recovered=true;
    }
    // Inspectors belonged to the previous server; release only their claims,
    // retaining the original audio and any durable pending catalog references.
    for(const id of Object.keys(this.reservations))if(/^library-inspect-[0-9a-f-]{36}$/i.test(id)){delete this.reservations[id];recovered=true;}
    for(const [id,item] of Object.entries(this.reservations))if(/^media-[0-9a-f-]{36}$/i.test(id)){
-    for(const path of item.paths)if(basename(path)===id && (this.options.roots.staging || []).some(root=>containsPath(resolve(root),resolve(path))) && existsSync(path) && lstatSync(path).isDirectory())rmSync(path,{recursive:true});
+    for(const path of item.paths)if(basename(path)===id && (this.options.roots.staging || []).some(root=>containsPath(resolve(root),resolve(path))) && this.exists(path) && this.stat(path).isDirectory())this.removeStaging(path);
     delete this.reservations[id];recovered=true;
    }
-   for(const item of Object.values(ledger.atomicWrites || {}) as Array<{temporary:string}>){if(existsSync(item.temporary) && lstatSync(item.temporary).isFile())unlinkSync(item.temporary);recovered=true;}
+   for(const item of Object.values(ledger.atomicWrites || {}) as Array<{temporary:string}>){if(this.exists(item.temporary) && this.stat(item.temporary).isFile())this.unlink(item.temporary);recovered=true;}
    if(recovered)this.persist();
   }
  }
  private persist(){const value={version:1,reservations:this.reservations,atomicWrites:this.atomicWrites};if(this.options.ledgerStorage)this.options.ledgerStorage.save(value);else atomicWriteJson(this.options.ledgerPath,value);}
+ private exists(path:string){return this.localIo ? this.localIo.exists(path) : existsSync(path);}
+ private stat(path:string){return this.localIo ? this.localIo.stat(path) : lstatSync(path);}
+ private unlink(path:string){if(this.localIo)this.localIo.unlink(path);else unlinkSync(path);}
+ private removeStaging(path:string){if(this.localIo)this.localIo.removeStaging(path);else rmSync(path,{recursive:true});}
  private managedPath(path:string):boolean{
+  if(this.localIo)return this.localIo.owns(path);
   const target=resolve(path);
   return Object.values(this.options.roots).flat().some(root=>{
    const base=resolve(root);const rel=relative(base,target);
@@ -87,6 +98,7 @@ export class ManagedQuota {
   });
  }
  private files():ManagedFile[]{
+  if(this.localIo)return this.localIo.inventory(this.options.roots,this.options.ledgerPath);
   const files:ManagedFile[]=[];const seen=new Set<string>();
   const visit=(path:string,category:ManagedCategory)=>{
    if(!existsSync(path))return;const stat=lstatSync(path);if(stat.isSymbolicLink())return;
@@ -116,7 +128,7 @@ export class ManagedQuota {
  allocation(id:string):{bytes:number;paths:string[]}|null{return this.reservations[id]?structuredClone(this.reservations[id]):null;}
  atomicWriteBudget(path:string,bytes:number,temporary?:string):()=>void{
   if(resolve(path)===resolve(this.options.ledgerPath) || !this.managedPath(path))return ()=>{};
-  const current=existsSync(path)?lstatSync(path).size:0;
+  const current=this.exists(path)?this.stat(path).size:0;
   const allocationEntry=Object.entries(this.reservations).find(([,item])=>item.paths.some(root=>ownsPath(root,resolve(path))));
   const allocation=allocationEntry?.[1];
   if(allocation){
@@ -156,7 +168,7 @@ export class ManagedQuota {
  apply(requestedLimit:number,token:string):QuotaSnapshot{
   const preview=this.preview(requestedLimit);if(typeof token!=='string' || token!==preview.token)throw new Error('Quota preview changed; review cleanup again');
   // No await: no second server job can acquire space between review and removal.
-  for(const file of preview.removals)unlinkSync(file.path);
+  for(const file of preview.removals)this.unlink(file.path);
   if(preview.removals.length)this.options.onEvicted?.(preview.removals.map(file=>file.path));
   const updated=this.snapshot();if(updated.usedBytes+updated.reservedBytes>requestedLimit)throw new Error('Quota usage changed during cleanup; review the storage limit again');
   this.options.setLimit(requestedLimit);return this.snapshot();

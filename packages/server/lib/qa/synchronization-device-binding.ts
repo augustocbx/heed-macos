@@ -29,6 +29,8 @@ let libc:ReturnType<typeof openLibrary>|undefined;let shim:ReturnType<typeof ope
 function openShim(){return cc({source:new URL('./synchronization-device-files.c',import.meta.url),symbols:{qa_openat:{args:[FFIType.i32,FFIType.ptr,FFIType.i32,FFIType.i32],returns:FFIType.i32},qa_directory_name:{args:[FFIType.ptr,FFIType.ptr,FFIType.i32],returns:FFIType.i32}}});}
 function openLibrary(){return dlopen('/usr/lib/libSystem.B.dylib',{
  mkdirat:{args:[FFIType.i32,FFIType.ptr,FFIType.i32],returns:FFIType.i32},
+ renameat:{args:[FFIType.i32,FFIType.ptr,FFIType.i32,FFIType.ptr],returns:FFIType.i32},
+ unlinkat:{args:[FFIType.i32,FFIType.ptr,FFIType.i32],returns:FFIType.i32},
  flock:{args:[FFIType.i32,FFIType.i32],returns:FFIType.i32},
  fdopendir:{args:[FFIType.i32],returns:FFIType.ptr},
  closedir:{args:[FFIType.ptr],returns:FFIType.i32},
@@ -280,3 +282,104 @@ export async function withPinnedQaDirectory<T>(path:string,expected:LocalIdentit
 }
 /** Reuse the reviewed schema-v2 preflight before launching original-authority proof. */
 export function preflightOwnedWorkspace(workspace:AcceptanceWorkspace,runId:string){localReceiptPreflight(workspace,runId);}
+
+/** Explicit originals for a tree operation, never discovered by matching bytes. */
+export interface QaTreeProof {path:string;identity:LocalIdentity;kind:'directory'|'file';policy:'private'|'installed'}
+export interface PinnedQaTree {
+ readonly path:string;readonly identity:LocalIdentity;
+ verify():void;stat(proofs:readonly QaTreeProof[]):import('../local-store-io').LocalStoreStat;
+ absent(parents:readonly QaTreeProof[],name:string):void;
+ list(parents:readonly QaTreeProof[],maximum:number):string[];
+ createDirectory(parents:readonly QaTreeProof[],name:string):LocalIdentity;
+ openRead(proofs:readonly QaTreeProof[],maximum:number):import('../local-store-io').LocalReadHandle;
+ createFile(parents:readonly QaTreeProof[],name:string,maximum:number):import('../local-store-io').LocalWriteHandle;
+ promote(source:readonly QaTreeProof[],parents:readonly QaTreeProof[],name:string,target?:QaTreeProof):void;
+ unlink(proofs:readonly QaTreeProof[]):void;syncDirectory(parents:readonly QaTreeProof[]):void;
+}
+function boundedInteger(value:number,maximum=Number.MAX_SAFE_INTEGER){if(!Number.isSafeInteger(value)||value<0||value>maximum)refuse();return value;}
+function structuralStat(fd:number):import('../local-store-io').LocalStoreStat {
+ const s=fstatSync(fd);
+ for(const key of ['dev','ino','size','uid','mode','nlink'] as const)boundedInteger(s[key]);
+ for(const key of ['birthtimeMs','mtimeMs'] as const)if(!Number.isFinite(s[key])||s[key]<0)refuse('identity-changed');
+ return {dev:s.dev,ino:s.ino,birthtimeMs:s.birthtimeMs,size:s.size,mtimeMs:s.mtimeMs,uid:s.uid,mode:s.mode,nlink:s.nlink,isFile:()=>s.isFile(),isDirectory:()=>s.isDirectory(),isSymbolicLink:()=>s.isSymbolicLink()};
+}
+function treeName(name:string){if(typeof name!=='string'||!name||name==='.'||name==='..'||name.includes('/')||name.includes('\0')||Buffer.byteLength(name)>255)refuse();return name;}
+function treePermission(fd:number,kind:QaTreeProof['kind'],policy:QaTreeProof['policy']){
+ const info=structuralStat(fd);
+ if(info.uid!==process.getuid?.()||!(kind==='directory'?info.isDirectory():info.isFile())||(kind==='file'&&info.nlink!==1)||(policy==='private'?(info.mode&0o777)!==(kind==='directory'?0o700:0o600):(info.mode&0o022)!==0))refuse('ownership-unavailable');
+ return info;
+}
+/** Callback-scoped descriptors. mkdirat provides no creator FD/inode: after parent fsync,
+ * a same-UID substitution before first no-follow open/validation/issuance is unsupported
+ * and can become the recorded parent for descendant effects. Confinement against
+ * substituted ancestors is conditional on genuine original-parent issuance.
+ * Ordinary rename/unlink namespace effects also remain outside inode-CAS guarantees. */
+export async function withPinnedQaTree<T>(path:string,originalRootIdentity:LocalIdentity,run:(tree:PinnedQaTree)=>Promise<T>):Promise<T>{
+ const chain=new LocalChain(path),directories=new Map<string,{fd:number;proof:QaTreeProof;parent:number;name:string}>(),handles=new Set<{close():void}>(),known=new Set<string>();let live=true;
+ try{
+  identityInput(originalRootIdentity);chain.installed();if(!same(chain.identities.at(-1)!,originalRootIdentity))refuse('identity-changed');
+  const verify=()=>{if(!live)refuse('identity-changed');chain.check();chain.installed();for(const d of directories.values()){treePermission(d.fd,'directory',d.proof.policy);if(!same(identity(fstatSync(d.fd,{bigint:true}) as any),d.proof.identity))refuse('identity-changed');const fd=relativeOpen(d.parent,d.name,directoryFlags);if(fd<0)refuse('identity-changed');try{if(!same(identity(fstatSync(fd,{bigint:true}) as any),d.proof.identity))refuse('identity-changed');}finally{closeSync(fd);}}};
+  const remember=(path:string)=>{known.add(path);if(known.size>512)refuse('recovery-required');};
+  const directory=(proofs:readonly QaTreeProof[])=>{
+   verify();if(proofs.length>16)refuse('recovery-required');let parent=chain.last,prefix='';
+   for(const proof of proofs){exact(proof,['path','identity','kind','policy']);if(proof.kind!=='directory'||!['private','installed'].includes(proof.policy))refuse();identityInput(proof.identity);const name=treeName(proof.path.slice(prefix?prefix.length+1:0));const expected=prefix?prefix+'/'+name:name;if(proof.path!==expected)refuse();remember(expected);let entry=directories.get(expected);
+    if(entry){if(!same(entry.proof.identity,proof.identity)||entry.proof.policy!==proof.policy)refuse('identity-changed');}
+    else{const fd=relativeOpen(parent,name,directoryFlags);if(fd<0)refuse('identity-changed');try{treePermission(fd,'directory',proof.policy);if(!same(identity(fstatSync(fd,{bigint:true}) as any),proof.identity))refuse('identity-changed');}catch(error){closeSync(fd);throw error;}entry={fd,proof:structuredClone(proof),parent,name};directories.set(expected,entry);}
+    parent=entry.fd;prefix=expected;
+   }
+   verify();return parent;
+  };
+  const leaf=(proofs:readonly QaTreeProof[])=>{if(!proofs.length||proofs.length>16)refuse();const proof=proofs.at(-1)!;exact(proof,['path','identity','kind','policy']);if(!['directory','file'].includes(proof.kind)||!['private','installed'].includes(proof.policy))refuse();identityInput(proof.identity);const parents=proofs.slice(0,-1),parent=directory(parents),prefix=parents.at(-1)?.path;const name=treeName(proof.path.slice(prefix?prefix.length+1:0));if(proof.path!==(prefix?prefix+'/'+name:name))refuse();remember(proof.path);return {parent,name,proof};};
+  const original=(proofs:readonly QaTreeProof[])=>{const entry=leaf(proofs),fd=relativeOpen(entry.parent,entry.name,entry.proof.kind==='directory'?directoryFlags:fileFlags);if(fd<0)refuse('identity-changed');try{treePermission(fd,entry.proof.kind,entry.proof.policy);if(!same(identity(fstatSync(fd,{bigint:true}) as any),entry.proof.identity))refuse('identity-changed');return {fd,...entry};}catch(error){closeSync(fd);throw error;}};
+  const absentName=(parent:number,name:string)=>{const fd=relativeOpen(parent,treeName(name),fileFlags);if(fd>=0){closeSync(fd);refuse('destination-exists');}if(lastErrno!==2)refuse('identity-changed');};
+  const readHandle=(proofs:readonly QaTreeProof[],maximum:number)=>{
+   boundedInteger(maximum);if(handles.size>=512)refuse('recovery-required');const entry=original(proofs);if(entry.proof.kind!=='file'){closeSync(entry.fd);refuse();}let closed=false;
+   const check=()=>{if(closed)refuse('identity-changed');verify();treePermission(entry.fd,'file',entry.proof.policy);if(!same(identity(fstatSync(entry.fd,{bigint:true}) as any),entry.proof.identity))refuse('identity-changed');const current=original(proofs);closeSync(current.fd);};
+   const handle={identity:Object.freeze({...entry.proof.identity}),verify:check,readAt(offset:number,count:number){boundedInteger(offset);boundedInteger(count,maximum);if(offset>maximum||count>maximum-offset)refuse();check();const out=Buffer.alloc(count);let total=0;while(total<count){check();const n=readSync(entry.fd,out,total,count-total,offset+total);boundedInteger(n,count-total);if(!n)break;total+=n;check();}check();return out.subarray(0,total);},close(){if(closed)return;closed=true;handles.delete(handle);closeSync(entry.fd);}};
+   handles.add(handle);return handle;
+  };
+  const tree:PinnedQaTree={path,identity:Object.freeze({...originalRootIdentity}),verify,
+   stat(proofs){if(!proofs.length){verify();return structuralStat(chain.last);}const entry=original(proofs);try{const info=structuralStat(entry.fd);verify();return info;}finally{closeSync(entry.fd);}},
+   absent(parents,name){const parent=directory(parents);absentName(parent,name);verify();},
+   list(parents,maximum){boundedInteger(maximum,512);const parent=directory(parents);maximum=Math.min(maximum,512-known.size);const copy=relativeOpen(parent,'.',directoryFlags);if(copy<0)refuse('identity-changed');const dir=libc!.symbols.fdopendir(copy);if(!dir){closeSync(copy);refuse('recovery-required');}const names:string[]=[];try{let reads=0;const bytes=Buffer.alloc(256);while(true){const length=shim!.symbols.qa_directory_name(dir,ptr(bytes),bytes.length);if(!length)break;if(length<0||++reads>maximum+2)refuse('recovery-required');const name=bytes.subarray(0,length).toString('utf8');if(name==='.'||name==='..')continue;treeName(name);if(names.length>=maximum)refuse('recovery-required');names.push(name);}}finally{libc!.symbols.closedir(dir);}verify();return names;},
+   createDirectory(parents,name){if(parents.length>=16)refuse('recovery-required');chain.private();const parent=directory(parents);absentName(parent,name);remember(parents.at(-1)?.path?parents.at(-1)!.path+'/'+name:name);makeDirectory(parent,name);const fd=relativeOpen(parent,name,directoryFlags);if(fd<0)refuse('identity-changed');try{treePermission(fd,'directory','private');const own=identity(fstatSync(fd,{bigint:true}) as any),path=parents.at(-1)?.path?parents.at(-1)!.path+'/'+name:name;directories.set(path,{fd,proof:{path,identity:own,kind:'directory',policy:'private'},parent,name});verify();return own;}catch(error){if(![...directories.values()].some(d=>d.fd===fd))closeSync(fd);throw error;}},
+   openRead:readHandle,
+   createFile(parents,name,maximum){if(parents.length>=16)refuse('recovery-required');boundedInteger(maximum);if(handles.size>=512)refuse('recovery-required');chain.private();const parent=directory(parents);absentName(parent,name);remember(parents.at(-1)?.path?parents.at(-1)!.path+'/'+name:name);const fd=relativeOpen(parent,name,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);if(fd<0)refuse('destination-exists');let closed=false;let total=0;const own=identity(fstatSync(fd,{bigint:true}) as any);
+    const check=()=>{if(closed)refuse('identity-changed');verify();treePermission(fd,'file','private');if(!same(identity(fstatSync(fd,{bigint:true}) as any),own))refuse('identity-changed');const current=relativeOpen(parent,name,fileFlags);if(current<0)refuse('identity-changed');try{if(!same(identity(fstatSync(current,{bigint:true}) as any),own))refuse('identity-changed');}finally{closeSync(current);}};
+    const handle={identity:Object.freeze({...own}),verify:check,append(chunk:Uint8Array){if(!(chunk instanceof Uint8Array)||chunk.byteLength>maximum-total)refuse();check();let written=0;while(written<chunk.byteLength){check();const n=writeSync(fd,chunk,written,chunk.byteLength-written);if(!Number.isSafeInteger(n)||n<=0||n>chunk.byteLength-written)refuse('recovery-required');written+=n;total+=n;check();}},sync(){check();fsyncSync(fd);check();},close(){if(closed)return;closed=true;handles.delete(handle);closeSync(fd);}};
+    try{treePermission(fd,'file','private');check();handles.add(handle);return handle;}catch(error){handle.close();throw error;}
+   },
+   promote(source,parents,name,target){if(parents.length>=16)refuse('recovery-required');chain.private();const src=original(source);try{if(src.proof.kind!=='file')refuse();const destination=directory(parents);if(target){const check=original([...parents,target]);closeSync(check.fd);}else absentName(destination,name);const from=Buffer.from(src.name+'\0'),to=Buffer.from(treeName(name)+'\0');if(libc!.symbols.renameat(src.parent,ptr(from),destination,ptr(to))!==0)refuse('recovery-required');const fd=relativeOpen(destination,name,fileFlags);if(fd<0)refuse('identity-changed');try{if(!same(identity(fstatSync(fd,{bigint:true}) as any),src.proof.identity))refuse('identity-changed');}finally{closeSync(fd);}verify();}finally{closeSync(src.fd);}},
+   unlink(proofs){chain.private();const entry=original(proofs);try{const name=Buffer.from(entry.name+'\0');if(libc!.symbols.unlinkat(entry.parent,ptr(name),entry.proof.kind==='directory'?0x80:0)!==0)refuse('recovery-required');if(entry.proof.kind==='directory'){const pin=directories.get(entry.proof.path);if(pin){closeSync(pin.fd);directories.delete(entry.proof.path);}}verify();}finally{closeSync(entry.fd);}},
+   syncDirectory(parents){chain.private();const fd=directory(parents);fsyncSync(fd);verify();}
+  };
+  const result=await run(tree);verify();return result;
+ }finally{live=false;for(const handle of [...handles])handle.close();for(const d of [...directories.values()].reverse())closeSync(d.fd);chain.close();}
+}
+
+export interface QaNamespaceIntent {
+ id:string;path:string;rootIdentity:LocalIdentity;operation:string;phase:string;claim:string;
+ kind:'directory'|'file';mode:0o700|0o600;maximum:number;role:'retained'|'temporary'|'staging';
+}
+export interface QaNamespaceGrant extends QaNamespaceIntent {parentIdentity:LocalIdentity}
+export interface QaNamespaceEntry extends QaNamespaceGrant {identity:LocalIdentity;policy:'private'|'installed'}
+export interface QaNamespaceFrame {
+ format:'heed-qa-runtime-namespace';version:1;rootIdentity:LocalIdentity;operation:string;
+ entries:QaNamespaceEntry[];grants:QaNamespaceGrant[];limitation:'same-uid-leaf-namespace-race-unprotected';
+}
+const intentKeys=['id','path','rootIdentity','operation','phase','claim','kind','mode','maximum','role'];
+export function parseQaNamespaceIntent(value:unknown):QaNamespaceIntent {
+ const v=exact(value,intentKeys);identityInput(v.rootIdentity);
+ if(!UUID.test(v.id)||!UUID.test(v.operation)||typeof v.phase!=='string'||!/^[a-z0-9-]{1,80}$/.test(v.phase)||typeof v.claim!=='string'||!/^[A-Za-z0-9_-]{1,160}$/.test(v.claim)||typeof v.path!=='string'||v.path.length>4096||v.path.split('/').length>16||v.path.split('/').some((p:string)=>!p||p==='.'||p==='..'||p.includes('\0')||Buffer.byteLength(p)>255)||!['directory','file'].includes(v.kind)||v.mode!==(v.kind==='directory'?0o700:0o600)||!Number.isSafeInteger(v.maximum)||v.maximum<0||(v.kind==='directory'&&v.maximum!==0)||!['retained','temporary','staging'].includes(v.role))refuse();
+ return structuredClone(v) as QaNamespaceIntent;
+}
+export function parseQaNamespaceGrant(value:unknown):QaNamespaceGrant {const v=exact(value,[...intentKeys,'parentIdentity']);identityInput(v.parentIdentity);const {parentIdentity,...intent}=v;return {...parseQaNamespaceIntent(intent),parentIdentity:structuredClone(parentIdentity)};}
+export function parseQaNamespaceEntry(value:unknown):QaNamespaceEntry {const v=exact(value,[...intentKeys,'parentIdentity','identity','policy']);identityInput(v.identity);if(!['private','installed'].includes(v.policy))refuse();const {identity:own,policy,...grant}=v;return {...parseQaNamespaceGrant(grant),identity:structuredClone(own),policy};}
+/** Runtime namespace frames are distinct from native receipts and their unchanged parser. */
+export function parseQaNamespaceFrame(value:unknown):QaNamespaceFrame {
+ const v=exact(value,['format','version','rootIdentity','operation','entries','grants','limitation']);identityInput(v.rootIdentity);
+ if(Buffer.byteLength(JSON.stringify(v))>1_048_576||v.format!=='heed-qa-runtime-namespace'||v.version!==1||!UUID.test(v.operation)||v.limitation!=='same-uid-leaf-namespace-race-unprotected'||!Array.isArray(v.entries)||!Array.isArray(v.grants)||v.entries.length>512||v.grants.length>512)refuse('recovery-required');
+ const entries=v.entries.map(parseQaNamespaceEntry),grants=v.grants.map(parseQaNamespaceGrant),names=new Set<string>();
+ for(const group of [entries,grants]){const seen=new Set<string>();for(const entry of group){if(!same(entry.rootIdentity,v.rootIdentity)||(group===grants&&entry.operation!==v.operation)||seen.has(entry.path))refuse('recovery-required');seen.add(entry.path);names.add(entry.path);}}
+ if(names.size>512)refuse('recovery-required');return {...v,entries,grants} as QaNamespaceFrame;
+}

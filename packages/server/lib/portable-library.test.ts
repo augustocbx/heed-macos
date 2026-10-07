@@ -237,3 +237,10 @@ test('I5 destination-dependent validation holds the override lease and restores 
   expect(f.library.isBusy()).toBe(false);
   expect(f.contexts).toEqual([]);
 });
+
+test('opted-in constructor refuses local authority loss before pathname category creation',()=>{
+ const root=mkdtempSync(join(tmpdir(),'heed-portable-local-'));roots.push(root);const sessionsDir=join(root,'sessions');mkdirSync(sessionsDir);
+ const localIo={mkdir(){throw new Error('Original descriptor refused');}};
+ expect(()=>new PortableLibrary({root:join(root,'library'),sessions:new SessionTags(sessionsDir),sessionsDir,quota:{reserve(){},release(){}},localIo:localIo as any})).toThrow('Original descriptor refused');
+ expect(existsSync(join(root,'library'))).toBe(false);
+});

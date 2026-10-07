@@ -209,3 +209,7 @@ test('pinned QA frames retain torn oversized linked and permission-changed entri
   expect(()=>dir.issue('bounded',{fixture:'public'},4096)).toThrow();expect(()=>dir.read('bounded',4096)).toThrow();
  });}finally{f.close();}
 });
+
+test('descriptor tree callback primitive exists independently of immutable private receipts',async()=>{
+ const binding=await import('./synchronization-device-binding');expect(typeof binding.withPinnedQaTree).toBe('function');
+});
