@@ -9,6 +9,10 @@ func screenCaptureGuideSelfTests() throws {
     precondition(UpdatePermissionHelpRoute.forMissing(nil) == .general)
     precondition(UpdatePermissionHelpRoute.forMissing([]) == .general)
     precondition(UpdatePermissionHelpRoute.forMissing(["slackLogs"]) == .general)
+    precondition(UpdatePermissionHelpRoute.forHelp(screenAuthorized: false, missing: nil, reportVersion: nil, installedVersion: "0.1.5") == .screenGuide)
+    precondition(UpdatePermissionHelpRoute.forHelp(screenAuthorized: true, missing: ["screenCapture"], reportVersion: "0.1.5", installedVersion: "0.1.5") == .screenGuide)
+    precondition(UpdatePermissionHelpRoute.forHelp(screenAuthorized: true, missing: ["screenCapture"], reportVersion: "0.1.4", installedVersion: "0.1.5") == .general)
+    precondition(UpdatePermissionHelpRoute.forHelp(screenAuthorized: true, missing: ["screenCapture"], reportVersion: nil, installedVersion: "0.1.5") == .general)
     for (key, translations) in ScreenCaptureGuideLocalization.translations {
         precondition(MenuLocalization.text(key, locale: "en") == key, "English remains the fallback for guide text")
         for locale in ["pt-BR", "fr", "de"] {
