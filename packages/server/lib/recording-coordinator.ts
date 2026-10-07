@@ -6,9 +6,10 @@ import type { CaptureMode, FinalCapture, RecordingSnapshot } from "../../shared/
 import { atomicWriteJson } from "./atomic-json";
 import { applySpeakerNames, reconcileSpeakerNames } from "../../shared/lib/speaker-names";
 import { sanitizeTranscriptionDiagnostics } from "./final-recording";
+import type { LiveCaptureOptions } from "../../shared/types/live-language";
 
 export interface RecordingAdapter {
-  start(mode: CaptureMode, meetingId: string, attachPath: (path: string) => void): Promise<{ path: string; liveModel?: string }>;
+  start(mode: CaptureMode, meetingId: string, attachPath: (path: string) => void, liveOptions: LiveCaptureOptions): Promise<{ path: string; liveModel?: string }>;
   stop(onCaptureStopped: () => void): Promise<FinalCapture>;
   finalize(path: string): Promise<FinalCapture>;
   save(session: Partial<Session>): Session;
@@ -24,18 +25,19 @@ export class RecordingCoordinator {
   private receipts: Record<string, Receipt> = {};
   private operations = new Map<string, {signature:string; promise:Promise<RecordingSnapshot>}>();
   private startOperation?: Promise<RecordingSnapshot>;
+  private pendingStartMode?: CaptureMode;
   private stopOperation?: Promise<RecordingSnapshot>;
   private listeners = new Set<(snapshot: RecordingSnapshot) => void>();
   private livePersistedAt = 0;
   private maintenanceOwner:string|undefined;
-  constructor(private options: {manifestPath: string; adapter: RecordingAdapter; now?: () => number; write?: typeof atomicWriteJson; maintenanceBlocked?:()=>boolean; realTimeTranscription?:()=>boolean}) {
+  constructor(private options: {manifestPath: string; adapter: RecordingAdapter; now?: () => number; write?: typeof atomicWriteJson; maintenanceBlocked?:()=>boolean; realTimeTranscription?:()=>boolean;resolveLiveOptions?:()=>Promise<LiveCaptureOptions>}) {
     mkdirSync(dirname(options.manifestPath),{recursive:true,mode:0o700});
     if (!existsSync(options.manifestPath)) return;
     const manifest = JSON.parse(readFileSync(options.manifestPath,"utf8")) as Manifest;
     if (manifest.version !== 1 || !manifest.snapshot || !["idle","starting","recording","stopping","finalizing","completed","failed"].includes(manifest.snapshot.state)
       || !Array.isArray(manifest.snapshot.segments) || !Number.isSafeInteger(manifest.snapshot.revision)
       || (manifest.snapshot.meetingId !== null && typeof manifest.snapshot.meetingId !== "string")) throw new Error("Invalid recording recovery manifest; preserve it for recovery");
-    this.value = {...manifest.snapshot,realTimeTranscription:manifest.snapshot.realTimeTranscription !== false}; this.receipts = manifest.receipts || {};
+    this.value = {...manifest.snapshot,realTimeTranscription:manifest.snapshot.realTimeTranscription !== false,liveSpeechLanguage:manifest.snapshot.liveSpeechLanguage === "pt"?"pt":"en"}; this.receipts = manifest.receipts || {};
     // A maintenance guard is tied to a running server; after restart no lease remains.
     if (busy.has(this.value.state)) this.change({state:"failed",error:"Recording interrupted by backend restart. Retry finalization using the retained audio.",maintenance:false});
     else if (this.value.maintenance) this.change({maintenance:false});
@@ -44,6 +46,7 @@ export class RecordingCoordinator {
   lifecycleState(): Pick<RecordingSnapshot,"state"|"maintenance"> {
     return {state:this.value.state,maintenance:this.value.maintenance};
   }
+  get admissionPending():boolean {return !!this.startOperation && !["starting","recording"].includes(this.value.state);}
   snapshot(): RecordingSnapshot {
     const value=structuredClone(this.value);
     if (value.state === "recording" && value.startedAt !== null) value.seconds=Math.max(0,(this.now()-value.startedAt)/1000);
@@ -82,25 +85,35 @@ export class RecordingCoordinator {
   start(requestId:string,mode:CaptureMode="both"):Promise<RecordingSnapshot> {
     return this.command(requestId,`start:${mode}`,async()=>{
       if(!["both","mic","system"].includes(mode))throw new Error("Choose a supported capture mode");
-      if(this.startOperation){this.remember(requestId,`start:${mode}`);return this.startOperation;}
+      if(this.startOperation){
+        if(this.pendingStartMode!==mode)throw Error("A different capture mode is pending admission");
+        if(this.admissionPending)return this.startOperation.then(state=>{this.remember(requestId,`start:${mode}`);return state;});
+        this.remember(requestId,`start:${mode}`);return this.startOperation;
+      }
       if(this.value.maintenance || this.options.maintenanceBlocked?.())throw new Error("Recording is unavailable during maintenance");
       if(this.value.state === "recording" || this.value.state === "starting"){this.remember(requestId,`start:${mode}`);return this.snapshot();}
       if(this.value.state === "failed" && this.value.path && !this.value.session)throw new Error("Recover the interrupted meeting before starting another recording");
       if(this.value.state === "stopping" || this.value.state === "finalizing")throw new Error("Wait for the active meeting to finish");
       if(this.receipts[requestId])return this.snapshot();
-      this.change({...initial(),meetingId:randomUUID(),mode,realTimeTranscription:this.options.realTimeTranscription?.() ?? true,revision:this.value.revision,startedAt:this.now(),state:"starting"},{id:requestId,signature:`start:${mode}`});
+      this.pendingStartMode=mode;
       this.startOperation=(async()=>{
+        // Defer execution so synchronous admission failure cannot leave a rejected pending owner.
+        await Promise.resolve();
         try {
-          const result=await this.options.adapter.start(mode,this.value.meetingId!,path=>this.change({path}));
+          const enabled=this.options.realTimeTranscription?.() ?? true;
+          const liveOptions:LiveCaptureOptions=this.options.resolveLiveOptions?await this.options.resolveLiveOptions():{realTimeTranscription:enabled,requestedLanguage:"en",effectiveLanguage:enabled?"en":null,engine:null,mode:null,initialModel:null,initialModelIdentity:null,capabilityKey:null,compatibleModels:[]};
+          if(this.value.maintenance || this.options.maintenanceBlocked?.())throw Error("Recording is unavailable during maintenance");
+          this.change({...initial(),meetingId:randomUUID(),mode,realTimeTranscription:liveOptions.realTimeTranscription,liveSpeechLanguage:liveOptions.requestedLanguage,liveOptions,revision:this.value.revision,startedAt:this.now(),state:"starting"},{id:requestId,signature:`start:${mode}`});
+          const result=await this.options.adapter.start(mode,this.value.meetingId!,path=>this.change({path}),liveOptions);
           if(this.value.state!=="starting")throw new Error(this.value.error || "Capture stopped during startup");
           if(!result.path)throw new Error("Capture did not create an audio writer");
           this.change({state:"recording",path:result.path,liveModel:result.liveModel,startedAt:this.now(),error:null});
           return this.snapshot();
         } catch(error) {
           if(this.value.path && !existsSync(this.value.path))this.change({path:null});
-          this.fail(error);throw error;
+          if(this.value.state==="starting")this.fail(error);throw error;
         }
-        finally {this.startOperation=undefined;}
+        finally {this.startOperation=undefined;this.pendingStartMode=undefined;}
       })();
       return this.startOperation;
     });
@@ -174,7 +187,7 @@ export class RecordingCoordinator {
   setMaintenance(acquire:boolean,owner="legacy") {
     if(typeof owner!=="string" || !owner.trim() || owner.length>128)throw new Error("Choose a valid maintenance owner");
     if(this.value.maintenance && this.maintenanceOwner!==owner)throw new Error("The maintenance guard belongs to another owner");
-    if(acquire && busy.has(this.value.state))throw new Error("An active meeting must finish before maintenance");
+    if(acquire && (busy.has(this.value.state)||this.admissionPending))throw new Error("An active meeting must finish before maintenance");
     const previous=this.maintenanceOwner;this.maintenanceOwner=acquire?owner:undefined;
     try{this.change({maintenance:acquire});}catch(error){this.maintenanceOwner=previous;throw error;}
     return this.snapshot();
@@ -197,5 +210,9 @@ export class RecordingCoordinator {
     // Periodic provisional checkpoints avoid an fsync for every live token.
     if(this.now()-this.livePersistedAt>=1000){this.persist();this.livePersistedAt=this.now();}
     this.publish();
+  }
+  updateLiveModel(model:string) {
+    if(!["starting","recording"].includes(this.value.state)||this.value.liveModel===model)return;
+    this.value={...this.value,liveModel:model,revision:this.value.revision+1};this.publish();
   }
 }

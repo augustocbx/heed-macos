@@ -4,6 +4,7 @@ import {join} from "node:path";
 import {tmpdir} from "node:os";
 import type {Session} from "@heed/shared";
 import {LibraryChatService} from "./library-chat";
+import {controlledChatRetrieval} from './chat-retrieval-test-utils';
 const directories:string[]=[];afterEach(()=>{for(const directory of directories.splice(0))rmSync(directory,{recursive:true,force:true});});
 const labels=(...names:string[])=>({mode:"labels" as const,labels:names,match:"any" as const});
 const all={mode:"all" as const,labels:[],match:"any" as const};
@@ -11,7 +12,7 @@ function meeting(id:string,tags:string[],text:string,final=true):Session{return 
 function fixture(generate?:ConstructorParameters<typeof LibraryChatService>[0]["generate"]){
  const directory=mkdtempSync(join(tmpdir(),"heed-library-chat-"));directories.push(directory);
  const meetings=[meeting("interview",["Entrevistas"],"INTERVIEW_ALLOWED Rails"),meeting("both",["Entrevistas","Planejamento"],"BOTH_ALLOWED Rails"),meeting("plan",["Planejamento"],"EXCLUDED_SECRET Rails"),meeting("unlabelled",[],"UNLABELLED_SECRET Rails"),meeting("draft",["Entrevistas"],"DRAFT_SECRET Rails",false)];
- const inputs:any[]=[];let held=false;const options={directory,listSessions:()=>meetings,isBusy:()=>held,generate:generate|| (async(input:any)=>{inputs.push(structuredClone({...input,signal:undefined}));return JSON.stringify({claims:[{text:input.evidence[0].quote,evidenceIds:[input.evidence[0].id]}],notFound:false});})};
+ const inputs:any[]=[];let held=false;const options={...controlledChatRetrieval(()=>meetings),directory,getSession:(id:string)=>meetings.find(s=>s.id===id)??null,isBusy:()=>held,generate:generate|| (async(input:any)=>{inputs.push(structuredClone({...input,signal:undefined}));return JSON.stringify({claims:[{text:input.evidence[0].quote,evidenceIds:[input.evidence[0].id]}],notFound:false});})};
  const service=new LibraryChatService(options);return {service,directory,meetings,inputs,options,hold:()=>{held=true;},release:()=>{held=false;}};
 }
 function send(f:ReturnType<typeof fixture>,scope:ReturnType<typeof labels>|typeof all,requestId="send",question="Who mentioned Rails?"){
@@ -56,7 +57,7 @@ test("same-snapshot followups are durable while stale clears and conflicting req
  expect(()=>send(f,scope,"one","Different question")).toThrow("request-conflict");expect(()=>f.service.command(scope,{action:"clear",expectedThreadRevision:"old"})).toThrow("history-changed");expect(f.service.command(scope,{action:"clear",expectedThreadRevision:done.revision}).turns).toEqual([]);
 });
 test("long eligible corpus reports partial coverage and never scans excluded meetings",async()=>{
- const f=fixture();f.meetings[0].segments=Array.from({length:100},(_,i)=>({speaker:"Ana",text:`Allowed ${i} `+"x".repeat(1190),start:i,end:i+1}));send(f,labels("Entrevistas"));const done=await completed(f,labels("Entrevistas"));expect(done.turns[0].answer!.coverage).toMatchObject({complete:false,reviewedChunks:80});expect(done.turns[0].answer!.coverage.totalChunks).toBeGreaterThan(80);expect(f.inputs.every(input=>input.evidence.every((s:any)=>s.sessionId!=="plan"))).toBe(true);
+ const f=fixture();f.meetings[0].segments=Array.from({length:100},(_,i)=>({speaker:"Ana",text:`Allowed ${i} `+"x".repeat(1190),start:i,end:i+1}));send(f,labels("Entrevistas"));const done=await completed(f,labels("Entrevistas"));expect(done.turns[0].answer!.coverage.complete).toBe(false);expect(done.turns[0].answer!.coverage.reviewedChunks).toBeLessThanOrEqual(4);expect(done.turns[0].answer!.coverage.retrieval?.partialReasons).toContain('generation-limit');expect(f.inputs.every(input=>input.evidence.every((s:any)=>s.sessionId!=="plan"))).toBe(true);
 });
 test("malformed scope input cannot request hidden broad access",()=>{
  const f=fixture();for(const scope of [null,{mode:"all",labels:["Entrevistas"],match:"any"},{mode:"labels",labels:[1],match:"any"},{mode:"labels",labels:["Entrevistas"],match:"bad"}])expect(()=>f.service.preview(scope as never)).toThrow("invalid-scope");

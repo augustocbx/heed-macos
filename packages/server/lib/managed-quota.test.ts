@@ -1,5 +1,5 @@
 import {afterEach, expect, test} from 'bun:test';
-import {mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, existsSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {ManagedQuota, configuredManagedLimit} from './managed-quota';
@@ -44,6 +44,21 @@ test('changed usage invalidates destructive preview and protected usage rejects 
  const s=setup();writeFileSync(join(s.text,'meeting.json'),'x'.repeat(60));writeFileSync(join(s.media,'a.wav'),'x'.repeat(30));
  expect(()=>s.quota.preview(50)).toThrow('protected');const preview=s.quota.preview(70);
  writeFileSync(join(s.text,'another.json'),'1');expect(()=>s.quota.apply(70,preview.token)).toThrow('preview');expect(s.value()).toBe(100);
+});
+test('explicit disposable index files are reviewed before media and retired only after current-token validation',()=>{
+ const s=setup(1000),indexes=join(s.root,'indexes');mkdirSync(indexes);const derived=join(indexes,'derived.sqlite'),foreign=join(indexes,'provider.json'),audio=join(s.media,'old.wav');
+ writeFileSync(derived,'x'.repeat(100));writeFileSync(foreign,'provider');writeFileSync(audio,'x'.repeat(30));writeFileSync(join(s.text,'source.json'),'source');
+ let eligible=true,calls=0;
+ const quota=new ManagedQuota({...s.options,roots:{...s.options.roots,indexes:[indexes]},disposableFiles:()=>eligible?[derived]:[],disposeFiles:(paths:string[])=>{expect(paths).toEqual([derived]);calls++;rmSync(derived);}} as any);
+ const preview=quota.preview(50);expect(preview.removals).toEqual([]);expect(preview.derivedCache).toEqual({bytes:100,files:1});expect(calls).toBe(0);expect(existsSync(derived)).toBe(true);
+ eligible=false;expect(()=>quota.apply(50,preview.token)).toThrow();expect(calls).toBe(0);expect(existsSync(audio)).toBe(true);eligible=true;
+ expect(()=>quota.apply(50,'stale')).toThrow('preview');expect(calls).toBe(0);quota.apply(50,preview.token);expect(calls).toBe(1);expect(readFileSync(foreign,'utf8')).toBe('provider');expect(existsSync(audio)).toBe(true);expect(s.value()).toBe(50);
+});
+test('one protected or missing bundle member prevents partial disposable-cache review',()=>{
+ const s=setup(1000),indexes=join(s.root,'indexes');mkdirSync(indexes);const database=join(indexes,'index.sqlite'),pointer=join(indexes,'active.json');writeFileSync(database,'x'.repeat(100));writeFileSync(pointer,'pointer');let protectedPaths=[database],calls=0;
+ const quota=new ManagedQuota({...s.options,roots:{...s.options.roots,indexes:[indexes]},protectedPaths:()=>protectedPaths,disposableFiles:()=>[database,pointer],disposeFiles:()=>{calls++;}});
+ expect(quota.snapshot().reclaimableCacheBytes).toBe(0);expect(()=>quota.preview(50)).toThrow('protected');expect(calls).toBe(0);
+ protectedPaths=[];const preview=quota.preview(50);expect(preview.derivedCache).toEqual({bytes:107,files:2});quota.reserve('foreign-active',107,[database]);expect(()=>quota.apply(50,preview.token)).toThrow();expect(calls).toBe(0);quota.release('foreign-active');rmSync(pointer);expect(quota.snapshot().reclaimableCacheBytes).toBe(0);expect(()=>quota.preview(50)).toThrow('protected');expect(existsSync(database)).toBe(true);
 });
 test('default and persisted byte limits validate safe integer accounting',()=>{
  expect(configuredManagedLimit(undefined)).toBe(2_000_000_000);expect(configuredManagedLimit(3_000_000_000)).toBe(3_000_000_000);
@@ -103,4 +118,15 @@ test('opted-in quota uses original inventory and refuses ungranted reservation w
  const localIo={inventory(){return [];},owns(){return false;},exists(){throw new Error('Original descriptor refused');},stat(){throw new Error('Original descriptor refused');},unlink(){throw new Error('Original descriptor refused');},removeStaging(){throw new Error('Original descriptor refused');}};
  const quota=new ManagedQuota({...s.options,ledgerStorage:{load:()=>null,save(){}},localIo});
  expect(quota.snapshot().usedBytes).toBe(0);expect(()=>quota.reserve('x',1,[join(s.media,'a.wav')])).toThrow('Invalid quota reservation');
+});
+
+test('cache owner refusal or incomplete retirement prevents media removal and limit mutation',()=>{
+ for(const failure of ['refuse','incomplete']){
+  const s=setup(1000),indexes=join(s.root,'indexes');mkdirSync(indexes);
+  const derived=join(indexes,'derived.sqlite'),media=join(s.media,'old.wav');writeFileSync(derived,'x'.repeat(100));writeFileSync(media,'x'.repeat(100));
+  const quota=new ManagedQuota({...s.options,roots:{...s.options.roots,indexes:[indexes]},disposableFiles:()=>[derived],disposeFiles:()=>{if(failure==='refuse')throw Error('Owner refused');}});
+  const preview=quota.preview(50);expect(preview.removals.map(file=>file.path)).toEqual([media]);
+  expect(()=>quota.apply(50,preview.token)).toThrow(failure==='refuse'?'Owner refused':'did not retire');
+  expect(readFileSync(media,'utf8')).toBe('x'.repeat(100));expect(existsSync(derived)).toBe(true);expect(s.value()).toBe(1000);
+ }
 });

@@ -1,0 +1,13 @@
+{
+  "short": [
+    {"speaker":"Ana <b> & João", "start":0, "end":4, "text":"English decisions and ação, coração, João."},
+    {"speaker":"Élodie", "start":3.5, "end":8, "text":"Français : réunion, œuf. Deutsch: Straße, Grüße. á."},
+    {"speaker":"Ana --> review", "start":8, "end":13, "text":"Literal <b>words</b> &amp; symbols --> stay visible.\n\nSecond paragraph."}
+  ],
+  "portuguese": [
+    {"speaker":"João", "start":0, "end":5, "text":"A revisão está aprovada. A ação será entregue amanhã."},
+    {"speaker":"Ana", "start":5, "end":10, "text":"São Paulo, integração, orçamento e confirmação."}
+  ],
+  "notes":"# Literal notes\n\nReviewed ação and réunion. <img src=https://example.invalid/private> remains literal.",
+  "task":"Deliver the reviewed ação and technical document"
+}

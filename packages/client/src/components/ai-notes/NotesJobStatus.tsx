@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import type { Session, NotesJob } from '@heed/shared';
 import { automaticNotesApi } from '@/api/automaticNotes';
-import { useSessionsStore } from '@/stores/sessions';
 import { aiWaitingMessage } from '@/lib/ai-waiting';
 import { useLocale } from '@/lib/i18n';
 import styles from './AutomaticNotes.module.css';
@@ -29,9 +28,9 @@ export function NotesJobStatus({ session, compact = false }: { session: Session;
  const { tr } = useLocale();
  const [busy, setBusy] = useState(false);
  const [error, setError] = useState(false);
- const accept = useSessionsStore(state => state.accept);
  const job = currentNotesJob(session);
  const metadata = session.notesMetadata;
+ const unknown = !!metadata && metadata.sourceRevision === null;
  const stale = !!metadata && (metadata.stale || metadata.sourceRevision !== session.transcriptRevision);
  if (!job && !metadata) return null;
  const control = async (action: 'cancel' | 'retry') => {
@@ -39,19 +38,18 @@ export function NotesJobStatus({ session, compact = false }: { session: Session;
   if (replace && !window.confirm(tr(replacementPrompt))) return;
   setBusy(true); setError(false);
   try {
-   const updated = await automaticNotesApi.control({ sessionId: session.id, jobId: job!.id, action, ...(replace ? { replaceExisting: true as const, expectedNotes: session.aiNotes } : {}) });
-   accept(updated);
+   await automaticNotesApi.control({ sessionId: session.id, jobId: job!.id, action, ...(replace ? { replaceExisting: true as const, expectedNotes: session.aiNotes } : {}) });
   } catch { setError(true); }
   finally { setBusy(false); }
  };
  const waiting = job && ['queued', 'waiting'].includes(job.status);
  const reason = waiting && job.waitingReason ? aiWaitingMessage(job.waitingReason) : job?.reason ? reasons[job.reason] || 'Automatic notes need attention.' : waiting ? aiWaitingMessage() : undefined;
- const source = metadata?.sourceRevision || job?.sourceRevision;
+ const source = metadata ? metadata.sourceRevision : job?.sourceRevision;
  const provenance = metadata?.origin === 'automatic' ? metadata : job;
  return <div className={compact ? styles.compact : styles.status}>
   {job && <div role="status">{tr(labels[job.status])}{job.status === 'running' && !compact && <span> · {tr('{count} characters generated', { count: job.generatedCharacters })}</span>}</div>}
   {reason && <p>{tr(reason)}</p>}
-  {stale && <p>{tr('Notes are stale: the transcript or speakers changed.')}</p>}
+  {unknown ? <p>{tr('Notes source is unknown. Regenerate notes to verify the current transcript.')}</p> : stale && <p>{tr('Notes are stale: the transcript or speakers changed.')}</p>}
   {!compact && <>
 
    {provenance && <p className={styles.provenance}>{[provenance.model, provenance.templateName ? tr(provenance.templateName) : undefined, provenance.language].filter(Boolean).join(' · ')}</p>}

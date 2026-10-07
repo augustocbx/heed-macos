@@ -9,18 +9,35 @@ import sys
 from types import SimpleNamespace
 from native_worker import NativeWorker, NATIVE_LIVE_TIMEOUT_SECONDS
 from worker_lifecycle import worker_entrypoint
+from live_language import path_capability, model_supports_language
 
 
 class PreviewWhisper:
     def __init__(self, model, kind, devices):
+        actual_kind = "mlx" if kind == "parakeet" else kind
+        expected = path_capability(actual_kind, model, "chunk", True)
+        if expected["state"] == "unavailable":
+            raise ValueError("Unknown preview model identity")
         self.worker = NativeWorker([sys.executable, "-u", os.path.abspath(__file__),
                                     model, kind, json.dumps(devices)])
+        try:
+            if self.worker.ready_info.get("capability") != expected:
+                raise RuntimeError("Preview worker model identity mismatch")
+        except BaseException:
+            self.worker.close()
+            raise
+        self.capability = expected
+        self.kind = actual_kind
+        self.model_name = model
 
     @property
     def alive(self):
         return self.worker.alive
 
     def transcribe(self, wav_path, language=None, **opts):
+        if not model_supports_language(self.kind, self.model_name, language) or opts.get("task", "transcribe") != "transcribe":
+            raise ValueError("Unsupported preview language or task")
+        opts["task"] = "transcribe"
         result = self.worker.request({"wav_path":wav_path, "language":language, "opts":opts},
                                      timeout=NATIVE_LIVE_TIMEOUT_SECONDS)
         if result.get("ok") is not True:
@@ -35,10 +52,12 @@ def serve(model, kind, devices):
     import engines
     engine = engines.MLXEngine(model) if kind in ("mlx", "parakeet") else engines.CTranslate2Engine(
         model, device=devices.get("whisper", "cpu"), compute_type=devices.get("compute_type", "int8"))
-    print(json.dumps({"ready":True}), flush=True)
+    print(json.dumps({"ready":True, "capability":path_capability(engine.kind, model, "chunk", True)}), flush=True)
     for line in sys.stdin:
         try:
             request = json.loads(line)
+            if not model_supports_language(engine.kind, model, request.get("language")) or request.get("opts", {}).get("task", "transcribe") != "transcribe":
+                raise ValueError("Unsupported preview language or task")
             segments, info = engine.transcribe(request["wav_path"], language=request.get("language"), **request.get("opts", {}))
             result = {"ok":True, "language":info.language,
                       "segments":[{"start":float(s.start), "end":float(s.end), "text":s.text} for s in segments]}

@@ -13,9 +13,9 @@ afterEach(() => {vi.restoreAllMocks();vi.unstubAllGlobals();});
 for (const label of ['failed final pass', 'unfinished final pass']) {
  it(`rejects ${label} and releases the processing state`, async () => {
   if (label === 'failed final pass') vi.mocked(recordingApi.stop).mockRejectedValue(new Error('Transcription failed'));
-  const {result}=renderHook(() => useRecording({micBars:{current:[]},systemBars:{current:[]},getLanguage:()=> 'pt'}));
+  const {result}=renderHook(() => useRecording({micBars:{current:[]},systemBars:{current:[]}}));
   let success:boolean|undefined;
-  await act(async () => {success=await result.current.stop('pt');});
+  await act(async () => {success=await result.current.stop();});
   expect(success).toBe(false);
   expect(useRecordingStore.getState().processing).toBe(false);
  });

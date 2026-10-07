@@ -1,0 +1,27 @@
+{
+  "family": "Noto Sans",
+  "version": "2.015",
+  "license": "SIL Open Font License 1.1",
+  "source": "https://github.com/notofonts/latin-greek-cyrillic/releases/tag/NotoSans-v2.015",
+  "sourceCommit": "c4a321e123e4d4ff315f57f4e0adf294fe3a95be",
+  "archive": "https://github.com/notofonts/latin-greek-cyrillic/releases/download/NotoSans-v2.015/NotoSans-v2.015.zip",
+  "files": {
+    "NotoSans-Regular.ttf": {
+      "archivePath": "NotoSans/full/ttf/NotoSans-Regular.ttf",
+      "bytes": 825628,
+      "sha256": "f5f552c8c5edb61fe6efb824baf4d4de47b1a8689ab4925ff43f7bd6a4ebece5"
+    },
+    "NotoSans-Bold.ttf": {
+      "archivePath": "NotoSans/full/ttf/NotoSans-Bold.ttf",
+      "bytes": 838072,
+      "sha256": "3a08a47daa00cade516425c15c57615aef2fd418ec9811a7b9f465088f92cc05"
+    },
+    "OFL.txt": {
+      "archivePath": "OFL.txt",
+      "bytes": 4395,
+      "sha256": "e2e177a32561584d4fc13aaa3cd8e53758a12910f013fe9ca125419111722029",
+      "sourceSha256": "cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a",
+      "formatting": "Trailing spaces removed; license text unchanged."
+    }
+  }
+}

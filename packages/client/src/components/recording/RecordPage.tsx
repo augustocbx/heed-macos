@@ -29,15 +29,13 @@ export function RecordPage() {
 	useLocale();
 	const micBars = useRef<HTMLDivElement[]>([]);
 	const systemBars = useRef<HTMLDivElement[]>([]);
-	const [language, setLanguage] = useState("en");
 
-	const { start, stop } = useRecording({
+	const { start, stop, recordFinalOnly, liveStartError, starting } = useRecording({
 		micBars,
 		systemBars,
-		getLanguage: () => language,
 	});
 
-	useDesktopControl({start,stop}, setLanguage);
+	useDesktopControl();
 
 	// Atomic selectors (stores/selectors.ts): subscribe to the narrowest slices instead of the whole
 	// store, so RecordPage doesn't re-render on every unrelated store write (e.g. live segment ticks).
@@ -52,7 +50,10 @@ export function RecordPage() {
 	// Show result card when recording (live preview) or after stop (final result)
 	const showResult = (recording && realTimeTranscription) || processing || segments.length > 0 || !!transcript;
 	// Block recording button while processing (transcribing + diarizing after stop)
-	const canRecord = !recording && !processing;
+	const canRecord = !recording && !processing && !starting;
+ const liveOptions=useRecordingStore(s=>s.liveOptions);
+ const liveLanguage=useRecordingStore(s=>s.liveSpeechLanguage);
+ const liveModel=useRecordingStore(s=>s.liveModel);
 	const [rotatingStep, setRotatingStep] = useState("");
 	const [rotatingStepKey, setRotatingStepKey] = useState(0);
 
@@ -114,6 +115,11 @@ export function RecordPage() {
 				<div className={styles.label}>
 					{recording ? tr("Recording... click to stop") : processing ? "" : !showResult ? tr("Click to start recording") : ""}
 				</div>
+                {liveStartError && !recording && !processing && <div role="alert">
+                  <p>{tr(liveStartError==='live-language-unsupported' ? 'The live model does not support this language. Choose a compatible model or record final-only.' : 'Live language capabilities are unavailable. Retry when the service is ready or record final-only.')}</p>
+                  <button disabled={starting} onClick={()=>void recordFinalOnly()}>{tr('Record final-only (keeps real-time off)')}</button>
+                  <p>{tr('Recording final-only turns real-time transcription off for future recordings. Turn it back on in Settings.')}</p>
+                </div>}
 				{recording && liveQuality && !liveQuality.ok && (
 					<div className={styles.qualityWarn} role="status">
 						<span className={styles.qualityWarnIcon} aria-hidden="true">!</span>
@@ -122,7 +128,8 @@ export function RecordPage() {
 				)}
 				{!processing && (
 					<div className={styles.options}>
-						<span role={recording && !realTimeTranscription ? "status" : undefined}>{tr(recording && !realTimeTranscription ? "Live text is disabled. Audio is being recorded; the transcript and speakers will be prepared after stopping." : "Live preview starts in English. The final transcript automatically detects English or Portuguese.")}</span>
+                        {recording && realTimeTranscription && <p role="status">{tr('Provisional live text: {language} • {engine} / {model}',undefined,{language:tr(liveLanguage==='pt'?'Brazilian Portuguese':'English'),engine:liveOptions?.engine || tr('Unknown'),model:liveModel || tr('Unknown')})}{liveOptions?.initialModel && liveModel!==liveOptions.initialModel && ' ('+tr('Initial model: {model}',undefined,{model:liveOptions.initialModel})+')'}</p>}
+						<span role={recording && !realTimeTranscription ? "status" : undefined}>{tr(recording && !realTimeTranscription ? "Live text is disabled. Audio is being recorded; the transcript and speakers will be prepared after stopping." : "Live speech language is configured in Settings. The final transcript automatically detects English or Portuguese.")}</span>
 					</div>
 				)}
 			</div>

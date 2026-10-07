@@ -9,6 +9,10 @@ import type {LibraryProvider} from '../portable-provider';
 import {encode,makeBundle,revisionPath} from '../portable-schema';
 import {MeetingChatService,transcriptEvidence,type ChatGenerator} from '../meeting-chat';
 import {LibraryChatService} from '../library-chat';
+import {RetrievalCatalog} from '../retrieval-catalog';
+import {RetrievalIndex} from '../retrieval-index';
+import {MeetingRetriever} from '../meeting-retrieval';
+import {createRetrievalPolicy} from '../retrieval-policy';
 import {sourceRevision} from '../automatic-notes';
 import {publicSynchronizationFixture} from './synchronization-integrity';
 
@@ -71,17 +75,26 @@ export async function createOfflineSynchronizationFixture(location:string,genera
  if(sessions.snapshot().sessions.length!==3)throw Error('Synthetic production imports did not commit');
  library.selectProvider();provider.disabled=true;const importedCalls=provider.calls;
  let meetingChat:MeetingChatService,labelChat:LibraryChatService;
+ let catalog:RetrievalCatalog,index:RetrievalIndex,retriever:MeetingRetriever;
+ const closeRetrieval=()=>{retriever?.close();index?.close();catalog?.close();};
+ const prepareRetrieval=async()=>{await catalog.reconcile();await index.tick();assertOffline();};
  const assertOffline=()=>{if(library.snapshot().configured||!provider.disabled||provider.calls!==importedCalls)throw Error('Offline provider isolation failed');};
  const guarded:ChatGenerator=async input=>{assertOffline();const result=await generate(input);assertOffline();return result;};
  const restart=()=>{
-  if(meetingChat?.busy||labelChat?.busy)throw Error('Cannot restart an active QA chat');
+  if(meetingChat?.busy||meetingChat?.pending||labelChat?.busy||labelChat?.pending)throw Error('Cannot restart an active QA chat');
+  closeRetrieval();
   library=new PortableLibrary({root:libraryRoot,sessions,sessionsDir,quota});
-  meetingChat=new MeetingChatService({directory:join(root,'meeting-chat'),getSession:id=>sessions.read(id),isBusy:()=>false,generate:guarded});
-  labelChat=new LibraryChatService({directory:join(root,'label-chat'),listSessions:()=>sessions.snapshot().sessions,isBusy:()=>false,generate:guarded});assertOffline();
+  const policy=createRetrievalPolicy(),now=()=>Date.now();
+  catalog=new RetrievalCatalog({store:sessions,policy,now,isBusy:()=>false});
+  index=new RetrievalIndex({directory:join(libraryRoot,'indexes','retrieval'),catalog,store:sessions,policy,now,quota,isBusy:()=>false});
+  retriever=new MeetingRetriever({store:sessions,catalog,index,policy,now});
+  meetingChat=new MeetingChatService({directory:join(root,'meeting-chat'),getSession:id=>sessions.read(id),catalog,retriever,isBusy:()=>false,generate:guarded});
+  labelChat=new LibraryChatService({directory:join(root,'label-chat'),getSession:id=>sessions.read(id),catalog,retriever,isBusy:()=>false,generate:guarded});assertOffline();
  };
  restart();
+ try{await prepareRetrieval();}catch(error){closeRetrieval();throw error;}
  const meeting=(locale:'en'|'pt')=>{const found=sessions.snapshot().sessions.find(session=>session.language===locale&&session.tags.includes('Synchronization QA'));if(!found)throw Error('Public imported meeting unavailable');return found;};
- const stop=async()=>{const results=await Promise.allSettled([meetingChat.preempt(),labelChat.preempt()]);if(results.some(result=>result.status==='rejected')||meetingChat.busy||labelChat.busy)throw Error('QA chats did not stop');};
+ const stop=async()=>{const results=await Promise.allSettled([meetingChat.preempt(),labelChat.preempt()]);if(results.some(result=>result.status==='rejected')||meetingChat.busy||labelChat.busy)throw Error('QA chats did not stop');closeRetrieval();};
  const wait=async<T extends ChatTurn|LibraryChatTurn>(read:()=>T|undefined,timeoutMs:number):Promise<T>=>{
   const deadline=Date.now()+timeoutMs;
   while(Date.now()<deadline){const turn=read();if(turn&&!['waiting','running'].includes(turn.status)){assertOffline();return turn;}await Bun.sleep(10);}
@@ -89,11 +102,13 @@ export async function createOfflineSynchronizationFixture(location:string,genera
  };
  return {root,receipt,sessions,get library(){return library;},restart,meeting,stop,assertOffline,providerCalls:()=>provider.calls,
   async askMeeting(locale:'en'|'pt',question:string,model:string,timeoutMs=300_000){
+   await prepareRetrieval();
    const session=meeting(locale),thread=meetingChat.get(session.id),requestId=randomUUID();
    meetingChat.command(session.id,{action:'send',question,model,requestId,expectedSourceRevision:sourceRevision(session),expectedThreadRevision:thread.revision});
    return wait(()=>meetingChat.get(session.id).turns.find(turn=>turn.requestId===requestId),timeoutMs);
   },
   async askLabels(locale:'en'|'pt',question:string,model:string,timeoutMs=300_000){
+   await prepareRetrieval();
    const scope={mode:'labels' as const,labels:[locale==='en'?'Planning':'Planejamento'],match:'any' as const},context=labelChat.get(scope),requestId=randomUUID();
    labelChat.command(scope,{action:'send',question,model,requestId,expectedSourceRevision:context.preview.snapshot.key,expectedThreadRevision:context.thread.revision});
    return wait(()=>labelChat.get(scope).thread.turns.find(turn=>turn.requestId===requestId),timeoutMs);

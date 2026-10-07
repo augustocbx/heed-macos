@@ -1,4 +1,7 @@
 export * from "./session.ts";
+export type * from "./transcript-editing.ts";
+export type * from "./live-language.ts";
+export type * from "./meeting-export.ts";
 export * from "./notes.ts";
 export * from "./speaker.ts";
 export * from "./template.ts";
@@ -21,3 +24,4 @@ export * from "./onedrive.ts";
 export * from '../lib/cloud-connections';
 export * from '../lib/service-config';
 export * from '../lib/service-identity';
+export type * from './retrieval';

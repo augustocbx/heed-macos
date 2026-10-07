@@ -6,7 +6,7 @@ import {localServiceUrl} from '@heed/shared';
 const API_BASE = import.meta.env.VITE_API_BASE ? localServiceUrl(import.meta.env.VITE_API_BASE as string,"API endpoint") : "";
 
 export class ApiError extends Error {
-	constructor(message: string, public status?: number) {
+	constructor(message: string, public status?: number, public code?: string) {
 		super(message);
 		this.name = "ApiError";
 	}
@@ -16,11 +16,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	const res = await fetch(`${API_BASE}${path}`, init);
 	if (!res.ok) {
 		let msg = `${res.status} ${res.statusText}`;
+        let code: string | undefined;
 		try {
 			const body = await res.json();
 			if (body.error) msg = body.error;
+            if (typeof body.code === "string") code = body.code;
 		} catch {}
-		throw new ApiError(msg, res.status);
+		throw new ApiError(msg, res.status, code);
 	}
 	return res.json() as Promise<T>;
 }

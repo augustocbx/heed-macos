@@ -5,6 +5,8 @@ import { join } from "node:path";
 import type { Session } from "@heed/shared";
 import { atomicWriteJson } from "./atomic-json";
 import { RecordingCoordinator, type RecordingAdapter } from "./recording-coordinator";
+import { AutomaticNotesService } from "./automatic-notes";
+import { transcriptGuard } from "./session-tags";
 
 const directories: string[] = [];
 const finalDiagnostics = () => {
@@ -43,6 +45,22 @@ describe("backend recording lifecycle", () => {
       const copy=coordinator.lifecycleState();copy.maintenance=false;check("completed",true);
       coordinator.setMaintenance(false,"metadata-owner");check("completed",false);
     } finally {fullSnapshot.mockRestore();}
+});
+  test("recovery after a completed-manifest fault returns an already corrected atomic session", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "heed-coordinator-source-")); directories.push(directory);
+    const notes = new AutomaticNotesService({ sessionsDir: join(directory, "sessions"), getSettings: () => ({ enabled: false, templateId: "meeting", model: null, language: "meeting" }), loadTemplate: () => undefined, generate: async () => "", isBusy: () => false });
+    const base = setup({ save: session => notes.create(session) }); let failed = false;
+    const coordinator = new RecordingCoordinator({ manifestPath: base.manifestPath, adapter: base.adapter, write(path, value) {
+      if ((value as any).snapshot.state === "completed" && !failed) { failed = true; throw Error("Synthetic completed-manifest fault"); }
+      atomicWriteJson(path, value);
+    } });
+    const active = await coordinator.start("source-start", "both");
+    await expect(coordinator.stop("source-stop", active.meetingId!)).rejects.toThrow("Synthetic completed-manifest fault");
+    const saved = notes.get(active.meetingId!)!; expect(saved.transcriptVersion).toBe(1);
+    const corrected = notes.commitTranscript(saved.id, { ...transcriptGuard(saved), requestId: "correction", action: "edit", target: { kind: "segment", index: 0 }, text: "Vamos entregar na sexta-feira." });
+    const recovered = new RecordingCoordinator({ manifestPath: base.manifestPath, adapter: base.adapter });
+    const completed = await recovered.retry("recover-source", active.meetingId!);
+    expect(completed.session).toEqual(corrected); expect(completed.session?.transcriptVersion).toBe(2); expect(notes.list()).toHaveLength(1);
   });
   test("diagnostics and fallback attribution survive checkpoint recovery without losing manual names",async()=>{
     let fail=true;let finalizations=0;
@@ -236,4 +254,34 @@ test("snapshots the device preference at admission and preserves it through reco
   expect(done.session).toMatchObject({transcript:"Vamos entregar sexta.",speakers:["Speaker 1"],transcriptFinalized:true});
   expect(done.realTimeTranscription).toBe(false);
   expect((await recovered.start("next", "mic")).realTimeTranscription).toBe(true);
+});
+
+// Execute the actual server shutdown callback with held consumers, without importing
+// the server singleton or accessing installed services, providers or model runtimes.
+function shutdownFixture(rejectConsumer=false) {
+ const source=readFileSync(join(import.meta.dir,'../server.ts'),'utf8');
+ const callback=source.match(/installShutdownHooks\((async \(\) => \{[\s\S]*?\n\})\);/)?.[1];
+ if(!callback)throw Error('Server shutdown callback unavailable');
+ const events:string[]=[];let release!:()=>void;const held=new Promise<void>(resolve=>release=resolve);
+ const consumer=(name:string)=>({preempt:async()=>{events.push(name+'-cancel');await held;if(rejectConsumer&&name==='chat')throw Error('Synthetic cancellation persistence failure');events.push(name+'-stopped');}});
+ const close=(name:string)=>({close:()=>events.push(name+'-closed')});
+ const scope={clearInterval:()=>events.push('timer-cleared'),notesTimer:0,tasksTimer:0,manualNotesController:{abort:()=>events.push('manual-aborted')},manualNotesDone:held,
+  directSmbConnections:{close:async()=>{events.push('smb-cancel');await held;events.push('smb-stopped');throw Error('Synthetic provider cleanup refusal');}},googleDrive:{preempt:async()=>{}},
+  notesService:consumer('notes'),tasksService:consumer('tasks'),chatService:consumer('chat'),libraryChatService:consumer('library-chat'),preemptRetrieval:async()=>{events.push('retrieval-cancel');await held;events.push('retrieval-stopped');},
+  icloudConnections:close('icloud'),oneDriveConnections:close('onedrive'),smbConnections:close('mounted'),meetingRetriever:close('retriever'),retrievalIndex:close('index'),retrievalCatalog:close('catalog'),stopLiveTranscribe:()=>events.push('live-stopped')};
+ const shutdown=new Function(...Object.keys(scope),`return (${callback})`)(...Object.values(scope)) as ()=>Promise<void>;
+ return {events,release,shutdown};
+}
+test('server shutdown waits for simultaneous direct SMB, chat and retrieval before closing storage despite provider refusal',async()=>{
+ const f=shutdownFixture(),pending=f.shutdown();
+ expect(f.events.slice(0,3)).toEqual(['timer-cleared','timer-cleared','manual-aborted']);
+ expect(f.events).toContain('smb-cancel');expect(f.events).toContain('retrieval-cancel');expect(f.events).not.toContain('index-closed');
+ f.release();await pending;
+ for(const consumer of ['chat','library-chat','retrieval','smb'])expect(f.events.indexOf(consumer+'-stopped')).toBeLessThan(f.events.indexOf('index-closed'));
+ expect(f.events).toContain('catalog-closed');
+});
+test('server shutdown never closes retrieval storage after an unproved consumer stop',async()=>{
+ const f=shutdownFixture(true),pending=f.shutdown();f.release();await pending.catch(()=>{});
+ expect(f.events).toContain('retrieval-stopped');expect(f.events).toContain('smb-stopped');
+ expect(f.events).not.toContain('retriever-closed');expect(f.events).not.toContain('index-closed');expect(f.events).not.toContain('catalog-closed');
 });

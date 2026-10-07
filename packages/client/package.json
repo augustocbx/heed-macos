@@ -14,6 +14,8 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
+		"@pdf-lib/fontkit": "1.1.1",
+		"pdf-lib": "1.17.1",
 		"react": "^19.2.0",
 		"react-dom": "^19.2.0",
 		"zustand": "^5.0.8"
@@ -31,6 +33,7 @@
 		"eslint-plugin-react": "^7.37.5",
 		"eslint-plugin-react-hooks": "^7.0.1",
 		"jsdom": "^29.0.2",
+		"subtitle": "4.2.2",
 		"typescript": "^5.9.3",
 		"typescript-eslint": "^8.58.0",
 		"vite": "^7.2.0",

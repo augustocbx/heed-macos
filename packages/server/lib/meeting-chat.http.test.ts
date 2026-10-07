@@ -16,7 +16,7 @@ test("isolated HTTP chat persists across restart, cancels generation and rejects
   if(!body.prompt){unloads++;return Response.json({done:true});}
   const input=JSON.parse(body.prompt);
   expect(body.options.num_ctx).toBe(8192);
-  if(input.question==="Cancel this request"){cancelStarted=true;await new Promise(resolve=>setTimeout(resolve,500));}
+  if(input.question==="Cancel this request: orçamento"){cancelStarted=true;await new Promise(resolve=>setTimeout(resolve,500));}
   return Response.json({response:JSON.stringify({claims:[{text:"Ana will review the budget.",evidenceIds:[input.evidence[0].id]}],notFound:false}),done:true,done_reason:"stop"});
  }});
  const probe=Bun.serve({hostname:"127.0.0.1",port:0,fetch:()=>new Response()});const port=probe.port;await probe.stop(true);
@@ -37,20 +37,25 @@ test("isolated HTTP chat persists across restart, cancels generation and rejects
   const source=(await request("/api/sessions",{id:"synthetic",title:"Synthetic bilingual meeting",language:"pt",transcript:"Ana: Vou revisar o orçamento.",segments:[{speaker:"Ana",start:1,end:3,text:"Vou revisar o orçamento."}],speakers:["Ana"],transcriptFinalized:true})).body;
   expect((await request("/api/chat/models")).body.models).toEqual(["synthetic:latest"]);
   expect((await request("/api/sessions/synthetic/chat",undefined,{headers:{origin:"https://hostile.example"}})).status).toBe(403);
-  const command={action:"send",requestId:"question-a",question:"What did Ana agree to do?",model:"synthetic:latest",expectedSourceRevision:source.transcriptRevision};
+  const command={action:"send",requestId:"question-a",question:"Quem vai revisar o orçamento?",model:"synthetic:latest",expectedSourceRevision:source.transcriptRevision};
   expect((await request("/api/sessions/synthetic/chat",command)).status).toBe(200);
   await waitFor(async()=>(await request("/api/sessions/synthetic/chat")).body.turns[0].status==="completed");
   const saved=(await request("/api/sessions/synthetic/chat")).body;
   const citation=saved.turns[0].answer.claims[0].citations[0];expect(citation).toMatchObject({quote:"Vou revisar o orçamento.",speaker:"Ana",segmentIndex:0,start:1});
   expect((await request("/api/sessions/synthetic/chat",command)).body.turns).toHaveLength(1);
   await stop();await start();expect((await request("/api/sessions/synthetic/chat")).body.turns[0].answer.claims[0].citations[0]).toEqual(citation);
-  await request("/api/sessions/synthetic/chat",{...command,requestId:"question-b",question:"Cancel this request"});
+  await request("/api/sessions/synthetic/chat",{...command,requestId:"question-b",question:"Cancel this request: orçamento"});
   await waitFor(async()=>cancelStarted);
   const active=(await request("/api/sessions/synthetic/chat")).body.turns[1];
   expect((await request("/api/sessions/synthetic/chat",{action:"cancel",turnId:active.id})).status).toBe(200);
   await waitFor(async()=>unloads>0);
   expect((await request("/api/sessions/synthetic/chat")).body.turns[1].status).toBe("cancelled");
-  await request("/api/sessions?id=synthetic",{transcript:"Edited synthetic transcript"},{method:"PATCH"});
+  const current=(await request("/api/sessions")).body.find((session:{id:string})=>session.id==='synthetic');
+  const corrected=await request("/api/sessions/synthetic/transcript/commands",{
+   expectedTranscriptRevision:current.transcriptRevision,expectedTranscriptVersion:current.transcriptVersion,
+   action:'edit',requestId:'chat-source-correction',target:{kind:'segment',index:0},text:'Edited synthetic transcript',
+  });
+  expect(corrected.status).toBe(200);expect(corrected.body.transcript).toBe('Edited synthetic transcript');
   const stale=(await request("/api/sessions/synthetic/chat")).body;expect(stale.turns[0].stale).toBe(true);
   expect((await request("/api/sessions/synthetic/chat",{action:"clear",expectedThreadRevision:stale.revision})).status).toBe(200);
   expect((await request("/api/sessions/synthetic/chat")).body.turns).toHaveLength(0);
@@ -82,7 +87,7 @@ test("real HTTP task and chat queues share one local model slot",async()=>{
  try{
   await waitFor(async()=>{try{return !!await request("/api/sessions");}catch{return false;}});
   const source=await request("/api/sessions",meeting("first"));await waitFor(async()=>taskCalls===1);
-  await request("/api/sessions/first/chat",{action:"send",requestId:"shared-slot",question:"What did Ana agree to do?",model:"synthetic:latest",expectedSourceRevision:source.transcriptRevision});
+  await request("/api/sessions/first/chat",{action:"send",requestId:"shared-slot",question:"Quem vai revisar o orçamento?",model:"synthetic:latest",expectedSourceRevision:source.transcriptRevision});
   await new Promise(resolve=>setTimeout(resolve,1100));expect(chatCalls).toBe(0);expect((await request("/api/sessions/first/chat")).turns[0].status).toBe("waiting");
   await request("/api/sessions",meeting("second"));
   releaseTask();await waitFor(async()=>chatCalls===1);
@@ -99,8 +104,8 @@ test('single and scoped chat request required response fields with exact eligibl
  const wait=async(read:()=>Promise<any>)=>{for(let i=0;i<250;i++){const value=await read();if(['completed','failed'].includes(value?.status))return value;await Bun.sleep(20);}throw new Error('Schema HTTP generation timed out');};
  try{app=Bun.spawn([process.execPath,'run',join(import.meta.dir,'..','server.ts')],{cwd:join(import.meta.dir,'../../..'),env:{...process.env,HEED_APP_DIR:state,HEED_RECORDINGS_DIR:join(state,'recordings'),HEED_MODEL:'',PORT:String(port),HEED_API_PORT:String(port),HEED_UI_PORT:"48101",HEED_TRANSCRIPTION_PORT:"48102",HEED_TRANSCRIPTION_URL:base,VITE_API_BASE:base,OLLAMA_HOST:`http://127.0.0.1:${ollama.port}`},stdout:'ignore',stderr:'ignore'});let ready=false;for(let i=0;i<150;i++){try{if((await fetch(base+'/api/sessions')).ok){ready=true;break;}}catch{}await Bun.sleep(20);}expect(ready).toBe(true);
   const source=await call('/api/sessions',{id:'allowed',title:'Synthetic',language:'pt',tags:['Allowed'],transcriptFinalized:true,transcript:'O orçamento não foi aprovado.',segments:[{speaker:'Ana',start:0,end:2,text:'O orçamento não foi aprovado.'}]});await call('/api/sessions',{id:'excluded',title:'Excluded',language:'en',tags:['Other'],transcriptFinalized:true,transcript:'EXCLUDED_MARKER',segments:[{speaker:'Dora',start:0,end:2,text:'EXCLUDED_MARKER'}]});
-  await call('/api/sessions/allowed/chat',{action:'send',requestId:'single',question:'Budget?',model:'synthetic:local',expectedSourceRevision:source.transcriptRevision});const single=await wait(async()=>(await call('/api/sessions/allowed/chat')).turns[0]);expect(single.status).toBe('completed');
-  const scope={mode:'labels',labels:['Allowed'],match:'any'},context=await call('/api/library-chat/context',{scope});await call('/api/library-chat/command',{scope,command:{action:'send',requestId:'scoped',question:'Budget?',model:'synthetic:local',expectedSourceRevision:context.preview.snapshot.key}});const scoped=await wait(async()=>(await call('/api/library-chat/context',{scope})).thread.turns[0]);expect(scoped.status).toBe('completed');
+  await call('/api/sessions/allowed/chat',{action:'send',requestId:'single',question:'Orçamento?',model:'synthetic:local',expectedSourceRevision:source.transcriptRevision});const single=await wait(async()=>(await call('/api/sessions/allowed/chat')).turns[0]);expect(single.status).toBe('completed');
+  const scope={mode:'labels',labels:['Allowed'],match:'any'},context=await call('/api/library-chat/context',{scope});await call('/api/library-chat/command',{scope,command:{action:'send',requestId:'scoped',question:'Orçamento?',model:'synthetic:local',expectedSourceRevision:context.preview.snapshot.key}});const scoped=await wait(async()=>(await call('/api/library-chat/context',{scope})).thread.turns[0]);expect(scoped.status).toBe('completed');
   expect(received).toHaveLength(2);for(const {body,input} of received){expect(body.format).toMatchObject({type:'object',additionalProperties:false,required:['claims','notFound'],properties:{notFound:{type:'boolean'},claims:{type:'array',maxItems:12,items:{required:['text','evidenceIds'],additionalProperties:false,properties:{text:{type:'string'},evidenceIds:{type:'array',minItems:1,maxItems:20,uniqueItems:true,items:{type:'string',enum:input.evidence.map((e:any)=>e.id)}}}}}}});expect(body.format.properties.claims.items.properties.text).toEqual({type:'string'});expect(body.options).toMatchObject({num_ctx:8192,num_predict:1800});expect(JSON.stringify(body.format)).not.toContain('excluded');expect(JSON.stringify(input)).not.toContain('EXCLUDED_MARKER');}
  }finally{app?.kill('SIGTERM');if(app)await app.exited;ollama.stop(true);rmSync(state,{recursive:true,force:true});}
 },15000);

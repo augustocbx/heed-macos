@@ -77,3 +77,231 @@ test("polling updates the active AI blocker without replacing saved history",asy
  expect(chatApi.command).toHaveBeenCalledWith(session.id,{action:"cancel",turnId:"waiting-turn"});
  }finally{vi.useRealTimers();}
 });
+
+const retrievalCoverage = {
+  version: 1 as const,
+  strategy: "lexical" as const,
+  selectedMeetings: 1,
+  selectedEvidence: 30,
+  indexedMeetings: 1,
+  indexedEvidence: 20,
+  searchedMeetings: 1,
+  searchedEvidence: 20,
+  matchingRowsVisited: 4,
+  matchedEvidence: 2,
+  retrievedMeetings: 1,
+  retrievedEvidence: 6,
+  suppliedMeetings: 1,
+  suppliedEvidence: 3,
+  citedMeetings: 1,
+  citedEvidence: 1,
+  indexComplete: false,
+  lookupComplete: false,
+  generationComplete: false,
+  partialReasons: [
+    "index-missing",
+    "context-budget",
+  ] as import("@heed/shared").RetrievalPartialReason[],
+};
+test("versioned coverage keeps lexical zero hits qualified even if legacy complete is true", async () => {
+  const retrieval = {
+    ...retrievalCoverage,
+    selectedMeetings: 1,
+    indexedMeetings: 1,
+    searchedMeetings: 1,
+    indexedEvidence: 30,
+    searchedEvidence: 30,
+    matchingRowsVisited: 0,
+    indexComplete: true,
+    lookupComplete: true,
+    matchedEvidence: 0,
+    retrievedEvidence: 0,
+    retrievedMeetings: 0,
+    suppliedEvidence: 0,
+    suppliedMeetings: 0,
+    citedEvidence: 0,
+    citedMeetings: 0,
+    partialReasons: [],
+  };
+  vi.mocked(chatApi.get).mockResolvedValue({
+    ...saved,
+    turns: [
+      {
+        ...saved.turns[0]!,
+        answer: {
+          claims: [],
+          coverage: {
+            complete: true,
+            reviewedChunks: 0,
+            totalChunks: 0,
+            answerLimited: false,
+            retrieval,
+          },
+        },
+      },
+    ],
+  });
+  render(<MeetingChat session={session} onCitation={vi.fn()} />);
+  expect(
+    await screen.findByText(
+      "No lexical matches found. This does not establish that the topic is absent from the selected transcripts.",
+    ),
+  ).toBeVisible();
+  expect(screen.queryByText("Not found in this meeting.")).toBeNull();
+  expect(screen.queryByText(/Reviewed .* transcript chunks/)).toBeNull();
+  expect(
+    screen.getByText(
+      "Meetings: 1 selected · 1 indexed · 1 searched · 0 retrieved · 0 supplied · 0 cited.",
+    ),
+  ).toBeVisible();
+});
+test("partial unknown counts show specific limits and preserve escaped stale citation evidence", async () => {
+  const retrieval = {
+    ...retrievalCoverage,
+    strategy: "fallback" as const,
+    searchedEvidence: null,
+    partialReasons: [
+      "fallback-limit",
+      "context-budget",
+    ] as import("@heed/shared").RetrievalPartialReason[],
+  };
+  const quote = { ...citation, quote: "<img src=x onerror=alert(1)> João" };
+  vi.mocked(chatApi.get).mockResolvedValue({
+    ...saved,
+    turns: [
+      {
+        ...saved.turns[0]!,
+        stale: true,
+        answer: {
+          claims: [{ text: "Literal supported claim.", citations: [quote] }],
+          coverage: {
+            complete: false,
+            reviewedChunks: 1,
+            totalChunks: 4,
+            answerLimited: false,
+            retrieval,
+          },
+        },
+      },
+    ],
+  });
+  render(<MeetingChat session={session} onCitation={vi.fn()} />);
+  expect(
+    await screen.findByText(
+      "Transcript excerpts: 30 selected · 20 indexed · unknown searched · 2 matched · 6 retrieved · 3 supplied · 1 cited.",
+    ),
+  ).toBeVisible();
+  expect(
+    screen.getByText(
+      "Fallback examined only a bounded part of the selected transcripts.",
+    ),
+  ).toBeVisible();
+  expect(
+    screen.getByText(
+      "The model context budget limited the supplied input. Ask a narrower question.",
+    ),
+  ).toBeVisible();
+  expect(screen.getByText(quote.quote)).toBeInTheDocument();
+  expect(document.querySelector("img")).toBeNull();
+  expect(screen.getByRole("button", { name: /Ana/ })).toBeDisabled();
+  expect(
+    screen.queryByText(/Evidence was sampled across the recording/),
+  ).toBeNull();
+});
+test("retrieval readiness stays cancellable and capacity failure is actionable", async () => {
+  vi.mocked(chatApi.get).mockResolvedValue({
+    ...saved,
+    turns: [
+      {
+        ...saved.turns[0]!,
+        status: "waiting",
+        waitingReason: "retrieval",
+        answer: undefined,
+      },
+    ],
+  });
+  const view = render(<MeetingChat session={session} onCitation={vi.fn()} />);
+  expect(
+    await screen.findByText(
+      "Waiting for the local transcript catalog to become ready.",
+    ),
+  ).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel answer" }));
+  await waitFor(() =>
+    expect(chatApi.command).toHaveBeenCalledWith(session.id, {
+      action: "cancel",
+      turnId: "turn-a",
+    }),
+  );
+  view.unmount();
+  vi.mocked(chatApi.get).mockResolvedValue({
+    ...saved,
+    turns: [
+      {
+        ...saved.turns[0]!,
+        status: "failed",
+        reason: "retrieval-capacity",
+        answer: undefined,
+      },
+    ],
+  });
+  render(<MeetingChat session={session} onCitation={vi.fn()} />);
+  expect(
+    await screen.findByText(
+      "The local transcript catalog reached its capacity. Reduce the stored meeting collection and refresh chat.",
+    ),
+  ).toBeVisible();
+  expect(screen.getByRole("button", { name: "Retry answer" })).toBeEnabled();
+});
+
+test.each(["retrieval-not-ready", "question-context-too-large"] as const)(
+  "controlled %s errors retain refresh and retry controls",
+  async (reason) => {
+    vi.mocked(chatApi.get).mockResolvedValue({
+      ...saved,
+      turns: [
+        { ...saved.turns[0]!, status: "failed", reason, answer: undefined },
+      ],
+    });
+    render(<MeetingChat session={session} onCitation={vi.fn()} />);
+    const expected =
+      reason === "retrieval-not-ready"
+        ? "Local transcripts are still being discovered. Wait, then refresh chat."
+        : "This question or its required evidence exceeds the local model input budget. Ask a shorter or narrower question.";
+    expect(await screen.findByText(expected)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Refresh chat" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Retry answer" })).toBeEnabled();
+  },
+);
+
+test("empty generated answer describes supplied evidence, not retrieved excerpts omitted by context limits", async () => {
+  vi.mocked(chatApi.get).mockResolvedValue({
+    ...saved,
+    turns: [
+      {
+        ...saved.turns[0]!,
+        answer: {
+          claims: [],
+          coverage: {
+            complete: false,
+            reviewedChunks: 1,
+            totalChunks: 4,
+            answerLimited: false,
+            retrieval: retrievalCoverage,
+          },
+        },
+      },
+    ],
+  });
+  render(<MeetingChat session={session} onCitation={vi.fn()} />);
+  expect(
+    await screen.findByText(
+      "No supporting evidence found in the supplied excerpts.",
+    ),
+  ).toBeVisible();
+  expect(
+    screen.queryByText(
+      "No supporting evidence found in the retrieved excerpts.",
+    ),
+  ).toBeNull();
+});

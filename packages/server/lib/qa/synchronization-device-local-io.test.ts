@@ -247,3 +247,82 @@ for(const phase of ['file','parent'] as const)test('required atomic '+phase+' fs
  }finally{hook.mockRestore();}
  });
 });
+
+test('descriptor source discovery uses original bounded enumeration and refuses directory replacement',async()=>{
+ let enumerated=false;
+ await expect(fixture(async f=>{
+  f.sessions.create(meeting);
+  const list=f.io.list;
+  f.io.list=(path:string,maximum:number)=>{enumerated=true;expect(maximum).toBeLessThanOrEqual(512);return list(path,maximum);};
+  expect([...f.sessions.sourceIds(1)]).toEqual([meeting.id]);
+  expect(enumerated).toBe(true);
+  const path=join(f.root,'sessions'),before=swap(path);
+  expect(()=>[...f.sessions.sourceIds(1)]).toThrow();
+  expect(foreignCensus(path)).toBe(before);
+ })).rejects.toBeInstanceOf(binding.AcceptanceError);
+ expect(enumerated).toBe(true);
+});
+
+test('descriptor discovery refuses unowned JSON and preserves original source bytes and bounded Unicode reads',async()=>{
+ await fixture(async f=>{
+  const saved=f.sessions.create({...meeting,transcript:'Reunião 日本語 🪐'}),path=join(f.root,'sessions',meeting.id+'.json');
+  const bytes=fs.readFileSync(path),sized=f.sessions.readSized(meeting.id,bytes.length);
+  expect(sized.bytes).toBe(bytes.length);expect(sized.session).toEqual(saved);
+  expect(()=>f.sessions.readSized(meeting.id,bytes.length-1)).toThrow();
+  for(const budget of [0,-1,1.5,Infinity])expect(()=>f.sessions.readSized(meeting.id,budget)).toThrow();
+  expect(()=>[...f.sessions.sourceIds(0)]).toThrow();
+  fs.writeFileSync(join(f.root,'sessions','foreign.json'),'foreign sentinel',{mode:0o600});
+  const before=foreignCensus(join(f.root,'sessions'));
+  expect(()=>[...f.sessions.sourceIds(1000)]).toThrow();
+  expect(foreignCensus(join(f.root,'sessions'))).toBe(before);
+  expect(fs.readFileSync(path)).toEqual(bytes);
+ });
+});
+test('descriptor retrieval rejects malformed UTF8, oversized original records and replaced source leaves',async()=>{
+ await fixture(async f=>{
+  f.sessions.create(meeting);const path=join(f.root,'sessions',meeting.id+'.json');
+  const malformed=Buffer.concat([Buffer.from('{"id":"a-en","title":"'),Buffer.from([0xff]),Buffer.from('","tags":[]}')]);
+  fs.writeFileSync(path,malformed);expect(()=>f.sessions.readSized(meeting.id,65536)).toThrow();
+  fs.writeFileSync(path,JSON.stringify({...meeting,transcript:'x'.repeat(65536)}));expect(()=>f.sessions.readSized(meeting.id,67_108_864)).toThrow();
+  fs.renameSync(path,path+'-original');fs.writeFileSync(path,JSON.stringify(meeting),{mode:0o600});const before=foreignCensus(dirname(path));
+  expect(()=>f.sessions.readSized(meeting.id,65536)).toThrow();expect(()=>[...f.sessions.sourceIds(1000)]).toThrow();expect(foreignCensus(dirname(path))).toBe(before);
+ });
+});
+
+import {transcriptGuard} from '../session-tags';
+import {applyTextCommand} from '../transcript-editing';
+function descriptorEdit(f:any,session:Session,requestId:string,text?:string):Session {
+ const command=text===undefined?{...transcriptGuard(session),requestId,action:'revert' as const,editId:session.transcriptEditing!.edits.at(-1)!.id}:{...transcriptGuard(session),requestId,action:'edit' as const,target:{kind:'document' as const},text};
+ return f.sessions.commitSource(session.id,transcriptGuard(session),(current:Session)=>applyTextCommand(current,command,'2026-10-07T12:00:00Z'));
+}
+test('descriptor corrected v2 retains exact large raw artifact through lost acknowledgment restart and republish',async()=>{
+ await fixture(async f=>{
+  const original=f.sessions.create(meeting),corrected=descriptorEdit(f,original,'descriptor-correct','Reunião corrected');
+  const bundle=makeBundle(randomUUID(),randomUUID(),portableMeeting(corrected,randomUUID()),[]);
+  const bytes=Buffer.from(JSON.stringify(bundle.payload,null,2)+'\n'+' '.repeat(70000));
+  bundle.manifest.artifacts[0]={path:'meeting.json',bytes:bytes.length,sha256:sha256(bytes)};bundle.marker.manifestHash=sha256(encode(bundle.manifest));
+  const target=join(f.root,'sessions',bundle.manifest.meetingId+'.json');f.allow(target,'synthetic-import');f.save();
+  f.provider.add(bundle);const remote=`${revisionPath(bundle.manifest.meetingId,bundle.manifest.revisionId)}/meeting.json`;f.provider.objects.set(remote,bytes);
+  const changes:any[]=[];f.sessions.subscribeCommitted((event:any)=>changes.push(event),()=>{});
+  await f.library.discover();const commit=f.sessions.commitSource.bind(f.sessions);f.sessions.commitSource=(...args:any[])=>{commit(...args);throw Error('Lost descriptor source acknowledgment');};
+  await f.library.importSelected();f.sessions.commitSource=commit;
+  const accepted=f.sessions.read(bundle.manifest.meetingId)!;expect(accepted.transcript).toBe(corrected.transcript);expect(accepted.transcriptEditing!.edits).toHaveLength(1);expect(accepted.transcriptEditing!.generations[0]!.transcript).toBe(meeting.transcript);
+  const path=join(f.root,'library/catalog/revisions',bundle.manifest.libraryId,bundle.manifest.meetingId,bundle.manifest.revisionId,'meeting.json');expect(fs.readFileSync(path)).toEqual(bytes);
+  const sourceBytes=fs.readFileSync(target),restarted=new PortableLibrary(f.libraryOptions);expect(restarted.snapshot().previews[0]?.state).toBe('verified');expect(fs.readFileSync(target)).toEqual(sourceBytes);
+  await restarted.publish(bundle.manifest.revisionId);expect(f.provider.objects.get(remote)).toEqual(bytes);expect(changes.filter(e=>e.kind==='upsert')).toHaveLength(1);expect(f.quota.snapshot().reservedBytes).toBe(0);
+ });
+});
+test('descriptor accepted edit and revert during provider read cannot acknowledge an obsolete import',async()=>{
+ await fixture(async f=>{
+  const first=makeBundle(randomUUID(),randomUUID(),portableMeeting(meeting,randomUUID()),[]),target=join(f.root,'sessions',first.manifest.meetingId+'.json');f.allow(target,'synthetic-import');f.save();f.provider.add(first);await f.library.discover();await f.library.importSelected();
+  const admitted=f.sessions.read(first.manifest.meetingId)!;
+  const child=makeBundle(first.manifest.libraryId,randomUUID(),portableMeeting({...meeting,title:'Remote metadata'},first.manifest.meetingId),[first.manifest.revisionId]);f.provider.add(child);await f.library.discover();
+  let entered!:()=>void,release!:()=>void;const waiting=new Promise<void>(r=>entered=r),blocked=new Promise<void>(r=>release=r),read=f.provider.read.bind(f.provider);
+  f.provider.read=async(path:string,maximum:number)=>{if(path.endsWith('/meeting.json')){entered();await blocked;}return read(path,maximum);};
+  const importing=f.library.importSelected([child.manifest.revisionId]);await waiting;
+  const edited=descriptorEdit(f,admitted,'descriptor-race-edit','Changed during read'),reverted=descriptorEdit(f,edited,'descriptor-race-revert');
+  expect(reverted.transcriptRevision).toBe(admitted.transcriptRevision);expect(reverted.transcriptVersion).toBe(admitted.transcriptVersion!+2);
+  const sourceBytes=fs.readFileSync(target);release();expect((await importing).imported).toBe(0);expect(fs.readFileSync(target)).toEqual(sourceBytes);
+  const state=JSON.parse(fs.readFileSync(join(f.root,'library/catalog/state.json'),'utf8'));expect(state.heads[first.manifest.libraryId+'/'+first.manifest.meetingId]).toBe(first.manifest.revisionId);expect(f.quota.snapshot().reservedBytes).toBe(0);
+ });
+});

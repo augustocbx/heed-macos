@@ -77,6 +77,7 @@ writeFileSync(receipt,JSON.stringify({pid:process.pid,chunks,stopped:false}));
 for(;;){const pcm=Buffer.alloc(6400);for(let i=0;i<1600;i++,frame++){pcm.writeInt16LE(Math.round(6000*Math.sin(2*Math.PI*440*frame/16000)),i*4);pcm.writeInt16LE(Math.round(4000*Math.sin(2*Math.PI*660*frame/16000)),i*4+2)}
 await Bun.write(Bun.stdout,pcm);chunks++;await Bun.sleep(100);}
 `,{mode:0o700});
+  const speech={engine:'mlx',model:'base',modelIdentity:'mlx:mlx-community/whisper-base-mlx',modelRevision:null,state:'loaded',supportedLanguages:['en','pt'],automatic:{modelSupported:true,pipelineAvailable:true,offered:false},mixedLanguage:'unverified',mode:'chunk',adaptiveModels:[]};
   sidecar=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(request){
    const path=new URL(request.url).pathname;
    if(path==='/finalize'){
@@ -86,7 +87,7 @@ await Bun.write(Bun.stdout,pcm);chunks++;await Bun.sleep(100);}
     await finalGate;
     return Response.json({finalized:true,language:'en',model:'synthetic-quota-control',turns:[{speaker:'Fixture',channel:'mic',text:'Public synthetic quota acceptance.',start:0,end:1}]});
    }
-   if(path==='/health')return Response.json({service:'heed-transcription',whisper:true,warm:true,models:[],live_tuning:{chunk_s:60,interval_ms:60000,mode:'chunk',model:'synthetic-quota-control'}});
+   if(path==='/health')return Response.json({service:'heed-transcription',protocolVersion:1,pid:process.pid,checkoutRoot:source,ready:true,pyannote:true,whisper:true,warm:true,models:[],languageCapabilities:{schemaVersion:1,capabilityKey:'a'.repeat(64),live:speech,final:{...speech,mode:'full'}},live_tuning:{chunk_s:60,interval_ms:60000,mode:'chunk',model:'synthetic-quota-control'}});
    return Response.json({turns:[],text:'',models:[]});
   }});
   const start=async()=>{

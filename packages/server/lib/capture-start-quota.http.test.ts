@@ -19,7 +19,11 @@ async function withServer(limit:number,retainingHelper:boolean,run:(fixture:{roo
  let source=repository;
  if(retainingHelper){
   source=join(temporary,'source');mkdirSync(join(source,'packages'),{recursive:true});
-  for(const name of ['server','shared'])cpSync(join(repository,'packages',name),join(source,'packages',name),{recursive:true,filter:path=>!path.includes('node_modules')&&!path.endsWith('.test.ts')});
+  const inventory=Bun.spawnSync(['git','ls-files','-z','--','packages/server','packages/shared'],{cwd:repository});
+  if(inventory.exitCode!==0)throw Error('Synthetic source inventory unavailable');
+  for(const file of new Set(new TextDecoder().decode(inventory.stdout).split('\0').filter(file=>file&&!file.endsWith('.test.ts')))){
+   const target=join(source,file);mkdirSync(resolve(target,'..'),{recursive:true});cpSync(join(repository,file),target);
+  }
   cpSync(join(repository,'config'),join(source,'config'),{recursive:true});
   for(const name of ['package.json','VERSION'])cpSync(join(repository,name),join(source,name));
   const binary=join(source,'packages/transcription/native/heed-parakeet/.build/release/heed-syscap');
@@ -30,7 +34,8 @@ writeFileSync(snapshot.path,Buffer.from(${JSON.stringify(retainedAudio.toString(
 writeFileSync(join(process.env.HEED_APP_DIR,'library/staging','capture-'+snapshot.meetingId,'checkpoint.txt'),'Retained synthetic capture checkpoint');
 console.error(JSON.stringify({error:'Synthetic startup failure after retained audio'}));\n`,{mode:0o700});
  }
- const sidecar=Bun.serve({hostname:'127.0.0.1',port:0,fetch:()=>Response.json({service:'heed-transcription',whisper:true,warm:true,models:[]})});
+ const speech={engine:'mlx',model:'base',modelIdentity:'mlx:mlx-community/whisper-base-mlx',modelRevision:null,state:'loaded',supportedLanguages:['en','pt'],automatic:{modelSupported:true,pipelineAvailable:true,offered:false},mixedLanguage:'unverified',mode:'chunk',adaptiveModels:[]};
+ const sidecar=Bun.serve({hostname:'127.0.0.1',port:0,fetch:()=>Response.json({service:'heed-transcription',protocolVersion:1,pid:process.pid,checkoutRoot:source,ready:true,pyannote:true,whisper:true,warm:true,models:[],languageCapabilities:{schemaVersion:1,capabilityKey:'a'.repeat(64),live:speech,final:{...speech,mode:'full'}}})});
  let app:Bun.Subprocess|undefined,base='',diagnostics:Promise<string>|undefined;
  const stop=async()=>{if(app){app.kill();await app.exited;app=undefined;await diagnostics;}};
  const start=async()=>{
@@ -76,7 +81,7 @@ test.skipIf(process.platform!=='darwin')('quota pressure automatically finalizes
   const sentinel=join(root,'library/staging/unrelated-transfer');mkdirSync(sentinel,{recursive:true});
   writeFileSync(join(sentinel,'public.txt'),'Unrelated synthetic transfer');
   const result=await request('/api/sysrecord/start',{requestId:'synthetic-pressure',mode:'both'});
-  expect(result.status).toBe(200);expect(result.body.recording).toBe(true);
+  expect(result).toMatchObject({status:200,body:{recording:true}});
   const initial=(await request('/api/recording/status')).body;
   expect(initial.state).toBe('recording');
   const initialLedger=JSON.parse(readFileSync(join(root,'quota-reservations.json'),'utf8'));

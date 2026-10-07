@@ -34,7 +34,7 @@ export function StorageSettings(){
   <h2 id="meeting-storage-title">{tr('Local meeting storage')}</h2>
   <p>{tr('This limit covers transcripts, notes, tasks, chat, media, indexes and transfer staging on this Mac. Models, logs and provider caches are excluded.')}</p>
   {usage && <dl>{[
-   ['Configured maximum',usage.limitBytes],['Used',usage.usedBytes],['Reserved working space',usage.reservedBytes],['Protected data',usage.protectedBytes],['Reclaimable local media',usage.reclaimableBytes],['Available budget',usage.availableBytes],
+   ['Configured maximum',usage.limitBytes],['Used',usage.usedBytes],['Reserved working space',usage.reservedBytes],['Protected data',usage.protectedBytes],['Reclaimable local media',usage.reclaimableMediaBytes ?? usage.reclaimableBytes],...(usage.reclaimableCacheBytes !== undefined ? [['Rebuildable local search data',usage.reclaimableCacheBytes]] : []),['Available budget',usage.availableBytes],
    ['Transcripts and metadata',usage.categories.text],['Media',usage.categories.media],['Indexes',usage.categories.indexes],['Transfer staging',usage.categories.staging],
   ].map(([label,bytes])=><div key={String(label)}><dt>{tr(String(label))}</dt><dd>{gb(Number(bytes))} GB</dd></div>)}</dl>}
   <label htmlFor="meeting-storage-limit">{tr('Maximum local meeting data (GB)')}</label>
@@ -45,6 +45,7 @@ export function StorageSettings(){
   {preview && <section aria-labelledby="storage-review-title"><h3 id="storage-review-title">{tr('Review storage change')}</h3>
    <p>{tr('New maximum: {size} GB',{size:gb(preview.requestedLimit)})}</p>
    <p>{tr('{count} local media files will be removed. Remote copies and transcripts remain unchanged.',{count:preview.removals.length})}</p>
+   {preview.derivedCache && preview.derivedCache.bytes>0 && <p>{tr('Local search data ({count} files, {size} GB) will be cleared and can be rebuilt when space is available. Clearing search data preserves transcripts and audio.',{count:preview.derivedCache.files,size:gb(preview.derivedCache.bytes)})}</p>}
    {preview.removals.length>0 && <ul>{preview.removals.map(file=><li key={file.path}>{file.path.split('/').at(-1)} — {gb(file.bytes)} GB</li>)}</ul>}
    <p>{tr('Additional imports pause when protected data consumes the available budget.')}</p>
    <button disabled={busy} onClick={()=>void apply()}>{tr('Confirm storage change')}</button>{' '}<button disabled={busy} onClick={()=>setPreview(null)}>{tr('Cancel')}</button>

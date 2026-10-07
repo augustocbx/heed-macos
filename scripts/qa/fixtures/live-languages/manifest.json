@@ -1,0 +1,322 @@
+{
+  "schemaVersion": 1,
+  "cohort": "authored-formant-TTS",
+  "humanRegionalAccentsAvailable": false,
+  "provenance": {
+    "textAuthor": "Heed project authored QA fixtures",
+    "synthesizer": "eSpeak NG 1.51",
+    "source": "https://github.com/espeak-ng/espeak-ng/tree/1.51",
+    "voiceDataLicense": "GPL-3.0-or-later",
+    "audioLicense": "GPL-3.0-or-later",
+    "rateWordsPerMinute": 145,
+    "ffmpeg": "PCM16 16kHz channel-preserving conversion",
+    "sourceArchiveSha256": "f0e028f695a8241c4fa90df7a8c8c5d68dcadbdbc91e758a97e594bbb0a3bdbf",
+    "releaseArchiveSha256": "027fa5dfa8616d5cc13f883209ff5f735eee6559f7689a019d5b2d01d290cd39"
+  },
+  "limitations": [
+    "Synthetic formant speech does not establish natural accents, human voice quality or regional diversity.",
+    "Within-turn switching concatenates authored EN/PT synthesizer utterances; it does not simulate a natural bilingual speaker.",
+    "Overlap uses independent channels; same-channel overlapping human speech is not evaluated."
+  ],
+  "fixtures": [
+    {
+      "id": "short-en",
+      "file": "short-en.wav",
+      "sha256": "0a9f68957f49903c9a32edd9905d68d693f9f25980c81146d05829dfb37b1382",
+      "seconds": 2.0,
+      "channels": 1,
+      "cohort": "authored-formant-TTS",
+      "license": "GPL-3.0-or-later",
+      "reference": "Ready now.",
+      "spans": [
+        {
+          "id": "short-en-0",
+          "language": "en",
+          "text": "Ready now.",
+          "start": 0.5,
+          "end": 1.714375,
+          "channel": 0,
+          "turn": 0,
+          "voice": "en-us",
+          "languageAnchors": [
+            "ready",
+            "now"
+          ]
+        }
+      ],
+      "channelReferences": {
+        "0": "Ready now."
+      }
+    },
+    {
+      "id": "short-pt",
+      "file": "short-pt.wav",
+      "sha256": "d7d928fbad3e53e9738fcd8f4db24aad893bcd1ecd46734c0130aa375d0c74c6",
+      "seconds": 2.0,
+      "channels": 1,
+      "cohort": "authored-formant-TTS",
+      "license": "GPL-3.0-or-later",
+      "reference": "Bom dia.",
+      "spans": [
+        {
+          "id": "short-pt-0",
+          "language": "pt",
+          "text": "Bom dia.",
+          "start": 0.5,
+          "end": 1.5148125,
+          "channel": 0,
+          "turn": 0,
+          "voice": "pt-br",
+          "languageAnchors": [
+            "bom",
+            "dia"
+          ],
+          "translatedAlternatives": [
+            "Good morning"
+          ]
+        }
+      ],
+      "channelReferences": {
+        "0": "Bom dia."
+      }
+    },
+    {
+      "id": "names-en",
+      "file": "names-en.wav",
+      "sha256": "2cf17f81c1c61f44b39e751ae276f07cd9ad1961e98591b0b14df82e9732216c",
+      "seconds": 5.0731875,
+      "channels": 1,
+      "cohort": "authored-formant-TTS",
+      "license": "GPL-3.0-or-later",
+      "reference": "Beatriz Vieira reviewed Kubernetes and PostgreSQL.",
+      "spans": [
+        {
+          "id": "names-en-0",
+          "language": "en",
+          "text": "Beatriz Vieira reviewed Kubernetes and PostgreSQL.",
+          "start": 0.5,
+          "end": 4.8231875,
+          "channel": 0,
+          "turn": 0,
+          "voice": "en-us",
+          "languageAnchors": [
+            "reviewed",
+            "and"
+          ],
+          "names": [
+            "Beatriz Vieira"
+          ],
+          "terms": [
+            "Kubernetes",
+            "PostgreSQL"
+          ]
+        }
+      ],
+      "channelReferences": {
+        "0": "Beatriz Vieira reviewed Kubernetes and PostgreSQL."
+      }
+    },
+    {
+      "id": "names-pt",
+      "file": "names-pt.wav",
+      "sha256": "45fb17395dd609b1e9a09a240230eb76eaa45d994147382f47cf265a367dfa2e",
+      "seconds": 4.8755,
+      "channels": 1,
+      "cohort": "authored-formant-TTS",
+      "license": "GPL-3.0-or-later",
+      "reference": "João Pereira revisou Kubernetes e PostgreSQL.",
+      "spans": [
+        {
+          "id": "names-pt-0",
+          "language": "pt",
+          "text": "João Pereira revisou Kubernetes e PostgreSQL.",
+          "start": 0.5,
+          "end": 4.6255,
+          "channel": 0,
+          "turn": 0,
+          "voice": "pt-br",
+          "languageAnchors": [
+            "revisou"
+          ],
+          "names": [
+            "João Pereira"
+          ],
+          "terms": [
+            "Kubernetes",
+            "PostgreSQL"
+          ]
+        }
+      ],
+      "channelReferences": {
+        "0": "João Pereira revisou Kubernetes e PostgreSQL."
+      }
+    },
+    {
+      "id": "alternating",
+      "file": "alternating.wav",
+      "sha256": "36bbb8c1581f9bc6e1f1e94876975cc129c3801b55fc81e64db02b0b89f155dd",
+      "seconds": 5.170875,
+      "channels": 1,
+      "cohort": "authored-formant-TTS",
+      "license": "GPL-3.0-or-later",
+      "reference": "A implantação está pronta. Deploy the release now.",
+      "spans": [
+        {
+          "id": "alternating-0",
+          "language": "pt",
+          "text": "A implantação está pronta.",
+          "start": 0.5,
+          "end": 2.8279375,
+          "channel": 0,
+          "turn": 0,
+          "voice": "pt-br",
+          "languageAnchors": [
+            "implantação",
+            "pronta"
+          ],
+          "translatedAlternatives": [
+            "The deployment is ready"
+          ]
+        },
+        {
+          "id": "alternating-1",
+          "language": "en",
+          "text": "Deploy the release now.",
+          "start": 3.0779375,
+          "end": 4.920875,
+          "channel": 0,
+          "turn": 1,
+          "voice": "en-us",
+          "languageAnchors": [
+            "deploy",
+            "release",
+            "now"
+          ],
+          "terms": [
+            "release"
+          ]
+        }
+      ],
+      "channelReferences": {
+        "0": "A implantação está pronta. Deploy the release now."
+      }
+    },
+    {
+      "id": "within-turn",
+      "file": "within-turn.wav",
+      "sha256": "0e4d35b9aa907cd1977cdd925fdf22964a6c8978657abb52ff323a3cd58862ad",
+      "seconds": 4.9870625,
+      "channels": 1,
+      "cohort": "authored-formant-TTS",
+      "license": "GPL-3.0-or-later",
+      "reference": "A reunião começa agora. Please review the pull request.",
+      "spans": [
+        {
+          "id": "within-turn-0",
+          "language": "pt",
+          "text": "A reunião começa agora.",
+          "start": 0.5,
+          "end": 2.6764375,
+          "channel": 0,
+          "turn": 0,
+          "voice": "pt-br",
+          "languageAnchors": [
+            "reunião",
+            "agora"
+          ],
+          "translatedAlternatives": [
+            "The meeting starts now"
+          ]
+        },
+        {
+          "id": "within-turn-1",
+          "language": "en",
+          "text": "Please review the pull request.",
+          "start": 2.6764375,
+          "end": 4.9870625,
+          "channel": 0,
+          "turn": 0,
+          "voice": "en-us",
+          "languageAnchors": [
+            "please",
+            "review"
+          ],
+          "terms": [
+            "pull request"
+          ]
+        }
+      ],
+      "channelReferences": {
+        "0": "A reunião começa agora. Please review the pull request."
+      }
+    },
+    {
+      "id": "overlap-dual",
+      "file": "overlap-dual.wav",
+      "sha256": "0839def8a913dd68b6a94a02ef61a190b4ac7be434e7d426c345628a7858656e",
+      "seconds": 3.3046875,
+      "channels": 2,
+      "cohort": "authored-formant-TTS",
+      "license": "GPL-3.0-or-later",
+      "reference": "João revisou a implantação. Beatriz reviewed the release.",
+      "spans": [
+        {
+          "id": "overlap-dual-0",
+          "language": "pt",
+          "text": "João revisou a implantação.",
+          "start": 0.5,
+          "end": 3.0546875,
+          "channel": 0,
+          "turn": 0,
+          "voice": "pt-br",
+          "languageAnchors": [
+            "revisou",
+            "implantação"
+          ],
+          "names": [
+            "João"
+          ]
+        },
+        {
+          "id": "overlap-dual-1",
+          "language": "en",
+          "text": "Beatriz reviewed the release.",
+          "start": 0.5,
+          "end": 2.5875625,
+          "channel": 1,
+          "turn": 1,
+          "voice": "en-us",
+          "languageAnchors": [
+            "reviewed",
+            "release"
+          ],
+          "names": [
+            "Beatriz"
+          ],
+          "terms": [
+            "release"
+          ]
+        }
+      ],
+      "channelReferences": {
+        "0": "João revisou a implantação.",
+        "1": "Beatriz reviewed the release."
+      }
+    },
+    {
+      "id": "silence",
+      "file": "silence.wav",
+      "sha256": "d303811b8c84619667cd0501342f84ec6cbe69f7aa3856dcf52fabda374c92b8",
+      "seconds": 3.0,
+      "channels": 1,
+      "cohort": "authored-formant-TTS",
+      "license": "GPL-3.0-or-later",
+      "reference": "",
+      "spans": [],
+      "channelReferences": {
+        "0": ""
+      }
+    }
+  ],
+  "annotationTiming": "Synthesis window boundaries, not manually aligned word times"
+}

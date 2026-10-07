@@ -15,7 +15,7 @@ function context(scope:LibraryChatScope):LibraryChatContext{
  const snapshot={key:scope.mode==='all'?'all-key':scope.match==='all'?'both-key':'narrow-key',scope,sources:ids.map(sessionId=>({sessionId,title:sessionId==='secret'?'Planning secret':sessionId,tags:['Entrevistas'],sourceRevision:sessionId==='meeting-a'?'source-a':'source-b'}))};
  return {preview:{snapshot,ready:ids.length>0,matchingCount:ids.length,unavailableCount:0,availableLabels:['Entrevistas','Planejamento']},thread:{id:scope.mode==='all'?'all-thread':'label-thread',revision:'thread-one',scope,turns:scope.mode==='all'?[{id:'broad-turn',requestId:'broad',question:'Broad question',model:'local',sourceRevision:'all-key',snapshot,status:'completed',createdAt:'now',updatedAt:'now',attempts:1,answer:{claims:[{text:'BROAD_SECRET_ANSWER',citations:[evidence]}],coverage:{complete:false,reviewedChunks:2,totalChunks:8,answerLimited:false}}}]:[]}};
 }
-beforeEach(()=>{vi.clearAllMocks();localStorage.clear();useLocaleStore.setState({locale:'en'});useSessionsStore.setState({viewing:null});useUIStore.setState({currentPage:'chat'});vi.mocked(chatApi.models).mockResolvedValue({models:['local']});vi.mocked(libraryChatApi.context).mockImplementation(async(scope)=>context(scope));vi.mocked(libraryChatApi.command).mockImplementation(async(scope)=>context(scope).thread);vi.mocked(libraryChatApi.source).mockResolvedValue({id:'meeting-a',title:'Source meeting',transcriptRevision:'source-a',transcriptFinalized:true,files:{}} as Session);});
+beforeEach(()=>{vi.clearAllMocks();localStorage.clear();useLocaleStore.setState({locale:'en'});useSessionsStore.setState({sessions:[],viewing:null});useUIStore.setState({currentPage:'chat'});vi.mocked(chatApi.models).mockResolvedValue({models:['local']});vi.mocked(libraryChatApi.context).mockImplementation(async(scope)=>context(scope));vi.mocked(libraryChatApi.command).mockImplementation(async(scope)=>context(scope).thread);vi.mocked(libraryChatApi.source).mockResolvedValue({id:'meeting-a',title:'Source meeting',transcriptRevision:'source-a',transcriptFinalized:true,files:{}} as Session);});
 
 test('empty scope remains unready and selecting multiple labels previews visible any/all inclusion',async()=>{
  render(<LibraryChat/>);await screen.findByRole('button',{name:'Entrevistas'});expect(screen.getByText('Choose labels or explicitly select All meetings before asking.')).toBeInTheDocument();
@@ -66,4 +66,203 @@ test('waiting answers identify changing blockers while preserving evidence and s
  expect(screen.getByText('BROAD_SECRET_ANSWER')).toBeInTheDocument();
  fireEvent.click(screen.getByRole('button',{name:'Cancel answer'}));
  await waitFor(()=>expect(libraryChatApi.command).toHaveBeenCalledWith(result.thread.scope,{action:'cancel',turnId:'waiting-turn'}));
+});
+
+test('a held citation source response cannot restore discarded candidates or an old title',async()=>{
+ const candidate={id:'discarded',requestId:'stage',requestSignature:'sig',createdAt:'2026-10-06T12:00:00Z',baseGuard:{expectedTranscriptRevision:'source-a',expectedTranscriptVersion:1},transcript:'Candidate',segments:[],speakers:[],language:'en',duration:1};
+ const old={id:'meeting-a',title:'Old title',createdAt:candidate.createdAt,duration:1,language:'en',transcript:'Current',segments:[],speakers:[],tags:[],pinned:false,aiNotes:'',summary:'',transcriptVersion:1,transcriptRevision:'source-a',transcriptEditing:{schemaVersion:1 as const,activeGenerationId:'g',generations:[],edits:[],candidates:[candidate],candidateRequestReceipts:[]}};
+ useSessionsStore.setState({sessions:[old]});let finish!:(session:Session)=>void;
+ vi.mocked(libraryChatApi.source).mockImplementation(()=>new Promise(resolve=>finish=resolve));
+ localStorage.setItem('heed-library-chat-scope',JSON.stringify({mode:'all',labels:[],match:'any'}));
+ render(<LibraryChat/>);await screen.findByText('BROAD_SECRET_ANSWER');fireEvent.click(screen.getByRole('button',{name:/meeting-a.*12s/}));
+ const current={...old,title:'Renamed',transcriptEditing:{...old.transcriptEditing,candidates:[]}};
+ const accepted=useSessionsStore.getState().accept(current);
+ useSessionsStore.setState({sessions:[{...accepted,title:"Renamed"}]});finish(old);
+ await waitFor(()=>expect(useUIStore.getState().currentPage).toBe('sessions'));
+ expect(useSessionsStore.getState().viewing).toBe(useSessionsStore.getState().sessions[0]);
+ expect(useSessionsStore.getState().viewing).toMatchObject({title:'Renamed',transcriptEditing:{candidates:[]}});
+});
+
+test('a newer citation source synchronizes accepted cache while retaining independently saved metadata',async()=>{
+ const old={id:'meeting-a',title:'Renamed',createdAt:'2026-10-06T12:00:00Z',duration:1,language:'en',transcript:'Current',segments:[],speakers:[],tags:['Current tag'],pinned:true,aiNotes:'',summary:'',transcriptVersion:2,transcriptRevision:'source-a'};
+ useSessionsStore.setState({sessions:[old]});let finish!:(session:Session)=>void;
+ vi.mocked(libraryChatApi.source).mockImplementation(()=>new Promise(resolve=>finish=resolve));
+ localStorage.setItem('heed-library-chat-scope',JSON.stringify({mode:'all',labels:[],match:'any'}));
+ render(<LibraryChat/>);await screen.findByText('BROAD_SECRET_ANSWER');fireEvent.click(screen.getByRole('button',{name:/meeting-a.*12s/}));
+ finish({...old,title:'Old response title',tags:[],pinned:false,transcriptVersion:3});
+ await waitFor(()=>expect(useUIStore.getState().currentPage).toBe('sessions'));
+ expect(useSessionsStore.getState().sessions[0]).toMatchObject({transcriptVersion:3,title:'Renamed',tags:['Current tag'],pinned:true});
+ useSessionsStore.getState().accept(old);
+ expect(useSessionsStore.getState().viewing?.transcriptVersion).toBe(3);
+});
+
+test("library retrieval coverage distinguishes stage counts and never infers unknown search totals", async () => {
+  localStorage.setItem(
+    "heed-library-chat-scope",
+    JSON.stringify({ mode: "all", labels: [], match: "any" }),
+  );
+  const retrieval = {
+    version: 1 as const,
+    strategy: "lexical" as const,
+    selectedMeetings: 3,
+    selectedEvidence: 30,
+    indexedMeetings: 2,
+    indexedEvidence: 20,
+    searchedMeetings: 2,
+    searchedEvidence: null,
+    matchingRowsVisited: 4,
+    matchedEvidence: 2,
+    retrievedMeetings: 2,
+    retrievedEvidence: 6,
+    suppliedMeetings: 1,
+    suppliedEvidence: 3,
+    citedMeetings: 1,
+    citedEvidence: 1,
+    indexComplete: false,
+    lookupComplete: false,
+    generationComplete: false,
+    partialReasons: [
+      "query-budget",
+      "context-budget",
+    ] as import("@heed/shared").RetrievalPartialReason[],
+  };
+  vi.mocked(libraryChatApi.context).mockImplementation(async (scope) => {
+    const result = context(scope);
+    result.thread.turns[0]!.answer!.coverage.retrieval = retrieval;
+    return result;
+  });
+  render(<LibraryChat />);
+  expect(
+    await screen.findByText(
+      "Meetings: 3 selected · 2 indexed · 2 searched · 2 retrieved · 1 supplied · 1 cited.",
+    ),
+  ).toBeVisible();
+  expect(
+    screen.getByText(
+      "Transcript excerpts: 30 selected · 20 indexed · unknown searched · 2 matched · 6 retrieved · 3 supplied · 1 cited.",
+    ),
+  ).toBeVisible();
+  expect(
+    screen.getByText(
+      "Lexical lookup stopped before completion. Some matches may be missing.",
+    ),
+  ).toBeVisible();
+  expect(
+    screen.queryByText(/Evidence was sampled across the selected meetings/),
+  ).toBeNull();
+  const source = screen.getByRole("button", { name: /meeting-a.*12s/ });
+  source.focus();
+  expect(source).toHaveFocus();
+  fireEvent.click(source);
+  await waitFor(() =>
+    expect(useUIStore.getState().currentPage).toBe("sessions"),
+  );
+});
+test("a complete library lexical zero hit is not a whole-scope absence claim", async () => {
+  localStorage.setItem(
+    "heed-library-chat-scope",
+    JSON.stringify({ mode: "all", labels: [], match: "any" }),
+  );
+  vi.mocked(libraryChatApi.context).mockImplementation(async (scope) => {
+    const result = context(scope);
+    const answer = result.thread.turns[0]!.answer!;
+    answer.claims = [];
+    answer.coverage = {
+      complete: true,
+      reviewedChunks: 0,
+      totalChunks: 0,
+      answerLimited: false,
+      retrieval: {
+        ...{
+          version: 1 as const,
+          strategy: "lexical" as const,
+          selectedMeetings: 3,
+          selectedEvidence: 30,
+          indexedMeetings: 2,
+          indexedEvidence: 20,
+          searchedMeetings: 2,
+          searchedEvidence: 20,
+          matchingRowsVisited: 4,
+          matchedEvidence: 2,
+          retrievedMeetings: 2,
+          retrievedEvidence: 6,
+          suppliedMeetings: 1,
+          suppliedEvidence: 3,
+          citedMeetings: 1,
+          citedEvidence: 1,
+          indexComplete: false,
+          lookupComplete: false,
+          generationComplete: false,
+          partialReasons: [],
+        },
+        indexedMeetings: 3,
+      indexedEvidence: 30,
+      searchedMeetings: 3,
+      searchedEvidence: 30,
+      matchingRowsVisited: 0,
+      retrievedMeetings: 0,
+      suppliedMeetings: 0,
+      citedMeetings: 0,
+      indexComplete: true,
+        lookupComplete: true,
+        matchedEvidence: 0,
+        retrievedEvidence: 0,
+        suppliedEvidence: 0,
+        citedEvidence: 0,
+      },
+    };
+    return result;
+  });
+  render(<LibraryChat />);
+  expect(
+    await screen.findByText(
+      "No lexical matches found. This does not establish that the topic is absent from the selected transcripts.",
+    ),
+  ).toBeVisible();
+  expect(screen.queryByText("Not found in the selected meetings.")).toBeNull();
+});
+
+test("catalog readiness preserves selected scope and can be cancelled; unavailable lookup is actionable", async () => {
+  localStorage.setItem(
+    "heed-library-chat-scope",
+    JSON.stringify({ mode: "all", labels: [], match: "any" }),
+  );
+  const result = context({ mode: "all", labels: [], match: "any" });
+  vi.mocked(libraryChatApi.context).mockResolvedValue({
+    ...result,
+    thread: {
+      ...result.thread,
+      turns: [
+        {
+          ...result.thread.turns[0]!,
+          status: "waiting",
+          waitingReason: "retrieval",
+          answer: undefined,
+        },
+      ],
+    },
+  });
+  const view = render(<LibraryChat />);
+  expect(
+    await screen.findByText(
+      "Waiting for the local transcript catalog to become ready.",
+    ),
+  ).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel answer" }));
+  await waitFor(() =>
+    expect(libraryChatApi.command).toHaveBeenCalledWith(result.thread.scope, {
+      action: "cancel",
+      turnId: "broad-turn",
+    }),
+  );
+  view.unmount();
+  vi.mocked(libraryChatApi.context).mockRejectedValue(
+    new Error("retrieval-unavailable"),
+  );
+  render(<LibraryChat />);
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Local transcript retrieval is unavailable. Refresh chat and retry.",
+  );
+  expect(screen.getByRole("button", { name: "Refresh chat" })).toBeEnabled();
+  expect(screen.getByLabelText("All meetings")).toBeChecked();
 });

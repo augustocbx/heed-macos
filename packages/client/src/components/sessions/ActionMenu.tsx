@@ -1,5 +1,5 @@
 import { tr, useLocale } from "@/lib/i18n.ts";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Session } from "@heed/shared";
 import { useUIStore } from "@/stores/ui.ts";
 import { fmtDate, fmtDuration } from "@/lib/format.ts";
@@ -16,6 +16,7 @@ interface Props {
 	onClose: () => void;
 	onTogglePin: () => void;
 	onDelete: () => void;
+ onExport?: (session: Session) => void;
 }
 
 function getContent(session: Session, category: Category): { text: string; md: string } {
@@ -53,11 +54,16 @@ function downloadFile(content: string, filename: string, mime: string) {
 	URL.revokeObjectURL(a.href);
 }
 
-export function ActionMenu({ x, y, session, onClose, onTogglePin, onDelete }: Props) {
+export function ActionMenu({ x, y, session, onClose, onTogglePin, onDelete, onExport }: Props) {
 	useLocale();
 	const ref = useRef<HTMLDivElement>(null);
 	const showToast = useUIStore((s) => s.showToast);
 	const [hoveredCategory, setHoveredCategory] = useState<Category | null>(null);
+ const [position, setPosition] = useState({ top: y, right: window.innerWidth - x });
+ useLayoutEffect(() => {
+  const rect = ref.current!.getBoundingClientRect();
+  setPosition({ top: Math.max(8, Math.min(y, window.innerHeight - rect.height - 8)), right: Math.max(8, Math.min(window.innerWidth - x, window.innerWidth - rect.width - 8)) });
+ }, [x, y]);
 
 	useEffect(() => {
 		const close = (e: MouseEvent) => {
@@ -147,12 +153,13 @@ export function ActionMenu({ x, y, session, onClose, onTogglePin, onDelete }: Pr
 	};
 
 	return (
-		<div ref={ref} className={styles.menu} style={{ top: y, right: window.innerWidth - x }}>
+		<div ref={ref} className={styles.menu} style={position}>
 			{renderCategoryItem("transcript", tr("Transcript"), true)}
 			{renderCategoryItem("speakers", tr("Speakers"), hasSpeakers, tr("No speakers detected"))}
 			{renderCategoryItem("notes", tr("AI Notes"), hasNotes, tr("Generate AI notes first"))}
 			<div className={styles.divider} />
 			<div className={styles.item} onClick={copyEverything}>{tr("Copy everything")}</div>
+   {onExport && <button type="button" className={`${styles.item} ${styles.exportButton}`} disabled={session.transcriptFinalized !== true} onClick={() => { onExport(session); onClose(); }}>{tr('Export PDF or subtitles…')}</button>}
 			<div className={styles.divider} />
 			<div className={styles.item} onClick={() => { onTogglePin(); onClose(); }}>
 				{session.pinned ? tr("Unpin") : tr("Pin")}

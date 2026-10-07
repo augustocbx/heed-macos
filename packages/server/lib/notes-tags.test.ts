@@ -70,7 +70,7 @@ test("tag snapshots include the same legacy note guards as meeting reads", async
  const response = await tagResponse(new Request("http://localhost/api/tags"), f.tags, session => f.notes.normalize(session));
  const saved = (await response.json()).sessions.find((session: { id: string }) => session.id === "legacy");
  expect(saved).toEqual(f.notes.get("legacy"));
- expect(saved.notesMetadata).toMatchObject({ origin: "manual", stale: false });
+ expect(saved.notesMetadata).toMatchObject({ origin: "manual", stale: true, sourceRevision: null });
  expect(saved.tagsRevision).toBeString();
 });
 test("a worker interrupted by storage recovery resumes after storage becomes available", async () => {

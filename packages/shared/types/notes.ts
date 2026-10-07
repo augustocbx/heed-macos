@@ -1,3 +1,4 @@
+import type { TranscriptSourceIdentity } from "./transcript-editing";
 import type { AiWaitingReason } from "./chat";
 
 export type NotesLanguagePolicy = "meeting" | "en" | "pt" | "fr" | "de";
@@ -14,6 +15,8 @@ export type NotesJobStatus = "queued" | "waiting" | "running" | "completed" | "f
 export interface NotesJob {
  id: string;
  sourceRevision: string;
+ /** Device-local accepted version bound when queued/admitted; excluded from portable records. */
+ sourceVersion?: number;
  status: NotesJobStatus;
  templateId: string;
  templateName: string;
@@ -32,7 +35,11 @@ export interface NotesJob {
 }
 
 export interface NotesMetadata {
- sourceRevision: string;
+ /** Null is unknown legacy/unguarded provenance, never verified against current text. */
+ sourceRevision: string | null;
+ /** Preserved historical identity whose missing witness cannot be verified. Requires null/stale. */
+ unverifiedSourceRevision?: string;
+ sourceIdentity?: TranscriptSourceIdentity;
  templateId?: string;
  templateName?: string;
  templateHash?: string;

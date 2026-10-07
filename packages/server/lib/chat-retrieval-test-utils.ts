@@ -1,0 +1,22 @@
+import {createHash} from 'node:crypto';
+import {tagKey,uniqueTags,type Session,type LibraryChatScope,type TranscriptEvidence} from '@heed/shared';
+import {normalizeChatScope} from './library-chat';
+import {iterateTranscriptEvidence,ChatError} from './meeting-chat';
+import {sourceRevision} from '../../shared/lib/transcript-source';
+import type {RetrievalSnapshot,RetrievalResult,RetrievalCoverage} from '../../shared/types/retrieval';
+import type {RetrievalScope} from './retrieval-catalog';
+const hash=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
+export function testCoverage(evidence:TranscriptEvidence[],retrieved=evidence):RetrievalCoverage{
+ return {version:1,strategy:'lexical',selectedMeetings:new Set(evidence.map(e=>e.sessionId)).size,selectedEvidence:evidence.length,indexedMeetings:new Set(evidence.map(e=>e.sessionId)).size,indexedEvidence:evidence.length,searchedMeetings:new Set(evidence.map(e=>e.sessionId)).size,searchedEvidence:evidence.length,matchingRowsVisited:evidence.length,matchedEvidence:evidence.length,retrievedMeetings:new Set(retrieved.map(e=>e.sessionId)).size,retrievedEvidence:retrieved.length,suppliedEvidence:0,suppliedMeetings:0,citedEvidence:0,citedMeetings:0,indexComplete:true,lookupComplete:true,generationComplete:false,partialReasons:[]};
+}
+/** Controlled service fixtures only; real lookup policy is exercised by SQLite/HTTP tests. */
+export function controlledChatRetrieval(sessions:()=>Session[]){
+ const scopes=new WeakMap<RetrievalSnapshot,RetrievalScope>();
+ const eligible=(scope:RetrievalScope)=>sessions().filter(s=>s.transcriptFinalized&&[...iterateTranscriptEvidence(s)].length&&(scope.kind==='meeting'?s.id===scope.sessionId:scope.scope.mode==='all'||scope.scope.labels.length>0&&(scope.scope.match==='all'?scope.scope.labels.every(t=>(s.tags??[]).map(tagKey).includes(t)):scope.scope.labels.some(t=>(s.tags??[]).map(tagKey).includes(t))))).sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
+ const resolve=(scope:RetrievalScope)=>{const normalized:RetrievalScope=scope.kind==='meeting'?scope:{kind:'library',scope:normalizeChatScope(scope.scope)},values=eligible(normalized),sources=values.map(s=>({sessionId:s.id,sourceRevision:sourceRevision(s),transcriptVersion:s.transcriptVersion??0}));const snapshot={key:hash({scope:normalized,sources,metadata:values.map(s=>[s.title,s.tags])}),sources};scopes.set(snapshot,normalized);return {snapshot,descriptors:values.map((s,i)=>({...sources[i],title:s.title,tags:(s.tags??[]).map(tagKey),displayTags:uniqueTags(s.tags??[]).sort(),finalized:true,nonempty:true,evidenceCount:[...iterateTranscriptEvidence(s)].length}))};};
+ const validate=(snapshot:RetrievalSnapshot)=>{const scope=scopes.get(snapshot);if(!scope||resolve(scope).snapshot.key!==snapshot.key)throw new ChatError('scope-changed',409);};
+ const preview=(value:LibraryChatScope)=>{const scope=normalizeChatScope(value),all=sessions(),matching=all.filter(s=>scope.mode==='all'||scope.labels.length>0&&(scope.match==='all'?scope.labels.every(t=>(s.tags??[]).map(tagKey).includes(t)):scope.labels.some(t=>(s.tags??[]).map(tagKey).includes(t)))),sources=eligible({kind:'library',scope}).map(s=>({sessionId:s.id,title:s.title,tags:uniqueTags(s.tags??[]).sort(),sourceRevision:sourceRevision(s)})).sort((a,b)=>a.sessionId.localeCompare(b.sessionId));return {snapshot:{key:hash({scope,sources}),scope,sources},ready:sources.length>0,matchingCount:matching.length,unavailableCount:matching.length-sources.length,availableLabels:uniqueTags(all.flatMap(s=>s.tags??[])).sort()};};
+ const catalog={state:()=> 'ready' as const,resolve,validate,preview};
+ const retriever={retrieve:async(snapshot:RetrievalSnapshot):Promise<RetrievalResult>=>{validate(snapshot);const evidence=eligible(scopes.get(snapshot)!).flatMap(s=>[...iterateTranscriptEvidence(s)]),retrieved=evidence.slice(0,32);return {snapshot,generationId:'controlled-test-only',hits:retrieved.map(e=>({...snapshot.sources.find(s=>s.sessionId===e.sessionId)!,evidenceId:e.id,evidenceOrdinal:eligible(scopes.get(snapshot)!).find(s=>s.id===e.sessionId)?[...iterateTranscriptEvidence(sessions().find(s=>s.id===e.sessionId)!)].findIndex(v=>v.id===e.id):0,score:101})),coverage:testCoverage(evidence,retrieved)};},materialize:async(result:RetrievalResult)=>{validate(result.snapshot);const all=eligible(scopes.get(result.snapshot)!).flatMap(s=>[...iterateTranscriptEvidence(s)]);return result.hits.map(hit=>all.find(e=>e.id===hit.evidenceId)!);}};
+ return {catalog,retriever};
+}

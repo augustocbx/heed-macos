@@ -1,6 +1,7 @@
 import type { Session } from "@heed/shared";
 import { sessionsApi } from "@/api/sessions.ts";
 import { useRecordingStore } from "@/stores/recording.ts";
+import { guardForSession } from "./acceptedSession";
 import { applySpeakerNames } from "./speakerNames.ts";
 
 export async function createRecordingSession(session: Partial<Session>) {
@@ -21,14 +22,14 @@ export async function createRecordingSession(session: Partial<Session>) {
  while (true) {
   const latest = fields();
   if (JSON.stringify(previous) === JSON.stringify(latest)) break;
-  saved = await sessionsApi.patch(saved.id, { ...latest, expectedTranscriptRevision:saved.transcriptRevision, ...(session.transcriptFinalized ? { transcriptFinalized: false } : {}) });
+  saved = await sessionsApi.patch(saved.id, { ...latest, ...guardForSession(saved), ...(session.transcriptFinalized ? { transcriptFinalized: false } : {}) });
   previous = latest;
  }
  if (session.transcriptFinalized) {
   // Close participant editing across the last commit. No eligible notes job can
   // appear during the reconciliation loop or use an in-flight speaker mapping.
   useRecordingStore.setState({finalSavePending:true});
-  try { saved = await sessionsApi.patch(saved.id,{...fields(),transcriptFinalized:true,expectedTranscriptRevision:saved.transcriptRevision}); }
+  try { saved = await sessionsApi.patch(saved.id,{...fields(),transcriptFinalized:true,...guardForSession(saved)}); }
   finally { useRecordingStore.setState({finalSavePending:false}); }
  }
  useRecordingStore.getState().setSessionId(saved.id);

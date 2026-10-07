@@ -2,12 +2,13 @@ import {fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {beforeEach,afterEach,expect,test,vi} from 'vitest';
 import {TasksPanel} from './TasksPanel';
 import {setLocale} from '@/lib/i18n';
+import {beginSessionRequest,useSessionsStore} from '@/stores/sessions';
 import {useUIStore} from '@/stores/ui';
 import type {Session,TasksSnapshot} from '@heed/shared';
 const meeting={id:'m',transcriptFinalized:true,transcript:'Fixture'} as Session;
 const review={sessionId:'m',sourceRevision:'r',status:'ready',updatedAt:'now',suggestions:Array.from({length:5},(_,i)=>({id:`s${i}`,title:`Task ${i+1}`,description:'Review me',assignee:null,dueDate:i===0?'2026-10-09':null,kind:i===0?'explicit':'inferred',state:'suggested',dateReview:i===1?'next Friday':null,evidence:[{segmentIndex:i,sourceRevision:'r',speaker:'Ana',start:i,end:i+1,quote:`Evidence ${i}`}]}))} as TasksSnapshot['review'];
 let snapshot:TasksSnapshot;let commands:any[];let fail=false;
-beforeEach(()=>{setLocale('en');commands=[];fail=false;snapshot={tasks:[],review:structuredClone(review)};vi.stubGlobal('fetch',vi.fn(async(url:string,init?:RequestInit)=>{
+beforeEach(()=>{useSessionsStore.setState({sessions:[],viewing:null});setLocale('en');commands=[];fail=false;snapshot={tasks:[],review:structuredClone(review)};vi.stubGlobal('fetch',vi.fn(async(url:string,init?:RequestInit)=>{
  if(init?.method==='POST'){const body=JSON.parse(String(init.body));commands.push(body);if(fail)return Response.json({error:'Could not save tasks. Please retry.'},{status:503});
  if(body.action==='accept')for(const item of body.items){snapshot.review!.suggestions.find(s=>s.id===item.suggestionId)!.state='accepted';}
  if(body.action==='dismiss')for(const id of body.ids){snapshot.review!.suggestions.find(s=>s.id===id)!.state='dismissed';}
@@ -114,4 +115,19 @@ test('task evidence from a different revision cannot focus or seek the current t
  render(<TasksPanel session={{...meeting,transcriptRevision:'r'}} onSeek={onSeek} onShowTranscript={onShowTranscript}/>);
  await screen.findByText('Accepted action');fireEvent.click(screen.getByRole('button',{name:'View task source'}));
  expect(onSeek).not.toHaveBeenCalled();expect(onShowTranscript).toHaveBeenCalledWith(undefined);
+});
+
+test('a pending task-source read cannot restore discarded equal-version candidates',async()=>{
+ useUIStore.setState({currentPage:'tasks'});
+ const state={schemaVersion:1,activeGenerationId:'g',generations:[],edits:[],candidateRequestReceipts:[],candidates:[{id:'old',requestId:'stage',requestSignature:'signature',createdAt:'2026-10-06T12:00:00Z',baseGuard:{expectedTranscriptRevision:'r',expectedTranscriptVersion:1},transcript:'Candidate',segments:[],speakers:[],language:'en',duration:1}]} as Session['transcriptEditing'];
+ const initial={...meeting,transcriptRevision:'r',transcriptVersion:1,transcriptEditing:state};
+ useSessionsStore.setState({sessions:[initial],viewing:null});snapshot={tasks:[{...acceptedTask(),evidence:[taskEvidence]}]};
+ let finish!:(response:Response)=>void;
+ vi.stubGlobal('fetch',vi.fn((url:string)=>url==='/api/sessions'?new Promise<Response>(resolve=>finish=resolve):Promise.resolve(Response.json(snapshot))));
+ render(<TasksPanel/>);await screen.findByText('Accepted action');fireEvent.click(screen.getByRole('button',{name:'View task source'}));
+ await waitFor(()=>expect(finish).toBeTypeOf('function'));
+ const discarded={...initial,transcriptEditing:{...state!,candidates:[]}};
+ useSessionsStore.getState().accept(discarded,beginSessionRequest(initial.id));
+ finish(Response.json([initial]));await waitFor(()=>expect(useUIStore.getState().currentPage).toBe('sessions'));
+ expect(useSessionsStore.getState().viewing?.transcriptEditing?.candidates).toEqual([]);
 });

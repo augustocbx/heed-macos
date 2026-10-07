@@ -21,14 +21,17 @@ interface ManagedFile {path:string;bytes:number;modified:number;category:Managed
 export interface QuotaSnapshot {
  limitBytes:number;usedBytes:number;reservedBytes:number;protectedBytes:number;reclaimableBytes:number;availableBytes:number;
  categories:Record<ManagedCategory,number>;
+ reclaimableMediaBytes?:number;reclaimableCacheBytes?:number;
 }
-export interface QuotaPreview extends QuotaSnapshot {requestedLimit:number;removals:Array<{path:string;bytes:number}>;token:string}
+export interface QuotaPreview extends QuotaSnapshot {requestedLimit:number;removals:Array<{path:string;bytes:number}>;token:string;derivedCache?:{bytes:number;files:number}}
 export interface QuotaLedgerStorage {load():unknown|null;save(value:unknown):void}
 interface Options {
  localIo?:QuotaLocalIo;
  ledgerStorage?:QuotaLedgerStorage;
  ledgerPath:string;roots:Partial<Record<ManagedCategory,string[]>>;getLimit:()=>number;setLimit:(bytes:number)=>void;
  protectedPaths:()=>string[];onEvicted?:(paths:string[])=>void;
+ /** Exact derived index files owned by a quiescent lifecycle, never arbitrary roots. */
+ disposableFiles?:()=>string[];disposeFiles?:(paths:string[])=>void;
 }
 
 /** One server owns synchronous claims; durable remaining allocations survive restarts. */
@@ -116,13 +119,18 @@ export class ManagedQuota {
  }
  private inspect(){
   const files=this.files();const protectedPaths=new Set([...this.options.protectedPaths(),...Object.values(this.reservations).flatMap(item=>item.paths)].map(path=>resolve(path)));
-  const reclaimable=files.filter(file=>file.category==='media' && ![...protectedPaths].some(path=>ownsPath(path,file.path))).sort((a,b)=>a.modified-b.modified || a.path.localeCompare(b.path));
+  const declared=new Set((this.options.disposeFiles?this.options.disposableFiles?.():[])?.map(path=>resolve(path))??[]);
+  const cacheFiles=files.filter(file=>file.category==='indexes'&&declared.has(file.path));
+  // A lifecycle's bundle is indivisible: one protected, missing, deduplicated
+  // or miscategorized member makes the entire cache ineligible.
+  const disposable=cacheFiles.length===declared.size&&cacheFiles.every(file=>![...protectedPaths].some(path=>ownsPath(path,file.path)))?declared:new Set<string>();
+  const reclaimable=files.filter(file=>(file.category==='media'||file.category==='indexes'&&disposable.has(file.path)) && ![...protectedPaths].some(path=>ownsPath(path,file.path))).sort((a,b)=>Number(b.category==='indexes')-Number(a.category==='indexes') || a.modified-b.modified || a.path.localeCompare(b.path));
   const categories={text:0,media:0,indexes:0,staging:0};for(const file of files)categories[file.category]+=file.bytes;
   const usedBytes=files.reduce((sum,file)=>sum+file.bytes,0);
   const reservedBytes=Object.values(this.reservations).reduce((sum,item)=>sum+Math.max(0,item.bytes-files.filter(file=>item.paths.some(path=>ownsPath(path,file.path))).reduce((n,file)=>n+file.bytes,0)),0);
   const reclaimableBytes=reclaimable.reduce((sum,file)=>sum+file.bytes,0);const limitBytes=this.options.getLimit();
-  const snapshot:QuotaSnapshot={limitBytes,usedBytes,reservedBytes,reclaimableBytes,protectedBytes:usedBytes-reclaimableBytes+reservedBytes,availableBytes:Math.max(0,limitBytes-usedBytes-reservedBytes),categories};
-  return {files,reclaimable,snapshot};
+  const snapshot:QuotaSnapshot={limitBytes,usedBytes,reservedBytes,reclaimableBytes,reclaimableMediaBytes:reclaimable.filter(file=>file.category==='media').reduce((sum,file)=>sum+file.bytes,0),reclaimableCacheBytes:reclaimable.filter(file=>file.category==='indexes').reduce((sum,file)=>sum+file.bytes,0),protectedBytes:usedBytes-reclaimableBytes+reservedBytes,availableBytes:Math.max(0,limitBytes-usedBytes-reservedBytes),categories};
+  return {files,reclaimable,snapshot,disposable:[...disposable].sort()};
  }
  snapshot():QuotaSnapshot{return this.inspect().snapshot;}
  allocation(id:string):{bytes:number;paths:string[]}|null{return this.reservations[id]?structuredClone(this.reservations[id]):null;}
@@ -155,19 +163,25 @@ export class ManagedQuota {
   if(!this.reservations[id])return;const before=this.reservations;this.reservations={...before};delete this.reservations[id];
   try{this.persist();}catch(error){this.reservations=before;throw error;}
  }
- preview(requestedLimit:number):QuotaPreview{
+ private plan(requestedLimit:number):{preview:QuotaPreview;derived:Array<{path:string;bytes:number}>}{
   // Public HTTP settings enforce the documented range; tiny controlled budgets test the service.
   if(!Number.isSafeInteger(requestedLimit) || requestedLimit<=0)throw new Error('Choose a valid integer-byte quota');
-  const {files,reclaimable,snapshot}=this.inspect();
+  const {files,reclaimable,snapshot,disposable}=this.inspect();
   if(requestedLimit<snapshot.protectedBytes)throw new Error('Requested quota is below protected meeting data and reservations');
-  const removals:Array<{path:string;bytes:number}>=[];let remaining=snapshot.usedBytes+snapshot.reservedBytes;
-  for(const file of reclaimable){if(remaining<=requestedLimit)break;removals.push({path:file.path,bytes:file.bytes});remaining-=file.bytes;}
-  const token=createHash('sha256').update(JSON.stringify({requestedLimit,limit:snapshot.limitBytes,files,reservations:this.reservations,protected:this.options.protectedPaths().sort()})).digest('hex');
-  return {...snapshot,requestedLimit,removals,token};
+  const removals:Array<{path:string;bytes:number}>=[],derived:Array<{path:string;bytes:number}>=[];let remaining=snapshot.usedBytes+snapshot.reservedBytes;
+  // One lifecycle owns this exact cache allowlist. Review its complete disposal
+  // before considering media, so the public summary equals actual retirement.
+  if(remaining>requestedLimit)for(const file of reclaimable.filter(file=>file.category==='indexes')){derived.push({path:file.path,bytes:file.bytes});remaining-=file.bytes;}
+  for(const file of reclaimable.filter(file=>file.category==='media')){if(remaining<=requestedLimit)break;removals.push({path:file.path,bytes:file.bytes});remaining-=file.bytes;}
+  const token=createHash('sha256').update(JSON.stringify({requestedLimit,limit:snapshot.limitBytes,files,reservations:this.reservations,protected:this.options.protectedPaths().sort(),disposable})).digest('hex');
+  return {preview:{...snapshot,requestedLimit,removals,token,derivedCache:{bytes:derived.reduce((sum,file)=>sum+file.bytes,0),files:derived.length}},derived};
  }
+ preview(requestedLimit:number):QuotaPreview{return this.plan(requestedLimit).preview;}
  apply(requestedLimit:number,token:string):QuotaSnapshot{
-  const preview=this.preview(requestedLimit);if(typeof token!=='string' || token!==preview.token)throw new Error('Quota preview changed; review cleanup again');
+  const {preview,derived}=this.plan(requestedLimit);if(typeof token!=='string' || token!==preview.token)throw new Error('Quota preview changed; review cleanup again');
   // No await: no second server job can acquire space between review and removal.
+  if(derived.length)this.options.disposeFiles!(derived.map(file=>file.path));
+  if(derived.some(file=>this.exists(file.path)))throw new Error('Disposable index owner did not retire its reviewed files');
   for(const file of preview.removals)this.unlink(file.path);
   if(preview.removals.length)this.options.onEvicted?.(preview.removals.map(file=>file.path));
   const updated=this.snapshot();if(updated.usedBytes+updated.reservedBytes>requestedLimit)throw new Error('Quota usage changed during cleanup; review the storage limit again');

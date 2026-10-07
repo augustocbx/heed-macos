@@ -4,14 +4,15 @@ import { useRecording } from "./useRecording";
 import { useRecordingStore } from "@/stores/recording";
 import { recordingApi } from "@/api/recording";
 import { createRecordingSession } from "@/lib/recordingSession";
+import {ApiError} from '@/api/client';
 
-vi.mock("@/api/recording", () => ({ recordingApi: { start: vi.fn(), stop: vi.fn(), status:vi.fn() } }));
+vi.mock("@/api/recording", () => ({ recordingApi: { start: vi.fn(), recordFinalOnly:vi.fn(), stop: vi.fn(), status:vi.fn() } }));
 vi.mock("@/lib/recordingSession", () => ({ createRecordingSession: vi.fn() }));
 vi.mock("@/stores/sessions", () => ({ useSessionsStore:Object.assign((select: (s: unknown) => unknown) => select({ load: vi.fn() }),{getState:()=>({load:vi.fn().mockResolvedValue(undefined)})}) }));
 
 afterEach(() => vi.unstubAllGlobals());
 
-const options = { micBars: { current: [] }, systemBars: { current: [] }, getLanguage: () => "pt" };
+const options = { micBars: { current: [] }, systemBars: { current: [] } };
 beforeEach(() => {
  vi.clearAllMocks();
  useRecordingStore.getState().reset();
@@ -21,10 +22,27 @@ beforeEach(() => {
 });
 
 describe("recording language and finalization", () => {
- it("starts in English even when a previous recording used Portuguese", async () => {
+ it('offers an explicit final-only action after unsupported admission without saving a preference automatically',async()=>{
+  vi.mocked(recordingApi.start).mockRejectedValue(new ApiError('unsupported',409,'live-language-unsupported'));
+  vi.mocked(recordingApi.recordFinalOnly).mockResolvedValue({success:true} as never);
+  const {result,unmount}=renderHook(()=>useRecording(options));
+  await act(async()=>{expect(await result.current.start()).toBe(false);});
+  expect(result.current.liveStartError).toBe('live-language-unsupported');expect(recordingApi.recordFinalOnly).not.toHaveBeenCalled();
+  await act(async()=>{expect(await result.current.recordFinalOnly()).toBe(true);});
+  expect(recordingApi.recordFinalOnly).toHaveBeenCalledWith('both',expect.any(String));
+  unmount();expect(recordingApi.stop).not.toHaveBeenCalled();
+ });
+ it('subscribes without a language override and closure releases observers without stopping capture',()=>{
+  const source=vi.fn();vi.stubGlobal('EventSource',class{constructor(url:string){source(url);}close(){}addEventListener(){}});
+  useRecordingStore.getState().startRecording();
+  const {unmount}=renderHook(()=>useRecording(options));
+  expect(source).toHaveBeenCalledWith('/api/sysrecord/live');expect(source).not.toHaveBeenCalledWith(expect.stringContaining('?lang='));
+  unmount();expect(recordingApi.stop).not.toHaveBeenCalled();
+ });
+ it("delegates speech language to authoritative admission", async () => {
   const { result } = renderHook(() => useRecording(options));
-  await act(async () => { await result.current.start("pt"); });
-  expect(recordingApi.start).toHaveBeenCalledWith("both", "en", expect.any(String));
+  await act(async () => { await result.current.start(); });
+  expect(recordingApi.start).toHaveBeenCalledWith("both", expect.any(String));
  });
  it("finishes native start even when browser microphone permission never resolves", async () => {
   vi.stubGlobal("navigator", {mediaDevices:{getUserMedia:vi.fn(() => new Promise(() => {}))}});
@@ -38,7 +56,7 @@ describe("recording language and finalization", () => {
   const session={id:"saved",transcriptFinalized:true,language:"pt",duration:720,transcript:"Bom dia",segments:[{id:0,speaker:"Me",channel:"mic",text:"Bom dia",start:2.1,end:3.4}],speakers:["Me"],files:{wav:"audio.wav"},transcriptionModel:"parakeet-v3",liveModel:"base"};
   vi.mocked(recordingApi.stop).mockResolvedValue({path:"audio.wav",finalized:true,snapshot:{meetingId:"meeting-1",state:"completed",revision:8,startedAt:100,path:"audio.wav",seconds:720,mode:"both",segments:session.segments,speakerNames:{},session,error:null,maintenance:false}} as never);
   const { result } = renderHook(() => useRecording(options));
-  await act(async () => { expect(await result.current.stop("en")).toBe(true); });
+  await act(async () => { expect(await result.current.stop()).toBe(true); });
   expect(recordingApi.stop).toHaveBeenCalledWith("meeting-1",expect.any(String));
   expect(createRecordingSession).not.toHaveBeenCalled();
   expect(useRecordingStore.getState().resultLanguage).toBe("pt");
