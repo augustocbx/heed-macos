@@ -39,10 +39,12 @@ jobs:
         run: python3 -m unittest discover -s packages/transcription -p preview_preference_test.py
       - name: Live speech language capability and immutable admission tests
         run: python3 -m unittest discover -s packages/transcription -p live_language_test.py
+      - name: Public live language scorer, fixture integrity and offline sandbox tests
+        run: python3 -m unittest discover -s scripts/qa -p '*test.py'
       - name: Managed audio working directory tests
         run: python3 -m unittest discover -s packages/transcription -p managed_work_test.py
       - name: Check Python syntax
-        run: python3 -m py_compile packages/transcription/transcription_server.py packages/transcription/final_echo.py packages/transcription/voice_identity.py packages/transcription/meeting_language.py packages/transcription/manual_transcription.py packages/desktop/browser-meet/native-host.py packages/desktop/browser-meet/register-host.py packages/transcription/managed_work.py packages/transcription/native_worker.py packages/transcription/process_ownership.py packages/transcription/worker_lifecycle.py packages/transcription/doctor.py packages/transcription/engines.py packages/desktop/permission-recovery.py packages/transcription/preview_preference.py packages/transcription/preview_worker.py packages/transcription/live_language.py scripts/check-real-time-resources.py
+        run: python3 -m py_compile packages/transcription/transcription_server.py packages/transcription/final_echo.py packages/transcription/voice_identity.py packages/transcription/meeting_language.py packages/transcription/manual_transcription.py packages/desktop/browser-meet/native-host.py packages/desktop/browser-meet/register-host.py packages/transcription/managed_work.py packages/transcription/native_worker.py packages/transcription/process_ownership.py packages/transcription/worker_lifecycle.py packages/transcription/doctor.py packages/transcription/engines.py packages/desktop/permission-recovery.py packages/transcription/preview_preference.py packages/transcription/preview_worker.py packages/transcription/live_language.py scripts/check-real-time-resources.py scripts/qa/evaluate-live-languages.py scripts/qa/live_language_metrics.py scripts/qa/generate-live-language-fixtures.py
       - name: Build interface
         run: bun run build
       - name: Check installers
