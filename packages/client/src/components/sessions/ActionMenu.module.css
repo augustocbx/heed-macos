@@ -62,3 +62,6 @@
 	padding: 4px;
 	min-width: 180px;
 }
+.exportButton { display:block; width:100%; text-align:left; color:inherit; background:none; border:0; font:inherit; }
+.exportButton:focus-visible { outline:2px solid var(--blue); outline-offset:-2px; }
+.exportButton:disabled { opacity:.5; cursor:default; }

@@ -6,6 +6,7 @@ import { useUIStore } from "@/stores/ui.ts";
 import { SessionItem } from "./SessionItem.tsx";
 import { ActionMenu } from "./ActionMenu.tsx";
 import { SessionDetail } from "./SessionDetail.tsx";
+import { MeetingExportDialog } from './MeetingExportDialog';
 import styles from "./SessionsPage.module.css";
 
 export function SessionsPage() {
@@ -15,7 +16,9 @@ export function SessionsPage() {
 
 	const [search, setSearch] = useState("");
 	const [activeTagFilter, setActiveTagFilter] = useState<string | null>(null);
-	const [menuState, setMenuState] = useState<{ x: number; y: number; session: Session } | null>(null);
+	const [menuState, setMenuState] = useState<{ x: number; y: number; session: Session; trigger: HTMLElement } | null>(null);
+ const [exportState, setExportState] = useState<{ sessionId: string; trigger: HTMLElement } | null>(null);
+ const headingRef = useRef<HTMLHeadingElement>(null);
 	const [deleteTarget, setDeleteTarget] = useState<Session | null>(null);
 	const [deleting, setDeleting] = useState(false);
 
@@ -91,6 +94,7 @@ export function SessionsPage() {
 
 	return (
 		<div>
+   <h2 className={styles.focusHeading} tabIndex={-1} ref={headingRef}>{tr('Meetings')}</h2>
 			<div className={styles.header}>
 				<input
 					type="search"
@@ -132,8 +136,9 @@ export function SessionsPage() {
 						onOpen={() => view(s)}
 						onDelete={() => openDeletePanel(s)}
 						onMenu={(e, sess) => {
-							const rect = (e.target as HTMLElement).getBoundingClientRect();
-							setMenuState({ x: rect.right, y: rect.bottom + 4, session: sess });
+							const trigger = e.currentTarget as HTMLElement;
+       const rect = trigger.getBoundingClientRect();
+							setMenuState({ x: rect.right, y: rect.bottom + 4, session: sess, trigger });
 						}}
 						onTagClick={(t) => setActiveTagFilter(t)}
 					/>
@@ -151,8 +156,13 @@ export function SessionsPage() {
 						showToast(menuState.session.pinned ? tr("Unpinned") : tr("Pinned"));
 					}}
 					onDelete={() => openDeletePanel(menuState.session)}
+     onExport={session => setExportState({ sessionId: session.id, trigger: menuState.trigger })}
 				/>
 			)}
+   {exportState && <MeetingExportDialog sessionId={exportState.sessionId} onClose={() => {
+    const trigger = exportState.trigger; setExportState(null);
+    queueMicrotask(() => (trigger.isConnected ? trigger : headingRef.current)?.focus());
+   }} />}
 
 			{deleteTarget && (
 				<div className={styles.confirmOverlay} onClick={() => !deleting && setDeleteTarget(null)}>

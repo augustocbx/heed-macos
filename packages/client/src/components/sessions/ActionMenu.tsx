@@ -16,6 +16,7 @@ interface Props {
 	onClose: () => void;
 	onTogglePin: () => void;
 	onDelete: () => void;
+ onExport?: (session: Session) => void;
 }
 
 function getContent(session: Session, category: Category): { text: string; md: string } {
@@ -53,7 +54,7 @@ function downloadFile(content: string, filename: string, mime: string) {
 	URL.revokeObjectURL(a.href);
 }
 
-export function ActionMenu({ x, y, session, onClose, onTogglePin, onDelete }: Props) {
+export function ActionMenu({ x, y, session, onClose, onTogglePin, onDelete, onExport }: Props) {
 	useLocale();
 	const ref = useRef<HTMLDivElement>(null);
 	const showToast = useUIStore((s) => s.showToast);
@@ -153,6 +154,7 @@ export function ActionMenu({ x, y, session, onClose, onTogglePin, onDelete }: Pr
 			{renderCategoryItem("notes", tr("AI Notes"), hasNotes, tr("Generate AI notes first"))}
 			<div className={styles.divider} />
 			<div className={styles.item} onClick={copyEverything}>{tr("Copy everything")}</div>
+   {onExport && <button type="button" className={`${styles.item} ${styles.exportButton}`} disabled={session.transcriptFinalized !== true} onClick={() => { onExport(session); onClose(); }}>{tr('Export PDF or subtitles…')}</button>}
 			<div className={styles.divider} />
 			<div className={styles.item} onClick={() => { onTogglePin(); onClose(); }}>
 				{session.pinned ? tr("Unpin") : tr("Pin")}
