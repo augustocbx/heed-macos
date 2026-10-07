@@ -1,3 +1,4 @@
+import type { OriginalPrivateRootIdentity } from './local-store-io';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { join } from 'node:path';
 import type { DeletionCapabilities, PortableCommit, RemoteInventory } from '@heed/shared';
@@ -39,9 +40,10 @@ export class DirectSmbProvider implements LibraryProvider, RemoteTransaction {
     private scope = new AsyncLocalStorage<Scope>();
     private busy = false;
     private pending?: PendingRemoteTransaction[];
-    constructor(binding: DirectSmbBinding, private native: DirectSmbNative, private getCredentials: () => Promise<DirectSmbCredentials>, private appDir: string, private quota?: QuotaBudget) {
+    constructor(binding: DirectSmbBinding, private native: DirectSmbNative, private getCredentials: () => Promise<DirectSmbCredentials>, private appDir: string, private quota?: QuotaBudget, private originalPrivateRoot?: OriginalPrivateRootIdentity) {
         this.binding = structuredClone(validateDirectBinding(binding));
-        validateDirectContext({ operationId: binding.id, deviceId: binding.id, kind: 'read', appDir });
+        validateDirectContext({ operationId: binding.id, deviceId: binding.id, kind: 'read', appDir, ...(originalPrivateRoot === undefined ? {} : { originalPrivateRoot }) });
+        if (originalPrivateRoot !== undefined) this.originalPrivateRoot = Object.freeze(structuredClone(originalPrivateRoot));
         this.id = binding.id;
         this.name = binding.name;
         this.readOnly = binding.readOnly;
@@ -53,7 +55,7 @@ export class DirectSmbProvider implements LibraryProvider, RemoteTransaction {
         if (this.busy)
             throw directSmbError('destination-busy');
         this.pending = undefined;
-        this.pending = validateDirectPending(await this.native.pending(this.binding, this.appDir, signal));
+        this.pending = validateDirectPending(await this.native.pending(this.binding, this.appDir, signal, this.originalPrivateRoot));
         return this;
     }
     pendingTransactions(): PendingRemoteTransaction[] {
@@ -69,7 +71,7 @@ export class DirectSmbProvider implements LibraryProvider, RemoteTransaction {
     }
     async withTransaction<T>(context: TransactionContext, run: (transaction: RemoteTransaction) => Promise<T>, signal?: AbortSignal): Promise<T> {
         signal?.throwIfAborted();
-        validateDirectContext({ ...context, appDir: this.appDir });
+        validateDirectContext({ ...context, appDir: this.appDir, ...(this.originalPrivateRoot === undefined ? {} : { originalPrivateRoot: this.originalPrivateRoot }) });
         if (this.readOnly)
             throw directSmbError('read-only');
         const borrowed = this.scope.getStore();
@@ -93,7 +95,7 @@ export class DirectSmbProvider implements LibraryProvider, RemoteTransaction {
             }
             const credentials = await this.getCredentials();
             openAttempted = true;
-            session = await this.native.open(this.binding, credentials, { ...context, appDir: this.appDir }, signal);
+            session = await this.native.open(this.binding, credentials, { ...context, appDir: this.appDir, ...(this.originalPrivateRoot === undefined ? {} : { originalPrivateRoot: this.originalPrivateRoot }) }, signal);
             const command = async (action: string, value?: Record<string, unknown>, s?: AbortSignal) => {
                 this.active();
                 if (action !== 'checkpoint' && ['write-deletion', 'write-fence', 'write-pending', 'retire-pending', 'remove-exact'].includes(action))

@@ -247,6 +247,131 @@ class TransactionTests(unittest.TestCase):
         self.transactions = []
         self.addCleanup(lambda: [t.abort() for t in self.transactions])
 
+    def original_root(self):
+        from journal import local_identity
+        info = os.stat(self.app)
+        identity = local_identity(info)
+        return dict(device=identity[0], inode=identity[1],
+                    birthMilliseconds=str(int(identity[2]) // 1_000_000))
+
+    def test_original_root_substitution_before_startup_creates_no_foreign_state(self):
+        expected = self.original_root()
+        original = self.app + "-original"
+        os.rename(self.app, original)
+        self.addCleanup(lambda: shutil.rmtree(original))
+        os.mkdir(self.app, 0o700)
+        Path(self.app, "sentinel").write_bytes(b"foreign sentinel")
+        before = sorted(Path(self.app).rglob("*"))
+        with self.assertRaises(SmbError):
+            Journal(self.binding, self.context, self.app, expected)
+        self.assertEqual(sorted(Path(self.app).rglob("*")), before)
+        self.assertEqual(Path(self.app, "sentinel").read_bytes(), b"foreign sentinel")
+        with self.assertRaises(SmbError):
+            pending_transactions(self.binding, self.app, expected)
+
+    def test_original_root_substitution_after_match_keeps_original_descriptor(self):
+        expected = self.original_root()
+        original = self.app + "-original"
+        self.addCleanup(lambda: shutil.rmtree(original, ignore_errors=True))
+        from journal import directory
+        mkdir = os.mkdir
+        injected = False
+        def walk(path, create=False):
+            # The old absolute rewalk is substituted before it opens the suffix;
+            # the restricted implementation reaches the first relative mkdir below.
+            if create:
+                substitute_root()
+            return directory(path, create=create)
+        def substitute_root():
+            nonlocal injected
+            if not injected:
+                os.rename(self.app, original)
+                mkdir(self.app, 0o700)
+                Path(self.app, "sentinel").write_bytes(b"foreign sentinel")
+                injected = True
+        def substitute(name, mode=0o777, *, dir_fd=None):
+            nonlocal injected
+            if name == "library" and not injected:
+                substitute_root()
+            return mkdir(name, mode, dir_fd=dir_fd)
+        with patch("journal.directory", side_effect=walk), patch("journal.os.mkdir", side_effect=substitute):
+            with self.assertRaises((SmbError, FileNotFoundError)):
+                Journal(self.binding, self.context, self.app, expected)
+        self.assertTrue(injected)
+        self.assertEqual([p.name for p in Path(self.app).iterdir()], ["sentinel"])
+        self.assertTrue(Path(original, "library/catalog/direct-smb", self.binding["id"]).is_dir())
+        self.assertEqual(Path(self.app, "sentinel").read_bytes(), b"foreign sentinel")
+
+    def test_original_root_valid_recovery_and_invalid_restrictions(self):
+        expected = self.original_root()
+        journal = Journal(self.binding, self.context, self.app, expected)
+        journal.close()
+        self.assertTrue(pending_transactions(self.binding, self.app, expected)[0]["recoverable"])
+        reopened = Journal(self.binding, self.context, self.app, expected)
+        reopened.close()
+        for invalid in [False, {}, {**expected, "device": "-1"},
+                        {**expected, "inode": True}, {**expected, "extra": "1"},
+                        {**expected, "birthMilliseconds": "0"},
+                        {**expected, "device": "1" * 31}]:
+            with self.subTest(invalid=invalid), self.assertRaises(SmbError):
+                Journal(self.binding, self.context, self.app, invalid)
+        os.chmod(self.app, 0o750)
+        with self.assertRaises(SmbError):
+            Journal(self.binding, self.context, self.app, expected)
+        os.chmod(self.app, 0o700)
+        real_fstat = os.fstat
+        def wrong_owner(fd):
+            info = real_fstat(fd)
+            if info.st_ino == int(expected["inode"]):
+                values = {k:getattr(info,k) for k in dir(info) if k.startswith("st_")}
+                values["st_uid"] = info.st_uid + 1
+                return SimpleNamespace(**values)
+            return info
+        with patch("journal.os.fstat", side_effect=wrong_owner), self.assertRaises(SmbError):
+            Journal(self.binding, self.context, self.app, expected)
+
+    def test_original_root_float_birth_boundary_is_conservatively_refused(self):
+        from journal import local_identity
+        expected = self.original_root()
+        real_fstat = os.fstat
+        def float_birth(fd):
+            info = real_fstat(fd)
+            if info.st_ino == int(expected["inode"]):
+                values = {k:getattr(info,k) for k in dir(info) if k.startswith("st_") and k != "st_birthtime_ns"}
+                values["st_birthtime"] = 1700000000.001
+                return SimpleNamespace(**values)
+            return info
+        expected["birthMilliseconds"] = "1700000000001"
+        with patch("journal.os.fstat", side_effect=float_birth):
+            fd = os.open(self.app, os.O_RDONLY)
+            try:
+                self.assertEqual(str(int(local_identity(float_birth(fd))[2]) // 1_000_000), "1700000000000")
+            finally:
+                os.close(fd)
+            with self.assertRaises(SmbError):
+                Journal(self.binding, self.context, self.app, expected)
+        self.assertEqual(list(Path(self.app).iterdir()), [])
+
+    def test_original_root_pending_refuses_missing_root_instead_of_empty_hints(self):
+        expected = self.original_root()
+        self.assertEqual(pending_transactions(self.binding, self.app, expected), [])
+        original = self.app + "-original"
+        os.rename(self.app, original)
+        try:
+            with self.assertRaises(SmbError):
+                pending_transactions(self.binding, self.app, expected)
+        finally:
+            os.rename(original, self.app)
+
+    def test_original_root_transaction_refuses_before_remote_claim(self):
+        expected = self.original_root()
+        expected["inode"] = "0"
+        with self.assertRaises(SmbError):
+            Transaction(DirectTransport(ENDPOINT, CREDS, MemorySession(self.server)),
+                        self.binding, self.context, self.app, expected)
+        self.assertEqual(list(Path(self.app).iterdir()), [])
+        self.assertEqual(self.server.events, [])
+
     def transaction(self, context=None, app=None):
         tx = Transaction(
             DirectTransport(ENDPOINT, CREDS, MemorySession(self.server)),

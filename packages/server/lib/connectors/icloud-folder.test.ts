@@ -36,3 +36,13 @@ test('QA native observer is bounded before launch and cancellation waits for act
   pending=native.acceptance({action:'qa-observe-parent',binding},controller.signal);const deadline=Date.now()+3000;while(!existsSync(started)&&Date.now()<deadline)await Bun.sleep(10);expect(existsSync(started)).toBe(true);const pid=Number(readFileSync(started,'utf8'));controller.abort();let error:any;try{await pending;}catch(e){error=e;}expect(error?.guardianStopped).toBe(true);expect(()=>process.kill(pid,0)).toThrow();
  }finally{controller.abort();await pending?.catch(()=>{});rmSync(root,{recursive:true});}
 });
+
+test('original private root is private request input and invalid restrictions refuse before native calls',async()=>{
+ const f=fixture(),expected={device:'1',inode:'2',birthMilliseconds:'3'},binding={bookmark:'YQ==',account:'Yg==',identity:'1:2'};
+ const p=new ICloudFolderProvider(id,'Fixture',binding,destinationId,f.native,undefined,1,'generation','/private/owned-app',undefined,expected);
+ const issued={...expected};expected.inode='99';await p.writeImmutable('objects/a',Buffer.from('synthetic'));expect(f.calls.length).toBeGreaterThan(0);for(const c of f.calls){expect(c.originalPrivateRoot).toEqual(issued);expect(c.privateRoot).toBe('/private/owned-app');}
+ const before=f.calls.length;
+ for(const invalid of [null,false,{}, {...expected,inode:'2\n'}, {...expected,device:'-1'}, {...expected,inode:2}, {...expected,extra:'4'}, {...expected,birthMilliseconds:'1'.repeat(31)}])expect(()=>new ICloudFolderProvider(id,'Fixture',binding,destinationId,f.native,undefined,1,'generation','/private/owned-app',undefined,invalid as any)).toThrow();
+ expect(()=>new ICloudFolderProvider(id,'Fixture',binding,destinationId,f.native,undefined,1,'generation',undefined,undefined,expected)).toThrow();expect(f.calls).toHaveLength(before);
+ const ordinary=fixture();await ordinary.provider.writeImmutable('objects/a',Buffer.from('synthetic'));for(const c of ordinary.calls)expect(Object.hasOwn(c,'originalPrivateRoot')).toBe(false);
+});

@@ -64,6 +64,46 @@ def local_identity(info):
     return [str(info.st_dev), str(info.st_ino), str(birth)]
 
 
+def validate_original_private_root(value):
+    identity = exact(value, ("device", "inode", "birthMilliseconds"))
+    if any(not isinstance(n, str) or not re.fullmatch(r"[0-9]{1,30}", n)
+           for n in identity.values()):
+        raise SmbError("invalid-input")
+    return identity
+
+
+def check_original_private_root(fd, expected):
+    expected = validate_original_private_root(expected)
+    info = os.fstat(fd)
+    identity = local_identity(info)
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o700
+            or identity[0] != expected["device"]
+            or identity[1] != expected["inode"]
+            or str(int(local_identity(info)[2]) // 1_000_000) != expected["birthMilliseconds"]):
+        raise SmbError("recovery-required")
+
+
+def journal_directory(app_fd, binding_id, create=False):
+    """Walk the fixed private suffix from the initially checked original app FD."""
+    fd = os.dup(app_fd)
+    try:
+        for name in ("library", "catalog", "direct-smb", binding_id):
+            if create:
+                try:
+                    os.mkdir(name, 0o700, dir_fd=fd)
+                    os.fsync(fd)
+                except FileExistsError:
+                    pass
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def directory(path, create=False):
     if (
         not isinstance(path, str)
@@ -314,7 +354,7 @@ def validate_job(job):
 
 
 class Journal:
-    def __init__(self, binding, context, app_dir):
+    def __init__(self, binding, context, app_dir, original_private_root=None):
         self.fd = self.app_fd = self.guard_fd = None
         self.app_dir = app_dir
         self.scope = scope_for(binding, context)
@@ -324,7 +364,11 @@ class Journal:
         self.previous = None
         try:
             self.app_fd = directory(app_dir)
-            self.fd = directory(self.path, create=True)
+            if original_private_root is not None:
+                check_original_private_root(self.app_fd, original_private_root)
+                self.fd = journal_directory(self.app_fd, binding["id"], create=True)
+            else:
+                self.fd = directory(self.path, create=True)
             self.machine = physical_uuid()
             names = bounded_names(self.fd, max(0, MAX_ENTRIES * 2 - 1))
             existing = self.name in names
@@ -484,18 +528,38 @@ class Journal:
                 setattr(self, name, None)
 
 
-def pending_transactions(binding, app_dir):
+def pending_transactions(binding, app_dir, original_private_root=None):
     """Pure bounded local query; positive recovery hints still require SMB revalidation."""
     scope_for(binding, dict(operationId=binding["id"], deviceId=binding["id"], kind="read"))
     path = app_dir + "/library/catalog/direct-smb/" + binding["id"]
-    try:
-        fd = directory(path)
-    except FileNotFoundError:
-        return []
     app = None
+    if original_private_root is not None:
+        try:
+            app = directory(app_dir)
+            check_original_private_root(app, original_private_root)
+        except BaseException as error:
+            if app is not None:
+                os.close(app)
+            if isinstance(error, FileNotFoundError):
+                raise SmbError("recovery-required") from None
+            raise
+    try:
+        if app is not None:
+            fd = journal_directory(app, binding["id"])
+        else:
+            fd = directory(path)
+    except FileNotFoundError:
+        if app is not None:
+            os.close(app)
+        return []
+    except BaseException:
+        if app is not None:
+            os.close(app)
+        raise
     result = []
     try:
-        app = directory(app_dir)
+        if app is None:
+            app = directory(app_dir)
         names = bounded_names(fd, MAX_ENTRIES * 3)
         input_budget = [MAX_PENDING_JOURNAL_BYTES]
         response_budget = [MAX_PENDING_RESPONSE_BYTES]

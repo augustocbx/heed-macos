@@ -127,6 +127,22 @@ func createHeader(_ files: ScopedFiles, id: String, version: Int = 1, validate: 
 func requireHeader(_ files: ScopedFiles, destinationId: String?, version: Int = 1) throws {
     guard let destinationId = destinationId, let value = try header(files), value["destinationId"] as? String == destinationId, value["schemaVersion"] as? Int == version else { throw CloudFailure("Library identity changed") }
 }
+struct OriginalPrivateRootIdentity: Decodable {
+    let device:String
+    let inode:String
+    let birthMilliseconds:String
+    init(device:String,inode:String,birthMilliseconds:String) {
+        self.device=device;self.inode=inode;self.birthMilliseconds=birthMilliseconds
+    }
+    func validate() throws {
+        guard [device,inode,birthMilliseconds].allSatisfy({(1...30).contains($0.utf8.count) && $0.utf8.allSatisfy({(48...57).contains($0)})}) else {throw CloudFailure("Invalid original private root")}
+    }
+    init(from decoder:Decoder) throws {
+        let value=try decoder.singleValueContainer().decode([String:String].self)
+        guard Set(value.keys)==Set(["device","inode","birthMilliseconds"]),let device=value["device"],let inode=value["inode"],let birth=value["birthMilliseconds"] else {throw CloudFailure("Invalid original private root")}
+        self.init(device:device,inode:inode,birthMilliseconds:birth);try validate()
+    }
+}
 struct CloudRequest: Decodable {
     var acceptanceFrame: Data?
     let action: String
@@ -140,15 +156,24 @@ struct CloudRequest: Decodable {
     let destinationVersion: Int?
     let jobId: String?
     let privateRoot: String?
+    let originalPrivateRoot: OriginalPrivateRootIdentity?
     let connectionGeneration: String?
 }
 func outputJSON<T: Encodable>(_ value: T) throws { FileHandle.standardOutput.write(try JSONEncoder().encode(value)); FileHandle.standardOutput.write(Data([10])) }
 func dictionaryJSON(_ value: Any) throws { FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .fragmentsAllowed])); FileHandle.standardOutput.write(Data([10])) }
+func decodeCloudRequest(_ data:Data) throws -> CloudRequest {
+    if let value=try JSONSerialization.jsonObject(with:data) as? [String:Any],value.keys.contains("originalPrivateRoot") {
+        let exact=try acceptanceJSON(data)
+        guard exact["privateRoot"] is String,let identity=exact["originalPrivateRoot"] as? [String:Any] else {throw CloudFailure("Invalid original private root")}
+        _=try JSONDecoder().decode(OriginalPrivateRootIdentity.self,from:JSONSerialization.data(withJSONObject:identity))
+    }
+    return try JSONDecoder().decode(CloudRequest.self,from:data)
+}
 func readRequest() throws -> CloudRequest {
     var header = Data()
     while let byte = try FileHandle.standardInput.read(upToCount: 1), !byte.isEmpty {
         if byte[0] == 10 {
-            var request = try JSONDecoder().decode(CloudRequest.self, from: header)
+            var request = try decodeCloudRequest(header)
             if request.action.hasPrefix("qa-") {
                 let value = try acceptanceJSON(header)
                 let expected = request.action == "qa-observe-parent" ? ["action","binding"] : request.action == "qa-create-child" ? ["action","binding","connectionGeneration","spec","workspace","selectedScope"] : request.action == "qa-join-child" ? ["action","binding","connectionGeneration","spec","workspace","selectedScope","evidence"] : request.action == "qa-open-owned-authority" ? ["action","binding","connectionGeneration","spec","workspace","selectedScope","role"] : []
@@ -254,7 +279,7 @@ func runtime() throws {
                 // Ancestors are created exclusively beneath the retained descriptor; final items have individual coordination.
                 try ScopedFiles(root: root, expected: binding.identity).ensureParents(path)
                 try coordinated(root, binding: binding, path: path, temporary: temporary, write: true) { files in try requireHeader(files, destinationId: request.destinationId, version: request.destinationVersion ?? 1); let canonical=request.destinationVersion == 2 && path.hasSuffix("/manifest.json");if canonical {signal(SIGTERM,SIG_IGN)};let admission:CloudAdmission?
-                    if canonical {guard let privateRoot=request.privateRoot,let generation=request.connectionGeneration else {throw CloudFailure("Original admission receipt is required")};admission=try CloudAdmission(privateRoot:privateRoot,generation:generation,remoteIdentity:binding.identity+"/"+digest(Data((binding.account+binding.bookmark+(request.destinationId ?? "")).utf8)),path:path,bytes:bytes,hash:hash)}else {admission=nil}
+                    if canonical {guard let privateRoot=request.privateRoot,let generation=request.connectionGeneration else {throw CloudFailure("Original admission receipt is required")};admission=try CloudAdmission(privateRoot:privateRoot,generation:generation,remoteIdentity:binding.identity+"/"+digest(Data((binding.account+binding.bookmark+(request.destinationId ?? "")).utf8)),path:path,bytes:bytes,hash:hash,originalPrivateRoot:request.originalPrivateRoot)}else {admission=nil}
                     try files.write(path, bytes: bytes, digest: hash, stagingId: owner, exclusive: canonical, existingAdmission:admission.map {receipt in {fd in try receipt.matches(fd)}}, beforePublication:{fd in try admission?.prepare(fd)}, validate: { try checkpoint(root: root, binding: binding) }) { try FileHandle.standardInput.read(upToCount: $0) ?? Data() } }; try dictionaryJSON(["localWriteVerified": true, "remoteChecksumVerified": false])
             }
         default: throw CloudFailure("Unsupported folder operation")

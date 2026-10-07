@@ -145,3 +145,12 @@ test('real quota owns journal replacement siblings without double-counting their
     await p.withTransaction(context, async (tx: any) => tx.checkpoint());
     expect(accounted).toBe(8000000);
 });
+
+test('original private root constructor forwards the restriction to pending and transaction startup',async()=>{
+ const f=fixture(),expected={device:'1',inode:'2',birthMilliseconds:'3'},queries:any[][]=[];
+ const native={pending:async(...args:any[])=>{queries.push(args);return [];},open:async(...args:any[])=>{f.opens.push(args);return {command:async()=>null,close:async()=>{}};}};
+ const p=new Provider(f.b,native,async()=>({username:'qa',password:'secret',domain:''}),'/private/owned-app',undefined,expected);
+ const issued={...expected};expected.inode='99';await p.initialize();const context={operationId:randomUUID(),deviceId:randomUUID(),kind:'read'};await p.withTransaction(context,async()=>{});
+ expect(queries[0][3]).toEqual(issued);expect(queries[1][3]).toEqual(issued);expect(f.opens[0][2]).toEqual({...context,appDir:'/private/owned-app',originalPrivateRoot:issued});
+ const before=queries.length;expect(()=>new Provider(f.b,native,async()=>{throw Error('Unexpected credentials');},'/private/owned-app',undefined,{...expected,inode:false})).toThrow();expect(queries).toHaveLength(before);
+});

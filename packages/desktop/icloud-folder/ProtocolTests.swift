@@ -14,7 +14,7 @@ func protocolTests() throws {
     }
     guard cloudIssue(NSError(domain: NSCocoaErrorDomain, code: 999999, userInfo: [NSLocalizedDescriptionKey: "iCloud account changed " + sentinel])) == .unavailable else { throw CloudFailure("Raw descriptions cannot classify failures") }
     try acceptanceObserverTests();try acceptanceOwnershipTests();try acceptanceQueryTests()
-    try remoteDeletionTests(); try admissionRecoveryTests()
+    try remoteDeletionTests(); try admissionRecoveryTests(); try originalPrivateRootTests()
     func check(_ value: Bool, _ message: String) throws { if !value { throw CloudFailure(message) } }
     func rejects(_ operation: () throws -> Void) throws {
         var rejected = false
@@ -231,4 +231,46 @@ func acceptanceQueryTests() throws {
     let started=ProcessInfo.processInfo.systemUptime;var refused=false
     do {_=try acceptancePhysicalQuery(executable:URL(fileURLWithPath:"/bin/sleep"),arguments:["3"],timeout:0.05)}catch{refused=true}
     guard refused,ProcessInfo.processInfo.systemUptime-started<1 else {throw CloudFailure("Owned query deadline must kill and reap")}
+}
+
+// An ignored fixture-source insertion invokes this closure at the first suffix syscall.
+// The shipped source has no test hook and no additional initializer argument.
+var admissionFixtureBeforeSuffix: (() throws -> Void)?
+func originalPrivateRootTests() throws {
+    let base=URL(fileURLWithPath:"/private/tmp").appendingPathComponent("heed-original-root-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at:base,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700]);defer {try? FileManager.default.removeItem(at:base);admissionFixtureBeforeSuffix=nil}
+    let root=base.appendingPathComponent("private"),original=base.appendingPathComponent("original")
+    try FileManager.default.createDirectory(at:root,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
+    var info=stat();guard stat(root.path,&info)==0 else {throw CloudFailure("Fixture root stat failed")}
+    let expected=OriginalPrivateRootIdentity(device:String(info.st_dev),inode:String(info.st_ino),birthMilliseconds:String(Int64(info.st_birthtimespec.tv_sec)*1000+Int64(info.st_birthtimespec.tv_nsec)/1_000_000))
+    let path="meetings/\(UUID().uuidString)/revisions/\(UUID().uuidString)/manifest.json",data=Data("Synthetic restricted manifest".utf8)
+    let ordinary=try decodeCloudRequest(Data("{\"action\":\"probe\"}".utf8));guard ordinary.originalPrivateRoot == nil else {throw CloudFailure("Ordinary startup must omit the restriction")}
+    let validRequest:[String:Any]=["action":"probe","privateRoot":root.path,"originalPrivateRoot":["device":expected.device,"inode":expected.inode,"birthMilliseconds":expected.birthMilliseconds]]
+    guard try decodeCloudRequest(JSONSerialization.data(withJSONObject:validRequest)).originalPrivateRoot?.inode==expected.inode else {throw CloudFailure("Private startup identity was lost")}
+    for invalid:Any in [NSNull(),false,[:], ["device":"1","inode":"2","birthMilliseconds":"3","extra":"4"], ["device":"1","inode":false,"birthMilliseconds":"3"], ["device":"1","inode":"2","birthMilliseconds":"3\n"]] {
+        var request=validRequest;request["originalPrivateRoot"]=invalid;var refused=false;do {_=try decodeCloudRequest(JSONSerialization.data(withJSONObject:request))}catch{refused=true};guard refused else {throw CloudFailure("Invalid private startup identity was accepted")}
+    }
+    var missingRoot=validRequest;missingRoot.removeValue(forKey:"privateRoot");var refused=false;do {_=try decodeCloudRequest(JSONSerialization.data(withJSONObject:missingRoot))}catch{refused=true};guard refused else {throw CloudFailure("Restricted startup needs its private root")}
+
+    func admission(_ identity:OriginalPrivateRootIdentity=expected) throws -> CloudAdmission {try CloudAdmission(privateRoot:root.path,generation:"original",remoteIdentity:"synthetic",path:path,bytes:data.count,hash:digest(data),originalPrivateRoot:identity)}
+    func refuse(_ run:() throws -> Void) throws {var refused=false;do {try run()} catch {refused=true};guard refused else {throw CloudFailure("Original private root restriction must refuse")}}
+    try FileManager.default.moveItem(at:root,to:original)
+    try FileManager.default.createDirectory(at:root,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
+    let sentinel=root.appendingPathComponent("sentinel");try data.write(to:sentinel)
+    try refuse {_ = try admission()}
+    guard try FileManager.default.contentsOfDirectory(atPath:root.path)==["sentinel"],try Data(contentsOf:sentinel)==data else {throw CloudFailure("Substituted root received foreign admission writes")}
+    try FileManager.default.removeItem(at:root);try FileManager.default.moveItem(at:original,to:root)
+    for invalid in [OriginalPrivateRootIdentity(device:"-1",inode:expected.inode,birthMilliseconds:expected.birthMilliseconds),OriginalPrivateRootIdentity(device:expected.device,inode:expected.inode,birthMilliseconds:"0"),OriginalPrivateRootIdentity(device:String(repeating:"1",count:31),inode:expected.inode,birthMilliseconds:expected.birthMilliseconds)] {try refuse {_ = try admission(invalid)}}
+    try FileManager.default.setAttributes([.posixPermissions:0o750],ofItemAtPath:root.path);try refuse {_ = try admission()};try FileManager.default.setAttributes([.posixPermissions:0o700],ofItemAtPath:root.path)
+    guard try FileManager.default.contentsOfDirectory(atPath:root.path).isEmpty else {throw CloudFailure("Invalid restriction created directories")}
+    var injected=false
+    admissionFixtureBeforeSuffix={try FileManager.default.moveItem(at:root,to:original);try FileManager.default.createDirectory(at:root,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700]);try data.write(to:sentinel);injected=true;admissionFixtureBeforeSuffix=nil}
+    let receipt=try admission()
+    if injected {
+        let staged=base.appendingPathComponent("staged");try data.write(to:staged);let fd=open(staged.path,O_RDWR|O_NOFOLLOW);guard fd>=0 else {throw CloudFailure("Fixture staged open failed")};defer {close(fd)};try receipt.prepare(fd)
+        let directory=original.appendingPathComponent("library/catalog/icloud-admissions")
+        guard try FileManager.default.contentsOfDirectory(atPath:root.path)==["sentinel"],try Data(contentsOf:sentinel)==data,try FileManager.default.contentsOfDirectory(atPath:directory.path).contains(where:{$0.hasSuffix(".json")}) else {throw CloudFailure("Relative admission walk lost the original descriptor")}
+    }
+    // The ordinary build runs the pre-open/refusal cases; the instrumented fixture
+    // additionally requires its deterministic after-match boundary to have executed.
 }

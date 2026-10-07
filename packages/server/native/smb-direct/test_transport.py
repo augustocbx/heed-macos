@@ -1107,3 +1107,35 @@ class SdkBoundaryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class OriginalRootStartupTests(unittest.TestCase):
+    def test_optional_original_root_is_exact_and_private_for_pending_and_transaction(self):
+        from guardian import validate_startup
+        from unittest.mock import patch
+        from test_transaction import TransactionTests
+        fixture = TransactionTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        expected = dict(device="1", inode="2", birthMilliseconds="3")
+        pending = dict(protocol=1, action="pending", binding=fixture.binding, appDir=fixture.app)
+        transaction = dict(protocol=1, action="transaction", binding=fixture.binding,
+                           endpoint=fixture.binding["endpoint"], credentials=CREDS,
+                           context=fixture.context, appDir=fixture.app)
+        for request in (pending, transaction):
+            validate_startup(request)
+            validate_startup(dict(request, originalPrivateRoot=expected))
+            for invalid in (None, False, {}, dict(expected, extra="4"),
+                            dict(expected, device="-1"), dict(expected, inode=1),
+                            dict(expected, birthMilliseconds="1" * 31)):
+                with self.subTest(action=request["action"], invalid=invalid), self.assertRaises(SmbError):
+                    validate_startup(dict(request, originalPrivateRoot=invalid))
+        source = io.BytesIO((json.dumps(dict(pending, originalPrivateRoot=expected)) + "\n").encode())
+        sink = io.BytesIO()
+        with patch("guardian.pending_transactions", return_value=[]) as query:
+            serve(source, sink)
+        self.assertEqual(query.call_args.args, (fixture.binding, fixture.app, expected))
+        self.assertTrue(json.loads(sink.getvalue())["ok"])
+        with patch("guardian.DirectTransport") as transport, patch("guardian.Transaction", side_effect=SmbError("recovery-required")) as tx:
+            source = io.BytesIO((json.dumps(dict(transaction, originalPrivateRoot=expected)) + "\n").encode())
+            serve(source, io.BytesIO())
+            self.assertEqual(tx.call_args.args[-1], expected)

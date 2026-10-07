@@ -4,7 +4,7 @@
 import logging
 import sys
 from identity import validate_identity
-from journal import pending_transactions
+from journal import pending_transactions, validate_original_private_root
 from protocol import (
     SmbError,
     UUID,
@@ -66,7 +66,10 @@ def validate_startup(value):
         raise SmbError("invalid-protocol")
     action = value.get("action")
     if action == "pending":
-        exact(value, ("protocol", "action", "binding", "appDir"))
+        extra = ("originalPrivateRoot",) if "originalPrivateRoot" in value else ()
+        exact(value, ("protocol", "action", "binding", "appDir", *extra))
+        if extra:
+            validate_original_private_root(value["originalPrivateRoot"])
         validate_binding(value["binding"])
         validate_app_dir(value["appDir"])
         return None, None
@@ -81,7 +84,10 @@ def validate_startup(value):
     }
     if action not in fields:
         raise SmbError("invalid-protocol")
-    exact(value, ("protocol", "action", "endpoint", "credentials", *fields[action]))
+    extra = ("originalPrivateRoot",) if action == "transaction" and "originalPrivateRoot" in value else ()
+    exact(value, ("protocol", "action", "endpoint", "credentials", *fields[action], *extra))
+    if extra:
+        validate_original_private_root(value["originalPrivateRoot"])
     endpoint = validate_endpoint(value["endpoint"])
     credentials = validate_credentials(value["credentials"])
     if action == "qa-open-owned-authority":
@@ -155,7 +161,7 @@ def serve(source, sink, backend_factory=None):
                 sink,
                 dict(
                     ok=True,
-                    value=pending_transactions(startup["binding"], startup["appDir"]),
+                    value=pending_transactions(startup["binding"], startup["appDir"], startup.get("originalPrivateRoot")),
                 ),
             )
             return
@@ -189,7 +195,7 @@ def serve(source, sink, backend_factory=None):
             emit(sink, dict(ok=True, value=value))
             return
         transaction = Transaction(
-            transport, startup["binding"], startup["context"], startup["appDir"]
+            transport, startup["binding"], startup["context"], startup["appDir"], startup.get("originalPrivateRoot")
         )
         emit(
             sink,

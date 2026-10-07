@@ -1,3 +1,4 @@
+import type { OriginalPrivateRootIdentity } from './local-store-io';
 import {openNativeAuthoritySession,type NativeOwnedAuthorityRequest} from './qa/synchronization-device-authority';
 import type {DirectSmbAcceptanceRequest} from './smb-direct-types';
 import type {PendingRemoteTransaction} from './portable-provider';
@@ -656,6 +657,7 @@ export class PythonDirectSmbNative implements DirectSmbNative {
 		binding: DirectSmbBinding,
 		appDir: string,
 		signal?: AbortSignal,
+		originalPrivateRoot?: OriginalPrivateRootIdentity,
 	): Promise<PendingRemoteTransaction[]> {
 		const b = this.prelaunch(() => {
 			const b = validateDirectBinding(binding);
@@ -664,11 +666,12 @@ export class PythonDirectSmbNative implements DirectSmbNative {
 				deviceId: b.id,
 				kind: 'read',
 				appDir,
+				...(originalPrivateRoot === undefined ? {} : { originalPrivateRoot }),
 			});
 			return b;
 		});
 		const { session, probe } = await this.start<PendingRemoteTransaction[]>(
-			{ action: 'pending', binding: b, appDir },
+			{ action: 'pending', binding: b, appDir, ...(originalPrivateRoot === undefined ? {} : { originalPrivateRoot }) },
 			false,
 			signal,
 			validateDirectPending,
@@ -742,13 +745,13 @@ export class PythonDirectSmbNative implements DirectSmbNative {
 		context: DirectSmbTransactionContext,
 		signal?: AbortSignal,
 	): Promise<DirectSmbSession> {
-		const { b, c, appDir, operation } = (() => {
+		const { b, c, appDir, originalPrivateRoot, operation } = (() => {
 			try {
 				signal?.throwIfAborted();
 				const b = validateDirectBinding(binding),
 					c = validateDirectCredentials(credentials);
-				const { appDir, ...operation } = validateDirectContext(context);
-				return { b, c, appDir, operation };
+				const { appDir, originalPrivateRoot, ...operation } = validateDirectContext(context);
+				return { b, c, appDir, originalPrivateRoot, operation };
 			} catch (error) {
 				throw stoppedFailure(error, signal?.aborted && error === signal.reason);
 			}
@@ -761,6 +764,7 @@ export class PythonDirectSmbNative implements DirectSmbNative {
 				binding: b,
 				context: operation,
 				appDir,
+				...(originalPrivateRoot === undefined ? {} : { originalPrivateRoot }),
 			},
 			true,
 			signal,

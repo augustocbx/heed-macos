@@ -9,12 +9,19 @@ final class CloudAdmission {
     private let name:String
     private let scope:[String:Any]
     private var receipt:[String:Any]?
-    init(privateRoot:String,generation:String,remoteIdentity:String,path:String,bytes:Int,hash:String) throws {
+    init(privateRoot:String,generation:String,remoteIdentity:String,path:String,bytes:Int,hash:String,originalPrivateRoot:OriginalPrivateRootIdentity?=nil) throws {
+        try originalPrivateRoot?.validate()
         guard privateRoot.hasPrefix("/"),generation.range(of:"^[A-Za-z0-9_-]{1,128}$",options:.regularExpression) != nil,bytes>0,bytes<=65536,path.hasSuffix("/manifest.json"),hash.range(of:"^[a-f0-9]{64}$",options:.regularExpression) != nil else {throw CloudFailure("Invalid original admission scope")}
         _=try artifactPath(path)
         let root=URL(fileURLWithPath:privateRoot).standardizedFileURL
         guard root.resolvingSymlinksInPath().path==root.path else {throw CloudFailure("Unsafe private admission root")}
         let rootFD=open(root.path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);guard rootFD>=0 else {throw CloudFailure("Private admission root unavailable")};defer {close(rootFD)}
+        if let expected=originalPrivateRoot {
+            var info=stat()
+            guard fstat(rootFD,&info)==0,info.st_mode&S_IFMT==S_IFDIR,info.st_uid==getuid(),info.st_mode&0o7777==0o700,
+                  String(info.st_dev)==expected.device,String(info.st_ino)==expected.inode,
+                  String(Int64(info.st_birthtimespec.tv_sec)*1000+Int64(info.st_birthtimespec.tv_nsec)/1_000_000)==expected.birthMilliseconds else {throw CloudFailure("Original private admission root changed")}
+        }
         let service=IOServiceGetMatchingService(kIOMainPortDefault,IOServiceMatching("IOPlatformExpertDevice"));guard service != 0 else {throw CloudFailure("Admission device identity unavailable")};defer {IOObjectRelease(service)}
         guard let hardware=IORegistryEntryCreateCFProperty(service,"IOPlatformUUID" as CFString,kCFAllocatorDefault,0)?.takeRetainedValue() as? String,!hardware.isEmpty else {throw CloudFailure("Admission device identity unavailable")}
         // Raw hardware identity never enters the journal, portable data, API, or logs.

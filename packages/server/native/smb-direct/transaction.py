@@ -241,7 +241,7 @@ def fence(value):
 
 
 class Transaction:
-    def __init__(self, transport, binding, context, app_dir):
+    def __init__(self, transport, binding, context, app_dir, original_private_root=None):
         self.transport = transport
         self.backend = transport.backend
         self.binding, self.context = binding, context
@@ -257,7 +257,7 @@ class Transaction:
                 raise SmbError("unsupported-destination")
             if binding["readOnly"]:
                 raise SmbError("read-only")
-            self.journal = Journal(binding, context, app_dir)
+            self.journal = Journal(binding, context, app_dir, original_private_root)
             probe = transport.probe(binding["identity"])
             if probe["readOnly"]:
                 raise SmbError("read-only")

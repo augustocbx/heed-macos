@@ -21,3 +21,6 @@ export interface LocalStoreIo {
 export type SessionLocalIo=Pick<LocalStoreIo,'exists'|'stat'|'readFile'|'list'|'unlink'>;
 export type PortableLocalIo=Pick<LocalStoreIo,'exists'|'stat'|'readFile'|'list'|'mkdir'|'canonical'|'writeAtomic'|'openRead'|'createFile'|'stream'|'promote'|'removeStaging'|'syncDirectory'>;
 export type QuotaLocalIo=Pick<LocalStoreIo,'exists'|'stat'|'unlink'|'removeStaging'|'owns'|'inventory'>;
+
+/** Original locally issued private root identity; native startup can only restrict its scope. */
+export interface OriginalPrivateRootIdentity {readonly device:string;readonly inode:string;readonly birthMilliseconds:string}

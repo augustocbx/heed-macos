@@ -1,3 +1,4 @@
+import type { OriginalPrivateRootIdentity } from './local-store-io';
 import { domainToASCII } from 'node:url';
 import { isIP } from 'node:net';
 import type { PendingRemoteTransaction, TransactionContext } from './portable-provider';
@@ -58,9 +59,9 @@ export interface DirectSmbSession {
 	): Promise<void>;
 	close(): Promise<void>;
 }
-export type DirectSmbTransactionContext = TransactionContext & { appDir: string };
+export type DirectSmbTransactionContext = TransactionContext & { appDir: string; originalPrivateRoot?: OriginalPrivateRootIdentity };
 export interface DirectSmbNative {
- pending(binding:DirectSmbBinding,appDir:string,signal?:AbortSignal):Promise<PendingRemoteTransaction[]>;
+ pending(binding:DirectSmbBinding,appDir:string,signal?:AbortSignal,originalPrivateRoot?:OriginalPrivateRootIdentity):Promise<PendingRemoteTransaction[]>;
 	probe(
 		endpoint: DirectSmbEndpoint,
 		credentials: DirectSmbCredentials,
@@ -283,8 +284,17 @@ export function validateDirectBinding(value: unknown): DirectSmbBinding {
 		identity: validateDirectIdentity(b.identity),
 	} as unknown as DirectSmbBinding;
 }
+function validateOriginalPrivateRoot(value: unknown): OriginalPrivateRootIdentity {
+	const identity = exactObject(value, ['device', 'inode', 'birthMilliseconds']);
+	if (Object.values(identity).some(n => typeof n !== 'string' || !/^[0-9]{1,30}$/.test(n)))
+		throw directSmbError('invalid-input');
+	return identity as unknown as OriginalPrivateRootIdentity;
+}
 export function validateDirectContext(value: unknown): DirectSmbTransactionContext {
-	const c = exactObject(value, ['operationId', 'deviceId', 'kind', 'appDir']);
+	const keys = ['operationId', 'deviceId', 'kind', 'appDir'];
+	if (value && Object.hasOwn(value, 'originalPrivateRoot')) keys.push('originalPrivateRoot');
+	const c = exactObject(value, keys);
+	if (Object.hasOwn(c, 'originalPrivateRoot')) validateOriginalPrivateRoot(c.originalPrivateRoot);
 	text(c.appDir, 4096);
 	if (
 		!(c.appDir as string).startsWith('/') ||

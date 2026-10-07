@@ -10,6 +10,7 @@ import {
 	validateDirectEndpoint,
 	validateDirectCredentials,
 	validateDirectProbe,
+	validateDirectContext,
 } from './smb-direct-types';
 
 const endpoint = {
@@ -604,4 +605,23 @@ test('QA startup bounds refuse before launch and cancellation provides actual st
  await expect(native.acceptance({action:'qa-create-child',endpoint,credentials,binding,spec:{sentinel:'x'.repeat(65536)},workspace:{},selectedScope:'parent'})).rejects.toThrow();expect(launches).toBe(0);
  const h=helper(`process.on('SIGTERM',()=>{});for await(const x of Bun.stdin.stream()){};setInterval(()=>{},1000);`),controller=new AbortController();const pending=new PythonDirectSmbNative({runner:h.runner,timeoutMs:5000}).acceptance({action:'qa-observe-parent',endpoint,credentials,identity},controller.signal);const timer=setTimeout(()=>controller.abort(),100);
  try{let error:any;try{await pending;}catch(e){error=e;}expect(error?.guardianStopped).toBe(true);expect(()=>process.kill(h.child.pid,0)).toThrow();}finally{clearTimeout(timer);controller.abort();await pending.catch(()=>{});}
+});
+
+const originalPrivateRoot = {device:'1',inode:'2',birthMilliseconds:'3'};
+test('original private root restriction is validated before native launch', async () => {
+ let launches=0;const native=new PythonDirectSmbNative({runner:()=>{launches++;throw Error('Unexpected launch');}});
+ expect(validateDirectContext({...context,originalPrivateRoot})).toEqual({...context,originalPrivateRoot});
+ for(const invalid of [null,false,{}, {...originalPrivateRoot,inode:'2\n'}, {...originalPrivateRoot,device:'-1'}, {...originalPrivateRoot,inode:2}, {...originalPrivateRoot,birthMilliseconds:'1'.repeat(31)}, {...originalPrivateRoot,extra:'4'}]) {
+  await expect(native.pending(binding,context.appDir,undefined,invalid as any)).rejects.toThrow();
+  await expect(native.open(binding,credentials,{...context,originalPrivateRoot:invalid} as any)).rejects.toThrow();
+ }
+ expect(launches).toBe(0);
+});
+test('original private root remains in private stdin outside the ordinary transaction context', async () => {
+ const pendingHelper=helper(`${start}const r=JSON.parse(b.split('\\n')[0]);if(JSON.stringify(r.originalPrivateRoot)!==JSON.stringify(${JSON.stringify(originalPrivateRoot)}))process.exit(3);console.log(JSON.stringify({ok:true,value:[]}));`);
+ const pendingNative=new PythonDirectSmbNative({runner:pendingHelper.runner});
+ expect(await pendingNative.pending(binding,context.appDir,undefined,originalPrivateRoot)).toEqual([]);
+ const transactionHelper=helper(`${start}const r=JSON.parse(b.split('\\n')[0]);if(JSON.stringify(r.originalPrivateRoot)!==JSON.stringify(${JSON.stringify(originalPrivateRoot)})||Object.keys(r.context).sort().join(',')!=='deviceId,kind,operationId')process.exit(3);console.log(JSON.stringify({ok:true,ready:true,checkpointed:false}));for await(const _ of Bun.stdin.stream()){};`);
+ const transactionNative=new PythonDirectSmbNative({runner:transactionHelper.runner});
+ const session=await transactionNative.open(binding,credentials,{...context,originalPrivateRoot});await session.close();
 });
