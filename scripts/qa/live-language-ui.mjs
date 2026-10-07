@@ -271,7 +271,7 @@ try {
     await page.getByRole('status').filter({ hasText: 'Provisional live text:' }).innerText(),
     /Brazilian Portuguese.*mlx \/ tiny.*Initial model: base/,
   );
-  await page.screenshot({ path: join(output, 'active-pt.png') });
+  await page.screenshot({ path: join(output, 'active-pt.png'), fullPage: true });
   await page.getByRole('button', { name: 'Stop recording', exact: true }).click();
   const completed = await until(
     () => request('/api/recording/status'),
@@ -304,7 +304,7 @@ try {
   await page.getByRole('status').filter({ hasText: 'Live text is disabled.' }).waitFor();
   await new Promise((resolve) => setTimeout(resolve, 2400));
   assert.equal(requests.filter((r) => r.path === '/transcribe-live').length, liveCalls);
-  await page.screenshot({ path: join(output, 'final-only.png') });
+  await page.screenshot({ path: join(output, 'final-only.png'), fullPage: true });
   await page.getByRole('button', { name: 'Stop recording', exact: true }).click();
   await until(
     () => request('/api/recording/status'),
