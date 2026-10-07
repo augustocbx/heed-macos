@@ -16,6 +16,10 @@ import {smbResponse} from './lib/smb-http.ts';
 import {ProviderRegistry} from './lib/provider-registry.ts';
 import {PortableLibraryRuntime} from './lib/portable-runtime.ts';
 import {libraryResponse} from './lib/portable-http.ts';
+import {RetrievalCatalog} from './lib/retrieval-catalog';
+import {RetrievalIndex} from './lib/retrieval-index';
+import {MeetingRetriever} from './lib/meeting-retrieval';
+import {defaultRetrievalPolicy} from './lib/retrieval-policy';
 import { LibraryChatService, libraryChatResponse } from "./lib/library-chat.ts";
 import { MeetingTasksService } from "./lib/meeting-tasks.ts";
 import { tasksResponse } from "./lib/tasks-http.ts";
@@ -72,6 +76,8 @@ let transcriptionRequests = 0;
 let manualNotesController: AbortController | null = null;
 let manualNotesDone: Promise<void> | null = null;
 let localAiReady = false;
+let retrievalMaintenanceController:AbortController|undefined;
+let retrievalMaintenanceDone:Promise<void>|undefined;
 function localAiWaitingReason(includePendingChat = false): AiWaitingReason {
  if (!localAiReady) return "queued";
  const state = recordingCoordinator.snapshot().state;
@@ -79,6 +85,7 @@ function localAiWaitingReason(includePendingChat = false): AiWaitingReason {
  if (recorderProc || recorderStarting || recorderStopping || ["starting", "recording", "stopping"].includes(state)) return "recording";
  if (manualNotesController || notesService.busy) return "notes";
  if (tasksService.busy) return "tasks";
+ if (retrievalCatalog.state()!=='ready') return "retrieval";
  if (chatService.busy || libraryChatService.busy || (includePendingChat && chatPending())) return "chat";
  return "queued";
 }
@@ -90,7 +97,7 @@ function audioWorkBusy() {
 }
 async function preemptNotes() {
  manualNotesController?.abort();
- await Promise.all([portableRuntime?.preempt(), notesService.preempt(), tasksService.preempt(), chatService.preempt(), libraryChatService.preempt(), googleDrive?.preempt(), oneDriveConnections?.preempt(), manualNotesDone]);
+ await Promise.all([preemptRetrieval(),portableRuntime?.preempt(), notesService.preempt(), tasksService.preempt(), chatService.preempt(), libraryChatService.preempt(), googleDrive?.preempt(), oneDriveConnections?.preempt(), manualNotesDone]);
 }
 function cleanupCaptureWork(id:string){if(!/^[a-zA-Z0-9_-]{1,180}$/.test(id))return;const directory=join(APP_DIR,'library','staging',`capture-${id}`);rmSync(directory,{recursive:true,force:true});if(recordingWorkDirectory===directory)recordingWorkDirectory=null;}
 function protectAudio(path: string) { retainedProcessing.set(path, Date.now() + 120_000); }
@@ -135,6 +142,7 @@ function existingProcessing():string[] {
  if (tasksService.busy) active.push('tasks');
  if (chatService.busy) active.push('chat');
  if (libraryChatService.busy) active.push('libraryChat');
+ if (retrievalMaintenanceDone) active.push('retrieval');
  if (portableRuntime?.isBusy() || smbConnections?.snapshot().syncing || icloudConnections?.snapshot().syncing || oneDriveConnections?.snapshot().busy || googleDrive?.snapshot().busy) active.push('synchronization');
  if (oneDriveConnections?.snapshot().authorizing || googleDrive?.snapshot().authorizing) active.push('authorization');
  return active;
@@ -2498,26 +2506,38 @@ const tasksService: MeetingTasksService = new MeetingTasksService({
 });
 const transcriptService = new TranscriptService({notes:notesService,store:sessionTags});
 notesService.recover();
+function retrievalMandatoryBusy(){return processingMaintenance.blocked()||audioWorkBusy()||recordingCoordinator.snapshot().state==='recording'||!!manualNotesController||notesService.busy||tasksService.busy;}
+function retrievalMaintenanceBusy(){return retrievalMandatoryBusy()||chatService.busy||libraryChatService.busy||chatPending();}
+const retrievalCatalog=new RetrievalCatalog({store:sessionTags,policy:defaultRetrievalPolicy,now:()=>performance.now(),isBusy:()=>retrievalMandatoryBusy()||chatService.busy||libraryChatService.busy});
+const retrievalIndex=new RetrievalIndex({directory:join(LIBRARY_DIR,'indexes','retrieval'),catalog:retrievalCatalog,store:sessionTags,quota:managedQuota,policy:defaultRetrievalPolicy,now:()=>performance.now(),isBusy:retrievalMaintenanceBusy,isQueryBusy:retrievalMandatoryBusy});
+const meetingRetriever=new MeetingRetriever({catalog:retrievalCatalog,index:retrievalIndex,store:sessionTags,policy:defaultRetrievalPolicy,now:()=>performance.now()});
+async function preemptRetrieval(){retrievalMaintenanceController?.abort();await retrievalMaintenanceDone?.catch(()=>{});}
+function maintainRetrieval(discoveryOnly=false):Promise<void>{
+ if(retrievalMaintenanceDone)return retrievalMaintenanceDone;
+ const controller=new AbortController();retrievalMaintenanceController=controller;
+ const work=(async()=>{if(retrievalCatalog.reconciliationDue())await retrievalCatalog.reconcile(controller.signal);if(!discoveryOnly&&!retrievalMaintenanceBusy())await retrievalIndex.tick(controller.signal);})();
+ retrievalMaintenanceDone=work.finally(()=>{if(retrievalMaintenanceController===controller){retrievalMaintenanceController=undefined;retrievalMaintenanceDone=undefined;}});return retrievalMaintenanceDone;
+}
 const chatService: MeetingChatService = new MeetingChatService({
- directory:join(APP_DIR,"chat"), getSession:id=>notesService.get(id),
+ directory:join(APP_DIR,"chat"),catalog:retrievalCatalog,retriever:meetingRetriever, getSession:id=>notesService.get(id),
  isBusy:()=>processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || libraryChatService.busy,
  waitingReason:localAiWaitingReason,
  generate:generateChatEvidence,
 });
 function generateChatEvidence(input:ChatGenerationRequest) {
  return generateLocalStructured({baseUrl:OLLAMA_HOST,model:input.model,system:CHAT_SYSTEM,outputSchema:chatResponseSchema(input.evidence),requireCompletion:true,contextTokens:8192,maxInputBytes:5500,
-  data:{question:input.question,history:input.history.slice(-2).map(turn=>({question:turn.question.slice(0,100),answer:turn.answer?.claims.slice(0,2).map(claim=>claim.text).join("\n").slice(0,200)})),evidence:input.evidence},signal:input.signal,
+  data:input.data,signal:input.signal,
   numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))});
 }
 const libraryChatService: LibraryChatService = new LibraryChatService({
- directory:join(APP_DIR,"library-chat"),listSessions:()=>notesService.list(),
+ directory:join(APP_DIR,"library-chat"),catalog:retrievalCatalog,retriever:meetingRetriever,getSession:id=>sessionTags.read(id,defaultRetrievalPolicy.sourceRecordBytes),
  isBusy:()=>processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy,
  waitingReason:localAiWaitingReason,
  generate:generateChatEvidence,
 });
 const tasksTimer = setInterval(() => { void tasksService.tick().catch(error => console.error("Task suggestion queue failed:", error)); },1000);
 tasksTimer.unref();
-const notesTimer = setInterval(() => { void (async()=>{await notesService.tick();await chatService.tick();await libraryChatService.tick();})().catch(()=>console.error("Local AI queue failed")); },1000);
+const notesTimer = setInterval(() => { void (async()=>{await maintainRetrieval(true);await notesService.tick();await chatService.tick();await libraryChatService.tick();await maintainRetrieval();})().catch(()=>console.error("Local AI queue failed")); },1000);
 notesTimer.unref();
 
 const recordingCoordinator = new RecordingCoordinator({
@@ -2565,6 +2585,7 @@ const recordingCoordinator = new RecordingCoordinator({
 recordingCoordinator.subscribe(state=>{if(state.state === "failed")void applySavedPreview();});
 if (processingMaintenance.owner()) recordingCoordinator.setMaintenance(true,processingMaintenance.owner()!);
 localAiReady = true;
+void maintainRetrieval(true).catch(()=>console.error("Local retrieval discovery failed"));
 const retained = recordingCoordinator.snapshot();
 if (retained.path && retained.state !== "completed") retainedProcessing.set(retained.path,Infinity);
 
@@ -2704,7 +2725,7 @@ const server = Bun.serve({
 // Never leave an orphaned ffmpeg/syscap holding the mic: on SIGINT/SIGTERM/exit, gracefully reap
 // every tracked child (the recorder, the system-audio capture, the level meter). Previously there
 // was NO signal handler — a server crash/exit left ffmpeg running and the mic "stuck busy".
-installShutdownHooks(async () => { icloudConnections?.close();oneDriveConnections?.close();smbConnections?.close();await googleDrive?.preempt();clearInterval(notesTimer); clearInterval(tasksTimer); manualNotesController?.abort(); void notesService.preempt(); void tasksService.preempt(); void chatService.preempt(); void libraryChatService.preempt(); stopLiveTranscribe(); });
+installShutdownHooks(async () => { icloudConnections?.close();oneDriveConnections?.close();smbConnections?.close();await googleDrive?.preempt();clearInterval(notesTimer); clearInterval(tasksTimer); manualNotesController?.abort(); void notesService.preempt(); void tasksService.preempt(); await Promise.all([chatService.preempt(),libraryChatService.preempt(),preemptRetrieval()]);meetingRetriever.close();retrievalIndex.close();retrievalCatalog.close();stopLiveTranscribe(); });
 
 console.log(`
   ┌──────────────────────────────────┐

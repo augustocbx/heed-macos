@@ -3,6 +3,7 @@ import {Database} from 'bun:sqlite';
 import {existsSync} from 'node:fs';
 import {join} from 'node:path';
 import {closeRetrievalFixtures,retrievalFixture} from './retrieval-test-utils';
+import {RetrievalUnavailableError} from './retrieval-tokenizer';
 afterEach(closeRetrievalFixtures);
 test('every posting lookup uses exact eligible stamps and the compound primary-key access path',async()=>{
  const f=await retrievalFixture();f.add('selected','alpha beta',['Work']);f.add('excluded','alpha beta',['Other']);await f.index.tick();
@@ -35,7 +36,12 @@ test('a third generation cannot grow while a retired generation has an active re
 });
 test('materialization preserves untimed surrogate halves and rejects corrupted stored quote/location bindings',async()=>{
  const f=await retrievalFixture();f.add('meeting-a','a'.repeat(1199)+'😀 delivery');await f.index.tick();const snapshot=f.snapshot(),result=await f.retriever.retrieve(snapshot,'delivery'),materialized=await f.retriever.materialize(result);expect(materialized.some(e=>e.quote.charCodeAt(0)===0xde00)).toBe(true);expect(materialized.some(e=>e.quote.endsWith('\ud83d'))).toBe(true);
- const db=new Database(join(f.directory,result.generationId!,'index.sqlite'));try{db.query('UPDATE chunks SET quote=? WHERE evidenceOrdinal=?').run(Buffer.from('forged','utf16le'),result.hits[0].evidenceOrdinal);}finally{db.close();}await expect(f.retriever.materialize(result)).rejects.toThrow();
+ const db=new Database(join(f.directory,result.generationId!,'index.sqlite'));try{db.query('UPDATE chunks SET quote=? WHERE evidenceOrdinal=?').run(Buffer.from('forged','utf16le'),result.hits[0].evidenceOrdinal);}finally{db.close();}await expect(f.retriever.materialize(result)).rejects.toThrow();expect((f.retriever as any).cache.size).toBe(0);await f.index.tick();expect(f.index.describe(snapshot).generationId).not.toBe(result.generationId);expect(await f.retriever.materialize(await f.retriever.retrieve(snapshot,'delivery'))).toEqual(materialized);
+});
+test('malformed derived locations report a controlled failure and schedule disposable-index repair',async()=>{
+ const f=await retrievalFixture();f.add('meeting-a','delivery');await f.index.tick();const snapshot=f.snapshot(),result=await f.retriever.retrieve(snapshot,'delivery');
+ const db=new Database(join(f.directory,result.generationId!,'index.sqlite'));try{db.query('UPDATE chunks SET location=?').run('{');}finally{db.close();}
+ await expect(f.retriever.materialize(result)).rejects.toThrow(RetrievalUnavailableError);expect((f.retriever as any).cache.size).toBe(0);await f.index.tick();expect(f.index.describe(snapshot).generationId).not.toBe(result.generationId);expect((await f.retriever.materialize(await f.retriever.retrieve(snapshot,'delivery')))[0].quote).toBe('delivery');
 });
 test('fallback independently caps four sources and256 evidence without expanding neighbors beyond its examined prefix',async()=>{
  const f=await retrievalFixture();for(let i=0;i<5;i++)f.add(`meeting-${i}`,'delivery');const sources=await f.retriever.retrieve(f.snapshot(),'delivery');expect(sources.coverage).toMatchObject({searchedMeetings:4,searchedEvidence:4,matchedEvidence:4,lookupComplete:false});expect(sources.hits).toHaveLength(4);

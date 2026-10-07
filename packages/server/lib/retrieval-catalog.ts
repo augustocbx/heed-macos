@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
-import { tagKey, type LibraryChatScope, type Session } from "@heed/shared";
+import { tagKey,uniqueTags,type LibraryChatPreview, type LibraryChatScope, type Session } from "@heed/shared";
 import type { RetrievalSnapshot, RetrievalSourceStamp } from "../../shared/types/retrieval";
 import { normalizeChatScope } from "./library-chat";
 import { iterateTranscriptEvidence } from "./meeting-chat";
 import { SessionTags, type CommittedSessionChange } from "./session-tags";
 import type { RetrievalPolicy } from "./retrieval-policy";
 
-export interface RetrievalDescriptor extends RetrievalSourceStamp { title: string; tags: string[]; finalized: boolean; nonempty: boolean; evidenceCount: number; }
+export interface RetrievalDescriptor extends RetrievalSourceStamp { title: string; tags: string[]; displayTags:string[]; finalized: boolean; nonempty: boolean; evidenceCount: number; }
 export type RetrievalScope = { kind: "meeting"; sessionId: string } | { kind: "library"; scope: LibraryChatScope };
 export class RetrievalCatalogError extends Error {
  readonly status = 409;
@@ -44,7 +44,7 @@ export class RetrievalCatalog {
   let evidenceCount = sameSource ? prior!.evidenceCount : 0;
   if (!sameSource) for (const _evidence of iterateTranscriptEvidence(session)) evidenceCount++;
   return { sessionId: session.id, sourceRevision: session.transcriptRevision, transcriptVersion: session.transcriptVersion!, title: session.title,
-   tags: [...new Set(session.tags.map(tagKey).filter(Boolean))].sort(binary), finalized: session.transcriptFinalized === true, nonempty: evidenceCount > 0, evidenceCount };
+   tags: [...new Set(session.tags.map(tagKey).filter(Boolean))].sort(binary), displayTags:uniqueTags(session.tags).sort(), finalized: session.transcriptFinalized === true, nonempty: evidenceCount > 0, evidenceCount };
  }
  private bytes(value: RetrievalDescriptor | undefined | null): number {
   if (!value) return 0;
@@ -89,7 +89,7 @@ export class RetrievalCatalog {
   const sources = values.map(stamp);
   const key = createHash("sha256").update(JSON.stringify({ scope, descriptors: values })).digest("hex");
   for(const source of sources)Object.freeze(source);Object.freeze(sources);
-  return { snapshot: Object.freeze({ key, sources }) as RetrievalSnapshot, descriptors: values.map(value => ({ ...value, tags: [...value.tags] })) };
+  return { snapshot: Object.freeze({ key, sources }) as RetrievalSnapshot, descriptors: values.map(value => ({ ...value, tags: [...value.tags], displayTags: [...value.displayTags] })) };
  }
  resolve(scope: RetrievalScope) {
   if (this.status !== "ready") throw new RetrievalCatalogError(this.status === "capacity" ? "retrieval-capacity" : "retrieval-not-ready");
@@ -102,6 +102,14 @@ export class RetrievalCatalog {
   const current = this.selected(scope).snapshot;
   if (snapshot.key !== current.key || JSON.stringify(snapshot.sources) !== JSON.stringify(current.sources)) throw new RetrievalCatalogError("scope-changed");
   this.validated.set(snapshot,this.epoch);
+ }
+ /** Existing public preview serialization, without loading transcript/history arrays. */
+ preview(value:LibraryChatScope):LibraryChatPreview {
+  if(this.status!=="ready")throw new RetrievalCatalogError(this.status==="capacity"?"retrieval-capacity":"retrieval-not-ready");
+  const scope=normalizeChatScope(value),all=[...this.descriptors.values()],matching=all.filter(source=>scope.mode==='all'||scope.labels.length>0&&(scope.match==='all'?scope.labels.every(label=>source.tags.includes(label)):scope.labels.some(label=>source.tags.includes(label))));
+  const sources=matching.filter(source=>source.finalized&&source.nonempty).map(source=>({sessionId:source.sessionId,title:source.title,tags:[...source.displayTags],sourceRevision:source.sourceRevision})).sort((a,b)=>a.sessionId.localeCompare(b.sessionId));
+  const key=createHash('sha256').update(JSON.stringify({scope,sources})).digest('hex');
+  return {snapshot:{key,scope,sources},ready:sources.length>0,matchingCount:matching.length,unavailableCount:matching.length-sources.length,availableLabels:uniqueTags(all.flatMap(source=>source.displayTags)).sort()};
  }
  describe(snapshot: RetrievalSnapshot): RetrievalDescriptor[] {
   this.validate(snapshot);return this.selected(this.scopes.get(snapshot)!).descriptors;

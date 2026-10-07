@@ -14,7 +14,7 @@ import {iterateTranscriptEvidence} from './meeting-chat';
 import {ScratchTokenizer,normalizeRetrievalQuery,RetrievalQueryError,RetrievalUnavailableError} from './retrieval-tokenizer';
 import {CandidateRanking,initialCoverage,recordRetrieved,type Candidate} from './retrieval-ranking';
 
-interface Options {directory:string;catalog:RetrievalCatalog;store:SessionTags;quota:ManagedQuota;isBusy:()=>boolean;policy:RetrievalPolicy;now:()=>number;}
+interface Options {directory:string;catalog:RetrievalCatalog;store:SessionTags;quota:ManagedQuota;isBusy:()=>boolean;isQueryBusy?:()=>boolean;policy:RetrievalPolicy;now:()=>number;}
 interface Manifest extends RetrievalSourceStamp {totalEvidence:number;indexedEvidence:number;indexedPrefix:number;epoch:number;}
 export interface RetrievalIndexedSource extends Manifest {current:boolean;reason?:RetrievalPartialReason;}
 export interface RetrievalIndexDescription {generationId:string|null;sources:RetrievalIndexedSource[];}
@@ -150,7 +150,7 @@ export class RetrievalIndex {
   if(change.kind==='upsert'&&change.session.transcriptFinalized&&this.indexed.get(id)===signature({sessionId:id,sourceRevision:change.session.transcriptRevision!,transcriptVersion:change.session.transcriptVersion!}))return;
   this.queue(id);this.failures.delete(id);
  }
- available(){return !this.closed&&!this.options.isBusy();}
+ available(){return !this.closed&&!(this.options.isQueryBusy?.()??this.options.isBusy());}
  describe(snapshot:RetrievalSnapshot):RetrievalIndexDescription {
   return this.describeGeneration(snapshot,this.active);
  }
@@ -170,14 +170,14 @@ export class RetrievalIndex {
   if(!Array.isArray(terms)||terms.length>this.options.policy.queryTerms||terms.some(t=>typeof t!=='string'))throw new RetrievalQueryError();
   const normalized=terms.length?normalizeRetrievalQuery(terms.join(' '),this.options.policy):[];
   if(JSON.stringify(normalized)!==JSON.stringify([...new Set(terms)].sort()))throw new RetrievalQueryError();
-  if(this.closed||this.querying||this.options.isBusy())throw new RetrievalUnavailableError();
+  if(this.querying||!this.available())throw new RetrievalUnavailableError();
   signal?.throwIfAborted();const g=this.active;if(g?.writer.inTransaction)throw new RetrievalUnavailableError();this.querying=true;let transaction=false;
   if(g)g.readers++;
   try{
    if(g){g.reader.exec('BEGIN');transaction=true;}
    const description=this.describeGeneration(snapshot,g),coverage=initialCoverage(snapshot,description),ranking=new CandidateRanking(this.options.policy);
    const deadline=this.options.now()+this.options.policy.queryMilliseconds;let fetched=0,partial=false,sourcesExamined=0;
-   const check=()=>{signal?.throwIfAborted();this.options.catalog.validate(snapshot);if(this.closed)throw new RetrievalUnavailableError();if(this.options.isBusy()||this.options.now()>=deadline)throw new InterruptedIndexWork();};
+   const check=()=>{signal?.throwIfAborted();this.options.catalog.validate(snapshot);if(this.closed)throw new RetrievalUnavailableError();if(!this.available()||this.options.now()>=deadline)throw new InterruptedIndexWork();};
    try{
     if(g&&normalized.length)for(const source of description.sources){
      check();if(!source.current||!source.indexedPrefix)continue;
@@ -245,7 +245,7 @@ export class RetrievalIndex {
    if(!source||source.sourceRevision!==hit.sourceRevision||source.transcriptVersion!==hit.transcriptVersion||!Number.isSafeInteger(hit.evidenceOrdinal)||hit.evidenceOrdinal<0)throw new RetrievalUnavailableError();
    const row=this.active?.reader.query('SELECT evidenceId,quote,location FROM chunks WHERE sessionId=? AND sourceRevision=? AND transcriptVersion=? AND evidenceOrdinal=?').get(hit.sessionId,hit.sourceRevision,hit.transcriptVersion,hit.evidenceOrdinal) as {evidenceId:string;quote:Uint8Array;location:string}|null;
    if(!row)return null;if(row.evidenceId!==hit.evidenceId)throw new RetrievalUnavailableError();
-   return {id:row.evidenceId,...JSON.parse(row.location),quote:Buffer.from(row.quote).toString('utf16le')};
+   try{return {id:row.evidenceId,...JSON.parse(row.location),quote:Buffer.from(row.quote).toString('utf16le')};}catch{throw new RetrievalUnavailableError();}
   });
  }
  private check(signal?:AbortSignal){signal?.throwIfAborted();if(this.closed||this.options.isBusy())throw new InterruptedIndexWork();}

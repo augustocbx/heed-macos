@@ -1,5 +1,5 @@
 import type { RetrievalCoverage } from "./retrieval";
-export type AiWaitingReason = "recording" | "transcription" | "notes" | "tasks" | "chat" | "queued";
+export type AiWaitingReason = "recording" | "transcription" | "notes" | "tasks" | "chat" | "retrieval" | "queued";
 
 /** References are qualified by source revision, never by a live speaker-turn ID. */
 export interface TranscriptEvidence {

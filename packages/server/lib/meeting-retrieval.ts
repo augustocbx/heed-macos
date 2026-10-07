@@ -104,6 +104,12 @@ export class MeetingRetriever {
   coverage.partialReasons=[...new Set(coverage.partialReasons)];result.hits=hits;recordRetrieved(coverage,hits);
  }
  async materialize(result:RetrievalResult,signal?:AbortSignal):Promise<TranscriptEvidence[]>{
+  try{return await this.materializeCurrent(result,signal);}catch(error){
+   if(error instanceof RetrievalUnavailableError){this.clear();if(!this.closed)this.options.index.enqueue({kind:'invalidate'});}
+   throw error;
+  }
+ }
+ private async materializeCurrent(result:RetrievalResult,signal?:AbortSignal):Promise<TranscriptEvidence[]>{
   this.check(result.snapshot,signal);const {hits}=result;if(hits.length>this.options.policy.excerpts||new Set(hits.map(h=>h.evidenceId)).size!==hits.length)throw new RetrievalUnavailableError();
   const bindings=this.options.index.bindings(result.snapshot,hits),selected=new Map(result.snapshot.sources.map(s=>[s.sessionId,s])),evidence=new Map<string,TranscriptEvidence>();
   const groups=new Map<string,RetrievalHit[]>();for(const hit of hits){const group=groups.get(hit.sessionId)??[];group.push(hit);groups.set(hit.sessionId,group);}
