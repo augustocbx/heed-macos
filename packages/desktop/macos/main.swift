@@ -24,6 +24,10 @@ struct ControlStatus: Decodable {
     var state: String? = nil
     var maintenance: Bool? = nil
     var path: String? = nil
+    var realTimeTranscription: Bool? = nil
+    func captureLabel(locale: String) -> String {
+        MenuLocalization.text(realTimeTranscription == false ? "Recording • live text off; transcript after stop" : "Recording", locale: locale)
+    }
     var canStart: Bool { ready && !recording && !processing && !pending && starting != true && maintenance != true && (state != "failed" || path == nil) }
     var canStop: Bool { recording && !processing && !pending && starting != true && meetingId != nil }
     var canQuit: Bool { !recording && !processing && !pending && starting != true }
@@ -203,7 +207,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
                     self.state = state
                     self.freshProtectedStatus=true
                     self.locale = MenuLocalization.normalize(state.uiLocale)
-                    self.statusMenu.title = state.error.map { MenuLocalization.message($0, locale: self.locale) } ?? (state.recording ? "\(self.text("Recording")) • \(state.seconds / 60):\(String(format: "%02d", state.seconds % 60))" : state.processing ? self.text("Processing meeting…") : state.pending ? self.text("Waiting for the interface…") : state.ready ? self.text("Ready to record") : self.text("Preparing services…"))
+                    self.statusMenu.title = state.error.map { MenuLocalization.message($0, locale: self.locale) } ?? (state.recording ? "\(state.captureLabel(locale: self.locale)) • \(state.seconds / 60):\(String(format: "%02d", state.seconds % 60))" : state.processing ? self.text("Processing meeting…") : state.pending ? self.text("Waiting for the interface…") : state.ready ? self.text("Ready to record") : self.text("Preparing services…"))
                 } else {
                     self.state = nil
                     self.freshProtectedStatus=false
@@ -534,6 +538,10 @@ if CommandLine.arguments.contains("--update-client-self-test") {
         }
         precondition(redPixelFound, "The recording symbol must render red pixels")
     } else { preconditionFailure("The recording symbol must be renderable") }
+    let finalOnly = try JSONDecoder().decode(ControlStatus.self, from: Data("{\"recording\":true,\"processing\":false,\"seconds\":12,\"ready\":true,\"clientConnected\":true,\"pending\":false,\"realTimeTranscription\":false}".utf8))
+    precondition(finalOnly.captureLabel(locale: "en") == "Recording • live text off; transcript after stop")
+    for locale in ["pt-BR", "fr", "de"] { precondition(finalOnly.captureLabel(locale: locale) != finalOnly.captureLabel(locale: "en")) }
+    precondition(status(true).captureLabel(locale: "en") == "Recording")
     precondition(status().canStart && !status().canStop)
     precondition(!status(true).canStart && status(true).canStop)
     precondition(!status(false, true).canStart)

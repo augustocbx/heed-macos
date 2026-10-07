@@ -5,6 +5,7 @@ import type { Segment, TranscribeResult } from "@heed/shared";
 import type { CoordinatorState } from "@heed/shared";
 
 interface RecordingState {
+ realTimeTranscription: boolean;
  coordinatorMeetingId: string | null;
  coordinatorRevision: number;
  dismissedMeetingId: string | null;
@@ -53,6 +54,7 @@ interface RecordingState {
 }
 
 export const useRecordingStore = create<RecordingState>((set, get) => ({
+ realTimeTranscription:true,
  coordinatorMeetingId: null,
  coordinatorRevision: -1,
  dismissedMeetingId: null,
@@ -165,6 +167,7 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
 
 	reset: () =>
 		set({
+   realTimeTranscription:true,
    dismissedMeetingId:get().coordinatorMeetingId,
    coordinatorMeetingId:null,
    coordinatorRevision:-1,
