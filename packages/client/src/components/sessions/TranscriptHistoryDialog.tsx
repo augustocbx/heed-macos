@@ -7,7 +7,8 @@ import type {
 } from "@heed/shared";
 import { Dialog } from "@/components/layout/Dialog";
 import { transcriptEditingApi } from "@/api/transcript-editing";
-import { guardForSession } from "@/lib/acceptedSession";
+import { guardForSession, sessionVersion } from "@/lib/acceptedSession";
+import { useSessionsStore } from "@/stores/sessions";
 import { tr, useLocale } from "@/lib/i18n";
 import { correctionError } from "./TranscriptSegmentEditor";
 import styles from "./TranscriptEditing.module.css";
@@ -40,7 +41,7 @@ function compatible(session: Session, edit: TranscriptEdit): boolean {
   );
 }
 export function TranscriptHistoryDialog({
-  session,
+  session: suppliedSession,
   onClose,
   onSaved,
 }: {
@@ -49,6 +50,11 @@ export function TranscriptHistoryDialog({
   onSaved: (session: Session) => void;
 }) {
   useLocale();
+  const opening = useRef(suppliedSession).current;
+  const listed = useSessionsStore(state => state.sessions.find(value => value.id === opening.id));
+  const viewed = useSessionsStore(state => state.viewing?.id === opening.id ? state.viewing : null);
+  const session = [suppliedSession.id === opening.id ? suppliedSession : null, listed, viewed]
+    .reduce<Session>((current, value) => value && sessionVersion(value) >= sessionVersion(current) ? value : current, opening);
   const state = session.transcriptEditing;
   const [generationId, setGenerationId] = useState(state?.generations[0]?.id),
     [editId, setEditId] = useState(state?.edits[0]?.id),
@@ -94,6 +100,7 @@ export function TranscriptHistoryDialog({
       className={styles.dialog}
     >
       <h2>{tr("Transcript recovery history")}</h2>
+      <p>{session.title}</p>
       <p className={styles.hint}>
         {tr(
           "History is read-only. Revert changes text only; copied older text does not restore old timing or speakers.",
