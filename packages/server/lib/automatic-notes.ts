@@ -5,7 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Session, SessionPatch } from "../../shared/types/session";
 import type { AutomaticNotesSettings, NotesJob } from "../../shared/types/notes";
 import type { Template } from "../../shared/types/template";
-import { SessionTags, TagError, acceptedSourceChanged, checkTranscriptGuard, normalizeNotesSource, sourcePatch, speakerOnly } from "./session-tags";
+import { SessionTags, TagError, acceptedSourceChanged, acceptedTranscriptChanged, checkTranscriptGuard, normalizeNotesSource, sourcePatch, speakerOnly } from "./session-tags";
 import { applyCandidateAcceptance, transcriptOperationReceipt, validateTranscriptRequestId } from "./transcript-service";
 import type { TranscriptCommand, TranscriptGuard } from "../../shared/types/transcript-editing";
 import { applyTextCommand, normalizeTranscriptSession, renderAcceptedTranscript, transcriptCommandSignature } from "./transcript-editing";
@@ -127,16 +127,16 @@ export class AutomaticNotesService {
   if (command.action === "accept-candidate") return this.replaceAccepted(id, command, current => applyCandidateAcceptance(current, command, this.timestamp()));
   return this.replaceAccepted(id, command, current => applyTextCommand(current, command, this.timestamp()));
  }
- replaceAccepted(id: string, guard: TranscriptGuard, build: (current: Session) => Session): Session {
+ replaceAccepted(id: string, guard: TranscriptGuard, build: (current: Session,now:string) => Session): Session {
   let changed = false;
   const saved = this.store.commitSource(id, guard, current => {
    if (!current) throw new TagError("Meeting not found", 404);
-   let next = build(current);
+   const now=this.timestamp();let next = build(current,now);
    if (acceptedSourceChanged(current, next) && next.segments?.length) next = { ...next, transcript: renderAcceptedTranscript(next.segments) };
-   changed = acceptedSourceChanged(current, next) || (!!current.transcriptEditing && !!next.transcriptEditing && current.transcriptEditing.activeGenerationId !== next.transcriptEditing.activeGenerationId);
+   changed = acceptedTranscriptChanged(current,next);
    if (!changed) return next;
    const diagnostics = sanitizeTranscriptionDiagnostics(next.transcriptionDiagnostics);
-   next = { ...next, transcriptionDiagnostics: diagnostics, transcriptRevision: sourceRevision(next), transcriptVersion: (current.transcriptVersion ?? 0) + 1, updatedAt: this.timestamp() };
+   next = { ...next, transcriptionDiagnostics: diagnostics, transcriptRevision: sourceRevision(next), transcriptVersion: (current.transcriptVersion ?? 0) + 1, updatedAt: now };
    for (const job of Object.values(next.notesJobs || {})) if (activeStatuses.has(job.status)) { job.status = "superseded"; job.reason = "transcript-changed"; job.updatedAt = this.timestamp(); }
    if (next.notesMetadata) next.notesMetadata = { ...next.notesMetadata, stale: true };
    if (next.transcriptFinalized && this.options.getSettings().enabled) this.enqueue(next);
