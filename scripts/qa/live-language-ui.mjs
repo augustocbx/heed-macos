@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Built UI, protected API and FFmpeg with an owned synthetic capture helper. */
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createServer as createSocket } from 'node:net';
 import { mkdtemp, mkdir, cp, writeFile, readFile, rm } from 'node:fs/promises';
@@ -54,11 +54,13 @@ setInterval(()=>process.stdout.write(pcm),100);
 );
 let supported = true,
   usedModel = 'base';
+let holdFinalization = false, finishFinalization;
 const requests = [],
   errors = [],
   external = [],
   checks = [];
 const mock = createServer(async (req, res) => {
+  try {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : undefined;
@@ -78,16 +80,19 @@ const mock = createServer(async (req, res) => {
       gov: { live_model: 'tiny', interval_ms: 500, changed: model !== 'tiny' },
       segments: [],
     };
-  } else if (req.url === '/finalize')
+  } else if (req.url === '/finalize') {
+    if (holdFinalization) await new Promise((resolve) => { finishFinalization = resolve; });
+    const duration = Number(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', body.wav_path], {encoding: 'utf8'}).trim());
+    assert(Number.isFinite(duration) && duration > 0, 'Actual managed WAV duration is required');
     result = {
       finalized: true,
-      duration: 3,
+      duration,
       language: 'pt',
       model: 'fixture-final',
-      turns: [{ speaker: 'João', channel: 'sys', text: 'Decisão final em português.', start: 0, end: 3 }],
+      turns: [{ speaker: 'João', channel: 'sys', text: 'Decisão final em português.', start: 0, end: duration }],
       embeddings: {},
     };
-  else {
+  } else {
     const live = {
       engine: 'mlx',
       model: supported ? usedModel : 'base.en',
@@ -137,6 +142,12 @@ const mock = createServer(async (req, res) => {
   }
   res.setHeader('Content-Type', 'application/json');
   res.end(JSON.stringify(result));
+  } catch (error) {
+    errors.push(String(error));
+    res.statusCode = 500;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({error: 'Synthetic finalization responder failed'}));
+  }
 });
 await new Promise((resolve) => mock.listen(0, '127.0.0.1', resolve));
 async function port() {
@@ -346,6 +357,61 @@ try {
   checks.push(
     'four narrow interface locales, separate persisted speech and preview preferences, actual live/final model metadata',
   );
+  // Exercise the already implemented desktop protocol through real HTTP and the
+  // built client. The synthetic helper never requests physical audio permissions.
+  await request('/api/ui-locale', {locale: 'en'});
+  await request('/api/recording/settings', {enabled: false, liveLanguage: 'en'});
+  for (const tab of context.pages()) await tab.close();
+  const menuStarted = await request('/api/desktop/control/commands', {action: 'start', requestId: 'qa-no-tabs-start', mode: 'both'});
+  const meetingId = menuStarted.snapshot.meetingId;
+  assert.equal(menuStarted.status.recording, true);
+  const repeated = await request('/api/desktop/control/commands', {action: 'start', requestId: 'qa-no-tabs-start', mode: 'both'});
+  assert.equal(repeated.snapshot.meetingId, meetingId);
+  const tabs = await Promise.all([context.newPage(), context.newPage()]);
+  for (const tab of tabs) {
+    tab.on('pageerror', (error) => errors.push(error.message));
+    await tab.goto(origin);
+    await tab.getByRole('button', {name: 'Stop recording', exact: true}).waitFor();
+    await tab.reload();
+    await tab.getByRole('button', {name: 'Stop recording', exact: true}).waitFor();
+  }
+  await until(() => request('/api/recording/status'), (value) => value.seconds >= 2, 'real elapsed capture');
+  for (const tab of tabs) {
+    await until(() => tab.locator('[class*="timer"]').innerText(), (value) => /^00:0[2-9]$/.test(value) || /^00:[1-5]\d$/.test(value), 'attached elapsed duration');
+    await tab.close();
+  }
+  assert.equal(context.pages().length, 0);
+  assert.equal((await request('/api/desktop/control/status')).recording, true);
+  holdFinalization = true;
+  const previousFinals = requests.filter((value) => value.path === '/finalize').length;
+  const stopA = request('/api/desktop/control/commands', {action: 'stop', requestId: 'qa-no-tabs-stop', meetingId});
+  const stopB = request('/api/desktop/control/commands', {action: 'stop', requestId: 'qa-second-stop', meetingId});
+  await until(() => request('/api/desktop/control/status'), (value) => value.state === 'finalizing', 'separate finalization');
+  const finalStatus = await request('/api/desktop/control/status');
+  assert.equal(finalStatus.recording, false);
+  assert.equal(finalStatus.processing, true);
+  const maintenance = await fetch(origin + '/api/recording/maintenance', {method: 'POST', headers: {'Content-Type': 'application/json', Origin: origin}, body: JSON.stringify({acquire: true, owner: 'qa-finalizing'})});
+  assert.equal(maintenance.status, 409);
+  const finalTab = await context.newPage();
+  await finalTab.goto(origin);
+  await finalTab.getByText('Finalizing...', {exact: true}).waitFor();
+  await finalTab.screenshot({path: join(output, 'lifecycle-finalizing.png'), fullPage: true});
+  await until(async () => typeof finishFinalization === 'function', Boolean, 'owned finalizer gate');
+  finishFinalization(); holdFinalization = false;
+  const replies = await Promise.all([stopA, stopB]);
+  assert(replies.every((reply) => reply.snapshot.state === 'completed'));
+  const durable = await request('/api/recording/status');
+  assert.equal(durable.meetingId, meetingId);
+  assert.equal(requests.filter((value) => value.path === '/finalize').length, previousFinals + 1);
+  const actualDuration = Number(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', durable.session.files.wav], {encoding: 'utf8'}).trim());
+  assert.equal(durable.session.duration, actualDuration);
+  const meetings = JSON.parse(await readFile(join(app, 'sessions', meetingId + '.json'), 'utf8'));
+  assert.equal(meetings.duration, actualDuration);
+  assert.equal(meetings.transcriptFinalized, true);
+  await finalTab.reload();
+  await finalTab.getByText('Decisão final em português.', {exact: true}).first().waitFor();
+  checks.push('no-tab desktop start/stop, idempotent start and concurrent stop, two reloaded tabs with elapsed timer, capture off during visible finalization, maintenance refusal, one durable save with actual WAV duration');
+  assert.deepEqual(errors, []);
   await writeFile(
     join(output, 'manifest.json'),
     JSON.stringify(
@@ -364,6 +430,7 @@ try {
   console.log(JSON.stringify({ checks: checks.length, pageErrors: errors.length, audioBytes: audio.length }));
 } finally {
   await browser?.close();
+  finishFinalization?.();
   if (child.exitCode === null) {
     const exited = new Promise((resolve) => child.once('exit', resolve));
     child.kill('SIGTERM');
