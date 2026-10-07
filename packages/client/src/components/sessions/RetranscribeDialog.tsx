@@ -26,10 +26,11 @@ export function RetranscribeDialog({
   onBusy: (busy: boolean) => void;
 }) {
   useLocale();
+  const opening = useRef(session).current;
   const current =
     useSessionsStore((state) =>
-      state.sessions.find((saved) => saved.id === session.id),
-    ) ?? session;
+      state.sessions.find((saved) => saved.id === opening.id),
+    ) ?? opening;
   const recordingBusy = useRecordingStore(
     (state) => state.recording || state.processing,
   );
@@ -44,7 +45,10 @@ export function RetranscribeDialog({
   const [step, setStep] = useState(""),
     [progress, setProgress] = useState<number | null>(null),
     [error, setError] = useState("");
-  const [unsaved, setUnsaved] = useState<CandidateInput | null>(null);
+  const [unsaved, setUnsaved] = useState<{
+    id: string;
+    input: CandidateInput;
+  } | null>(null);
   const dialogRef = useRef<HTMLElement>(null),
     selectRef = useRef<HTMLSelectElement>(null);
   useEffect(() => {
@@ -67,9 +71,9 @@ export function RetranscribeDialog({
       return;
     onClose();
   };
-  const saveDraft = async (input: CandidateInput) => {
-    setUnsaved(input);
-    const saved = await transcriptEditingApi.stage(current.id, input);
+  const saveDraft = async (id: string, input: CandidateInput) => {
+    setUnsaved({ id, input });
+    const saved = await transcriptEditingApi.stage(id, input);
     setUnsaved(null);
     setSelected(
       saved.transcriptEditing?.candidates.find(
@@ -84,7 +88,7 @@ export function RetranscribeDialog({
     setSaving(true);
     setError("");
     try {
-      await saveDraft(unsaved);
+      await saveDraft(unsaved.id, unsaved.input);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -119,7 +123,7 @@ export function RetranscribeDialog({
         model,
         language,
         { onStep: setStep, onProgress: setProgress },
-        (_id, input) => saveDraft(input),
+        saveDraft,
       );
     } catch (e) {
       setError((e as Error).message);
@@ -165,6 +169,7 @@ export function RetranscribeDialog({
         }}
       >
         <h2 id="retranscribe-heading">{tr("Transcribe saved audio")}</h2>
+        <p>{current.title}</p>
         <p>
           {tr(
             "The complete recording will be transcribed again. Your accepted transcript changes only after you review and replace it.",
@@ -259,12 +264,12 @@ export function RetranscribeDialog({
             <TranscriptComparison
               session={current}
               draft={{
-                transcript: unsaved.result.text,
-                segments: unsaved.result.segments,
-                speakers: unsaved.result.speakers,
-                duration: unsaved.result.duration!,
-                language: unsaved.result.metadata.language,
-                transcriptionModel: unsaved.result.metadata.model,
+                transcript: unsaved.input.result.text,
+                segments: unsaved.input.result.segments,
+                speakers: unsaved.input.result.speakers,
+                duration: unsaved.input.result.duration!,
+                language: unsaved.input.result.metadata.language,
+                transcriptionModel: unsaved.input.result.metadata.model,
               }}
             />
             <button
@@ -293,7 +298,7 @@ export function RetranscribeDialog({
             </div>
             {!busy && (
               <TranscriptCandidatePanel
-                key={candidate.id}
+                key={`${current.id}:${candidate.id}`}
                 session={current}
                 candidate={candidate}
                 onBusy={setSaving}

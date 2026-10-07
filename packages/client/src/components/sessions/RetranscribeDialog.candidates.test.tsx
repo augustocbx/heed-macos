@@ -233,3 +233,72 @@ test("keyboard trap includes comparison, escape closes and focus returns to open
   expect(document.activeElement).toBe(opener);
   opener.remove();
 });
+
+test.each(["completion", "retry"] as const)(
+  "opening meeting remains the target after parent navigation during %s",
+  async (mode) => {
+    const a = { ...source(), id: "meeting-a", title: "Meeting A" },
+      b = { ...source(), id: "meeting-b", title: "Meeting B" };
+    useSessionsStore.setState({ sessions: [a, b], viewing: a });
+    let release!: (value: Response) => void;
+    const posted: string[] = [];
+    let stages = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url, init) => {
+        const path = String(url);
+        if (path === "/api/transcribe") {
+          if (mode === "completion")
+            return new Promise<Response>((r) => {
+              release = r;
+            });
+          return new Response(
+            `event: result\ndata: ${JSON.stringify(result)}\n\n`,
+          );
+        }
+        posted.push(path);
+        stages++;
+        if (mode === "retry" && stages === 1)
+          return Response.json({ error: "Disk full" }, { status: 500 });
+        const input = JSON.parse(init.body) as CandidateInput;
+        const target = path.includes("meeting-a") ? a : b;
+        return Response.json({
+          ...target,
+          transcriptEditing: {
+            ...target.transcriptEditing!,
+            candidates: [{ ...candidate(), requestId: input.requestId }],
+          },
+        });
+      }),
+    );
+    const callbacks = { onClose: vi.fn(), onBusy: vi.fn() };
+    const view = render(<RetranscribeDialog session={a} {...callbacks} />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Start transcription" }),
+    );
+    if (mode === "retry") await screen.findByRole("alert");
+    view.rerender(<RetranscribeDialog session={b} {...callbacks} />);
+    if (mode === "completion")
+      await act(async () =>
+        release(
+          new Response(`event: result\ndata: ${JSON.stringify(result)}\n\n`),
+        ),
+      );
+    else
+      fireEvent.click(
+        screen.getByRole("button", { name: "Retry saving draft" }),
+      );
+    await screen.findByRole("button", { name: "Replace accepted transcript" });
+    expect(
+      posted.every(
+        (path) => path === "/api/sessions/meeting-a/transcript/candidates",
+      ),
+    ).toBe(true);
+    expect(screen.getByText("Meeting A", { exact: true })).toBeVisible();
+    expect(screen.queryByText("Meeting B", { exact: true })).toBeNull();
+    expect(
+      useSessionsStore.getState().sessions.find((s) => s.id === "meeting-b")
+        ?.transcriptEditing?.candidates,
+    ).toEqual([]);
+  },
+);
