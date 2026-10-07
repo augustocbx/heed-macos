@@ -1,4 +1,5 @@
 export * from "./session.ts";
+export type * from "./transcript-editing.ts";
 export * from "./notes.ts";
 export * from "./speaker.ts";
 export * from "./template.ts";

@@ -49,7 +49,7 @@ test("renames legacy case variants together without merging into another tag", (
 test("stale tag edits fail, while metadata-only edits preserve the tag revision", () => {
   const { store } = fixture();
   const first = store.snapshot();
-  store.patch("a", { aiNotes: "new notes", transcript: "corrected", speakers: ["Bob"] });
+  store.patch("a", { aiNotes: "new notes", title: "Metadata" });
   expect(store.snapshot().revision).toBe(first.revision);
   store.mutate({ action: "add", sessionId: "a", tag: "New", expectedRevision: first.revision });
   expect(() => store.mutate({ action: "delete", tag: "Planning", expectedRevision: first.revision })).toThrow("Tags changed");
