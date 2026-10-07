@@ -189,7 +189,7 @@ func acceptanceBudget(workspace:AcceptanceChain,files:AcceptanceChain,quota:Acce
 final class AcceptanceOwnership {
     let workspace:AcceptanceChain;let files:AcceptanceChain;let quota:AcceptanceChain;var guardFD:Int32 = -1;var machine:String = ""
     let spec:[String:Any];var origin:[String:Any]=[:];var value:[String:Any]=[:];var previous:[String:Any]?;var receiptFD:Int32 = -1;var committed=Data();var receiptHeader:[String:Any]=[:];let io:AcceptanceIO
-    init(workspace descriptor:[String:Any],spec:[String:Any],binding:CloudBinding,generation:String,parent:[String],role:String,machine:() throws -> String,io:AcceptanceIO = .system) throws {
+    init(workspace descriptor:[String:Any],spec:[String:Any],binding:CloudBinding,generation:String,parent:[String],role:String,machine:() throws -> String,io:AcceptanceIO = .system,existingOnly:Bool = false) throws {
         self.io=io
         guard Set(descriptor.keys)==Set(["path","identity","receipts","quota"]),let path=descriptor["path"] as? String,!generation.isEmpty,generation.utf8.count<=128 else {throw CloudFailure("Invalid acceptance workspace")}
         self.spec=spec;workspace=try AcceptanceChain(path);files=try AcceptanceChain(path+"/acceptance");quota=try AcceptanceChain(path+"/quota")
@@ -198,6 +198,7 @@ final class AcceptanceOwnership {
         receiptFD=openat(files.fd,"receipt",O_RDWR|O_APPEND|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC)
         let prior:[String:Any]?
         if receiptFD>=0 {let (header,value,bytes)=try acceptanceReceipt(receiptFD);receiptHeader=header;committed=bytes;prior=value;try acceptanceOriginalEntry(files.fd,"receipt",receiptFD,bytes)}else {guard errno==ENOENT else {throw CloudFailure("Original receipt unavailable")};prior=nil}
+        if existingOnly && (prior == nil || prior?["phase"] as? String != (role=="creator" ? "initialized":"joined")) {if receiptFD>=0 {close(receiptFD);receiptFD = -1};throw CloudFailure("Existing completed authority required")}
         let fd=openat(files.fd,"guard",O_RDWR|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC|(prior==nil ? O_CREAT|O_EXCL:0),0o600)
         guard fd>=0 else {throw CloudFailure("Original acceptance guard unavailable")}
         var info=stat();guard fstat(fd,&info)==0,info.st_mode&S_IFMT==S_IFREG,info.st_uid==getuid(),info.st_mode&0o777==0o600,info.st_nlink==1,info.st_size==0,flock(fd,LOCK_EX|LOCK_NB)==0 else {close(fd);throw CloudFailure("Acceptance guard unavailable")}

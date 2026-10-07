@@ -1,3 +1,4 @@
+import {openNativeAuthoritySession,type NativeOwnedAuthorityRequest} from '../qa/synchronization-device-authority';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {encode,validateCommit} from '../portable-schema';
 import {equivalentRevisionFence,canonicalControl,validateDeletionRecord,validatePublicationIntent,validateRevisionFence} from '../portable-deletion-schema';
@@ -54,6 +55,12 @@ export class MacCloudNative implements CloudNative {
  }
  stream(request:CloudRequest,max:number,signal?:AbortSignal){return this.read(request,max,signal);}
  async json(request:CloudRequest,signal?:AbortSignal){const chunks:Uint8Array[]=[];for await(const chunk of this.read(request,['list','inventory'].includes(request.action)?2_000_000:150000,signal,true))chunks.push(chunk);try{return JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{throw cloudUnavailable();}}
+ async openAcceptanceAuthority(request:NativeOwnedAuthorityRequest,signal?:AbortSignal){
+  const keys=['action','binding','spec','workspace','selectedScope','role','connectionGeneration'];
+  if(request.action!=='qa-open-owned-authority'||Object.keys(request).sort().join(',')!==keys.sort().join(',')||!['creator','participant'].includes(request.role)||request.selectedScope!==(request.role==='creator'?'parent':'child')||Buffer.byteLength(JSON.stringify(request))>150000)throw cloudUnavailable();
+  cloudBinding(request.binding);
+  return openNativeAuthoritySession(async()=>Bun.spawn([this.helper],{stdin:'pipe',stdout:'pipe',stderr:'pipe'}),request as unknown as Record<string,unknown>,signal);
+ }
  async acceptance(request:CloudAcceptanceRequest,signal?:AbortSignal):Promise<unknown>{
   const keys=request.action==='qa-observe-parent'?['action','binding']:request.action==='qa-create-child'?['action','binding','connectionGeneration','spec','workspace','selectedScope']:request.action==='qa-join-child'?['action','binding','connectionGeneration','spec','workspace','selectedScope','evidence']:[];
   if(!keys.length||Object.keys(request).sort().join(',')!==keys.sort().join(',')||Buffer.byteLength(JSON.stringify(request))>150000)throw cloudUnavailable();cloudBinding(request.binding);

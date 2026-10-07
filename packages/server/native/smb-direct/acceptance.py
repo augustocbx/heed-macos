@@ -413,7 +413,7 @@ def verify_budget(files, quota, workspace, run_id):
 
 
 class Ownership:
-    def __init__(self, workspace, spec, binding, parent, role):
+    def __init__(self, workspace, spec, binding, parent, role, existing_only=False):
         self.chains = []
         self.guard = None
         self.previous = None
@@ -449,6 +449,8 @@ class Ownership:
                 original_entry(self.files.fd, "receipt", self.receipt, self.committed)
             except FileNotFoundError:
                 existing = None
+            if existing_only and (existing is None or existing.get("phase") != ("initialized" if role == "creator" else "joined")):
+                raise SmbError("recovery-required")
             flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
             if existing is None:
                 flags |= os.O_CREAT | os.O_EXCL

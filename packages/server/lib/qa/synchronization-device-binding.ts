@@ -74,8 +74,25 @@ function selected(value:Record<string,unknown>,d:LocalBindingDescriptor):Omit<Ex
  }
  return found??refuse('binding-unavailable');
 }
-export async function withResolvedLocalBinding<T>(input:LocalBindingDescriptor,run:(binding:ResolvedLocalBinding)=>Promise<T>,vault?:Pick<SecretVault,'get'>):Promise<T>{
- let chain:LocalChain|undefined,fd:number|undefined;
+/** Pin only the exact scalar queue name and its absent/present ancestors. No inventory. */
+class CloudScalarJobs {
+ readonly directories:Array<{parent:number;name:string;fd:number;identity:LocalIdentity}>=[];private missing:{parent:number;name:string;flags:number}|undefined;private file:number|undefined;private bytes:Buffer|undefined;readonly drained:boolean;
+ constructor(root:number){
+  let parent=root;
+  try{for(const name of ['library','catalog']){const fd=relativeOpen(parent,name,directoryFlags);if(fd<0){if(lastErrno!==2)refuse('recovery-required');this.missing={parent,name,flags:directoryFlags};this.drained=true;return;}const info=fstatSync(fd);if(info.uid!==process.getuid?.()||(info.mode&0o022)!==0){closeSync(fd);refuse('ownership-unavailable');}const own=identity(fstatSync(fd,{bigint:true}) as any);this.directories.push({parent,name,fd,identity:own});parent=fd;}
+   const name='icloud-jobs.json';this.file=relativeOpen(parent,name,fileFlags);if(this.file<0){this.file=undefined;if(lastErrno!==2)refuse('recovery-required');this.missing={parent,name,flags:fileFlags};this.drained=true;return;}
+   this.bytes=privateFile(this.file,4000000);const v=decodeFrame(this.bytes);if(Object.keys(v).some(key=>!['version','jobs','observeCursor'].includes(key))||v.version!==1||!Array.isArray(v.jobs)||v.jobs.length>10000||(v.observeCursor!==undefined&&(typeof v.observeCursor!=='string'||!UUID.test(v.observeCursor))))refuse('recovery-required');
+   for(const raw of v.jobs as unknown[]){const j=exact(raw,['revisionId','attempts','next','state']);if(typeof j.revisionId!=='string'||!UUID.test(j.revisionId)||!Number.isInteger(j.attempts)||j.attempts<0||j.attempts>30||typeof j.next!=='number'||!Number.isFinite(j.next)||j.next<0||!['pending-upload','system-reported-uploaded','cloud-full','provider-offline','provider-error'].includes(j.state))refuse('recovery-required');}this.drained=(v.jobs as unknown[]).length===0;this.check();
+  }catch(error){this.close();throw error;}
+ }
+ check(){for(const d of this.directories){const info=fstatSync(d.fd);if(info.uid!==process.getuid?.()||(info.mode&0o022)!==0)refuse('ownership-unavailable');const current=relativeOpen(d.parent,d.name,directoryFlags);if(current<0)refuse('identity-changed');try{if(!same(identity(fstatSync(current,{bigint:true}) as any),d.identity)||!same(identity(fstatSync(d.fd,{bigint:true}) as any),d.identity))refuse('identity-changed');}finally{closeSync(current);}}
+  if(this.missing){const fd=relativeOpen(this.missing.parent,this.missing.name,this.missing.flags);if(fd>=0){closeSync(fd);refuse('identity-changed');}if(lastErrno!==2)refuse('identity-changed');}
+  if(this.file!==undefined){const current=relativeOpen(this.directories.at(-1)!.fd,'icloud-jobs.json',fileFlags);if(current<0)refuse('identity-changed');try{if(!same(identity(fstatSync(current,{bigint:true}) as any),identity(fstatSync(this.file,{bigint:true}) as any))||!privateFile(current,4000000).equals(this.bytes!)||!privateFile(this.file,4000000).equals(this.bytes!))refuse('identity-changed');}finally{closeSync(current);}}
+ }
+ close(){if(this.file!==undefined)closeSync(this.file);this.file=undefined;for(const d of this.directories.splice(0).reverse())closeSync(d.fd);}
+}
+export async function withResolvedLocalBinding<T>(input:LocalBindingDescriptor,run:(binding:ResolvedLocalBinding,verify:()=>void)=>Promise<T>,vault?:Pick<SecretVault,'get'>):Promise<T>{
+ let chain:LocalChain|undefined,fd:number|undefined,jobs:CloudScalarJobs|undefined;
  try{
   const raw=exact(input,['version','provider','appPath','appIdentity','configIdentity','connectionId','generation']);
   if(raw.version!==1||!['icloud','smb-direct'].includes(raw.provider)||typeof raw.appPath!=='string'||!UUID.test(raw.connectionId)||typeof raw.generation!=='string'||!(raw.provider==='icloud'?HASH:UUID).test(raw.generation))refuse();
@@ -83,14 +100,14 @@ export async function withResolvedLocalBinding<T>(input:LocalBindingDescriptor,r
   const name=d.provider==='icloud'?'icloud-folder.json':'direct-smb-connections.json';
   const transition=()=>{if(d.provider==='icloud'){const t=relativeOpen(chain!.last,name+'.transition.json',fileFlags);if(t>=0){closeSync(t);refuse('recovery-required');}if(lastErrno!==2)refuse('recovery-required');}};
   transition();fd=relativeOpen(chain.last,name,fileFlags);if(fd<0)refuse('binding-unavailable');if(!same(identity(fstatSync(fd,{bigint:true}) as any),d.configIdentity))refuse('identity-changed');
-  const max=d.provider==='icloud'?150000:16_000_000;const bytes=privateFile(fd,max);const parsed=decodeFrame(bytes);const local=selected(parsed,d);
-  const check=()=>{chain!.check();chain!.installed();transition();const current=relativeOpen(chain!.last,name,fileFlags);if(current<0)refuse('identity-changed');try{if(!same(identity(fstatSync(current,{bigint:true}) as any),d.configIdentity)||!privateFile(current,max).equals(bytes)||!privateFile(fd!,max).equals(bytes))refuse('identity-changed');}finally{closeSync(current);}};
+  const max=d.provider==='icloud'?150000:16_000_000;const bytes=privateFile(fd,max);const parsed=decodeFrame(bytes);const local=selected(parsed,d);if(d.provider==='icloud'){jobs=new CloudScalarJobs(chain.last);(local as any).preparation.drained=(local as any).preparation.disabled&&jobs.drained;}
+  const check=()=>{jobs?.check();chain!.check();chain!.installed();transition();const current=relativeOpen(chain!.last,name,fileFlags);if(current<0)refuse('identity-changed');try{if(!same(identity(fstatSync(current,{bigint:true}) as any),d.configIdentity)||!privateFile(current,max).equals(bytes)||!privateFile(fd!,max).equals(bytes))refuse('identity-changed');}finally{closeSync(current);}};
   let binding:ResolvedLocalBinding;
   if(d.provider==='icloud')binding={provider:'icloud',...(local as Omit<Extract<ResolvedLocalBinding,{provider:'icloud'}>,'provider'>)};
   else{if(!vault)refuse('binding-unavailable');const {binding:b,preparation}=local as {binding:DirectSmbBinding;preparation:SelectedPreparation};check();const credentials=validateDirectCredentials(await vault!.get(b.credentialRef));binding={provider:'smb-direct',binding:b,credentials,connectionId:b.id,generation:b.connectionGeneration,preparation};}
-  check();const result=await run(binding);check();return result;
+  check();const result=await run(binding,check);check();return result;
  }catch(error){if(error instanceof AcceptanceError)throw error;const safe=new AcceptanceError('binding-unavailable');if(error instanceof Error&&Object.getOwnPropertyDescriptor(error,'guardianStopped')?.value===true)Object.defineProperty(safe,'guardianStopped',{value:true,enumerable:false});throw safe;}
- finally{if(fd!==undefined&&fd>=0)closeSync(fd);chain?.close();}
+ finally{jobs?.close();if(fd!==undefined&&fd>=0)closeSync(fd);chain?.close();}
 }
 
 export interface AcceptanceWorkspace {path:string;identity:LocalIdentity;receipts:LocalIdentity;quota:LocalIdentity}
@@ -228,3 +245,38 @@ async function prepareOwnedChild(input:BootstrapInput,role:'creator'|'participan
   }finally{quota.close();}
  },natives.vault??(input.descriptor.provider==='smb-direct'?createKeychainVault():undefined));
 }
+
+export interface BindingIssueRequest {provider:'icloud'|'smb-direct';appPath:string;connectionId:string}
+/** Issue only from the pinned selected config; never derive authority from a later path lookup. */
+export async function withIssuedLocalBinding<T>(request:BindingIssueRequest,run:(descriptor:LocalBindingDescriptor,local:ResolvedLocalBinding)=>Promise<T>,dependencies:{vault?:Pick<SecretVault,'get'>;smb?:Pick<PythonDirectSmbNative,'pending'>}={},signal?:AbortSignal):Promise<T>{
+ let chain:LocalChain|undefined,fd:number|undefined;
+ try{
+  const v=exact(request,['provider','appPath','connectionId']);if(!['icloud','smb-direct'].includes(v.provider)||typeof v.appPath!=='string'||!UUID.test(v.connectionId))refuse();
+  signal?.throwIfAborted();chain=new LocalChain(v.appPath);chain.installed();const name=v.provider==='icloud'?'icloud-folder.json':'direct-smb-connections.json';
+  fd=relativeOpen(chain.last,name,fileFlags);if(fd<0)refuse('binding-unavailable');const bytes=privateFile(fd,v.provider==='icloud'?150000:16000000),parsed=decodeFrame(bytes);
+  // The complete shape is validated by the existing selected parser below.
+  const connection=v.provider==='icloud'?parsed.connection:(Array.isArray(parsed.connections)?parsed.connections.find((c:any)=>c?.binding?.id===v.connectionId)?.binding:undefined);
+  if(!connection||typeof connection!=='object')refuse('binding-unavailable');let generation:string;
+  if(v.provider==='icloud'){const {name,enabled,...parts}=connection as Record<string,unknown>;generation=createHash('sha256').update(JSON.stringify(parts)).digest('hex');}else generation=(connection as any).connectionGeneration;
+  const descriptor:LocalBindingDescriptor={version:1,provider:v.provider,appPath:v.appPath,appIdentity:chain.identities.at(-1)!,configIdentity:identity(fstatSync(fd,{bigint:true}) as any),connectionId:v.connectionId,generation};
+  const verify=()=>{signal?.throwIfAborted();chain!.check();chain!.installed();const current=relativeOpen(chain!.last,name,fileFlags);if(current<0)refuse('identity-changed');try{if(!same(identity(fstatSync(current,{bigint:true}) as any),descriptor.configIdentity)||!privateFile(current,bytes.length).equals(bytes)||!privateFile(fd!,bytes.length).equals(bytes))refuse('identity-changed');}finally{closeSync(current);}};
+  verify();const result=await withResolvedLocalBinding(descriptor,async local=>{verify();const pending=local.provider==='smb-direct'?(dependencies.smb??new PythonDirectSmbNative()):undefined;if(pending){const jobs=await pending.pending((local as Extract<ResolvedLocalBinding,{provider:'smb-direct'}>).binding,descriptor.appPath,signal);if(jobs.length)local.preparation.drained=false;verify();}const result=await run(descriptor,local);verify();if(pending){const jobs=await pending.pending((local as Extract<ResolvedLocalBinding,{provider:'smb-direct'}>).binding,descriptor.appPath,signal);if(jobs.length)refuse('recovery-required');verify();}return result;},dependencies.vault??(v.provider==='smb-direct'?createKeychainVault():undefined));verify();return result;
+ }catch(error){if(error instanceof AcceptanceError)throw error;throw new AcceptanceError('binding-unavailable');}
+ finally{if(fd!==undefined&&fd>=0)closeSync(fd);chain?.close();}
+}
+export interface PinnedQaDirectory {readonly identity:LocalIdentity;verify():void;issue(name:string,value:Record<string,unknown>,maximum:number):void;read(name:string,maximum:number):Record<string,unknown>}
+/** Small shared descriptor-only primitives for new immutable QA files, not ownership parsing. */
+export async function withPinnedQaDirectory<T>(path:string,expected:LocalIdentity|undefined,run:(directory:PinnedQaDirectory)=>Promise<T>):Promise<T>{
+ let chain:LocalChain|undefined,active=true;
+ try{
+  chain=new LocalChain(path);chain.private();const own=chain.identities.at(-1)!;if(expected&&!same(own,identityInput(expected)))refuse('identity-changed');
+  const verify=()=>{if(!active)refuse('ownership-unavailable');chain!.check();chain!.private();};
+  const input=(name:string,max:number)=>{verify();if(typeof name!=='string'||!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(name)||!Number.isSafeInteger(max)||max<1||max>1048576)refuse();};
+  const read=(name:string,max:number)=>{input(name,max);const fd=relativeOpen(chain!.last,name,fileFlags);if(fd<0)refuse('recovery-required');try{const bytes=privateFile(fd,max);if(bytes.at(-1)!==10||bytes.subarray(0,-1).includes(10))refuse('recovery-required');const frame=exact(decodeFrame(bytes.subarray(0,-1)),['format','version','identity','value']);if(frame.format!=='heed-qa-private'||frame.version!==1||!same(identity(fstatSync(fd,{bigint:true}) as any),identityInput(frame.identity))||!frame.value||typeof frame.value!=='object'||Array.isArray(frame.value))refuse('identity-changed');const current=relativeOpen(chain!.last,name,fileFlags);if(current<0)refuse('identity-changed');try{if(!same(identity(fstatSync(current,{bigint:true}) as any),identityInput(frame.identity))||!privateFile(current,max).equals(bytes))refuse('identity-changed');}finally{closeSync(current);}verify();return structuredClone(frame.value);}finally{closeSync(fd);}};
+  const issue=(name:string,value:Record<string,unknown>,max:number)=>{input(name,max);const fd=relativeOpen(chain!.last,name,constants.O_RDWR|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);if(fd<0)refuse('recovery-required');try{const frame={format:'heed-qa-private',version:1,identity:identity(fstatSync(fd,{bigint:true}) as any),value};const bytes=Buffer.from(canonical(frame)+'\n');if(bytes.length>max)refuse('recovery-required');decodeFrame(bytes);let offset=0;while(offset<bytes.length){const written=writeSync(fd,bytes,offset,bytes.length-offset);if(written<=0)refuse('recovery-required');offset+=written;}fsyncSync(fd);fsyncSync(chain!.last);verify();const actual=read(name,max);if(canonical(actual)!==canonical(value))refuse('identity-changed');}finally{closeSync(fd);}};
+  const result=await run({identity:own,verify,issue,read});verify();return result;
+ }catch(error){if(error instanceof AcceptanceError)throw error;throw new AcceptanceError('ownership-unavailable');}
+ finally{active=false;chain?.close();}
+}
+/** Reuse the reviewed schema-v2 preflight before launching original-authority proof. */
+export function preflightOwnedWorkspace(workspace:AcceptanceWorkspace,runId:string){localReceiptPreflight(workspace,runId);}

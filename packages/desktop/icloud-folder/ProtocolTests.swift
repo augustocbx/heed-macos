@@ -162,12 +162,33 @@ func acceptanceOwnershipTests() throws {
     guard FileManager.default.fileExists(atPath:(a["path"] as! String)+"/acceptance/parent-binding"),FileManager.default.fileExists(atPath:(a["path"] as! String)+"/acceptance/child-binding") else {throw CloudFailure("Private acceptance bindings must be durable")}
     let second=try acceptanceBootstrap(action:"qa-create-child",binding:parentBinding,generation:"fixture-generation",spec:spec,workspace:a,evidence:nil,environment:environment,machine:{"synthetic-physical-a"})
     guard first["phase"] as? String=="initialized",second["phase"] as? String=="initialized" else {throw CloudFailure("Original allocated child must resume")}
+    let originalAuthorityBytes=try Data(contentsOf:URL(fileURLWithPath:(a["path"] as! String)+"/acceptance/receipt"))
+    try withExistingAcceptanceAuthority(binding:parentBinding,generation:"fixture-generation",spec:spec,workspace:a,role:"creator",environment:environment,machine:{"synthetic-physical-a"}) { issued,generation,verify in
+        try verify();guard acceptanceEqual(issued,first["binding"] as! [String:Any]),generation==first["generation"] as? String else {throw CloudFailure("Original authority must return its immutable binding")}
+        var concurrentRefused=false
+        do {try withExistingAcceptanceAuthority(binding:parentBinding,generation:"fixture-generation",spec:spec,workspace:a,role:"creator",environment:environment,machine:{"synthetic-physical-a"}) { _,_,_ in }}catch{concurrentRefused=true}
+        guard concurrentRefused else {throw CloudFailure("Original guard must remain held")}
+    }
+    guard try Data(contentsOf:URL(fileURLWithPath:(a["path"] as! String)+"/acceptance/receipt"))==originalAuthorityBytes else {throw CloudFailure("Authorization cannot append receipt records")}
     let child=parent.appendingPathComponent("heed-qa-\(run)"),childFiles=try ScopedFiles(root:child)
     guard try header(childFiles)?["destinationId"] as? String==destination else {throw CloudFailure("Actual v2 header required")}
     let b=try workspace("b"),childBinding=try binding(child)
     let evidence:[String:Any]=["runId":run,"destinationId":destination,"provider":"icloud","destinationVersion":2,"child":"heed-qa-\(run)","initialized":true]
     let joined=try acceptanceBootstrap(action:"qa-join-child",binding:childBinding,generation:"participant-generation",spec:spec,workspace:b,evidence:evidence,environment:environment,machine:{"synthetic-physical-b"})
     guard joined["role"] as? String=="participant" else {throw CloudFailure("Independent participant role required")}
+    try withExistingAcceptanceAuthority(binding:childBinding,generation:"participant-generation",spec:spec,workspace:b,role:"participant",environment:environment,machine:{"synthetic-physical-b"}) { issued,_,verify in try verify();guard acceptanceEqual(issued,joined["binding"] as! [String:Any]) else {throw CloudFailure("Participant must consume its own binding")} }
+    let liveReceipt=URL(fileURLWithPath:(a["path"] as! String)+"/acceptance/receipt"),retained=liveReceipt.appendingPathExtension("retained-live")
+    try withExistingAcceptanceAuthority(binding:parentBinding,generation:"fixture-generation",spec:spec,workspace:a,role:"creator",environment:environment,machine:{"synthetic-physical-a"}) { _,_,verify in
+        let bytes=try Data(contentsOf:liveReceipt);try FileManager.default.moveItem(at:liveReceipt,to:retained);try bytes.write(to:liveReceipt);try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:liveReceipt.path)
+        var rejected=false;do {try verify()}catch{rejected=true};guard rejected,try Data(contentsOf:liveReceipt)==bytes else {throw CloudFailure("Live substituted receipt must be retained and refused")}
+        try FileManager.default.removeItem(at:liveReceipt);try FileManager.default.moveItem(at:retained,to:liveReceipt)
+    }
+    for control in ["{\"sequence\":1,\"action\":\"check\"}\n","{\"sequence\":1,\"sequence\":2,\"action\":\"check\"}\n","{\"sequence\":1,\"action\":\"check\"}\r\n"] {
+        var descriptors:[Int32]=[0,0];guard pipe(&descriptors)==0 else {throw CloudFailure("Fixture pipe unavailable")};defer {close(descriptors[0]);close(descriptors[1])}
+        let data=Data(control.utf8);try data.withUnsafeBytes {buffer in guard Darwin.write(descriptors[1],buffer.baseAddress!,data.count)==data.count else {throw CloudFailure("Fixture pipe write failed")}}
+        var accepted=false;do {_=try acceptanceAuthorityFrame(deadline:ProcessInfo.processInfo.systemUptime+1,input:descriptors[0]);accepted=true}catch{}
+        guard accepted == (!control.contains("sequence\":2") && !control.utf8.contains(13)) else {throw CloudFailure("Strict original authority control framing required")}
+    }
     var refused=false
     do {_=try acceptanceBootstrap(action:"qa-create-child",binding:parentBinding,generation:"fixture-generation",spec:spec,workspace:a,evidence:nil,environment:environment,machine:{"copied-physical-device"})}catch{refused=true}
     guard refused else {throw CloudFailure("Copied device authority must refuse")}

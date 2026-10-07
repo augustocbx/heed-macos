@@ -73,6 +73,7 @@ def validate_startup(value):
     fields = {
         "probe": (),
         "qa-observe-parent": ("identity",),
+        "qa-open-owned-authority": ("binding", "spec", "workspace", "selectedScope", "role"),
         "qa-create-child": ("binding", "spec", "workspace", "selectedScope"),
         "qa-join-child": ("binding", "spec", "workspace", "selectedScope", "evidence"),
         "initialize": ("identity", "destinationId"),
@@ -83,6 +84,10 @@ def validate_startup(value):
     exact(value, ("protocol", "action", "endpoint", "credentials", *fields[action]))
     endpoint = validate_endpoint(value["endpoint"])
     credentials = validate_credentials(value["credentials"])
+    if action == "qa-open-owned-authority":
+        validate_binding(value["binding"])
+        from acceptance_authority import validate_startup as validate_authority
+        validate_authority(value)
     if action in ("qa-create-child", "qa-join-child"):
         binding = validate_binding(value["binding"])
         spec = public_spec(value["spec"])
@@ -139,6 +144,10 @@ def serve(source, sink, backend_factory=None):
         startup = read_frame(source)
         endpoint, credentials = validate_startup(startup)
         action = startup["action"]
+        if action == "qa-open-owned-authority":
+            from acceptance_authority import serve_authority
+            serve_authority(startup, source, sink, backend_factory)
+            return
         if action != "transaction" and source.read(1):
             raise SmbError("invalid-protocol")
         if action == "pending":

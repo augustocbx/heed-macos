@@ -1,3 +1,4 @@
+import {openNativeAuthoritySession,type NativeOwnedAuthorityRequest} from './qa/synchronization-device-authority';
 import type {DirectSmbAcceptanceRequest} from './smb-direct-types';
 import type {PendingRemoteTransaction} from './portable-provider';
 import { fileURLToPath } from 'node:url';
@@ -631,6 +632,12 @@ export class PythonDirectSmbNative implements DirectSmbNative {
 		await session.close();
 		return result;
 	}
+ async openAcceptanceAuthority(request:NativeOwnedAuthorityRequest,signal?:AbortSignal){
+  const keys=['action','binding','spec','workspace','selectedScope','role','endpoint','credentials'];
+  if(request.action!=='qa-open-owned-authority'||Object.keys(request).sort().join(',')!==keys.sort().join(',')||!['creator','participant'].includes(request.role)||request.selectedScope!==(request.role==='creator'?'parent':'child')||Buffer.byteLength(JSON.stringify(request))>65535)throw directSmbError('invalid-input');
+  validateDirectBinding(request.binding);validateDirectEndpoint(request.endpoint);validateDirectCredentials(request.credentials);
+  return openNativeAuthoritySession(()=>this.runner(this.helper),{protocol:1,...request} as unknown as Record<string,unknown>,signal);
+ }
     async acceptance(request:DirectSmbAcceptanceRequest,signal?:AbortSignal):Promise<unknown>{
         this.prelaunch(()=>{
             const keys=request.action==='qa-observe-parent'?['action','endpoint','credentials','identity']:request.action==='qa-create-child'?['action','endpoint','credentials','binding','spec','workspace','selectedScope']:request.action==='qa-join-child'?['action','endpoint','credentials','binding','spec','workspace','selectedScope','evidence']:[];

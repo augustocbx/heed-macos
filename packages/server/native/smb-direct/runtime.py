@@ -244,6 +244,8 @@ def source_inventory(root):
     allowed = {
         "runtime.py",
         "guardian.py",
+        "acceptance.py",
+        "acceptance_authority.py",
         "transport.py",
         "identity.py",
         "protocol.py",

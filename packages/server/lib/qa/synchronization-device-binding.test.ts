@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import {ManagedQuota} from '../managed-quota';
 import {test,expect,spyOn} from 'bun:test';
-import {realpathSync,mkdtempSync,mkdirSync,writeFileSync,readFileSync,renameSync,symlinkSync,linkSync,rmSync,chmodSync} from 'node:fs';
+import {realpathSync,mkdtempSync,mkdirSync,writeFileSync,readFileSync,renameSync,symlinkSync,linkSync,unlinkSync,rmSync,chmodSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
@@ -117,8 +117,12 @@ finally:server.close()
   const input={descriptor:selected(parent),workspace,spec,limitBytes:1048576};
   const created=await createOwnedChild(input,{smb:native,vault});expect(created.public.role).toBe('creator');
   const resumed=await createOwnedChild(input,{smb:native,vault});expect(resumed.private.binding).toEqual(created.private.binding);
+  const {withValidatedOwnedChild}=await import('./synchronization-device-authority');
+  await withValidatedOwnedChild({descriptor:input.descriptor,workspace,spec,role:'creator'},async handle=>{await handle.check();expect(handle.child.binding).toEqual(created.private.binding);expect(handle.signal.aborted).toBe(false);},{smb:native,vault});
+  let callbackFailure:any;try{await withValidatedOwnedChild({descriptor:input.descriptor,workspace,spec,role:'creator'},async()=>{throw new Error('private-callback-sentinel');},{smb:native,vault});}catch(error){callbackFailure=error;}expect(callbackFailure.message).not.toContain('private-callback-sentinel');expect(Object.getOwnPropertyDescriptor(callbackFailure,'guardianStopped')?.value).toBe(true);
   const participantBinding={...created.private.binding,id:randomUUID(),connectionGeneration:randomUUID(),credentialRef:randomUUID()} as typeof parent;
   const joined=await joinOwnedChild({descriptor:selected(participantBinding),workspace:createAcceptanceWorkspace(join(f.root,'participant')),spec,limitBytes:1048576},{runId,destinationId:spec.destinationId,provider:'smb-direct',destinationVersion:3,child:spec.child,initialized:true},{smb:native,vault});
+  await withValidatedOwnedChild({descriptor:selected(participantBinding),workspace:joined.private.workspace,spec,role:'participant'},async handle=>{await handle.check();expect(handle.child.binding).toEqual(joined.private.binding);},{smb:native,vault});
   expect(joined.public.role).toBe('participant');expect(JSON.stringify(joined.public)).not.toContain(remote);
   expect(JSON.parse(readFileSync(join(workspace.path,'acceptance','receipt'),'utf8').trimEnd().split('\n').at(-1)!).phase).toBe('initialized');
   expect(JSON.parse(readFileSync(join(remote,'Heed','library',spec.child,'heed-library.json'),'utf8')).destinationId).toBe(spec.destinationId);
@@ -170,4 +174,38 @@ test('original ledger allows only one active bootstrap writer',async()=>{
  const {createAcceptanceWorkspace,openAcceptanceQuota}=await import('./synchronization-device-binding');const f=fixture();let first:ReturnType<typeof openAcceptanceQuota>|undefined,second:ReturnType<typeof openAcceptanceQuota>|undefined;
  try{const workspace=createAcceptanceWorkspace(join(f.root,'ledger-lock')),run=randomUUID();first=openAcceptanceQuota(workspace,run,1048576);expect(()=>{second=openAcceptanceQuota(workspace,run,1048576);}).toThrow();first.close();first=undefined;second=openAcceptanceQuota(workspace,run,1048576);second.verify();}
  finally{second?.close();first?.close();f.close();}
+});
+
+test('issuer observes the selected original inode and refuses a replacement across its callback',async()=>{
+ const api=await import('./synchronization-device-binding');expect(typeof (api as any).withIssuedLocalBinding).toBe('function');
+ const f=fixture();try{let calls=0;await expect((api as any).withIssuedLocalBinding({provider:'icloud',appPath:f.app,connectionId:f.descriptor.connectionId},async(d:any)=>{calls++;expect(d).toEqual(f.descriptor);renameSync(f.path,f.path+'-original');writeFileSync(f.path,readFileSync(f.path+'-original'),{mode:0o600});})).rejects.toThrow();expect(calls).toBe(1);}finally{f.close();}
+});
+test('pinned QA immutable framed file rejects identical new inode and retains both entries',async()=>{
+ const api=await import('./synchronization-device-binding');expect(typeof (api as any).withPinnedQaDirectory).toBe('function');
+ const f=fixture();try{await (api as any).withPinnedQaDirectory(f.root,undefined,async(dir:any)=>{dir.issue('phase',{public:'fixture'},16384);expect(dir.read('phase',16384)).toEqual({public:'fixture'});const path=join(f.root,'phase');renameSync(path,path+'-original');writeFileSync(path,readFileSync(path+'-original'),{mode:0o600});expect(()=>dir.read('phase',16384)).toThrow();expect(readFileSync(path)).toEqual(readFileSync(path+'-original'));});}finally{f.close();}
+});
+
+test('issuer pins only known scalar cloud jobs and refuses appearance after observation',async()=>{
+ const {withIssuedLocalBinding}=await import('./synchronization-device-binding');const f=fixture();try{
+  const selected=JSON.parse(readFileSync(f.path,'utf8'));selected.connection.enabled=false;writeFileSync(f.path,JSON.stringify(selected));
+  await expect(withIssuedLocalBinding({provider:'icloud',appPath:f.app,connectionId:f.descriptor.connectionId},async()=>{mkdirSync(join(f.app,'library'),{mode:0o700});mkdirSync(join(f.app,'library','catalog'),{mode:0o700});writeFileSync(join(f.app,'library','catalog','icloud-jobs.json'),JSON.stringify({version:1,jobs:[]}),{mode:0o600});})).rejects.toThrow();
+  writeFileSync(join(f.app,'library','catalog','icloud-jobs.json'),JSON.stringify({version:1,jobs:[{revisionId:randomUUID(),attempts:0,next:0,state:'pending-upload'}]}));
+  await withIssuedLocalBinding({provider:'icloud',appPath:f.app,connectionId:f.descriptor.connectionId},async(_,local)=>{expect(local.preparation.disabled).toBe(true);expect(local.preparation.drained).toBe(false);});
+ }finally{f.close();}
+});
+
+test('scalar queue ancestors cannot be group writable or redirect to foreign roots',async()=>{
+ const {withIssuedLocalBinding}=await import('./synchronization-device-binding');const f=fixture();try{mkdirSync(join(f.app,'library'),{mode:0o700});mkdirSync(join(f.app,'library','catalog'),{mode:0o700});chmodSync(join(f.app,'library'),0o775);let calls=0;await expect(withIssuedLocalBinding({provider:'icloud',appPath:f.app,connectionId:f.descriptor.connectionId},async()=>{calls++;})).rejects.toThrow();expect(calls).toBe(0);}finally{f.close();}
+});
+
+
+test('pinned QA frames retain torn oversized linked and permission-changed entries',async()=>{
+ const {withPinnedQaDirectory}=await import('./synchronization-device-binding');const f=fixture();try{await withPinnedQaDirectory(f.root,undefined,async dir=>{
+  dir.issue('valid',{fixture:'public'},4096);const valid=join(f.root,'valid'),original=readFileSync(valid);
+  chmodSync(valid,0o640);expect(()=>dir.read('valid',4096)).toThrow();chmodSync(valid,0o600);
+  linkSync(valid,join(f.root,'linked'));expect(()=>dir.read('valid',4096)).toThrow();unlinkSync(join(f.root,'linked'));
+  writeFileSync(valid,original.subarray(0,-1));expect(()=>dir.read('valid',4096)).toThrow();expect(readFileSync(valid)).toEqual(original.subarray(0,-1));
+  writeFileSync(valid,original);expect(()=>dir.read('valid',1)).toThrow();expect(()=>dir.issue('bounded',{fixture:'public'},1)).toThrow();expect(readFileSync(join(f.root,'bounded')).length).toBe(0);
+  expect(()=>dir.issue('bounded',{fixture:'public'},4096)).toThrow();expect(()=>dir.read('bounded',4096)).toThrow();
+ });}finally{f.close();}
 });

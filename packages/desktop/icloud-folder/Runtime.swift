@@ -151,7 +151,7 @@ func readRequest() throws -> CloudRequest {
             var request = try JSONDecoder().decode(CloudRequest.self, from: header)
             if request.action.hasPrefix("qa-") {
                 let value = try acceptanceJSON(header)
-                let expected = request.action == "qa-observe-parent" ? ["action","binding"] : request.action == "qa-create-child" ? ["action","binding","connectionGeneration","spec","workspace","selectedScope"] : request.action == "qa-join-child" ? ["action","binding","connectionGeneration","spec","workspace","selectedScope","evidence"] : []
+                let expected = request.action == "qa-observe-parent" ? ["action","binding"] : request.action == "qa-create-child" ? ["action","binding","connectionGeneration","spec","workspace","selectedScope"] : request.action == "qa-join-child" ? ["action","binding","connectionGeneration","spec","workspace","selectedScope","evidence"] : request.action == "qa-open-owned-authority" ? ["action","binding","connectionGeneration","spec","workspace","selectedScope","role"] : []
                 guard !expected.isEmpty,Set(value.keys)==Set(expected),let rawBinding=value["binding"] as? [String:Any],Set(rawBinding.keys)==Set(["bookmark","account","identity"]) else {throw CloudFailure("Invalid acceptance request")}
                 request.acceptanceFrame=header
             }
@@ -187,6 +187,7 @@ func runtime() throws {
         if request.action == "qa-observe-parent" {try dictionaryJSON(acceptanceObserve(binding));return}
         guard let frame=request.acceptanceFrame,let generation=request.connectionGeneration else {throw CloudFailure("Acceptance request unavailable")}
         let value=try acceptanceJSON(frame)
+        if request.action == "qa-open-owned-authority" {try acceptanceAuthorityRuntime(value,binding:binding,generation:generation);return}
         guard let spec=value["spec"] as? [String:Any],let workspace=value["workspace"] as? [String:Any],value["selectedScope"] as? String == (request.action == "qa-create-child" ? "parent":"child") else {throw CloudFailure("Invalid acceptance preparation")}
         try dictionaryJSON(acceptanceBootstrap(action:request.action,binding:binding,generation:generation,spec:spec,workspace:workspace,evidence:value["evidence"] as? [String:Any]));return
     }

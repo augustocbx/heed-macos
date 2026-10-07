@@ -28,6 +28,11 @@ class RuntimeFixture(unittest.TestCase):
             shutil.copyfile(source / name, self.payload / name)
         shutil.copytree(source / "wheels", self.payload / "wheels")
 
+    def stage_sources(self):
+        for source in MODULE.parent.glob("*.py"):
+            if not source.name.startswith("test_"):
+                shutil.copyfile(source, self.payload / source.name)
+
     def manifest(self, change):
         path = self.payload / "wheel-manifest.json"
         value = json.loads(path.read_text())
@@ -123,13 +128,48 @@ class PayloadTests(RuntimeFixture):
         self.assertEqual(sentinel.read_text(), "preserve prior runtime")
 
 
+class SourceInventoryTests(RuntimeFixture):
+    def setUp(self):
+        super().setUp()
+        self.stage_sources()
+
+    def test_actual_staged_payload_records_both_acceptance_helpers(self):
+        inventory = self.runtime.source_inventory(self.root)
+        for name in ("acceptance.py", "acceptance_authority.py"):
+            self.assertEqual(inventory[name], self.runtime.digest((self.payload / name).read_bytes()))
+
+    def test_unknown_module_bytecode_and_symlink_remain_refused(self):
+        for kind in ("module", "bytecode", "symlink"):
+            with self.subTest(kind=kind):
+                if kind == "module":
+                    path = self.payload / "unknown.py"
+                    path.write_text("# unreviewed public fixture\n")
+                elif kind == "bytecode":
+                    path = self.payload / "__pycache__"
+                    path.mkdir()
+                else:
+                    path = self.payload / "acceptance_authority.py"
+                    original = path.read_bytes()
+                    path.unlink()
+                    path.symlink_to(MODULE.parent / "acceptance_authority.py")
+                try:
+                    with self.assertRaises(self.runtime.RuntimeFailure) as caught:
+                        self.runtime.source_inventory(self.root)
+                    self.assertEqual(caught.exception.code, "payload-invalid")
+                finally:
+                    if path.is_dir():
+                        path.rmdir()
+                    else:
+                        path.unlink()
+                    if kind == "symlink":
+                        path.write_bytes(original)
+
+
 class InstallTests(RuntimeFixture):
     # Real isolated interpreter + public offline wheels; no SMB endpoint or account.
     def setUp(self):
         super().setUp()
-        for source in MODULE.parent.glob("*.py"):
-            if not source.name.startswith("test_"):
-                shutil.copyfile(source, self.payload / source.name)
+        self.stage_sources()
         self.python = Path(
             __import__("os").environ.get(
                 "HEED_SMB_PYTHON", "/opt/homebrew/bin/python3.12"
@@ -158,6 +198,21 @@ class InstallTests(RuntimeFixture):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(__import__("json").loads(result.stdout), {"ok": True})
+
+    def test_installed_receipt_refuses_either_acceptance_source_tamper(self):
+        receipt = self.runtime.install_runtime(self.root, self.python)
+        for name in ("acceptance.py", "acceptance_authority.py"):
+            with self.subTest(name=name):
+                path = self.payload / name
+                original = path.read_bytes()
+                self.assertEqual(receipt["sources"][name], self.runtime.digest(path.read_bytes()))
+                path.write_bytes(original + b"\n# public tamper fixture\n")
+                try:
+                    with self.assertRaises(self.runtime.RuntimeFailure):
+                        self.runtime.verify_runtime(self.root)
+                finally:
+                    path.write_bytes(original)
+                self.runtime.verify_runtime(self.root)
 
     def test_selftest_failure_preserves_old_runtime_and_cleans_staging(self):
         (self.payload / "transport.py").write_text(
