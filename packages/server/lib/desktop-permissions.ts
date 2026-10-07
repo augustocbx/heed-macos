@@ -1,5 +1,5 @@
 import {configuredServicePorts} from './service-ports';
-export type PermissionAction = 'microphone' | 'screenCapture' | 'slackLogs' | 'accessibility';
+export type PermissionAction = 'microphone' | 'screenCapture' | 'recoverScreenCapture' | 'slackLogs' | 'accessibility';
 export type MicrophonePermission = 'authorized' | 'denied' | 'restricted' | 'notDetermined' | 'unknown';
 export interface DesktopPermissionSnapshot {
  microphone: MicrophonePermission;
@@ -9,6 +9,7 @@ export interface DesktopPermissionSnapshot {
 }
 export interface PermissionBuild { version: string; commit: string | null; instanceId: string }
 export interface PermissionReport {
+ recoverySupported?: boolean;
  build?: PermissionBuild;
  permissions: DesktopPermissionSnapshot;
  commandId?: string;
@@ -33,11 +34,12 @@ function object(value: unknown): value is Record<string, unknown> {
  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 export function permissionAction(body: unknown): PermissionAction | null {
- if (!object(body) || !['microphone', 'screenCapture', 'slackLogs', 'accessibility'].includes(String(body.action))) return null;
+ if (!object(body) || !['microphone', 'screenCapture', 'recoverScreenCapture', 'slackLogs', 'accessibility'].includes(String(body.action))) return null;
  return typeof body.action === 'string' ? body.action as PermissionAction : null;
 }
 export function permissionReport(body: unknown): PermissionReport | null {
  if (!object(body) || !object(body.permissions)) return null;
+ if (body.recoverySupported !== undefined && typeof body.recoverySupported !== 'boolean') return null;
  const p = body.permissions;
  if (typeof p.microphone !== 'string' || !['authorized', 'denied', 'restricted', 'notDetermined', 'unknown'].includes(p.microphone)) return null;
  for (const key of ['screenCapture', 'slackLogs', 'slackAutoRecord']) {
@@ -54,7 +56,7 @@ export function permissionReport(body: unknown): PermissionReport | null {
   screenCapture: p.screenCapture as boolean | null,
   slackLogs: p.slackLogs as boolean | null,
   slackAutoRecord: p.slackAutoRecord as boolean | null,
- }, ...(body.build === undefined ? {} : {build: {...body.build as unknown as PermissionBuild}}), ...(body.commandId === undefined ? {} : { commandId: body.commandId as string }),
+ }, ...(body.recoverySupported === undefined ? {} : {recoverySupported: body.recoverySupported as boolean}), ...(body.build === undefined ? {} : {build: {...body.build as unknown as PermissionBuild}}), ...(body.commandId === undefined ? {} : { commandId: body.commandId as string }),
  ...(body.error === undefined ? {} : { error: body.error as string | null }) };
 }
 
@@ -63,6 +65,7 @@ export class DesktopPermissions {
  private command: PermissionCommand | null = null;
  private permissions: DesktopPermissionSnapshot | null = null;
  private build: PermissionBuild | null = null;
+ private recoverySupported = false;
  private updatedAt: number | null = null;
  private error: string | null = null;
  private expire(now: number) {
@@ -78,6 +81,15 @@ export class DesktopPermissions {
    permissions: controllerConnected && this.permissions ? { ...this.permissions } : null,
    error: this.error, pending: this.command !== null };
  }
+ recovery(state: {active: string[]; maintenance: boolean}, now = Date.now()): {recoveryAvailable: boolean; recoveryBlockedReason?: string} {
+  const status = this.status(now);
+  let recoveryBlockedReason: string | undefined;
+  if (!status.controllerConnected || !status.build || !this.recoverySupported) recoveryBlockedReason = 'Open the updated Heed menu app to recover system audio access.';
+  else if (state.maintenance) recoveryBlockedReason = 'Wait for the update or maintenance to finish before recovering system audio access.';
+  else if (state.active.length) recoveryBlockedReason = 'Wait for recording, transcription or other processing to finish before recovering system audio access.';
+  else if (status.permissions?.screenCapture !== false) recoveryBlockedReason = 'System audio recovery is available only when access is unavailable.';
+  return recoveryBlockedReason ? {recoveryAvailable:false,recoveryBlockedReason} : {recoveryAvailable:true};
+ }
  request(now = Date.now()) {
   this.expire(now);
   return this.command ? { id: this.command.id, action: this.command.action } : null;
@@ -92,6 +104,7 @@ export class DesktopPermissions {
  report(report: PermissionReport, now = Date.now()) {
   this.expire(now);
   this.permissions = { ...report.permissions };
+  this.recoverySupported = report.recoverySupported === true;
   this.build = report.build ? {...report.build} : null;
   this.updatedAt = now;
   if (report.commandId && this.command?.id === report.commandId) {
@@ -102,4 +115,10 @@ export class DesktopPermissions {
    if (!this.command) this.error = report.error;
   }
  }
+}
+
+/** Lifecycle admission needs no recording paths, saved meetings or transcript segments. */
+export function permissionRecoverySummary(status: Record<string, unknown>) {
+ return Object.fromEntries(['recording','processing','starting','pending','audioWork','maintenance',
+  'maintenanceProtocol','processingKinds','updateTransactionId','permissionRequest'].map(key=>[key,status[key]]));
 }

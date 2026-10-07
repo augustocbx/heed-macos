@@ -46,7 +46,7 @@ const sessionTags = new SessionTags(SESSIONS_DIR);
 import { RecordingCoordinator } from "./lib/recording-coordinator.ts";
 import {ProcessingMaintenance, retainProcessingStream} from './lib/processing-maintenance.ts';
 import type { FinalCapture, RecordingSnapshot } from "../shared/types/recording-coordinator.ts";
-import { DesktopPermissions, desktopRequestAllowed as permissionRequestAllowed, permissionAction, permissionReport } from "./lib/desktop-permissions.ts";
+import { DesktopPermissions, permissionRecoverySummary, desktopRequestAllowed as permissionRequestAllowed, permissionAction, permissionReport } from "./lib/desktop-permissions.ts";
 import { removeChannelCopies } from "./lib/audio-retention.ts";
 import {validManagedLimit} from './lib/managed-quota.ts';
 import {createAppQuota} from './lib/app-storage.ts';
@@ -2320,6 +2320,7 @@ async function handleRecordingControl(req: Request, pathname: string): Promise<R
     if (body.transactionId !== undefined && processingMaintenance.transactionId() !== body.transactionId) throw Error('Another update transaction owns maintenance');
     processingMaintenance.release(body.owner);
    }
+   if (new URL(req.url).searchParams.get('summary') === '1') return Response.json({maintenance:processingMaintenance.blocked(),maintenanceProtocol:2,updateTransactionId:processingMaintenance.transactionId()});
    return Response.json({...hydratedRecordingSnapshot(),maintenanceProtocol:2,updateTransactionId:processingMaintenance.transactionId()});
   }
   return Response.json({error:"Unknown recording control endpoint"},{status:404});
@@ -2330,6 +2331,7 @@ async function handleDesktopControl(req: Request, pathname: string): Promise<Res
  try {
   if (req.method === "GET" && pathname.endsWith("/status")) {
    const status = desktopRecordingStatus();
+   if (new URL(req.url).searchParams.get('summary') === '1') return Response.json(permissionRecoverySummary({...status,permissionRequest:desktopPermissions.request()}));
    try { const health = await fetch(`${TRANSCRIPTION_SERVER}/health`,{signal:AbortSignal.timeout(1500)}); const data=await health.json(); status.ready = health.ok && isTranscriptionHealth(data) && !status.maintenance && data.whisper === true; } catch {status.ready=false;}
    return Response.json({...status,permissionRequest:desktopPermissions.request()});
   }
@@ -2362,7 +2364,7 @@ async function handleUiLocale(req:Request):Promise<Response> {
 
 async function handleDesktopPermissions(req: Request, pathname: string): Promise<Response> {
  if (!desktopRequestAllowed(req)) return Response.json({error:"Permissions are available only on localhost."}, {status:403});
- if (req.method === "GET" && pathname === "/api/desktop/permissions") return Response.json(desktopPermissions.status());
+ if (req.method === "GET" && pathname === "/api/desktop/permissions") return Response.json({...desktopPermissions.status(),...desktopPermissions.recovery({active:processingMaintenance.active(),maintenance:processingMaintenance.blocked()})});
  if (req.method !== "POST") return Response.json({error:"Method not allowed."}, {status:405});
  let body: unknown;
  try { body = await req.json(); } catch { return Response.json({error:"Invalid JSON body."}, {status:400}); }
@@ -2374,7 +2376,11 @@ async function handleDesktopPermissions(req: Request, pathname: string): Promise
  }
  if (pathname !== "/api/desktop/permissions") return Response.json({error:"Unknown permissions endpoint."}, {status:404});
  const action = permissionAction(body);
- if (!action) return Response.json({error:"Choose microphone, screenCapture, slackLogs, or accessibility."}, {status:400});
+ if (!action) return Response.json({error:"Choose microphone, screenCapture, recoverScreenCapture, slackLogs, or accessibility."}, {status:400});
+ if (action === 'recoverScreenCapture') {
+  const recovery = desktopPermissions.recovery({active:processingMaintenance.active(),maintenance:processingMaintenance.blocked()});
+  if (!recovery.recoveryAvailable) return Response.json({error:recovery.recoveryBlockedReason},{status:409});
+ }
  try { return Response.json({ok:true,id:desktopPermissions.enqueue(action)}); }
  catch (error) { return Response.json({error:(error as Error).message}, {status:409}); }
 }
