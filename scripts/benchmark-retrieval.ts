@@ -14,6 +14,7 @@ import {
 import { tmpdir, hostname, release, totalmem } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { execFileSync } from 'node:child_process';
 import { SessionTags, transcriptGuard } from '../packages/server/lib/session-tags';
 import { RetrievalCatalog } from '../packages/server/lib/retrieval-catalog';
 import { RetrievalIndex } from '../packages/server/lib/retrieval-index';
@@ -56,6 +57,16 @@ export async function benchmarkCohort(count: number, seed: number, iterations: n
   });
   const index = new RetrievalIndex({ directory, catalog, store, policy, quota, now, isBusy: () => false });
   const retriever = new MeetingRetriever({ catalog, index, store, policy, now });
+  let observedPeakWorkingDiskBytes = 0,
+    observedPeakJournalBytes = 0;
+  function sampleDisk() {
+    observedPeakWorkingDiskBytes = Math.max(observedPeakWorkingDiskBytes, disk(directory));
+    const journals = readdirSync(directory)
+      .filter((name) => statSync(join(directory, name)).isDirectory())
+      .reduce((sum, name) => sum + disk(join(directory, name, 'index.sqlite-journal')), 0);
+    observedPeakJournalBytes = Math.max(observedPeakJournalBytes, journals);
+  }
+  const sampling = setInterval(sampleDisk, 10);
   try {
     // The actual store adopts canonical source versions, rather than injecting index rows.
     for (const meeting of corpus.meetings) store.commitSource(meeting.id, null, () => meeting);
@@ -123,6 +134,7 @@ export async function benchmarkCohort(count: number, seed: number, iterations: n
     await index.tick();
     const incrementalMilliseconds = milliseconds(start);
     const pointer = JSON.parse(readFileSync(join(directory, 'active.json'), 'utf8'));
+    sampleDisk();
     const result = {
       meetings: count,
       seed,
@@ -135,12 +147,16 @@ export async function benchmarkCohort(count: number, seed: number, iterations: n
       incrementalMilliseconds,
       databaseBytes: statSync(join(directory, pointer.generationId, 'index.sqlite')).size,
       workingDiskBytes: disk(directory),
+      observedPeakWorkingDiskBytes,
+      observedPeakJournalBytes,
+      diskSamplingMilliseconds: 10,
       reservedQuotaBytes: quota.snapshot().reservedBytes,
       observedPeakRssBytes: process.resourceUsage().maxRSS * 1024,
       questions,
     };
     return result;
   } finally {
+    clearInterval(sampling);
     retriever.close();
     index.close();
     catalog.close();
@@ -182,7 +198,15 @@ if (import.meta.main) {
     scriptSha256: createHash('sha256')
       .update(readFileSync(import.meta.path))
       .digest('hex'),
-    hardware: { hostname: hostname(), architecture: process.arch, macOS: release(), memoryBytes: totalmem() },
+    hardware: {
+      hostname: hostname(),
+      architecture: process.arch,
+      darwinRelease: release(),
+      macOS: execFileSync('/usr/bin/sw_vers', ['-productVersion'], { encoding: 'utf8' }).trim(),
+      model: execFileSync('/usr/sbin/sysctl', ['-n', 'hw.model'], { encoding: 'utf8' }).trim(),
+      chip: execFileSync('/usr/sbin/sysctl', ['-n', 'machdep.cpu.brand_string'], { encoding: 'utf8' }).trim(),
+      memoryBytes: totalmem(),
+    },
     runtime: { bun: Bun.version },
     iterations,
     cohorts: [] as Awaited<ReturnType<typeof benchmarkCohort>>[],
