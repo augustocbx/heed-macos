@@ -1,24 +1,25 @@
-import { RetrievalCoverageView, retrievalEmptyMessage } from './RetrievalCoverage';
+import { MeetingMetadataCoverageView, RetrievalCoverageView, retrievalEmptyMessage } from './RetrievalCoverage';
 import {aiWaitingMessage} from '@/lib/ai-waiting';
 import {useEffect,useRef,useState} from 'react';
-import {tagKey,type LibraryChatScope,type LibraryChatContext,type ChatCommand,type LibraryChatTurn,type TranscriptEvidence} from '@heed/shared';
+import {tagKey,type LibraryChatScope,type LibraryChatContext,type ChatCommand,type LibraryChatTurn,type TranscriptEvidence,type MeetingMetadataEvidence} from '@heed/shared';
 import {libraryChatApi} from '@/api/library-chat';
 import {chatApi} from '@/api/chat';
 import {ApiError} from '@/api/client';
 import {useLocale} from '@/lib/i18n';
-import {fmtDuration} from '@/lib/format';
+import {fmtDuration,fmtMeetingDateTime} from '@/lib/format';
 import {beginSessionRequest,useSessionsStore} from '@/stores/sessions';
 import {useUIStore} from '@/stores/ui';
 import {chatErrorMessages} from './chat-errors';
 import styles from './MeetingChat.module.css';
 import scopeStyles from './LibraryChat.module.css';
+import {isMeetingMetadataCitation} from './citation';
 const emptyScope:LibraryChatScope={mode:'labels',labels:[],match:'any'};
 function storedScope():LibraryChatScope{
  try{const scope=JSON.parse(localStorage.getItem('heed-library-chat-scope')||'null');if(scope&&['labels','all'].includes(scope.mode)&&['any','all'].includes(scope.match)&&Array.isArray(scope.labels)&&scope.labels.length<=50&&scope.labels.every((label:unknown)=>typeof label==='string'&&label.length<=200)&&(scope.mode!=='all'||!scope.labels.length))return scope;}catch{}return emptyScope;
 }
 const messages={...chatErrorMessages,'scope-changed':'The selected meetings or labels changed. Refresh the scope before asking.','scope-empty':'Choose labels or explicitly select All meetings before asking.'};
 export function LibraryChat(){
- const {tr}=useLocale();const [scope,setScope]=useState<LibraryChatScope>(storedScope);const [context,setContext]=useState<LibraryChatContext|null>(null);
+ const {tr,locale}=useLocale();const [scope,setScope]=useState<LibraryChatScope>(storedScope);const [context,setContext]=useState<LibraryChatContext|null>(null);
  const [search,setSearch]=useState('');const [question,setQuestion]=useState('');const [models,setModels]=useState<string[]>([]);const [model,setModel]=useState('');const [error,setError]=useState('');const [saving,setSaving]=useState(false);const [clearing,setClearing]=useState(false);
  const mounted=useRef(false),version=useRef(0),sequence=useRef(0);const pending=useRef<Extract<ChatCommand,{action:'send'}>|null>(null);
  const errorText=(reason:string)=>tr(messages[reason as keyof typeof messages]||'Could not load or update chat. Refresh and retry.');
@@ -33,12 +34,12 @@ export function LibraryChat(){
  const refresh=async()=>{const current=++version.current,request=++sequence.current;setError('');try{const [result,installed]=await Promise.all([libraryChatApi.context(scope),chatApi.models()]);if(mounted.current&&version.current===current&&request===sequence.current){setContext(result);setModels(installed.models);}}catch(error){if(mounted.current&&version.current===current)setError(error instanceof Error?error.message:'chat-storage-failed');}};
  const mutate=async(command:ChatCommand)=>{const current=++version.current;setSaving(true);setError('');try{const thread=await libraryChatApi.command(scope,command);if(mounted.current&&version.current===current){++sequence.current;setContext(previous=>previous?{...previous,thread}:null);return true;}}catch(error){if(mounted.current&&version.current===current){setError(error instanceof Error?error.message:'chat-storage-failed');if(error instanceof ApiError&&error.status===409)pending.current=null;}}finally{if(mounted.current&&version.current===current)setSaving(false);}return false;};
  const send=async()=>{if(!context?.preview.ready||!question.trim()||!models.includes(model)||saving)return;if(!pending.current||pending.current.question!==question.trim()||pending.current.model!==model)pending.current={action:'send',requestId:crypto.randomUUID(),question:question.trim(),model,expectedSourceRevision:context.preview.snapshot.key,expectedThreadRevision:context.thread.revision};if(await mutate(pending.current)){pending.current=null;setQuestion('');}};
- const openCitation=async(turn:LibraryChatTurn,citation:TranscriptEvidence)=>{
-  const current=++version.current,order=beginSessionRequest(citation.sessionId);setSaving(true);setError('');try{const session=await libraryChatApi.source(scope,turn.snapshot.key,citation.id);if(mounted.current&&current===version.current){if(session.id!==citation.sessionId||session.transcriptRevision!==citation.sourceRevision)throw new Error('scope-changed');const accepted=useSessionsStore.getState().accept(session,order);if(accepted.transcriptRevision!==citation.sourceRevision)throw new Error('scope-changed');useSessionsStore.getState().view(accepted);useUIStore.setState({currentPage:'sessions',chatSourceFocus:citation,taskSourceSeek:null});}}catch(error){if(mounted.current&&current===version.current)setError(error instanceof Error?error.message:'chat-storage-failed');}finally{if(mounted.current&&current===version.current)setSaving(false);}
+ const openCitation=async(turn:LibraryChatTurn,citation:TranscriptEvidence|MeetingMetadataEvidence)=>{
+  const current=++version.current,order=beginSessionRequest(citation.sessionId);setSaving(true);setError('');try{const session=await libraryChatApi.source(scope,turn.snapshot.key,citation.id);if(mounted.current&&current===version.current){if(session.id!==citation.sessionId||!isMeetingMetadataCitation(citation)&&session.transcriptRevision!==citation.sourceRevision)throw new Error('scope-changed');const accepted=useSessionsStore.getState().accept(session,order);if(isMeetingMetadataCitation(citation)?accepted.createdAt!==session.createdAt||accepted.duration!==session.duration:accepted.transcriptRevision!==citation.sourceRevision)throw new Error('scope-changed');useSessionsStore.getState().view(accepted);useUIStore.setState({currentPage:'sessions',chatSourceFocus:isMeetingMetadataCitation(citation)?null:citation,taskSourceSeek:null});}}catch(error){if(mounted.current&&current===version.current)setError(error instanceof Error?error.message:'chat-storage-failed');}finally{if(mounted.current&&current===version.current)setSaving(false);}
  };
  const labels=context?.preview.availableLabels||[];const running=context?.thread.turns.some(turn=>turn.status==='running'||turn.status==='waiting');
  return <section className={styles.chat} aria-label={tr('Meeting chat')}>
-  <h1>{tr('Meeting chat')}</h1><p className={styles.hint}>{tr('Answers use the saved final transcript and stay on this Mac. Check cited evidence before relying on an answer.')}</p>
+  <h1>{tr('Meeting chat')}</h1><p className={styles.hint}>{tr('Answers use saved final transcripts and meeting details on this Mac. Check cited evidence before relying on an answer.')}</p>
   <fieldset className={scopeStyles.scope}><legend>{tr('Meeting scope')}</legend>
    <label><input type="radio" name="meeting-scope" checked={scope.mode==='labels'} disabled={saving} onChange={()=>changeScope({...emptyScope})}/>{tr('Selected labels')}</label>
    <label><input type="radio" name="meeting-scope" checked={scope.mode==='all'} disabled={saving} onChange={()=>changeScope({mode:'all',labels:[],match:'any'})}/>{tr('All meetings')}</label>
@@ -60,12 +61,18 @@ export function LibraryChat(){
    {(turn.status==='running'||turn.status==='waiting')&&<div><p role="status">{tr(turn.status==='waiting'?aiWaitingMessage(turn.waitingReason):'Reviewing transcript evidence…')}</p><button disabled={saving} onClick={()=>void mutate({action:'cancel',turnId:turn.id})}>{tr('Cancel answer')}</button></div>}
    {(turn.status==='failed'||turn.status==='cancelled')&&<div><p role="status">{errorText(turn.reason||'interrupted')}</p><button disabled={saving||turn.stale} onClick={()=>void mutate({action:'retry',turnId:turn.id,...(model?{model}:{})})}>{tr('Retry answer')}</button></div>}
    {turn.status==='completed'&&turn.answer&&<div>{!turn.answer.claims.length&&<p>{tr(turn.answer.coverage.retrieval?.version===1 ? retrievalEmptyMessage(turn.answer.coverage.retrieval) : turn.answer.coverage.complete?'Not found in the selected meetings.':'No supporting evidence found in the reviewed excerpts.')}</p>}
-    {turn.answer.claims.map((claim,index)=><div className={styles.claim} key={index}><p>{claim.text}</p><div className={styles.citations}>{claim.citations.map(citation=><details key={citation.id}><summary>{turn.snapshot.sources.find(source=>source.sessionId===citation.sessionId)?.title} · {citation.speaker||tr('Transcript')}</summary><blockquote>{citation.quote}</blockquote><button disabled={saving||turn.stale} onClick={()=>void openCitation(turn,citation)}>{turn.snapshot.sources.find(source=>source.sessionId===citation.sessionId)?.title} · {citation.start===null?tr('Open source text'):fmtDuration(Math.floor(citation.start))}</button></details>)}</div></div>)}
+    {turn.answer.claims.map((claim,index)=><div className={styles.claim} key={index}><p>{claim.text}</p><div className={styles.citations}>{claim.citations.map(citation=>isMeetingMetadataCitation(citation)?<details key={citation.id}>
+     <summary>{turn.snapshot.sources.find(source=>source.sessionId===citation.sessionId)?.title} · {tr('Meeting date and time')}</summary>
+     <p>{tr('Recorded start')}: <time dateTime={citation.recordedAt}>{fmtMeetingDateTime(citation.recordedAt,locale)}</time></p>
+     {citation.durationSeconds!==undefined&&<p>{tr('Duration: {duration}',{duration:fmtDuration(Math.floor(citation.durationSeconds))})}</p>}
+     <button disabled={saving||turn.stale} onClick={()=>void openCitation(turn,citation)}>{tr('Open meeting')}</button>
+    </details>:<details key={citation.id}><summary>{turn.snapshot.sources.find(source=>source.sessionId===citation.sessionId)?.title} · {citation.speaker||tr('Transcript')}</summary><blockquote>{citation.quote}</blockquote><button disabled={saving||turn.stale} onClick={()=>void openCitation(turn,citation)}>{turn.snapshot.sources.find(source=>source.sessionId===citation.sessionId)?.title} · {citation.start===null?tr('Open source text'):fmtDuration(Math.floor(citation.start))}</button></details>)}</div></div>)}
      {turn.answer.coverage.retrieval?.version === 1 ? (
       <RetrievalCoverageView coverage={turn.answer.coverage.retrieval}/>
      ) : <>
     <p className={styles.hint}>{tr('Reviewed {reviewed} of {total} transcript chunks.',{reviewed:turn.answer.coverage.reviewedChunks,total:turn.answer.coverage.totalChunks})}</p>{!turn.answer.coverage.complete&&<p className={styles.warning}>{tr('Coverage is partial. Evidence was sampled across the selected meetings; missing topics may exist in unreviewed excerpts.')}</p>}     </>}
      {turn.answer.coverage.answerLimited&&<p className={styles.warning}>{tr('The displayed answer was limited to 40 supported statements. Ask a narrower question.')}</p>}
+     {turn.answer.coverage.metadata&&<MeetingMetadataCoverageView coverage={turn.answer.coverage.metadata}/>}
    </div>}
   </article>)}</div>
   <form onSubmit={event=>{event.preventDefault();void send();}}><label htmlFor="library-question">{tr('Question across selected meetings')}</label><textarea id="library-question" value={question} maxLength={2000} rows={3} disabled={saving} onChange={event=>setQuestion(event.target.value)}/><button type="submit" disabled={!context?.preview.ready||!question.trim()||!models.includes(model)||saving||running}>{tr('Send question')}</button></form>

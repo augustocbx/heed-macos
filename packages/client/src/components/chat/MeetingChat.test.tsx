@@ -17,6 +17,21 @@ test("loads durable answers and navigates exact transcript citations",async()=>{
  expect(screen.getByText("Vamos revisar.")).toBeInTheDocument();
 });
 
+test("displays recorded meeting time as metadata in the local timezone without transcript seeking",async()=>{
+ const previousTimezone=process.env.TZ;process.env.TZ="America/Sao_Paulo";
+ const metadata={kind:"meeting-metadata" as const,id:"meeting-a:meeting-metadata:metadata-a",sessionId:"meeting-a",sourceRevision:"metadata-a",recordedAt:"2026-04-15T14:30:00Z",durationSeconds:2194};
+ vi.mocked(chatApi.get).mockResolvedValue({...saved,turns:[{...saved.turns[0]!,answer:{...saved.turns[0]!.answer!,claims:[{text:"The meeting started on April 15.",citations:[metadata]}]}}]});
+ try{
+  const navigate=vi.fn();render(<MeetingChat session={session} onCitation={navigate}/>);
+  expect(await screen.findByText("The meeting started on April 15.")).toBeInTheDocument();
+  expect(screen.getByText(/Meeting date and time/)).toBeInTheDocument();
+  expect(screen.getByText(/11:30/)).toBeInTheDocument();
+  expect(screen.getByText(/Duration: 36m 34s/)).toBeInTheDocument();
+  expect(document.querySelector("blockquote")).toBeNull();
+  expect(navigate).not.toHaveBeenCalled();
+ }finally{if(previousTimezone===undefined)delete process.env.TZ;else process.env.TZ=previousTimezone;}
+});
+
 test("sends question independently from interface language and reuses request identity after transport failure",async()=>{
  vi.mocked(chatApi.command).mockRejectedValueOnce(new Error("network"));render(<MeetingChat session={session} onCitation={vi.fn()}/>);
  await screen.findByText("Review was suggested.");fireEvent.change(screen.getByLabelText("Local chat model"),{target:{value:"local"}});

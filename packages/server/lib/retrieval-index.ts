@@ -7,11 +7,11 @@ import {sourceRevision} from '../../shared/lib/transcript-source';
 import type {Session,TranscriptEvidence} from '@heed/shared';
 import {atomicWriteJson} from './atomic-json';
 import {RetrievalCatalog,type RetrievalDescriptor,type RetrievalScope} from './retrieval-catalog';
-import type {RetrievalPolicy} from './retrieval-policy';
+import {defaultRetrievalPolicy,type RetrievalPolicy} from './retrieval-policy';
 import {SessionTags,type CommittedSessionChange} from './session-tags';
 import type {ManagedQuota} from './managed-quota';
 import {iterateTranscriptEvidence} from './meeting-chat';
-import {ScratchTokenizer,normalizeRetrievalQuery,RetrievalQueryError,RetrievalUnavailableError} from './retrieval-tokenizer';
+import {ScratchTokenizer,normalizeRetrievalQuery,RetrievalQueryError,RetrievalUnavailableError,type RetrievalTerm} from './retrieval-tokenizer';
 import {CandidateRanking,initialCoverage,recordRetrieved,type Candidate} from './retrieval-ranking';
 
 interface Options {directory:string;catalog:RetrievalCatalog;store:SessionTags;quota:ManagedQuota;isBusy:()=>boolean;isQueryBusy?:()=>boolean;policy:RetrievalPolicy;now:()=>number;}
@@ -23,6 +23,16 @@ const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}
 const signature=(s:RetrievalSourceStamp)=>`${s.sourceRevision}:${s.transcriptVersion}`;
 const all:RetrievalScope={kind:'library',scope:{mode:'all',labels:[],match:'any'}};
 class InterruptedIndexWork extends Error {}
+
+/** Search both accepted speech and its speaker label; the stored quote stays exact. */
+export function tokenizeTranscriptEvidence(scratch:ScratchTokenizer,evidence:TranscriptEvidence):RetrievalTerm[]{
+ const frequencies=new Map<string,number>();
+ for(const text of [evidence.quote,evidence.speaker.slice(0,defaultRetrievalPolicy.queryCharacters)]){
+  if(!text)continue;
+  for(const {term,frequency} of scratch.tokenize(text))frequencies.set(term,(frequencies.get(term)??0)+frequency);
+ }
+ return [...frequencies].map(([term,frequency])=>({term,frequency}));
+}
 
 /** Disposable accepted-source data. Authoritative JSON is never modified here. */
 export class RetrievalIndex {
@@ -42,7 +52,7 @@ export class RetrievalIndex {
  private claims=new Set<string>();
  private config:string;
  constructor(private options:Options){
-  const p=options.policy;this.config=JSON.stringify({schemaVersion:1,tokenizer:'unicode61-diacritics2-scalar-v1',chunker:'legacy1200-utf16-v1',quote:'utf16le-v1',databaseBytes:p.databaseBytes,evidenceRows:p.evidenceRows,postingRows:p.postingRows});
+  const p=options.policy;this.config=JSON.stringify({schemaVersion:1,tokenizer:'unicode61-diacritics2-scalar-v1',chunker:'legacy1200-utf16-v1',quote:'utf16le-v1',searchFields:'quote-speaker-v1',databaseBytes:p.databaseBytes,evidenceRows:p.evidenceRows,postingRows:p.postingRows});
   mkdirSync(options.directory,{recursive:true,mode:0o700});
   if(lstatSync(options.directory).isSymbolicLink())throw new Error('Retrieval directory must be private local storage');
   chmodSync(options.directory,0o700);this.recover();
@@ -263,7 +273,7 @@ export class RetrievalIndex {
    let rows=total.n,postings=(db.query('SELECT COUNT(*) AS n FROM postings').get() as {n:number}).n,indexed=0;
    db.query('INSERT INTO manifests VALUES(?,?,?,?,?,?,?)').run(descriptor.sessionId,descriptor.sourceRevision,descriptor.transcriptVersion,descriptor.evidenceCount,0,0,(old?.epoch??0)+1);
    for(const evidence of iterateTranscriptEvidence(session)){
-    const terms=scratch.tokenize(evidence.quote);
+    const terms=tokenizeTranscriptEvidence(scratch,evidence);
     if(rows>=this.options.policy.evidenceRows||postings+terms.length>this.options.policy.postingRows)break;
     const {id,quote,...location}=evidence;
     db.query('INSERT INTO chunks VALUES(?,?,?,?,?,?,?)').run(descriptor.sessionId,descriptor.sourceRevision,descriptor.transcriptVersion,indexed,id,Buffer.from(quote,'utf16le'),JSON.stringify(location));
