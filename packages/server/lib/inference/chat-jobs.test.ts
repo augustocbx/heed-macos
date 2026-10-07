@@ -71,3 +71,38 @@ for(const kind of ['chat','library-chat'] as const)test(`${kind}: current source
  const f=await setup(kind);f.send();const plan=await f.consent();const catalog=f.options.catalog,resolve=catalog.resolve.bind(catalog),preview=catalog.preview.bind(catalog);const frozen=resolve(kind==='chat'?{kind:'meeting',sessionId:f.session.id}:{kind:'library',scope});const frozenPreview=preview(scope);
  catalog.resolve=()=>frozen;catalog.preview=()=>frozenPreview;catalog.validate=()=>{};f.session.transcriptVersion!++;f.release();await f.service.tick();expect(f.requests).toHaveLength(0);expect(()=>f.authorizations.authorize(plan.id,{allowRemote:true,expectedPayloadHash:plan.payloadHash})).toThrow();
 });
+
+async function libraryHistoryFixture(){
+ const f=await setup('library-chat');
+ f.session.segments=[{speaker:'Ana',start:0,end:1,text:'CURRENT_A_MARKER'}];f.session.transcriptRevision=sourceRevision(f.session);
+ const historical={...structuredClone(f.session),id:'history-b',title:'History source B',segments:[{speaker:'Ana',start:0,end:1,text:'HISTORY_B_MARKER'}]};historical.transcriptRevision=sourceRevision(historical);f.sessions.push(historical);
+ let selectedId=historical.id,held=false,entered=false,release!:()=>void;const admission=new Promise<void>(resolve=>release=resolve),uploads:any[]=[];
+ const retrieve=f.options.retriever.retrieve;
+ f.options.retriever.retrieve=async(...args)=>{const result=await retrieve(...args);return {...result,hits:result.hits.filter(hit=>hit.sessionId===selectedId)};};
+ f.inference.runtime=new AiRuntime({planner:f.planner,authorizations:f.authorizations,connections:f.manager,hooks:{reserve:async()=>({dispatch:async()=>{},outcome:async()=>{},finish:async()=>{}}),acquire:async()=>{if(held){entered=true;await admission;}return {release:()=>{}};}},generate:input=>getAiAdapter(input.selection.provider).generate({...input,fetch:(async(_url,init)=>{
+  const body=JSON.parse(String(init?.body)),data=JSON.parse(body.input);uploads.push(body);
+  return Response.json({status:'completed',output:[{type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:JSON.stringify({claims:[{text:data.evidence[0].quote,evidenceIds:[data.evidence[0].id]}],notFound:false})}]}]});
+ }) as typeof fetch})});
+ f.send('history-b-only');await f.consent();f.release();await f.service.tick();
+ expect(uploads).toHaveLength(1);expect(JSON.parse(uploads[0].input).evidence.map((item:any)=>item.sessionId)).toEqual([historical.id]);expect(f.get().turns[0]?.status).toBe('completed');
+ selectedId=f.session.id;f.send('current-a-only');const plan=await f.prepare(),reviewed=JSON.stringify(plan.calls);
+ expect(plan.calls).toHaveLength(1);expect((plan.calls[0]!.data as any).evidence.map((item:any)=>item.sessionId)).toEqual([f.session.id]);expect(JSON.stringify((plan.calls[0]!.data as any).history)).toContain('HISTORY_B_MARKER');expect(plan.sources.map(source=>source.sessionId).sort()).toEqual([historical.id,f.session.id].sort());
+ // Model the production catalog's pre-reconciliation cache, without changing the frozen sources or history.
+ const catalog=f.options.catalog,frozen=catalog.resolve({kind:'library',scope}),preview=catalog.preview(scope);catalog.resolve=()=>frozen;catalog.preview=()=>preview;catalog.validate=()=>{};
+ return {...f,historical,plan,reviewed,uploads,holdAdmission:()=>held=true,admissionEntered:()=>entered,releaseAdmission:release};
+}
+for(const change of ['version','revision','finalization'] as const)for(const timing of ['before-consent','during-admission'] as const)test(`library history-only ${change} changes invalidate reviewed content ${timing}`,async()=>{
+ const f=await libraryHistoryFixture();let running:Promise<void>|undefined;
+ try{
+  if(timing==='during-admission'){
+   f.authorizations.authorize(f.plan.id,{allowRemote:true,expectedPayloadHash:f.plan.payloadHash});f.holdAdmission();running=f.service.tick();
+   for(let i=0;i<100&&!f.admissionEntered();i++)await Bun.sleep(1);expect(f.admissionEntered()).toBe(true);expect(f.uploads).toHaveLength(1);
+  }
+  if(change==='version')f.historical.transcriptVersion!++;
+  else if(change==='revision'){f.historical.segments[0]!.text='Changed source B';f.historical.transcriptRevision=sourceRevision(f.historical);}
+  else f.historical.transcriptFinalized=false;
+  expect(()=>f.authorizations.authorize(f.plan.id,{allowRemote:true,expectedPayloadHash:f.plan.payloadHash})).toThrow('scope-changed');
+  expect(()=>f.authorizations.assert(f.plan)).toThrow('scope-changed');
+ }finally{f.releaseAdmission();await running;}
+ await f.service.tick();expect(f.uploads).toHaveLength(1);expect(f.get().turns[1]?.answer).toBeUndefined();expect(JSON.stringify(f.plan.calls)).toBe(f.reviewed);expect(JSON.stringify(f.get().turns[0]?.answer)).toContain('HISTORY_B_MARKER');
+});
