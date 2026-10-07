@@ -4,7 +4,7 @@ import { requestJson, validateRemoteEndpoint } from '../transport';
 export const xaiAdapter: AiAdapter = { async generate(input) {
  const data = prepareRemote(input, 'xai', 'schema'); validateRemoteEndpoint(input.endpoint, 'xai');
  const format = input.call.schema ? input.capabilities!.structuredOutput === 'schema' ? { type: 'json_schema', name: 'heed_result', schema: input.call.schema, strict: true } : { type: 'json_object' } : { type: 'text' };
- const body = record(await requestJson({ ...input, headers: { 'content-type': 'application/json', authorization: `Bearer ${input.key}` }, body: { model: input.selection.model, instructions: input.call.system, input: data, max_output_tokens: input.call.maxOutputTokens, stream: false, store: false, text: { format } } }));
+ const body = record(await requestJson({ ...input, maxRequestBytes:input.call.maxRequestBytes, headers: { 'content-type': 'application/json', authorization: `Bearer ${input.key}` }, body: { model: input.selection.model, instructions: input.call.system, input: data, max_output_tokens: input.call.maxOutputTokens, stream: false, store: false, text: { format } } }));
  const counts = body.usage ?? {};
  const incoming = tokenCount(counts.input_tokens); const visible = tokenCount(counts.output_tokens); const reasoning = tokenCount(counts.output_tokens_details?.reasoning_tokens); const total = tokenCount(counts.total_tokens);
  // Official xAI examples vary: only a verified total relationship establishes overlap.

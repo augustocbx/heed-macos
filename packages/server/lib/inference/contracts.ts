@@ -1,7 +1,10 @@
+import {validateCallBytes} from './limits';
 import type { AiCapabilities, AiProviderId, AiResult, AiSelection, AiUsage } from '../../../shared/types/ai';
 export interface AiCall {
  id: string; system: string; data: unknown; schema?: Record<string, unknown>;
  contextTokens: number; maxOutputTokens: number;
+ /** Bound the complete serialized vendor request, not tokens. */
+ maxRequestBytes?: number;
 }
 /** Private server-only transport input. Never serialize this request to a client. */
 export interface AiAdapterRequest {
@@ -17,7 +20,7 @@ export interface AiAdapterRequest {
  timeoutMs?: number;
 }
 export interface AiAdapter { generate(input: AiAdapterRequest): Promise<AiResult>; }
-export type AiErrorCode = 'invalid-request' | 'invalid-endpoint' | 'unsupported-capability' | 'authentication-failed' | 'rate-limited' | 'provider-unavailable' | 'provider-timeout' | 'request-rejected' | 'cancelled' | 'response-too-large' | 'invalid-output' | 'incomplete-output';
+export type AiErrorCode = 'invalid-request' | 'invalid-endpoint' | 'unsupported-capability' | 'authentication-failed' | 'rate-limited' | 'provider-unavailable' | 'provider-timeout' | 'request-rejected' | 'cancelled' | 'response-too-large' | 'request-too-large' | 'invalid-output' | 'incomplete-output';
 export class AiInferenceError extends Error {
  constructor(readonly code: AiErrorCode) { super(code); this.name = 'AiInferenceError'; }
 }
@@ -40,6 +43,7 @@ export function usage(input: AiAdapterRequest, counts: Omit<AiUsage, 'supported'
 }
 export function prepareRemote(input: AiAdapterRequest, provider: AiProviderId, supportedFormat: 'schema' | 'validated-json'): string {
  const caps = input.capabilities; const call = input.call;
+ validateCallBytes(call);
  if (input.selection.provider !== provider || !input.selection.model?.trim() || !input.key?.trim() || /[\r\n]/.test(input.key) || !call.id || !call.system?.trim()) return fail('invalid-request');
  if (!caps || caps.streaming || input.onToken || !Number.isSafeInteger(caps.contextTokens) || !Number.isSafeInteger(caps.maxOutputTokens) || !Number.isSafeInteger(call.contextTokens) || !Number.isSafeInteger(call.maxOutputTokens) || call.contextTokens <= 0 || call.maxOutputTokens <= 0 || call.contextTokens > caps.contextTokens || call.maxOutputTokens > caps.maxOutputTokens) return fail('unsupported-capability');
  if (call.schema && (caps.structuredOutput === 'none' || (supportedFormat === 'validated-json' && caps.structuredOutput === 'schema'))) return fail('unsupported-capability');

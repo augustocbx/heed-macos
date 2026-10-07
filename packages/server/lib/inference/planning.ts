@@ -1,3 +1,4 @@
+import {validateCallBytes,featureWireBytes} from './limits';
 import {createHash,randomUUID} from 'node:crypto';
 import type {AiCapabilities,AiFeature,AiSelection} from '../../../shared/types/ai';
 import {AiInferenceError,type AiCall} from './contracts';
@@ -43,7 +44,8 @@ export class AiPlanner {
   }
   if(!draft.selection.model||draft.calls.length>(['notes','tasks'].includes(draft.feature)?1:4)||new Set(draft.calls.map(call=>call.id)).size!==draft.calls.length||draft.calls.some(c=>!c.id||!c.system||!Number.isSafeInteger(c.contextTokens)||c.contextTokens<=0||!Number.isSafeInteger(c.maxOutputTokens)||c.maxOutputTokens<=0))throw new AiPlanError('invalid-plan');
   for(const call of draft.calls){if(connection?.capabilities&&(call.contextTokens>connection.capabilities.contextTokens||call.maxOutputTokens>connection.capabilities.maxOutputTokens||call.schema&&connection.capabilities.structuredOutput==='none'))throw new AiPlanError('unsupported-capability');}
-  const content={jobId:draft.jobId,feature:draft.feature,selection:draft.selection,calls:draft.calls,sources:draft.sources,settingsVersion:snapshot.version,connectionGeneration:connection?.connectionGeneration??0,credentialGeneration:connection?.credentialGeneration??0,trustGeneration:connection?.trustVersion??0,...(connection?.capabilities?{capabilities:connection.capabilities}:{})};
+  const calls=draft.calls.map(call=>{if(draft.selection.provider==='ollama')return call;validateCallBytes(call,draft.feature);return {...call,maxRequestBytes:featureWireBytes(draft.feature)};});
+  const content={jobId:draft.jobId,feature:draft.feature,selection:draft.selection,calls,sources:draft.sources,settingsVersion:snapshot.version,connectionGeneration:connection?.connectionGeneration??0,credentialGeneration:connection?.credentialGeneration??0,trustGeneration:connection?.trustVersion??0,...(connection?.capabilities?{capabilities:connection.capabilities}:{})};
   const plan=freeze(structuredClone({...content,id:randomUUID(),expiresAt:this.now()+600000,payloadHash:aiFingerprint(content)}));
   draft.validate();
   // A second preview replaces the same command's old review, never its durable job.

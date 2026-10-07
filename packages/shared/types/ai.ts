@@ -46,7 +46,14 @@ export interface AiJobBinding {selection:AiSelection;commandRevision?:string;pla
 export interface AiAuthorizationDecision {allowRemote:true;expectedPayloadHash:string;allowUnknownCost?:true;}
 export interface AiPreview {
  id:string;jobId:string;feature:AiFeature;selection:AiSelection;payloadHash:string;expiresAt:number;
- calls:Array<{id:string;system:string;data:unknown;schema?:Record<string,unknown>;contextTokens:number;maxOutputTokens:number}>;
+ calls:Array<{id:string;system:string;data:unknown;schema?:Record<string,unknown>;contextTokens:number;maxOutputTokens:number;maxRequestBytes?:number}>;
  sources:Array<{sessionId:string;sourceRevision:string;sourceVersion?:number;expectedNotesHash?:string}>;
  excluded:string[];costStatus:'unknown';
 }
+/** Existing durable command identity only. The server resolves all source text and settings. */
+export type AiPlanRequest =
+ | {feature:'notes';sessionId:string;jobId?:string}
+ | {feature:'tasks';sessionId:string}
+ | {feature:'chat';sessionId:string;turnId:string}
+ | {feature:'library-chat';scope:import('./library-chat').LibraryChatScope;turnId:string};
+export interface AiAuthorizationReceipt {planId:string;payloadHash:string;expiresAt:number;}

@@ -1,3 +1,4 @@
+import {AiPlanError,aiErrorCode,aiFingerprint,remoteBinding,type AiDomainInference,type AiJobDraft,type AiJobPlan} from './inference/planning';
 import type { AiWaitingReason } from "@heed/shared";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, unlinkSync } from "node:fs";
@@ -15,6 +16,7 @@ export class ChatError extends Error {
  constructor(reason: string, readonly status = 400) { super(reason); }
 }
 export function chatFailure(error:unknown):string {
+ if(aiErrorCode(error))return aiErrorCode(error)!;
  if(error instanceof ChatError)return error.message;
  if(error instanceof RetrievalCatalogError)return error.reason;
  if(error instanceof RetrievalQueryError)return 'invalid-question';
@@ -161,18 +163,20 @@ interface ChatOptions {
  directory: string; getSession: (id: string) => Session | null; isBusy: () => boolean;
  waitingReason?: () => AiWaitingReason;
  catalog:Pick<RetrievalCatalog,'state'|'resolve'|'validate'>;retriever:Pick<MeetingRetriever,'retrieve'|'materialize'>;
+ inference?:AiDomainInference;
  generate: ChatGenerator; write?: typeof atomicWriteJson;
 }
 
 /** Single-process mutations are synchronous; generation commits check the live source and turn. */
 export class MeetingChatService {
  private active?: { sessionId: string; turnId: string; attempt: number; controller: AbortController; done: Promise<void> };
+ private prepared=new WeakMap<AiJobPlan,{prepared:PreparedMeetingQuestion;retrieval:RetrievalSnapshot;result:Awaited<ReturnType<MeetingRetriever['retrieve']>>}>();
  private readonly write: typeof atomicWriteJson;
  constructor(private options: ChatOptions) {
   mkdirSync(options.directory, {recursive:true}); this.write = options.write ?? atomicWriteJson;
   for (const file of readdirSync(options.directory).filter(value=>value.endsWith(".json"))) {
    const thread = this.read(file.slice(0,-5)); let changed=false;
-   for (const turn of thread.turns) if (turn.status === "running" || turn.status === "waiting") { turn.status="failed";turn.reason="interrupted";turn.updatedAt=new Date().toISOString();changed=true; }
+   for (const turn of thread.turns) if (turn.status === "running" || turn.status === "waiting") { turn.status="failed";turn.reason=remoteBinding(turn)&&turn.ai?.dispatched?"remote-attempt-uncertain":"interrupted";turn.updatedAt=new Date().toISOString();changed=true; }
    if (changed) this.save(thread);
   }
  }
@@ -188,7 +192,7 @@ export class MeetingChatService {
  private session(id:string) { const session=this.options.getSession(id);if(!session)throw new ChatError("meeting-not-found",404);return session; }
  private recoverThread(thread:ChatThread) {
   let changed=false;
-  for(const turn of thread.turns)if(turn.status==="running"&&!(this.active?.sessionId===thread.sessionId&&this.active.turnId===turn.id)){turn.status="failed";turn.reason="interrupted";turn.updatedAt=new Date().toISOString();changed=true;}
+  for(const turn of thread.turns)if(turn.status==="running"&&!(this.active?.sessionId===thread.sessionId&&this.active.turnId===turn.id)){turn.status="failed";turn.reason=remoteBinding(turn)&&turn.ai?.dispatched?"remote-attempt-uncertain":"interrupted";turn.updatedAt=new Date().toISOString();changed=true;}
   if(changed)this.save(thread);return thread;
  }
  private captured(id:string):RetrievalSnapshot{return this.options.catalog.resolve({kind:'meeting',sessionId:id}).snapshot;}
@@ -203,7 +207,7 @@ export class MeetingChatService {
   return {...thread,turns:thread.turns.map(turn=>({...turn,stale:turn.sourceRevision!==revision||!!key&&!!this.localKey(turn)&&this.localKey(turn)!==key,waitingReason:turn.status==='waiting'?(this.options.waitingReason?.()??(!this.ready()?'retrieval':undefined)):undefined}))};
  }
  get busy() { return !!this.active; }
- get pending(): boolean { return readdirSync(this.options.directory).filter(file=>file.endsWith(".json")).some(file=>this.read(file.slice(0,-5)).turns.some(turn=>turn.status === "waiting")); }
+ get pending(): boolean { return readdirSync(this.options.directory).filter(file=>file.endsWith(".json")).some(file=>this.read(file.slice(0,-5)).turns.some(turn=>this.runnable(turn))); }
  command(id:string, command:ChatCommand):ChatThread {
   const session=this.session(id); const thread=this.read(id);
   if(!command || typeof command !== "object")throw new ChatError("invalid-command");
@@ -223,7 +227,7 @@ export class MeetingChatService {
    if(thread.turns.length>=200)throw new ChatError("history-full",409);
    const now=new Date().toISOString();
    if(!['ready','discovering'].includes(this.options.catalog.state()))throw new ChatError(this.options.catalog.state()==='capacity'?'retrieval-capacity':'retrieval-not-ready',409);
-   thread.turns.push({...(this.ready()?{retrievalKey:this.captured(id).key}:{}),id:randomUUID(),requestId:command.requestId,question:command.question.trim(),model:command.model,initialModel:command.model,sourceRevision:revisionOf(session),status:"waiting",createdAt:now,updatedAt:now,attempts:0});
+   thread.turns.push({...this.binding(command.model),...(this.ready()?{retrievalKey:this.captured(id).key}:{}),id:randomUUID(),requestId:command.requestId,question:command.question.trim(),model:command.model,initialModel:command.model,sourceRevision:revisionOf(session),status:"waiting",createdAt:now,updatedAt:now,attempts:0});
   } else if(command.action === "cancel"||command.action === "retry") {
    const turn=thread.turns.find(value=>value.id===command.turnId);if(!turn)throw new ChatError("turn-not-found",404);
    if(command.action === "cancel") {
@@ -233,7 +237,7 @@ export class MeetingChatService {
     if(turn.status!=="failed"&&turn.status!=="cancelled")throw new ChatError("turn-not-retryable",409);
     if(!session.transcriptFinalized)throw new ChatError("transcript-not-final",409);
     if(command.model!==undefined){if(typeof command.model!=="string"||!command.model.trim()||command.model.length>200)throw new ChatError("invalid-question");turn.initialModel??=turn.model;turn.model=command.model;}
-    turn.status="waiting";turn.sourceRevision=revisionOf(session);if(this.ready())(turn as LocalChatTurn).retrievalKey=this.captured(id).key;else delete (turn as LocalChatTurn).retrievalKey;delete turn.reason;delete turn.answer;
+    Object.assign(turn,this.binding(turn.model));delete turn.provenance;turn.status="waiting";turn.sourceRevision=revisionOf(session);if(this.ready())(turn as LocalChatTurn).retrievalKey=this.captured(id).key;else delete (turn as LocalChatTurn).retrievalKey;delete turn.reason;delete turn.answer;
    }
    turn.updatedAt=new Date().toISOString();
   } else throw new ChatError("invalid-command");
@@ -244,34 +248,71 @@ export class MeetingChatService {
  async preempt():Promise<void> {
   const active=this.active;if(!active)return;
   const thread=this.read(active.sessionId);const turn=thread.turns.find(value=>value.id===active.turnId);
-  if(turn?.status==="running") {turn.status="cancelled";turn.reason="resources-busy";turn.updatedAt=new Date().toISOString();this.save(thread);}
+  if(turn?.status==="running") {turn.status="cancelled";turn.reason=remoteBinding(turn)&&turn.ai?.dispatched?"remote-attempt-uncertain":"resources-busy";turn.updatedAt=new Date().toISOString();this.save(thread);}
   active.controller.abort();await active.done;
  }
  remove(id:string):void { const path=this.path(id);if(existsSync(path))unlinkSync(path);if(this.active?.sessionId===id)this.active.controller.abort(); }
+ private runnable(turn:ChatTurn):boolean {
+  if(turn.status!=='waiting')return false;if(!remoteBinding(turn))return true;
+  try{if(!this.options.inference||!turn.ai?.planId)return false;this.options.inference.authorizations.assert(this.options.inference.planner.get(turn.ai.planId));return true;}catch{return false;}
+ }
+ private binding(model:string):Pick<ChatTurn,'ai'|'model'> {
+  if(!this.options.inference)return {model};
+  const selection=this.options.inference.planner.selection('chat',model);
+  if(selection.model!==model)throw new ChatError('settings-changed',409);
+  return {model,ai:{selection,commandRevision:randomUUID()}};
+ }
+ private history(turns:ChatTurn[],snapshot:ChatTurn,retrieval:RetrievalSnapshot):ChatHistory {
+  return turns.filter(turn=>turn.createdAt<=snapshot.createdAt&&turn.id!==snapshot.id&&turn.status==='completed'&&turn.sourceRevision===snapshot.sourceRevision&&(!this.localKey(turn)||this.localKey(turn)===retrieval.key)).slice(-4).map(turn=>({question:turn.question,answer:turn.answer}));
+ }
+ async prepareAi(id:string,turnId:string):Promise<AiJobDraft> {
+  const inference=this.options.inference,thread=this.get(id),turn=thread.turns.find(item=>item.id===turnId);
+  if(!inference||!turn||turn.status!=='waiting'||!remoteBinding(turn))throw new AiPlanError('invalid-command');
+  const retrieval=this.captured(id),history=this.history(thread.turns,turn,retrieval),historyHash=aiFingerprint(history),identity=aiFingerprint([turn.question,turn.model,turn.sourceRevision,turn.ai?.commandRevision]);
+  let attached:string|undefined;
+  const current=()=>{const live=this.read(id),value=live.turns.find(item=>item.id===turnId);if(!value||!['waiting','running'].includes(value.status)||aiFingerprint([value.question,value.model,value.sourceRevision,value.ai?.commandRevision])!==identity||attached&&value.ai?.planId!==attached)throw new AiPlanError('command-changed');return {live,value};};
+  const validate=()=>{const {live,value}=current();this.options.catalog.validate(retrieval);const session=this.session(id);if(!session.transcriptFinalized||revisionOf(session)!==turn.sourceRevision||(session.transcriptVersion??0)!==retrieval.sources.find(source=>source.sessionId===id)?.transcriptVersion||this.captured(id).key!==retrieval.key)throw new AiPlanError('source-changed');if(aiFingerprint(this.history(live.turns,turn,retrieval))!==historyHash)throw new AiPlanError('history-changed');if(value.status==='running'&&this.options.isBusy())throw new AiPlanError('resources-busy');};
+  validate();const result=await this.options.retriever.retrieve(retrieval,turn.question),evidence=await this.options.retriever.materialize(result);validate();
+  const prepared=prepareMeetingQuestion({evidence,coverage:result.coverage,question:turn.question,history,model:turn.model});
+  return {jobId:`chat:${id}:${turnId}`,feature:'chat',selection:turn.ai!.selection,calls:chatPlanCalls(prepared),sources:retrieval.sources.map(source=>({sessionId:source.sessionId,sourceRevision:source.sourceRevision,sourceVersion:source.transcriptVersion})),validate,
+   attach:plan=>{validate();const {live,value}=current();value.ai={...value.ai!,planId:plan.id,dispatched:false};attached=plan.id;(value as LocalChatTurn).retrievalKey=retrieval.key;delete value.reason;this.save(live);this.prepared.set(plan,{prepared,retrieval,result});},
+   dispatched:()=>{validate();const {live,value}=current();value.ai!.dispatched=true;this.save(live);}};
+ }
  async tick():Promise<void> {
   if(this.active||this.options.isBusy())return;
-  for(const file of readdirSync(this.options.directory).filter(value=>value.endsWith(".json"))) {
-   const thread=this.recoverThread(this.read(file.slice(0,-5)));const turn=thread.turns.find(value=>value.status==="waiting");if(!turn)continue;
-   if(this.options.catalog.state()==='discovering')return;
-   if(!this.ready()){turn.status='failed';turn.reason=this.options.catalog.state()==='capacity'?'retrieval-capacity':'retrieval-not-ready';this.save(thread);continue;}
-   const session=this.options.getSession(thread.sessionId);
-   if(!session || !session.transcriptFinalized || revisionOf(session)!==turn.sourceRevision) {turn.status="failed";turn.reason="source-changed";this.save(thread);continue;}
-   const retrieval=this.captured(thread.sessionId);if(this.localKey(turn)&&this.localKey(turn)!==retrieval.key){turn.status='failed';turn.reason='source-changed';this.save(thread);continue;}
-   (turn as LocalChatTurn).retrievalKey=retrieval.key;turn.status="running";turn.attempts++;turn.updatedAt=new Date().toISOString();this.save(thread);
-   const controller=new AbortController();
-   const active={sessionId:thread.sessionId,turnId:turn.id,attempt:turn.attempts,controller,done:Promise.resolve()};this.active=active;
-   active.done=this.execute(session,turn,thread.turns,controller,retrieval);
-   try {await active.done;}finally{if(this.active===active)this.active=undefined;}return;
+  for(const file of readdirSync(this.options.directory).filter(value=>value.endsWith('.json'))) {
+   const thread=this.recoverThread(this.read(file.slice(0,-5)));
+   for(const turn of thread.turns.filter(value=>value.status==='waiting')){
+    if(this.options.catalog.state()==='discovering')return;
+    if(!this.ready()){turn.status='failed';turn.reason=this.options.catalog.state()==='capacity'?'retrieval-capacity':'retrieval-not-ready';this.save(thread);continue;}
+    const session=this.options.getSession(thread.sessionId);
+    if(!session||!session.transcriptFinalized||revisionOf(session)!==turn.sourceRevision){turn.status='failed';turn.reason='source-changed';this.save(thread);continue;}
+    const retrieval=this.captured(thread.sessionId);if(this.localKey(turn)&&this.localKey(turn)!==retrieval.key){turn.status='failed';turn.reason='source-changed';this.save(thread);continue;}
+    let plan:AiJobPlan|undefined;
+    if(remoteBinding(turn)){
+     try{if(!turn.ai?.planId||!this.options.inference)throw new AiPlanError('authorization-required');plan=this.options.inference.planner.get(turn.ai.planId);this.options.inference.authorizations.assert(plan);if(!this.prepared.has(plan))throw new AiPlanError('plan-not-found');}
+     catch(error){turn.reason=aiErrorCode(error)??chatFailure(error);this.save(thread);continue;}
+    }
+    (turn as LocalChatTurn).retrievalKey=retrieval.key;turn.status='running';turn.attempts++;turn.updatedAt=new Date().toISOString();this.save(thread);
+    const controller=new AbortController(),active={sessionId:thread.sessionId,turnId:turn.id,attempt:turn.attempts,controller,done:Promise.resolve()};this.active=active;
+    active.done=this.execute(session,turn,thread.turns,controller,retrieval,plan);
+    try{await active.done;}finally{if(this.active===active)this.active=undefined;}return;
+   }
   }
  }
- private async execute(session:Session, snapshot:ChatTurn, turns:ChatTurn[], controller:AbortController,retrieval:RetrievalSnapshot) {
+ private async execute(session:Session, snapshot:ChatTurn, turns:ChatTurn[], controller:AbortController,retrieval:RetrievalSnapshot,plan?:AiJobPlan) {
   try {
-   // Old-revision answers remain visible, but never become evidence for a new question.
-   const history=turns.filter(turn=>turn.createdAt <= snapshot.createdAt && turn.id!==snapshot.id && turn.status==="completed" && turn.sourceRevision===snapshot.sourceRevision&&(!this.localKey(turn)||this.localKey(turn)===retrieval.key)).slice(-4).map(turn=>({question:turn.question,answer:turn.answer}));
-   const result=await this.options.retriever.retrieve(retrieval,snapshot.question,controller.signal),evidence=await this.options.retriever.materialize(result,controller.signal);
+   const frozen=plan?this.prepared.get(plan)!:undefined;
+   retrieval=frozen?.retrieval??retrieval;
+   const result=frozen?.result??await this.options.retriever.retrieve(retrieval,snapshot.question,controller.signal);
    const check=()=>{this.options.catalog.validate(retrieval);if(this.options.isBusy())throw new ChatError('resources-busy',409);if(controller.signal.aborted)throw new ChatError('cancelled',409);};check();
-   const answer=await answerMeetingQuestion({evidence,coverage:result.coverage,question:snapshot.question,history,model:snapshot.model,signal:controller.signal,generate:async input=>{check();const text=await this.options.generate(input);check();return text;}});
-   this.options.catalog.validate(retrieval);await this.options.retriever.materialize(result,controller.signal);this.options.catalog.validate(retrieval);
+   let answer:ChatAnswer;
+   if(plan){const outputs=await this.options.inference!.runtime.execute(plan,controller.signal);answer=completeMeetingQuestion(frozen!.prepared,outputs.map(output=>output.text));snapshot.provenance={provider:plan.selection.provider,model:plan.selection.model!};}
+   else{
+    const history=this.history(turns,snapshot,retrieval),evidence=await this.options.retriever.materialize(result,controller.signal),generate=()=>answerMeetingQuestion({evidence,coverage:result.coverage,question:snapshot.question,history,model:snapshot.model,signal:controller.signal,generate:async input=>{check();const text=await this.options.generate(input);check();return text;}});
+    answer=this.options.inference?await this.options.inference.runtime.local('chat',snapshot.model,controller.signal,generate):await generate();snapshot.provenance={provider:'ollama',model:snapshot.model};
+   }
+   check();await this.options.retriever.materialize(result,controller.signal);check();if(plan)this.options.inference!.planner.assertCurrent(plan);
    this.finish(session.id,snapshot,controller,answer);
   } catch(error) { this.finish(session.id,snapshot,controller,undefined,chatFailure(error)==='scope-changed'?'source-changed':chatFailure(error)); }
  }
@@ -282,7 +323,7 @@ export class MeetingChatService {
   if(!turn||turn.status!=="running"||turn.attempts!==snapshot.attempts)return;
   if(!session.transcriptFinalized||revisionOf(session)!==snapshot.sourceRevision||this.ready()&&this.localKey(snapshot)!==this.captured(id).key)reason="source-changed";
   turn.updatedAt=new Date().toISOString();
-  if(reason) {turn.status="failed";turn.reason=reason;delete turn.answer;}else {turn.status="completed";turn.answer=answer;delete turn.reason;}
+  if(reason) {turn.status="failed";turn.reason=reason;delete turn.answer;}else {turn.status="completed";turn.answer=answer;turn.provenance=snapshot.provenance;delete turn.reason;}
   this.save(thread);
  }
 }

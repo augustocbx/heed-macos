@@ -182,3 +182,13 @@ test('local adapter retains loopback, installed-model metadata and completion pr
  const fetcher = (async (url: string | URL | Request) => { requests.push(String(url)); return String(url).endsWith('/api/tags') ? Response.json({ models: [{ name: 'fixture-model' }] }) : Response.json({ details: { remote_host: 'https://cloud.example' } }); }) as unknown as typeof fetch;
  await expect(getAiAdapter('ollama').generate(input('ollama', fetcher, { endpoint: 'http://127.0.0.1:11434', key: undefined }))).rejects.toThrow('local-only'); expect(requests.some(url => url.endsWith('/api/generate'))).toBe(false);
 });
+
+test('transport bounds exact serialized UTF-8 wire bytes before fetch without truncation',async()=>{
+ const fake=fixture({ok:true}),signal=new AbortController().signal;
+ for(const body of [{data:'á😀'.repeat(50000)},{schema:{description:'\\"'.repeat(150000)}}])await expect(requestJson({endpoint:AI_ENDPOINTS.openai,headers:{},signal,body,fetch:fake.fetch})).rejects.toThrow('request-too-large');
+ expect(fake.requests).toHaveLength(0);
+ const body={data:'Revisão 😀 \n "safe"'};await requestJson({endpoint:AI_ENDPOINTS.openai,headers:{},signal,body,fetch:fake.fetch});expect(fake.requests[0]!.init.body).toBe(JSON.stringify(body));
+});
+for(const provider of remoteProviders)test(`${provider} enforces bounded source/schema and the reviewed final wire cap`,async()=>{
+ for(const mode of ['source','schema','wire'] as const){const fake=fixture(responseBody(provider)),request=input(provider,fake.fetch);if(mode==='source')request.call={...request.call,data:{text:'é'.repeat(40000)}};if(mode==='schema')request.call={...request.call,schema:{...schema,description:'😀'.repeat(5000)}};if(mode==='wire')request.call={...request.call,maxRequestBytes:128} as typeof request.call;await expect(getAiAdapter(provider).generate(request)).rejects.toThrow('request-too-large');expect(fake.requests).toHaveLength(0);}
+});

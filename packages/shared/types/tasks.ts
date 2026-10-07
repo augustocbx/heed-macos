@@ -33,6 +33,7 @@ export interface TaskReview {
  updatedAt: string;
 }
 export interface MeetingTask extends TaskFields {
+ provenance?: import("./ai").AiProvenance;
  id: string;
  revision: string;
  sessionId: string;

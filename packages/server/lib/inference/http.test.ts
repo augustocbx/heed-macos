@@ -41,3 +41,24 @@ test('aggregate and replacement capacity rejections preserve reloadable settings
  expect((await aiResponse(command({action:'replace',id:anchor.id,...large}),f.manager,true))?.status).toBe(400);expect(puts).toBe(priorPuts);expect(f.manager.snapshot()).toEqual(before);expect(()=>f.manager.assertCurrent(checkpoint)).not.toThrow();
  const {AiConnections}=await import('./connections');const restarted=new AiConnections(f.options);expect(restarted.snapshot().unavailable).toBe(false);expect(restarted.snapshot()).toEqual(before);expect((await restarted.resolve(selected)).key).toBe('ANCHOR_KEY');
 });
+
+test('HTTP plans resolve durable notes and authorize exact server content through the production client API',async()=>{
+ const {AutomaticNotesService}=await import('../automatic-notes'),{join}=await import('node:path');
+ const {AiPlanner}=await import('./planning'),{AiAuthorizations}=await import('./authorization'),{AiRuntime}=await import('./runtime');
+ const {aiPlansResponse}=await import('./http');
+ const f=fixture(),c=await f.manager.register({provider:'openai',model:'gpt-6-luna',key:'SYNTHETIC_KEY'});await f.manager.validate(c.id);f.manager.saveSelection('notes',{provider:'openai',connectionId:c.id,model:c.model});
+ const planner=new AiPlanner(f.manager),authorizations=new AiAuthorizations(planner),inference={planner,authorizations,runtime:new AiRuntime({planner,authorizations,connections:f.manager})};let local=0;
+ const notes=new AutomaticNotesService({sessionsDir:join(f.root,'sessions'),getSettings:()=>({enabled:true,model:'local',templateId:'fixture',language:'meeting'}),loadTemplate:()=>({id:'fixture',name:'Fixture',description:'',prompt:'Reviewed template'}),isBusy:()=>false,generate:async()=>{local++;return 'Wrong local dispatch';},inference});
+ notes.create({id:'meeting',transcript:'SELECTED_TEXT',transcriptFinalized:true,language:'en',summary:'EXCLUDED_CALENDAR'});planner.register('notes',command=>notes.prepareAi(command.sessionId!,command.jobId));
+ const request=(path:string,value:unknown)=>new Request(`http://localhost:48100/api/ai/${path}`,{method:'POST',body:JSON.stringify(value)});
+ for(const value of [{feature:'notes',sessionId:'meeting',calls:[{data:'INJECTED'}]},{feature:'notes',sessionId:'meeting',key:'SECRET'},{feature:'chat',sessionId:'meeting'},{feature:'library-chat',turnId:'turn',scope:{mode:'all',match:'any',labels:[]},sessionId:'injected'},{feature:'tasks',sessionId:'../escape'},{feature:'notes',sessionId:'x'.repeat(21000)}])expect((await aiPlansResponse(request('plans',value),inference,true))?.status).toBe(400);
+ expect((await aiPlansResponse(new Request('http://localhost:48100/api/ai/plans',{method:'POST',headers:{origin:'https://evil.invalid'},body:'{}'}),inference,true))?.status).toBe(403);
+ expect((await aiPlansResponse(new Request('http://localhost:48100/api/ai/plans'),inference,true))?.status).toBe(405);
+ const previous=globalThis.fetch;
+ try{
+  globalThis.fetch=(async(input,init)=>{const response=await aiPlansResponse(new Request(new URL(String(input),'http://localhost:48100'),init),inference,true);expect(response?.headers.get('cache-control')).toBe('no-store');return response!;}) as typeof fetch;
+  const {aiApi}=await import('../../../client/src/api/ai');const preview=await aiApi.plan({feature:'notes',sessionId:'meeting'});expect(JSON.stringify(preview)).toContain('SELECTED_TEXT');for(const excluded of ['EXCLUDED_CALENDAR','SYNTHETIC_KEY','credentialReference'])expect(JSON.stringify(preview)).not.toContain(excluded);
+  expect((await aiPlansResponse(request('authorize',{planId:preview.id,decision:{allowRemote:true,expectedPayloadHash:'wrong'}}),inference,true))?.status).toBe(409);
+  const accepted=await aiApi.authorize(preview.id,{allowRemote:true,expectedPayloadHash:preview.payloadHash});expect(accepted.planId).toBe(preview.id);await notes.tick();expect(local).toBe(0);expect(Object.values(notes.get('meeting')!.notesJobs!)[0]?.reason).toBe('budget-unavailable');
+ }finally{globalThis.fetch=previous;}
+});

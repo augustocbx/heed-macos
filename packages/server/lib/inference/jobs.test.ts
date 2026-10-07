@@ -102,9 +102,9 @@ test('remote tasks preempt to explicit retry and notes restart never resubmits a
 test('legacy queued jobs remain local after remote feature selection, with resource hooks still applied',async()=>{
  const f=await setup();const {readFileSync,writeFileSync}=await import('node:fs');
  const session=JSON.parse(readFileSync(join(f.root,'sessions','meeting.json'),'utf8'));for(const job of Object.values(session.notesJobs) as any[])delete job.ai;writeFileSync(join(f.root,'sessions','meeting.json'),JSON.stringify(session));
- let localCalls=0;const legacyNotes=new AutomaticNotesService({...f.notesOptions,generate:async()=>{localCalls++;return 'Legacy local notes';}});await legacyNotes.tick();expect(localCalls).toBe(1);expect(f.uploads()).toBe(0);
+ let localCalls=0;const legacyNotes=new AutomaticNotesService({...f.notesOptions,generate:async()=>{localCalls++;return 'Legacy local notes';}});await legacyNotes.tick();expect(localCalls).toBe(1);expect(f.uploads()).toBe(0);expect(legacyNotes.get('meeting')!.notesMetadata?.provenance).toEqual({provider:'ollama',model:'gpt-6-luna'});
  await f.tasks.tick();const store=JSON.parse(readFileSync(join(f.root,'tasks.json'),'utf8'));delete store.reviews.meeting.ai;writeFileSync(join(f.root,'tasks.json'),JSON.stringify(store));
- const legacyTasks=new MeetingTasksService({...f.tasksOptions,generate:async()=>{localCalls++;return '{"suggestions":[]}';}});await legacyTasks.tick();expect(localCalls).toBe(2);expect(f.uploads()).toBe(0);expect(f.resources()).toBe(2);
+ const legacyTasks=new MeetingTasksService({...f.tasksOptions,generate:async()=>{localCalls++;return '{"suggestions":[]}';}});await legacyTasks.tick();expect(localCalls).toBe(2);expect(f.uploads()).toBe(0);expect(f.resources()).toBe(2);expect(legacyTasks.snapshot('meeting').review?.provenance).toEqual({provider:'ollama',model:'local'});
 });
 
 test('real provider adapter receives only the reviewed notes call through the durable service',async()=>{
@@ -141,4 +141,22 @@ test('legacy task admission and generation share one captured model across a hel
   expect(admitted).toBe(configured?'small-local':'');expect(generated).toBe(configured?'small-local':undefined);expect(modelReads).toBe(configured?1:0);
   expect(generationCalls).toBe(1);expect(service.snapshot('meeting').review?.status).toBe('ready');expect(f.uploads()).toBe(0);
  }
+});
+
+test('hosted notes and task preparation reject oversize UTF-8 input before authorization or key lookup',async()=>{
+ const f=await setup();f.notes.create({id:'oversize',transcript:'😀'.repeat(20000),transcriptFinalized:true,language:'pt'});await f.tasks.tick();
+ for(const feature of ['notes','tasks'] as const)await expect(f.planner.prepare({feature,sessionId:'oversize'})).rejects.toThrow('request-too-large');expect(f.uploads()).toBe(0);
+});
+
+test('accepted tasks retain only safe provider/model provenance from their reviewed generation',async()=>{
+ const f=await setup();await f.tasks.tick();f.setGenerate(async()=>JSON.stringify({suggestions:[{title:'Send report',description:'Send report',kind:'explicit',assignee:null,dueDate:null,dateQuote:null,evidence:[{segmentIndex:0,quote:'I will send the report.'}]}]}));await consent(f,'tasks');await f.tasks.tick();const review=f.tasks.snapshot('meeting').review!;expect(review.status).toBe('ready');const suggestion=review.suggestions[0]!;f.tasks.accept('meeting',review.sourceRevision,[{suggestionId:suggestion.id,title:suggestion.title,description:suggestion.description,assignee:null,dueDate:null}]);const task=f.tasks.snapshot('meeting').tasks[0]!;expect(task.provenance).toEqual({provider:'openai',model:'gpt-6-luna'});expect(JSON.stringify(task)).not.toContain('connectionId');
+});
+
+for(const feature of ['notes','tasks'] as const)test(`${feature}: HTTP consent reaches the real adapter with only the durable reviewed payload`,async()=>{
+ const f=await setup(),{aiPlansResponse}=await import('./http'),{getAiAdapter}=await import('./adapters');const requests:any[]=[];
+ f.notesOptions.inference!.runtime=new AiRuntime({planner:f.planner,authorizations:f.authorizations,connections:f.manager,hooks:{reserve:async()=>({dispatch:async()=>{},outcome:async()=>{},finish:async()=>{}}),acquire:async()=>({release:()=>{}})},generate:input=>getAiAdapter(input.selection.provider).generate({...input,fetch:(async(_url,init)=>{requests.push(JSON.parse(String(init?.body)));return Response.json({status:'completed',output:[{type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:feature==='notes'?'Reviewed notes':'{"suggestions":[]}'}]}]});}) as typeof fetch})});
+ const service=feature==='notes'?f.notes:f.tasks;await service.tick();expect(requests).toHaveLength(0);
+ const http=(path:string,body:unknown)=>aiPlansResponse(new Request(`http://localhost:48100/api/ai/${path}`,{method:'POST',body:JSON.stringify(body)}),f.notesOptions.inference,true);
+ const preview=await (await http('plans',{feature,sessionId:'meeting'}))!.json();expect(preview.feature).toBe(feature);expect(requests).toHaveLength(0);expect((await http('authorize',{planId:preview.id,decision:{allowRemote:true,expectedPayloadHash:preview.payloadHash}}))?.status).toBe(200);await service.tick();expect(requests).toHaveLength(1);expect(requests[0].input).toBe(JSON.stringify(preview.calls[0].data));for(const value of ['AUDIO_MARKER','EMBEDDING_MARKER','CALENDAR_MARKER','SECRET_KEY'])expect(JSON.stringify(requests)).not.toContain(value);
+ if(feature==='notes')expect(f.notes.get('meeting')!.notesMetadata?.provenance).toEqual({provider:'openai',model:'gpt-6-luna'});else{expect(f.tasks.snapshot('meeting').review?.status).toBe('ready');expect(f.tasks.snapshot('meeting').tasks).toEqual([]);}
 });

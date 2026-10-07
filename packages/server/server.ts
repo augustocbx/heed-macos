@@ -21,7 +21,10 @@ import {OneDriveConnections} from './lib/connectors/onedrive-connections';
 import {oneDriveResponse} from './lib/connectors/onedrive-http';
 import {createKeychainVault} from './lib/connectors/keychain-vault';
 import {AiConnections} from './lib/inference/connections';
-import {aiResponse} from './lib/inference/http';
+import {AiPlanner} from './lib/inference/planning';
+import {AiAuthorizations} from './lib/inference/authorization';
+import {AiRuntime} from './lib/inference/runtime';
+import {aiResponse,aiPlansResponse} from './lib/inference/http';
 import {ICloudConnections,icloudResponse} from './lib/connectors/icloud-connections.ts';
 import {SmbConnections,SMB_SETTINGS_RECOVERY_NOTICE} from './lib/smb-connections.ts';
 import {smbResponse} from './lib/smb-http.ts';
@@ -2572,7 +2575,11 @@ setInterval(async () => {
  finally{retentionBusy=false;}
 },1000);
 
+const aiPlanner=new AiPlanner(aiConnections),aiAuthorizations=new AiAuthorizations(aiPlanner);
+// Hosted dispatch remains unavailable until spending and resource admission are installed.
+const aiInference={planner:aiPlanner,authorizations:aiAuthorizations,runtime:new AiRuntime({planner:aiPlanner,authorizations:aiAuthorizations,connections:aiConnections})};
 const notesService: AutomaticNotesService = new AutomaticNotesService({
+ inference:aiInference,
  sessionsDir:SESSIONS_DIR,
  sessionStore:sessionTags,
  getSettings:() => automaticNotesSettings(loadConfig()),
@@ -2583,11 +2590,12 @@ const notesService: AutomaticNotesService = new AutomaticNotesService({
   transcript:renderNotesTranscript(session),language:job.language,signal,onProgress,numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))}),
 });
 const tasksService: MeetingTasksService = new MeetingTasksService({
+ inference:aiInference,getModel:()=>getCurrentModel()||"",
  path:join(APP_DIR,"tasks.json"),
  listSessions:() => notesService.list(),
  getSession:id => notesService.get(id),
  isBusy:() => processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || chatService.busy || libraryChatService.busy || chatPending(),
- generate:(session,signal) => generateTaskSuggestions(session,signal,{baseUrl:OLLAMA_HOST,model:getCurrentModel() || "",numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))}),
+ generate:(session,signal,model) => generateTaskSuggestions(session,signal,{baseUrl:OLLAMA_HOST,model:model ?? "",numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))}),
 });
 try {
  mediaImports=new MediaImportController({
@@ -2616,6 +2624,7 @@ function maintainRetrieval(discoveryOnly=false):Promise<void>{
  retrievalMaintenanceDone=work.finally(()=>{if(retrievalMaintenanceController===controller){retrievalMaintenanceController=undefined;retrievalMaintenanceDone=undefined;}});return retrievalMaintenanceDone;
 }
 const chatService: MeetingChatService = new MeetingChatService({
+ inference:aiInference,
  directory:join(APP_DIR,"chat"),catalog:retrievalCatalog,retriever:meetingRetriever, getSession:id=>notesService.get(id),
  isBusy:()=>processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || libraryChatService.busy,
  waitingReason:localAiWaitingReason,
@@ -2627,11 +2636,16 @@ function generateChatEvidence(input:ChatGenerationRequest) {
   numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))});
 }
 const libraryChatService: LibraryChatService = new LibraryChatService({
+ inference:aiInference,
  directory:join(APP_DIR,"library-chat"),catalog:retrievalCatalog,retriever:meetingRetriever,getSession:id=>sessionTags.read(id,defaultRetrievalPolicy.sourceRecordBytes),
  isBusy:()=>processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy,
  waitingReason:localAiWaitingReason,
  generate:generateChatEvidence,
 });
+aiPlanner.register('notes',command=>notesService.prepareAi(command.sessionId!,command.jobId));
+aiPlanner.register('tasks',command=>tasksService.prepareAi(command.sessionId!));
+aiPlanner.register('chat',command=>chatService.prepareAi(command.sessionId!,command.turnId!));
+aiPlanner.register('library-chat',command=>libraryChatService.prepareAi(command.scope as import('@heed/shared').LibraryChatScope,command.turnId!));
 const tasksTimer = setInterval(() => { void tasksService.tick().catch(error => console.error("Task suggestion queue failed:", error)); },1000);
 tasksTimer.unref();
 const notesTimer = setInterval(() => { void (async()=>{await maintainRetrieval(true);await notesService.tick();await chatService.tick();await libraryChatService.tick();await maintainRetrieval();})().catch(()=>console.error("Local AI queue failed")); },1000);
@@ -2762,6 +2776,8 @@ const server = Bun.serve({
 		const method = req.method;
   if(url.pathname === "/.well-known/heed-service")return desktopRequestAllowed(req)?Response.json(API_IDENTITY,{headers:{"Cache-Control":"no-store"}}):new Response(null,{status:403});
   if(url.pathname === "/.well-known/heed-services")return desktopRequestAllowed(req)&&method==='GET'?Response.json(await serviceDiagnostics.get(url.searchParams.get('refresh')==='1'),{headers:{'Cache-Control':'no-store'}}):new Response(null,{status:403});
+  const aiPlanResponse=await aiPlansResponse(req,aiInference,desktopRequestAllowed(req));
+  if(aiPlanResponse)return aiPlanResponse;
   const aiSettingsResponse=await aiResponse(req,aiConnections,desktopRequestAllowed(req));
   if(aiSettingsResponse)return aiSettingsResponse;
   if(url.pathname.startsWith('/api/media/imports')&&mediaImportUnavailable)return Response.json({error:'Media imports require recovery. Preserve the library and its pending recordings.'},{status:503});

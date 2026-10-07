@@ -1,3 +1,4 @@
+import {AI_WIRE_BYTES} from './limits';
 import { AiInferenceError, fail } from './contracts';
 import type { AiProviderId } from '../../../shared/types/ai';
 export const AI_ENDPOINTS: Readonly<Record<AiProviderId, string>> = Object.freeze({
@@ -13,7 +14,7 @@ export function validateRemoteEndpoint(endpoint: string, provider?: AiProviderId
  if (provider && provider !== 'compatible' && endpoint !== AI_ENDPOINTS[provider]) return fail('invalid-endpoint');
  return url.href;
 }
-export interface JsonRequest { endpoint: string; headers: HeadersInit; signal: AbortSignal; body?: unknown; fetch?: typeof fetch; timeoutMs?: number; validation?: boolean; }
+export interface JsonRequest { maxRequestBytes?:number; endpoint: string; headers: HeadersInit; signal: AbortSignal; body?: unknown; fetch?: typeof fetch; timeoutMs?: number; validation?: boolean; }
 function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
  if (signal.aborted) return Promise.reject(new AiInferenceError('cancelled'));
  return new Promise((resolve, reject) => {
@@ -29,12 +30,16 @@ export async function requestJson(input: JsonRequest): Promise<unknown> {
  const timeoutMs = input.timeoutMs ?? maximum;
  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > maximum) return fail('invalid-request');
  if (input.signal.aborted) return fail('cancelled');
+ const limit=input.maxRequestBytes??AI_WIRE_BYTES;if(!Number.isSafeInteger(limit)||limit<=0||limit>AI_WIRE_BYTES)return fail('invalid-request');
+ let serialized:string|undefined;try{serialized=input.body===undefined?undefined:JSON.stringify(input.body);}catch{return fail('invalid-request');}
+ if(input.body!==undefined&&serialized===undefined)return fail('invalid-request');
+ if(serialized!==undefined&&Buffer.byteLength(serialized)>limit)return fail('request-too-large');
  const controller = new AbortController(); let timedOut = false;
  const forward = () => controller.abort(); input.signal.addEventListener('abort', forward, { once: true });
  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
  try {
-  const response = await abortable((input.fetch ?? fetch)(endpoint, { method: input.body === undefined ? 'GET' : 'POST', headers: input.headers, ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }), redirect: 'error', credentials: 'omit', signal: controller.signal }), controller.signal);
+  const response = await abortable((input.fetch ?? fetch)(endpoint, { method: input.body === undefined ? 'GET' : 'POST', headers: input.headers, ...(input.body === undefined ? {} : { body: serialized }), redirect: 'error', credentials: 'omit', signal: controller.signal }), controller.signal);
   if (response.redirected || (response.url && response.url !== endpoint) || (response.status >= 300 && response.status < 400)) return fail('invalid-endpoint');
   if (!response.ok) {
    void response.body?.cancel().catch(() => {});

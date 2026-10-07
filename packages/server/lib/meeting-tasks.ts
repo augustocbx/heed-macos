@@ -99,7 +99,7 @@ export class MeetingTasksService {
    const values=fields(item);const suggestion=review.suggestions.find(s=>s.id===item.suggestionId);
    if(!suggestion||suggestion.state==='dismissed')throw new Error('Suggestion no longer available');
    if(suggestion.state==='accepted'||seen.has(suggestion.id))continue;seen.add(suggestion.id);
-   const task:MeetingTask={...values,id:randomUUID(),revision:randomUUID(),sessionId:id,meetingTitle:meeting.title,suggestionId:suggestion.id,sourceRevision:revision,evidence:suggestion.evidence,kind:suggestion.kind,status:'open',completedAt:null,createdAt:now,updatedAt:now};
+   const task:MeetingTask={...values,...(review.provenance?{provenance:{provider:review.provenance.provider,model:review.provenance.model}}:{}),id:randomUUID(),revision:randomUUID(),sessionId:id,meetingTitle:meeting.title,suggestionId:suggestion.id,sourceRevision:revision,evidence:suggestion.evidence,kind:suggestion.kind,status:'open',completedAt:null,createdAt:now,updatedAt:now};
    store.tasks.push(task);suggestion.state='accepted';suggestion.acceptedTaskId=task.id;store.decisions[suggestion.id]={state:'accepted',acceptedTaskId:task.id};
   }
   this.save(store);return this.snapshot(id);
@@ -182,7 +182,7 @@ export class MeetingTasksService {
    const generate=()=>this.options.generate(session,active.controller.signal,actualModel);
    const results=plan?await inference!.runtime.execute(plan,active.controller.signal):undefined;
    const output=results?results[0]!.text:inference?await inference.runtime.local('tasks',actualModel??'',active.controller.signal,generate):await generate();
-   if(plan)inference!.planner.assertCurrent(plan);provenance=results?.[0]?.provenance;
+   if(plan)inference!.planner.assertCurrent(plan);provenance=results?.[0]?.provenance??(actualModel?{provider:'ollama',model:actualModel}:undefined);
    suggestions=validateTaskSuggestions(session,output);
   }catch(failure){error=(failure as Error).message;safeError=aiErrorCode(failure);}
   const store=this.read();const review=store.reviews[session.id];if(!review||review.sourceRevision!==active.revision||review.attemptId!==active.attemptId||review.status!=='running')return;

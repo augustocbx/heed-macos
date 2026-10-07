@@ -273,7 +273,7 @@ export class AutomaticNotesService {
    if (!session || !job || job.status !== "running" || job.attempts !== expected.attempts || controller.signal.aborted) return;
    if (session.transcriptRevision !== expected.sourceRevision || session.transcriptVersion !== expected.sourceVersion || !session.transcriptFinalized || notesHash(session.aiNotes) !== expected.expectedNotesHash || (session.aiNotes.trim() && !expected.replaceExisting)) { job.status = "superseded"; job.reason = "transcript-changed"; this.save(session); return; }
    if (!text.trim()) throw new Error("incomplete-output");
-   session.aiNotes = text; session.notesMetadata = { origin: "automatic", sourceRevision: expected.sourceRevision, sourceIdentity: transcriptSourceIdentity(session), templateId: expected.templateId, templateName: expected.templateName, templateHash: expected.templateHash, model: expected.model, language: expected.language, generatedAt: this.timestamp(), stale: false, ...(results?.[0]?{provenance:results[0].provenance}:{}) };
+   session.aiNotes = text; session.notesMetadata = { origin: "automatic", sourceRevision: expected.sourceRevision, sourceIdentity: transcriptSourceIdentity(session), templateId: expected.templateId, templateName: expected.templateName, templateHash: expected.templateHash, model: expected.model, language: expected.language, generatedAt: this.timestamp(), stale: false, provenance:results?.[0]?.provenance??{provider:'ollama',model:expected.model} };
    job.status = "completed"; job.retryable = false; job.generatedCharacters = text.length; job.updatedAt = this.timestamp(); delete job.reason; this.save(session);
   } catch (error) {
    const session = this.get(snapshot.id); const job = session?.notesJobs?.[expected.id];
