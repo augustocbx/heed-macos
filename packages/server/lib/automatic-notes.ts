@@ -41,7 +41,7 @@ export function renderNotesTranscript(session: Session): string {
 }
 const activeStatuses = new Set(["queued", "waiting", "running"]);
 const allowedLanguages = new Set(["en", "pt", "fr", "de"]);
-const failureReasons = new Set(["template-missing", "model-missing", "transcript-empty", "language-unsupported", "existing-notes", "local-only", "ollama-unavailable", "generation-failed", "incomplete-output"]);
+const failureReasons = new Set(["template-missing", "model-missing", "transcript-empty", "language-unsupported", "existing-notes", "local-only", "ollama-unavailable", "generation-timeout", "generation-failed", "incomplete-output"]);
 
 /** All read/modify/write operations are synchronous, including after generation awaits. */
 export class AutomaticNotesService {

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AiWaitingReason, Session } from "@heed/shared";
 import { sourceRevision } from "./automatic-notes";
-import { MeetingChatService, transcriptEvidence, answerMeetingQuestion as answerRetrieved } from "./meeting-chat";
+import { MeetingChatService, chatFailure, transcriptEvidence, answerMeetingQuestion as answerRetrieved } from "./meeting-chat";
 import {controlledChatRetrieval,testCoverage} from './chat-retrieval-test-utils';
 const answerMeetingQuestion=({sessions,...input}:any)=>{const evidence=sessions.flatMap(transcriptEvidence).slice(0,32);return answerRetrieved({...input,evidence,coverage:testCoverage(evidence)});};
 const dirs: string[] = [];
@@ -13,6 +13,10 @@ afterEach(() => dirs.splice(0).forEach(d => rmSync(d, { recursive: true, force: 
 function meeting(): Session { const s: Session = { id: "meeting-a", title: "Planning", createdAt: "2026-10-05T12:00:00Z", duration: 40, language: "pt", transcript: "", speakers: ["Ana", "Bruno"], segments: [{speaker:"Ana",start:1,end:5,text:"O orçamento não foi aprovado."}, {speaker:"Bruno",start:10,end:15,text:"I will review it on Friday."}], aiNotes: "", summary: "", tags: [], pinned: false, transcriptFinalized: true }; s.transcriptRevision = sourceRevision(s); return s; }
 const result = (id: string) => JSON.stringify({ claims: [{ text: "The budget was not approved.", evidenceIds: [id] }], notFound: false });
 const flush = async () => { await new Promise(r => setTimeout(r, 10)); };
+
+test('a local model timeout keeps its specific chat failure reason',()=>{
+ expect(chatFailure(new Error('generation-timeout'))).toBe('generation-timeout');
+});
 
 test("evidence identities are revision-qualified and legacy paragraphs remain text navigable", () => {
  const s = meeting(); const evidence = transcriptEvidence(s);

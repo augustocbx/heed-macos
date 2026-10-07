@@ -1,7 +1,7 @@
 export class NotesGenerationError extends Error {
  constructor(readonly reason: string) { super(reason); this.name = "NotesGenerationError"; }
 }
-interface TransportOptions { fetch?: typeof fetch; signal?: AbortSignal; timeoutMs?: number; }
+interface TransportOptions { fetch?: typeof fetch; signal?: AbortSignal; timeoutMs?: number; maxDurationMs?: number; }
 export interface LocalNotesInput extends TransportOptions {
  baseUrl: string;
  model: string;
@@ -40,13 +40,17 @@ function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", aborted));
  });
 }
-async function withTransport<T>(baseUrl: string, options: TransportOptions, work: (request: (path: string, init?: RequestInit) => Promise<Response>, signal: AbortSignal) => Promise<T>): Promise<T> {
+async function withTransport<T>(baseUrl: string, options: TransportOptions, work: (request: (path: string, init?: RequestInit) => Promise<Response>, signal: AbortSignal, activity: () => void) => Promise<T>, timeoutReason: "ollama-unavailable" | "generation-timeout" = "ollama-unavailable"): Promise<T> {
  const base = localBaseUrl(baseUrl);
  const controller = new AbortController();
  let timedOut = false;
  const timeoutMs = options.timeoutMs ?? 300_000;
- if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return fail("ollama-unavailable");
- const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+ const maxDurationMs = options.maxDurationMs ?? 1_800_000;
+ if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isFinite(maxDurationMs) || maxDurationMs <= 0) return fail(timeoutReason);
+ const expire = () => { timedOut = true; controller.abort(); };
+ let timer = setTimeout(expire, timeoutMs);
+ const totalTimer = setTimeout(expire, maxDurationMs);
+ const activity = () => { if (!controller.signal.aborted) { clearTimeout(timer); timer = setTimeout(expire, timeoutMs); } };
  const forwardAbort = () => controller.abort(options.signal?.reason);
  options.signal?.addEventListener("abort", forwardAbort, { once: true });
  if (options.signal?.aborted) forwardAbort();
@@ -54,11 +58,12 @@ async function withTransport<T>(baseUrl: string, options: TransportOptions, work
   if (controller.signal.aborted) throw controller.signal.reason;
   const response = await abortable((options.fetch || fetch)(`${base}${path}`, { ...init, redirect: "error", credentials: "omit", signal: controller.signal }), controller.signal);
   if (!response.ok) return fail("ollama-unavailable");
+  activity();
   return response;
  };
- try { return await work(request, controller.signal); }
- catch (error) { if (options.signal?.aborted) throw options.signal.reason || error; if (error instanceof NotesGenerationError && !timedOut) throw error; return fail("ollama-unavailable"); }
- finally { clearTimeout(timer); options.signal?.removeEventListener("abort", forwardAbort); }
+ try { return await work(request, controller.signal, activity); }
+ catch (error) { if (options.signal?.aborted) throw options.signal.reason || error; if (timedOut) return fail(timeoutReason); if (error instanceof NotesGenerationError) throw error; return fail("ollama-unavailable"); }
+ finally { clearTimeout(timer); clearTimeout(totalTimer); options.signal?.removeEventListener("abort", forwardAbort); }
 }
 async function json(response: Response, signal: AbortSignal): Promise<any> {
  try { return await abortable(response.json(), signal); } catch { return fail("ollama-unavailable"); }
@@ -158,7 +163,7 @@ interface LocalGenerationInput extends TransportOptions {
 
 /** A completed stream is required; partial output is never eligible for persistence. */
 async function generateLocalOutput(input: LocalGenerationInput): Promise<string> {
- return withTransport(input.baseUrl, input, async (request, signal) => {
+ return withTransport(input.baseUrl, input, async (request, signal, activity) => {
   if (!input.model?.trim()) return fail("model-missing");
   if (cloudModelName(input.model)) return fail("local-only");
   if (!input.system?.trim() || !input.prompt?.trim()) return fail("generation-failed");
@@ -192,6 +197,7 @@ async function generateLocalOutput(input: LocalGenerationInput): Promise<string>
    while (true) {
     const chunk = await abortable(reader.read(), signal);
     if (chunk.done) { buffer += decoder.decode(); break; }
+    activity();
     buffer += decoder.decode(chunk.value, { stream: true });
     if (buffer.length > 2_000_000) return fail("incomplete-output");
     let newline: number;
@@ -207,5 +213,5 @@ async function generateLocalOutput(input: LocalGenerationInput): Promise<string>
   } finally {
    if (signal.aborted) await unloadLocalNotesModel(input.baseUrl, input.model, { fetch: input.fetch }).catch(() => {});
   }
- });
+ }, "generation-timeout");
 }
