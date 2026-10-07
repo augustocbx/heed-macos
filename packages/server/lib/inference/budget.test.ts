@@ -206,3 +206,22 @@ test('known model-limit contradictions and cost overflow cannot use an explicit 
  const root=mkdtempSync(join(tmpdir(),'heed-overflow-'));roots.push(root);const price=priceSnapshot('openai','gpt-6-luna')!;price.contextTiers=[];price.categories.inputTokens=Number.MAX_SAFE_INTEGER;
  const overflow=new AiBudget({appDir:root,now:()=>date,price:()=>price});ledgers.push(overflow);overflow.configure(policy);expect(()=>admit(overflow)).toThrow('cost-estimate-blocked');
 });
+
+for(const change of [{periodDays:1},{periodStart:date+4*86400000}])test(`settled charges stay in the current window after changing ${Object.keys(change)[0]}`,()=>{
+ const {ledger,time}=fixture();ledger.configure(policy);const p={...plan(),selection:{provider:'xai' as const,connectionId:'xai',model:'grok-4.3'}};
+ const allocation=ledger.review(p).estimate.knownComponentsMicroUsd!;ledger.configure({...policy,periodLimitMicroUsd:allocation});time(date+5*86400000);
+ const r=admit(ledger,p);ledger.settle(dispatch(ledger,r),{status:'completed',usage:{supported:true,inputTokens:2,outputTokens:1},reportedCharge:parseXaiCharge(10_000)!});ledger.cancelUnsubmitted(r.id);
+ const next={...p,planId:'next',jobId:'next'};expect(ledger.snapshot().liabilityMicroUsd).toBe(1);expect(()=>admit(ledger,next)).toThrow('period-budget-exceeded');
+ ledger.configure({...policy,periodLimitMicroUsd:allocation,...change});expect(ledger.snapshot().liabilityMicroUsd).toBe(1);expect(()=>admit(ledger,next)).toThrow('period-budget-exceeded');
+});
+test('future anchors cannot replace policy or hide a just-settled request',()=>{
+ const {ledger}=fixture();ledger.configure(policy);const r=admit(ledger,{...plan(),selection:{provider:'xai',connectionId:'xai',model:'grok-4.3'}});
+ ledger.settle(dispatch(ledger,r),{status:'completed',usage:{supported:true,inputTokens:2,outputTokens:1},reportedCharge:parseXaiCharge(10_000)!});ledger.cancelUnsubmitted(r.id);
+ const before=ledger.snapshot();expect(()=>ledger.configure({...policy,periodStart:date+86400000})).toThrow('invalid-budget-policy');expect(ledger.snapshot()).toEqual(before);
+});
+test('a stored anchor ahead of the clock fails closed and can be repaired without losing charges',()=>{
+ const {ledger,time}=fixture();ledger.configure(policy);const r=admit(ledger,{...plan(),selection:{provider:'xai',connectionId:'xai',model:'grok-4.3'}});
+ ledger.settle(dispatch(ledger,r),{status:'completed',usage:{supported:true,inputTokens:2,outputTokens:1},reportedCharge:parseXaiCharge(10_000)!});ledger.cancelUnsubmitted(r.id);
+ time(date-1000);expect(()=>ledger.snapshot()).toThrow('budget-period-not-started');expect(()=>admit(ledger,plan('next','next'))).toThrow('budget-period-not-started');
+ ledger.configure({...policy,periodStart:date-1000});expect(ledger.snapshot().liabilityMicroUsd).toBe(1);
+});

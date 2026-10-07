@@ -69,8 +69,8 @@ export class AiBudget {
  }
  private clock():number{const now=this.now();if(!safe(now)||now>8640000000000000)fail('budget-unavailable');return now;}
  private current():{policy:AiBudgetPolicy;generation:number}{const row=this.db.query('SELECT * FROM policy WHERE id=1').get() as {value:string;generation:number};if(!row||!safe(row.generation)||row.generation===0)fail('budget-unavailable');return {policy:validateAiBudgetPolicy(JSON.parse(row.value)),generation:row.generation};}
- private period(policy:AiBudgetPolicy):number{const now=this.clock();return now<=policy.periodStart?policy.periodStart:policy.periodStart+Math.floor((now-policy.periodStart)/(policy.periodDays*day))*policy.periodDays*day;}
- configure(policy:AiBudgetPolicy):void {const next=validateAiBudgetPolicy(policy);this.atomic(()=>{const current=this.current();if(hash(current.policy)===hash(next))return;if(current.generation===Number.MAX_SAFE_INTEGER)fail('budget-unavailable');this.db.query('UPDATE policy SET generation=?,value=? WHERE id=1').run(current.generation+1,JSON.stringify(next));});}
+ private period(policy:AiBudgetPolicy):number{const now=this.clock();if(policy.periodStart>now)fail('budget-period-not-started');return policy.periodStart+Math.floor((now-policy.periodStart)/(policy.periodDays*day))*policy.periodDays*day;}
+ configure(policy:AiBudgetPolicy):void {const next=validateAiBudgetPolicy(policy);this.atomic(()=>{if(next.periodStart>this.clock())fail('invalid-budget-policy');const current=this.current();if(hash(current.policy)===hash(next))return;if(current.generation===Number.MAX_SAFE_INTEGER)fail('budget-unavailable');this.db.query('UPDATE policy SET generation=?,value=? WHERE id=1').run(current.generation+1,JSON.stringify(next));});}
  private reviewed(plan:AiBudgetPlan):AiBudgetReview {
   const {policy,generation}=this.current(),price=structuredClone(this.price(plan.selection.provider,plan.selection.model!)),priceIdentity=hash(price),estimate=estimateAiPlan(plan,price,this.clock());
   const content={policy,policyGeneration:generation,price,priceIdentity,estimate};
@@ -83,7 +83,8 @@ export class AiBudget {
  private reservation(id:string):StoredReservation{const row=this.db.query('SELECT * FROM reservations WHERE id=?').get(id) as StoredReservation|null;if(!row)fail('reservation-not-found');return row;}
  private attempts(reservationId?:string):StoredAttempt[]{return reservationId?this.db.query('SELECT * FROM attempts WHERE reservation_id=? ORDER BY round,call_id').all(reservationId) as StoredAttempt[]:this.db.query('SELECT * FROM attempts ORDER BY rowid').all() as StoredAttempt[];}
  private receipt(reservation:StoredReservation):AiBudgetReservation{const metadata=JSON.parse(reservation.metadata) as AiBudgetPlan;return {id:reservation.id,planId:reservation.plan_id,jobId:metadata.jobId,reviewIdentity:(JSON.parse(reservation.review) as AiBudgetReview).identity,attempts:this.attempts(reservation.id).map(a=>({id:a.id,callId:a.call_id,round:a.round}))};}
- private counted(a:StoredAttempt,period:number):boolean{return a.state!=='released'&&(a.period_start>=period||a.state==='held'||a.state==='dispatched'||a.state==='uncertain'||a.unknown_liability===1);}
+ /** Reconfiguration changes window membership, not the historical dispatch time. */
+ private counted(a:StoredAttempt,period:number):boolean{return a.state!=='released'&&(a.dispatched_at!==null&&a.dispatched_at>=period||a.state==='held'||a.state==='dispatched'||a.state==='uncertain'||a.unknown_liability===1);}
  reserve(plan:AiBudgetPlan,review:AiBudgetReview,decision:AiBudgetDecision):AiBudgetReservation {
   const metadata=project(plan);
   return this.atomic(()=>{
