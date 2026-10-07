@@ -20,6 +20,8 @@ import {OneDriveAuth} from './lib/connectors/onedrive-auth';
 import {OneDriveConnections} from './lib/connectors/onedrive-connections';
 import {oneDriveResponse} from './lib/connectors/onedrive-http';
 import {createKeychainVault} from './lib/connectors/keychain-vault';
+import {AiConnections} from './lib/inference/connections';
+import {aiResponse} from './lib/inference/http';
 import {ICloudConnections,icloudResponse} from './lib/connectors/icloud-connections.ts';
 import {SmbConnections,SMB_SETTINGS_RECOVERY_NOTICE} from './lib/smb-connections.ts';
 import {smbResponse} from './lib/smb-http.ts';
@@ -134,6 +136,8 @@ const STATIC_ROOT = join(import.meta.dir, "..", "client", "dist");
 // Recordings stored in the project root
 const UPLOAD_DIR = process.env.HEED_RECORDINGS_DIR || join(import.meta.dir, "..", "..", "recordings");
 const OLLAMA_HOST = process.env.OLLAMA_HOST || "http://localhost:11434";
+export const aiConnections = new AiConnections({appDir:APP_DIR,vault:createKeychainVault(),localEndpoint:OLLAMA_HOST});
+void aiConnections.recover().catch(()=>console.error('AI settings require recovery. Preserve private configuration.'));
 // Hard fallback only — actual model is read from ~/.heed-app/config.json (set by hardware
 // auto-detection on first launch, or by the user via the model picker modal).
 // Opt-in override ONLY (for power users / tests). No silent hardcoded default — the user
@@ -2758,6 +2762,8 @@ const server = Bun.serve({
 		const method = req.method;
   if(url.pathname === "/.well-known/heed-service")return desktopRequestAllowed(req)?Response.json(API_IDENTITY,{headers:{"Cache-Control":"no-store"}}):new Response(null,{status:403});
   if(url.pathname === "/.well-known/heed-services")return desktopRequestAllowed(req)&&method==='GET'?Response.json(await serviceDiagnostics.get(url.searchParams.get('refresh')==='1'),{headers:{'Cache-Control':'no-store'}}):new Response(null,{status:403});
+  const aiSettingsResponse=await aiResponse(req,aiConnections,desktopRequestAllowed(req));
+  if(aiSettingsResponse)return aiSettingsResponse;
   if(url.pathname.startsWith('/api/media/imports')&&mediaImportUnavailable)return Response.json({error:'Media imports require recovery. Preserve the library and its pending recordings.'},{status:503});
   if(mediaImports){const imported=await mediaImportResponse(req,mediaImports,desktopRequestAllowed(req));if(imported)return imported;}
   const chatResponse=await chatApiResponse(req,chatService,()=>listLocalChatModels(OLLAMA_HOST),desktopRequestAllowed(req));

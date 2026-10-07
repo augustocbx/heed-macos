@@ -20,3 +20,24 @@ export interface AiUsage {
 }
 export interface AiProvenance { provider: AiProviderId; model: string; }
 export interface AiResult { text: string; usage: AiUsage; finish: 'completed'; provenance: AiProvenance; }
+export type AiConnectionValidation = 'unvalidated' | 'validated' | 'failed' | 'credential-unavailable';
+/** Device-local configuration summary. No secret references or stored keys. */
+export interface AiConnectionSnapshot {
+ id: string; provider: Exclude<AiProviderId, 'ollama'>; model: string;
+ endpoint: string; validationEndpoint: string;
+ connectionGeneration: number; credentialGeneration: number; trustVersion: number;
+ validation: AiConnectionValidation; validationCode?: string;
+ capabilities: AiCapabilities | null;
+ capabilitySource: 'verified-metadata' | 'explicit-declaration' | 'unverified';
+ capabilityVerifiedAt: string | null;
+}
+export interface AiSettingsSnapshot {
+ version: number; selections: Record<AiFeature, AiSelection>;
+ connections: AiConnectionSnapshot[]; pendingCleanup: boolean; unavailable: boolean;
+}
+/** Keys are write-only request input and must never enter browser persistence. */
+export interface AiConnectionInput {
+ provider: Exclude<AiProviderId, 'ollama'>; model: string; key: string;
+ endpoint?: string; validationEndpoint?: string; trusted?: true;
+ capabilities?: AiCapabilities;
+}
