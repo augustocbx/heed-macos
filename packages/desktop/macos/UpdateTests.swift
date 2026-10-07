@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Local fixtures require a separate QA bundle and an explicit argument.
@@ -20,6 +21,7 @@ func updateClientSelfTests() throws {
 }
 
 func updateSelfTests() throws {
+    installedVersionMenuSelfTests()
     let available = try JSONDecoder().decode(UpdateSnapshot.self, from: Data(#"{"schema":1,"state":"available","targetVersion":"1.2.0","release":{"manifest":{"version":"1.2.0","tag":"v1.2.0"},"notesURL":"https://github.com/augustocbx/heed-macos/releases/tag/v1.2.0"}}"#.utf8))
     precondition(UpdatePresentation.status(available) == "Update available")
     precondition(available.canInstall)
@@ -162,4 +164,32 @@ private func updateClientForcedRefreshSelfTests() throws {
     try first.unblock(); awaitUpdateClient { !client.inFlight }
     precondition(replacement.requests.count == 1, "Service retries during a request must preserve and coalesce a forced status refresh")
     precondition(client.snapshot.targetVersion == "1.0.2" && client.snapshot.recovery == "recoveryRequired", "Forced retry must promptly discover recovery with the new configuration")
+}
+
+
+/// The installed build remains visible without opening the Updates submenu.
+private func installedVersionMenuSelfTests() {
+    let root = NSMenu()
+    root.autoenablesItems = false
+    let updates = UpdateMenu()
+    root.addItem(updates.item)
+    let installed = InstalledMenuBuild(version: "1.0.1", commit: String(repeating: "a", count: 40))
+    var snapshot = UpdateSnapshot()
+    snapshot.state = "available"
+    snapshot.release = SelectedUpdateRelease(manifest: UpdateManifest(version: "2.0.0", tag: "v2.0.0"), notesURL: "https://github.com/augustocbx/heed-macos/releases/tag/v2.0.0")
+    updates.render(snapshot, build: installed, locale: "en")
+    precondition(root.items.first?.title == "Installed version: 1.0.1", "Installed version must be visible in the main menu, separate from the available update")
+    precondition(root.items.first?.isEnabled == false)
+    snapshot.state = "checkFailed"
+    snapshot.errorCode = "helper-unavailable"
+    updates.render(snapshot, build: installed, locale: "en")
+    precondition(root.items.first?.title == "Installed version: 1.0.1", "An unavailable update helper must not hide the installed build")
+    precondition(root.items.count == 2, "Refreshing status must not duplicate the installed version")
+    let development = InstalledMenuBuild(version: "1.0.1", commit: nil)
+    for (locale, expected) in [("en", "Installed version: 1.0.1 (development)"), ("pt-BR", "Versão instalada: 1.0.1 (desenvolvimento)"), ("fr", "Version installée : 1.0.1 (développement)"), ("de", "Installierte Version: 1.0.1 (Entwicklung)")] {
+        updates.render(snapshot, build: development, locale: locale)
+        precondition(root.items.first?.title == expected)
+    }
+    updates.render(snapshot, build: nil, locale: "en")
+    precondition(root.items.first?.title == "Installed version: Unknown", "Missing installed metadata must not show the available release as installed")
 }

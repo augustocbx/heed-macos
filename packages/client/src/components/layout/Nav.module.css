@@ -18,6 +18,21 @@
 	align-items: center;
 }
 
+.brandGroup {
+	display: flex;
+	flex-direction: column;
+	align-self: center;
+	max-width: 12rem;
+}
+
+.version {
+	font-family: var(--mono);
+	font-size: 0.6875rem;
+	line-height: 1.4;
+	color: var(--text-2);
+	overflow-wrap: anywhere;
+}
+
 .brand {
 	font-family: var(--mono);
 	font-weight: 700;
