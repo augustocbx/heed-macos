@@ -55,7 +55,7 @@ export class AiConnections {
   try{
    const directory=join(options.appDir,'ai');mkdirSync(directory,{recursive:true,mode:0o700});if(lstatSync(directory).isSymbolicLink())throw Error();chmodSync(directory,0o700);
    const stat=lstatSync(this.path,{throwIfNoEntry:false});
-   if(stat){if(!stat.isFile())throw Error();const value=readPrivateJson(this.path,MAX_CONFIGURATION_BYTES);this.checkConfiguration(value);this.state=value;chmodSync(this.path,0o600);}
+   if(stat){if(!stat.isFile())throw Error();const value=readPrivateJson(this.path,MAX_CONFIGURATION_BYTES);this.checkConfiguration(value);this.ensureWritable(value);this.state=value;chmodSync(this.path,0o600);}
   }catch{this.failed=true;}
  }
  private checkConfiguration(value:any):asserts value is Configuration {
@@ -96,7 +96,14 @@ export class AiConnections {
  private serial<T>(operation:()=>Promise<T>):Promise<T>{const work=this.mutation.then(()=>{this.available();return operation();});this.mutation=work.catch(()=>{});return work;}
  private changed(){for(const listener of this.listeners)try{listener();}catch{/* An observer cannot undo durable invalidation. */}}
  subscribe(listener:()=>void):()=>void {this.listeners.add(listener);return()=>{this.listeners.delete(listener);};}
- snapshot():AiSettingsSnapshot {return structuredClone({version:this.state.version,selections:this.state.selections,connections:this.state.connections.map(({credentialReference,...safe})=>safe),pendingCleanup:this.state.pendingCleanup.length>0,unavailable:this.failed});}
+ private publicConnection(connection:PrivateConnection):AiConnectionSnapshot {
+  const {credentialReference,...safe}=connection;
+  // Failure is durable even when capacity cannot retain optional reason detail.
+  // Derive this disclosure without spending bytes in the private record.
+  if((safe.validation==='failed'||safe.validation==='credential-unavailable')&&!safe.validationCode)safe.validationCode='validation-details-unavailable';
+  return safe;
+ }
+ snapshot():AiSettingsSnapshot {return structuredClone({version:this.state.version,selections:this.state.selections,connections:this.state.connections.map(connection=>this.publicConnection(connection)),pendingCleanup:this.state.pendingCleanup.length>0,unavailable:this.failed});}
  saveSelection(feature:AiFeature,input:AiSelection):AiSettingsSnapshot {
   this.available();if(!features.includes(feature))reject('invalid-request');const chosen=selection(input);
   if(chosen.provider!=='ollama'){const c=this.find(chosen.connectionId!);if(c.provider!==chosen.provider||c.model!==chosen.model)reject('invalid-request');}
@@ -140,7 +147,7 @@ export class AiConnections {
    }finally{this.pendingStore=undefined;}
   });
  }
- private safe(id:string):AiConnectionSnapshot {const {credentialReference,...safe}=this.find(id);return structuredClone(safe);}
+ private safe(id:string):AiConnectionSnapshot {return structuredClone(this.publicConnection(this.find(id)));}
  /** May be retried after unlocking Keychain. Failure preserves pending references. */
  recover():Promise<void>{return this.serial(()=>this.cleanup());}
  private async cleanup():Promise<void>{for(const reference of [...this.state.pendingCleanup]){try{await this.options.vault.remove(reference);}catch{continue;}this.write({...this.state,pendingCleanup:this.state.pendingCleanup.filter(ref=>ref!==reference)});}}
@@ -160,9 +167,33 @@ export class AiConnections {
   return this.validationResult(id,proof,state,code);
  }
  private validationResult(id:string,proof:AiConnectionCheckpoint,validation:AiConnectionSnapshot['validation'],validationCode?:string):Promise<AiConnectionSnapshot>{return this.serial(async()=>{
-  if(!this.matches(proof))reject('stale-connection');const previous=this.find(id);const updated={...previous,validation,...(validationCode?{validationCode}:{})};if(!validationCode)delete updated.validationCode;
+  if(!this.matches(proof))reject('stale-connection');
+  const previous=this.find(id);
+  const updated={...previous,validation,...(validationCode?{validationCode}:{})};
+  if(!validationCode)delete updated.validationCode;
   const changed=previous.validation!==validation||previous.validationCode!==validationCode;
-  this.write({...this.state,version:this.state.version+(changed?1:0),connections:this.state.connections.map(c=>c.id===id?updated:c)});if(changed)this.changed();return this.safe(id);
+  let version=this.state.version+(changed?1:0);
+  const persist=()=>this.write({...this.state,version,connections:this.state.connections.map(c=>c.id===id?updated:c)});
+  try{persist();}
+  catch(error){
+   if(validation==='validated'||!(error instanceof AiConnectionError)||error.code!=='invalid-request')throw error;
+   // Never apply ordinary capacity rejection to discovered credential revocation.
+   // Keep the precise status first, sacrificing only optional error detail.
+   delete updated.validationCode;
+   version=Math.min(version,Number.MAX_SAFE_INTEGER);
+   try{persist();}
+   catch(error){
+    if(!(error instanceof AiConnectionError)||error.code!=='invalid-request')throw error;
+    // 'failed' is shorter than 'validated' and 'unvalidated'. Together with at
+    // most one version digit of growth, it always fits a writable prior record.
+    // Already failed states need no extra version to remain inadmissible.
+    updated.validation='failed';
+    version=Math.min(Number.MAX_SAFE_INTEGER,this.state.version+(previous.validation==='validated'?1:0));
+    persist();
+   }
+  }
+  if(previous.validation!==updated.validation||previous.validationCode!==updated.validationCode||proof.settingsVersion!==this.state.version)this.changed();
+  return this.safe(id);
  });}
  async resolve(input:AiSelection):Promise<ResolvedAiConnection>{
   this.available();const chosen=selection(input);if(chosen.provider==='ollama')return {selection:chosen,endpoint:this.localEndpoint,checkpoint:this.checkpoint()};

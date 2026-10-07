@@ -3,6 +3,7 @@ import {lstatSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, trunc
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {AiConnections} from './connections';
+import {aiResponse} from './http';
 
 import {fixture, cleanupFixtures} from './connection-fixtures';
 afterEach(cleanupFixtures);
@@ -108,4 +109,22 @@ test('selection changes during a protected put must fit both journal and reserve
  try{expect(()=>restarted.saveSelection('notes',{provider:'ollama',connectionId:null,model:'s'.repeat(200)})).toThrow('invalid-request');expect(()=>restarted.assertCurrent(checkpoint)).not.toThrow();}
  finally{release();await registering;}
  expect(statSync(path).size).toBeLessThanOrEqual(1_000_000);expect(new AiConnections(f.options).snapshot().unavailable).toBe(false);
+});
+test('authentication and locked-vault failures durably revoke near/full configurations without admitting old checkpoints',async()=>{
+ for(const cause of ['authentication','locked-vault'])for(const targetBytes of [999_980,1_000_000]){
+  let authenticationFailed=false;const f=fixture(async()=>authenticationFailed?new Response('CUSTOM_KEY PRIVATE_PROVIDER_BODY',{status:401}):Response.json({data:[]}));const c=await f.manager.register(custom as any);await f.manager.validate(c.id);const other=await f.manager.register(openai);await f.manager.validate(other.id);
+  const selected={provider:'compatible' as const,connectionId:c.id,model:c.model},otherSelection={provider:'openai' as const,connectionId:other.id,model:other.model};f.manager.saveSelection('chat',selected);f.manager.saveSelection('notes',otherSelection);
+  const path=join(f.root,'ai','connections.json'),record=JSON.parse(readFileSync(path,'utf8'));record.version=9;writeFileSync(path,padConfiguration(record,targetBytes));const manager=new AiConnections(f.options),oldCheckpoint=(await manager.resolve(selected)).checkpoint;
+  const originalGet=f.vault.get,targetReference=record.connections[0].credentialReference;if(cause==='authentication')authenticationFailed=true;else f.vault.get=async<T=unknown>(reference:string):Promise<T|null>=>{if(reference===targetReference)throw Error('CUSTOM_KEY PRIVATE_LOCKED_ERROR');return originalGet<T>(reference);};
+  let changes=0;manager.subscribe(()=>changes++);const response=await aiResponse(new Request('http://localhost:48100/api/ai/connections',{method:'POST',body:JSON.stringify({action:'validate',id:c.id})}),manager,true);expect(response?.status).toBe(200);
+  const text=await response!.text(),result=JSON.parse(text);expect(text).not.toContain('CUSTOM_KEY');expect(text).not.toContain('PRIVATE_');expect(result.validation).toBe(cause==='locked-vault'&&targetBytes===999_980?'credential-unavailable':'failed');expect(result.validationCode).toBe('validation-details-unavailable');expect(changes).toBeGreaterThan(0);expect(manager.snapshot().unavailable).toBe(false);expect(statSync(path).size).toBeLessThanOrEqual(1_000_000);
+  expect(()=>manager.assertCurrent(oldCheckpoint)).toThrow('stale-connection');await expect(manager.resolve(selected)).rejects.toThrow('connection-unvalidated');const restarted=new AiConnections(f.options);expect(restarted.snapshot().unavailable).toBe(false);expect(restarted.snapshot().connections.find(item=>item.id===c.id)?.validation).toBe(result.validation);expect(()=>restarted.assertCurrent(oldCheckpoint)).toThrow('stale-connection');await expect(restarted.resolve(selected)).rejects.toThrow('connection-unvalidated');expect(restarted.snapshot().connections.find(item=>item.id===other.id)?.validation).toBe('validated');expect((await restarted.resolve(otherSelection)).key).toBe(openai.key);
+  // Free fixture capacity before deliberate revalidation; an old authorization
+  // must remain stale even after the same connection becomes valid again.
+  authenticationFailed=false;f.vault.get=originalGet;await restarted.remove(other.id);expect((await restarted.validate(c.id)).validation).toBe('validated');expect(()=>restarted.assertCurrent(oldCheckpoint)).toThrow('stale-connection');
+ }
+});
+test('compact files exceeding the writable representation limit fail closed before credential admission',async()=>{
+ const f=fixture();const c=await f.manager.register(custom as any);await f.manager.validate(c.id);const path=join(f.root,'ai','connections.json'),record=JSON.parse(readFileSync(path,'utf8'));padConfiguration(record,1_000_001);const compact=JSON.stringify(record);expect(Buffer.byteLength(compact,'utf8')).toBeLessThanOrEqual(1_000_000);writeFileSync(path,compact);
+ let gets=0;const get=f.vault.get;f.vault.get=async<T=unknown>(reference:string):Promise<T|null>=>{gets++;return get<T>(reference);};const manager=new AiConnections(f.options);expect(manager.snapshot().unavailable).toBe(true);await expect(manager.resolve({provider:'compatible',connectionId:c.id,model:c.model})).rejects.toThrow('settings-recovery');expect(gets).toBe(0);
 });
