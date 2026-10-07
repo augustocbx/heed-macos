@@ -33,6 +33,11 @@ jobs:
         run: python3 -m unittest discover -s packages/transcription -p meeting_language_test.py
       - name: Manual transcription selection tests
         run: python3 -m unittest discover -s packages/transcription -p manual_transcription_test.py
+      - name: Local vocabulary validation and import worker recovery tests
+        run: |
+          python3 -m unittest discover -s packages/transcription -p vocabulary_test.py
+          python3 -m unittest discover -s packages/transcription -p media_import_test.py
+          python3 -m py_compile packages/transcription/vocabulary.py packages/transcription/media_import.py
       - name: Native transcription deadline and owned process cleanup tests
         run: python3 -m unittest discover -s packages/transcription -p '*worker_test.py'
       - name: Real-time transcription preference, warm-up and owned preview tests
@@ -77,6 +82,8 @@ jobs:
         run: |
           bunx playwright install chromium
           node scripts/qa/transcript-corrections-ui.mjs --output "$RUNNER_TEMP/transcript-corrections-ui"
+      - name: Production recording, vocabulary and import acceptance replay
+        run: HEED_QA_BUN="$(command -v bun)" bun scripts/qa/live-language-ui.mjs --acceptance --output "$RUNNER_TEMP/meeting-acceptance"
       - name: Production scoped retrieval browser and public lexical corpus
         run: |
           node scripts/qa/retrieval-ui.mjs --output "$RUNNER_TEMP/retrieval-ui"

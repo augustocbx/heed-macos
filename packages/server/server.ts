@@ -1,6 +1,7 @@
 import {LocalVocabulary} from './lib/vocabulary';
 import {vocabularyHttp} from './lib/vocabulary-http';
 import type {VocabularySelection,VocabularyRun} from '../shared/types/vocabulary';
+import {validateVocabularySnapshot} from '../shared/lib/vocabulary';
 import {MediaImportController,MAX_IMPORT_FILE_BYTES} from './lib/media-import';
 import {mediaImportResponse} from './lib/media-import-http';
 import {transcribeImport} from './lib/media-import-transcription';

@@ -18,7 +18,7 @@ test('real local upload persists metadata, seekable audio and transcript-only cl
    for(let i=0;i<200;i++){state=await (await fetch(`${base}/api/media/imports/${job.id}`)).json();if(['completed','failed','cancelled'].includes(state.state))break;await Bun.sleep(25);}expect(state.state).toBe('completed');
    const sessions=await (await fetch(`${base}/api/sessions`)).json();const saved=sessions.find((session:any)=>session.id===state.sessionId);expect(saved).toMatchObject({duration:4,transcriptionModel:'base',meetingMode,transcriptFinalized:true});expect(saved.segments[0]).toMatchObject({start:1,end:3});
    const audio=await fetch(`${base}/api/sessions/${saved.id}/audio`,{headers:{Range:'bytes=44-63'}});
-   if(meetingMode==='audio-transcript'){expect(existsSync(saved.files.wav)).toBe(true);expect(audio.status).toBe(206);expect((await audio.arrayBuffer()).byteLength).toBe(20);}else{expect(saved.audioCleanup.status).toBe('completed');expect(saved.audioUnavailableReason).toBe('transcript-only');expect(saved.files.wav).toBe('');expect(audio.status).toBe(404);}
+   if(meetingMode==='audio-transcript'){expect(existsSync(saved.files.wav)).toBe(true);expect(audio.status).toBe(206);expect((await audio.arrayBuffer()).byteLength).toBe(20);}else{expect(saved.audioCleanup.status).toBe('completed');expect(saved.audioUnavailableReason).toBe('transcript-only');expect(saved.files.wav).toBe('');expect(audio.status).toBe(410);expect(audio.headers.get("X-Heed-Audio-Unavailable-Reason")).toBe("transcript-only");}
    expect(existsSync(join(appRoot,'library/staging',`media-import-${job.id}`))).toBe(false);expect(digest()).toBe(before);
   }
   expect(pipelineCalls).toBe(2);expect((await (await fetch(`${base}/api/storage`)).json()).reservedBytes).toBe(0);
