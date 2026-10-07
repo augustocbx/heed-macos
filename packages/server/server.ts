@@ -2,6 +2,7 @@ import type { AiWaitingReason } from "@heed/shared";
 import type { LanguageCapabilities, LiveCaptureOptions } from "@heed/shared";
 import {configuredLiveSpeechLanguage, recordingSettingsPatch, resolveLiveCaptureOptions, validatedLanguageCapabilities, rejectRecordingOverrides, previewResultMatches, LiveLanguageError} from "./lib/live-language";
 import {configuredServicePorts} from './lib/service-ports';
+import { meetingExportResponse } from './lib/meeting-export-http';
 import {ServiceDiagnostics} from './lib/service-diagnostics';
 import {isTranscriptionHealth} from '../shared/lib/service-identity';
 import {createGoogleDriveController} from './lib/connectors/google-drive-runtime';
@@ -163,7 +164,7 @@ const managedQuota=createAppQuota({
  },
 });
 
-portableRuntime=new PortableLibraryRuntime({root:LIBRARY_DIR,sessions:sessionTags,sessionsDir:SESSIONS_DIR,recordingsDir:UPLOAD_DIR,quota:managedQuota,protectedPaths:captureProtectedPaths});
+portableRuntime=new PortableLibraryRuntime({root:LIBRARY_DIR,sessions:sessionTags,sessionsDir:SESSIONS_DIR,recordingsDir:UPLOAD_DIR,quota:managedQuota,protectedPaths:captureProtectedPaths,replaceAccepted:(id,guard,build)=>notesService.replaceAccepted(id,guard,build)});
 /** Connectors lease this single catalog owner for their entire provider tick. */
 export function getPortableLibrary(){return portableRuntime!.get();}
 /** Device preference lives outside the portable schema and managed-meeting quota. */
@@ -2678,6 +2679,8 @@ const server = Bun.serve({
   if(chatResponse)return chatResponse;
   const libraryChatResult=await libraryChatResponse(req,libraryChatService,desktopRequestAllowed(req));
   if(libraryChatResult)return libraryChatResult;
+  const exportResponse = await meetingExportResponse(req, { session: id => notesService.get(id), tasks: id => tasksService.snapshot(id).tasks, now: () => new Date().toISOString() }, desktopRequestAllowed(req));
+  if (exportResponse) return exportResponse;
   const transcriptResult=await transcriptEditingResponse(req,transcriptService,desktopRequestAllowed(req));
   if(transcriptResult)return transcriptResult;
 

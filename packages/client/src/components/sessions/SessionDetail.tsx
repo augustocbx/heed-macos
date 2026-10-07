@@ -2,7 +2,7 @@ import { TasksPanel } from "@/components/tasks/TasksPanel";
 import { MeetingChat } from "@/components/chat/MeetingChat";
 import { tr, useLocale } from "@/lib/i18n.ts";
 import { useState, useEffect, useRef } from "react";
-import type { Session, TranscriptEvidence } from "@heed/shared";
+import type { Session, TranscriptEvidence,TranscriptGuard,TranscriptTarget,TranscriptCommand } from "@heed/shared";
 import { useSessionsStore } from "@/stores/sessions.ts";
 import { useTemplatesStore } from "@/stores/templates.ts";
 import { useModelsStore } from "@/stores/models.ts";
@@ -18,8 +18,13 @@ import { Spinner } from "@/components/shared/Spinner.tsx";
 import { TagEditor } from "./TagEditor";
 import { TitleInput } from "./TitleInput.tsx";
 import { SessionAudioPlayer } from "./SessionAudioPlayer.tsx";
+import { guardForSession } from "@/lib/acceptedSession";
 import { applySpeakerNames } from "@/lib/speakerNames.ts";
 import { RetranscribeDialog } from "./RetranscribeDialog";
+import {TranscriptSegmentEditor} from './TranscriptSegmentEditor';
+import {TranscriptReplaceDialog} from './TranscriptReplaceDialog';
+import {TranscriptHistoryDialog} from './TranscriptHistoryDialog';
+import {transcriptEditingApi} from '@/api/transcript-editing';
 import { useRecordingStore } from "@/stores/recording";
 import { sessionLanguageLabel, sessionModelLabels } from "@/lib/sessionMetadata";
 import styles from "./SessionDetail.module.css";
@@ -33,6 +38,21 @@ interface Props {
 type TabId = "speakers" | "notes" | "tasks" | "chat";
 
 export function SessionDetail({ session, onBack, onTagClick }: Props) {
+ const transcriptHasText=session.segments.length?session.segments.some(segment=>!!segment.text.trim()):!!session.transcript.trim();
+  const [editDraft, setEditDraft] = useState<{
+    id: string;
+    target: TranscriptTarget;
+    guard: TranscriptGuard;
+    value: string;
+    generationId?: string;
+  } | null>(null);
+  const [correctionDialog, setCorrectionDialog] = useState<
+    "replace" | "history" | null
+  >(null);
+  const pendingCorrection = useRef<{
+    key: string;
+    command: TranscriptCommand;
+  } | null>(null);
  const notesBusy = automaticNotesBusy(session);
 	useLocale();
 	const [showTranscribe,setShowTranscribe] = useState(false);
@@ -40,6 +60,88 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
  const recordingBusy = useRecordingStore(s=>s.recording || s.processing);
  const update = useSessionsStore((s) => s.update);
 	const showToast = useUIStore((s) => s.showToast);
+  function openTextEditor(index?: number) {
+    try {
+      const guard = guardForSession(session),
+        target: TranscriptTarget =
+          index === undefined ? { kind: "document" } : { kind: "segment", index };
+      pendingCorrection.current = null;
+      setEditDraft({
+        id: session.id,
+        target,
+        guard,
+        value:
+          index === undefined
+            ? session.transcript
+            : session.segments[index]!.text,
+        generationId: session.transcriptEditing?.activeGenerationId,
+      });
+    } catch {
+      showToast(
+        tr("The transcript source is unavailable. Refresh before saving."),
+      );
+    }
+  }
+  async function saveText(text: string) {
+    if (!editDraft) return;
+    const key = JSON.stringify({
+      guard: editDraft.guard,
+      target: editDraft.target,
+      text,
+    });
+    if (pendingCorrection.current?.key !== key)
+      pendingCorrection.current = {
+        key,
+        command: {
+          ...editDraft.guard,
+          requestId: crypto.randomUUID(),
+          action: "edit",
+          target: editDraft.target,
+          text,
+        },
+      };
+    await transcriptEditingApi.command(
+      editDraft.id,
+      pendingCorrection.current.command,
+    );
+    setEditDraft(null);
+  }
+  async function reloadText(): Promise<string> {
+    if (!editDraft) throw Error("No open transcript draft");
+    await useSessionsStore.getState().load(true);
+    const state = useSessionsStore.getState(),
+      listed = state.sessions.find((value) => value.id === editDraft.id),
+      viewed = state.viewing?.id === editDraft.id ? state.viewing : null;
+    const current =
+      viewed &&
+      (viewed.transcriptVersion ?? 0) > (listed?.transcriptVersion ?? -1)
+        ? viewed
+        : listed;
+    if (
+      !current ||
+      (editDraft.generationId &&
+        editDraft.generationId !==
+          current.transcriptEditing?.activeGenerationId) ||
+      (!editDraft.generationId &&
+        (current.transcriptEditing?.generations.length ?? 0) > 1) ||
+      (editDraft.target.kind === "segment" &&
+        !current.segments[editDraft.target.index]) ||
+      (editDraft.target.kind === "document" && current.segments.length)
+    )
+      throw Error("Source structure changed");
+    const value =
+      editDraft.target.kind === "document"
+        ? current.transcript
+        : current.segments[editDraft.target.index]!.text;
+    pendingCorrection.current = null;
+    setEditDraft({
+      ...editDraft,
+      guard: guardForSession(current),
+      value,
+      generationId: current.transcriptEditing?.activeGenerationId,
+    });
+    return value;
+  }
 	const { templates, load: loadTemplates } = useTemplatesStore();
 	const modelsData = useModelsStore((s) => s.data);
 	const loadModels = useModelsStore((s) => s.load);
@@ -66,7 +168,8 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
  useEffect(()=>{if(activeTab==="speakers")textRef.current?.querySelector<HTMLElement>('[aria-current="true"]')?.scrollIntoView?.({block:"center"});},[activeTab,focusedSource]);
  const [playbackTime,setPlaybackTime] = useState<number|null>(null);
  const [audioDuration,setAudioDuration] = useState<number|null>(null);
- useEffect(()=>{setPlaybackTime(null);setAudioDuration(null);setSpeakerNames({});},[session.id]);
+ useEffect(()=>{setPlaybackTime(null);setAudioDuration(null);},[session.id]);
+ useEffect(()=>{setSpeakerNames({});},[session.id, session.transcriptRevision, session.transcriptVersion]);
  const seekAudio = (seconds:number) => {
   const audio=audioRef.current;
   if(!audio || audio.error || !Number.isFinite(seconds) || seconds<0)return;
@@ -122,12 +225,13 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 	};
 
 	const handleGenerate = async (forceCpu = false) => {
-		if (!session.transcript || generating || notesBusy || recordingBusy || transcribing) return;
+		if (!transcriptHasText || generating || notesBusy || recordingBusy || transcribing) return;
   if (session.aiNotes && !window.confirm(tr(replacementPrompt))) return;
 		setGenerating(true);
 		setStreamingNotes("");
 		setActiveTab("notes");
 		try {
+			const guard = guardForSession(session);
 			let acc = "";
 			await generateNotes(
 				session.segments?.length ? session.segments.map(segment => `${segment.speaker}: ${segment.text}`).join("\n") : session.transcript,
@@ -136,7 +240,7 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 				{
 					onToken: (tok) => { acc += tok; setStreamingNotes(acc); },
 					onDone: async (full) => {
-						await update(session.id, { aiNotes: full, expectedNotes: session.aiNotes || "", expectedTranscriptRevision: session.transcriptRevision });
+						await update(session.id, { aiNotes: full, expectedNotes: session.aiNotes || "", ...guard });
       setStreamingNotes("");
 					},
 				},
@@ -151,7 +255,6 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 			}
 		} finally {
 			setGenerating(false);
-   setStreamingNotes("");
 		}
 	};
 
@@ -159,7 +262,7 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 		const names = { ...speakerNames, [original]: newName };
 		setSpeakerNames(names);
 		try {
-			await update(session.id, applySpeakerNames(session.segments || [], session.speakers || [], session.embeddings || {}, names));
+			await update(session.id, { ...applySpeakerNames(session.segments || [], session.speakers || [], session.embeddings || {}, names), ...guardForSession(session) });
 		} catch {
 			setSpeakerNames((latest) => {
 				if (latest[original] !== newName) return latest;
@@ -177,8 +280,10 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 			s.speaker === from ? { ...s, speaker: into } : s,
 		);
 		const newSpeakers = (session.speakers || []).filter((s) => s !== from);
-		await update(session.id, { segments: newSegments, speakers: newSpeakers });
-		showToast(tr("Merged"));
+		try {
+   await update(session.id, { segments: newSegments, speakers: newSpeakers, ...guardForSession(session) });
+   showToast(tr("Merged"));
+  } catch (error) { showToast(tr("Error: {message}", undefined, {message: tr((error as Error).message)})); }
 	};
 
 	const displayNotes = streamingNotes || session.aiNotes || "";
@@ -202,11 +307,15 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 				<TitleInput sessionId={session.id} value={session.title || ""} tags={session.tags || []} />
 				<div className={styles.actions}>
 					<button className={styles.btn} onClick={()=>setShowTranscribe(true)} disabled={!session.files?.wav || recordingBusy || generating}>{tr("Transcribe")}</button>
+     {!!session.transcriptEditing?.candidates.length&&<button type="button" className={styles.btn} onClick={()=>setShowTranscribe(true)}>{tr('Review new transcript')}</button>}
      <button className={styles.btn} disabled={transcribing} onClick={onBack}>{tr("← Back")}</button>
 				</div>
 			</div>
 
 			{showTranscribe && <RetranscribeDialog session={session} onClose={()=>setShowTranscribe(false)} onBusy={setTranscribing}/>}
+   {editDraft&&<TranscriptSegmentEditor value={editDraft.value} label={tr(editDraft.target.kind==='document'?'Edit transcript':'Edit segment {number}',undefined,{number:editDraft.target.kind==='segment'?editDraft.target.index+1:0})} onSave={saveText} onCancel={()=>setEditDraft(null)} onReload={reloadText}/>}
+   {correctionDialog==='replace'&&<TranscriptReplaceDialog session={session} onClose={()=>setCorrectionDialog(null)} onSaved={()=>setCorrectionDialog(null)}/>}
+   {correctionDialog==='history'&&<TranscriptHistoryDialog session={session} onClose={()=>setCorrectionDialog(null)} onSaved={()=>setCorrectionDialog(null)}/>}
    <div className={styles.meta}>{meta}</div>
    {session.transcriptionDiagnostics?.warnings.includes('microphone-all-asr-filtered') && <p role="status">{tr('All recognized microphone text was filtered as possible echo. Check the saved audio and transcript.')}</p>}
    {session.transcriptionDiagnostics?.warnings.includes('microphone-attribution-fallback') && <p role="status">{tr('Some microphone speech has uncertain speaker labels. Review the transcript and speaker names.')}</p>}
@@ -237,12 +346,16 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
      playbackTime={playbackTime}
      focusedSegmentIndex={focusedSource?.segmentIndex ?? undefined}
      onSeek={session.files?.wav ? seekAudio : undefined}
-				/> : <div ref={textRef} className={styles.textTranscript}>{session.transcript ? session.transcript.split(/\n\s*\n/).map((paragraph,index)=><p key={index} aria-current={focusedSource?.paragraphIndex===index ? "true" : undefined}>{paragraph}</p>) : <p>{tr("No speaker segments in this meeting yet.")}</p>}</div>
+     onEditText={session.transcriptFinalized?index=>openTextEditor(index):undefined}
+     editingDisabled={transcribing}
+				/> : <div ref={textRef} className={styles.textTranscript}>{session.transcript ? session.transcript.split(/\n\s*\n/).map((paragraph,index)=><p key={index} aria-current={focusedSource?.paragraphIndex===index ? "true" : undefined}>{paragraph}</p>) : <p>{tr(session.transcriptFinalized?'Empty transcript text':"No speaker segments in this meeting yet.")}</p>}{session.transcriptFinalized&&<button className={styles.btn} disabled={transcribing} onClick={()=>openTextEditor()}>{tr('Edit transcript')}</button>}</div>
 			)}
+   {activeTab==='speakers'&&session.transcriptFinalized&&<div className={styles.actionsRow}><button className={styles.btn} disabled={transcribing} onClick={()=>setCorrectionDialog('replace')}>{tr('Find and replace')}</button><button className={styles.btn} onClick={()=>setCorrectionDialog('history')}>{tr('Recovery history')}</button></div>}
 
    {activeTab === "chat" && <MeetingChat session={session} onCitation={openCitation}/>}
 
    {activeTab === "notes" && <NotesView notes={displayNotes} streaming={isStreaming} placeholder={tr("Click \"Generate AI notes\" below")}/>}
+   {activeTab==='notes'&&!transcriptHasText&&<p role="status">{tr('This transcript has no usable text. Add a correction before generating notes.')}</p>}
 
 			{activeTab === "notes" && fitsGpu && !generating && (
 				<NotesHardwareHint model={currentModel} modelsData={modelsData} fitsGpu={fitsGpu} />
@@ -273,11 +386,11 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 							))}
 						</select>
 						{fitsGpu ? (
-							<button className={styles.btn} onClick={() => handleGenerate(false)} disabled={generating || notesBusy || recordingBusy || transcribing}>
+							<button className={styles.btn} onClick={() => handleGenerate(false)} disabled={generating || notesBusy || recordingBusy || transcribing || !transcriptHasText}>
 								{generating ? <><Spinner />{tr("Generating…")}</> : tr("Generate AI notes · ~{seconds}s", undefined, {seconds: estimateNotesSeconds(currentModel?.vram_mb, true)})}
 							</button>
 						) : (
-							<button className={styles.btnCpu} onClick={() => handleGenerate(true)} disabled={generating || notesBusy || recordingBusy || transcribing}>
+							<button className={styles.btnCpu} onClick={() => handleGenerate(true)} disabled={generating || notesBusy || recordingBusy || transcribing || !transcriptHasText}>
 								{generating ? <><Spinner />{tr("Generating on CPU…")}</> : tr("Generate on CPU · ~{seconds}s", undefined, {seconds:estimateNotesSeconds(currentModel?.vram_mb, false)})}
 							</button>
 						)}

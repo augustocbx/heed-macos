@@ -1,3 +1,4 @@
+import type { TranscriptSourceIdentity } from "./transcript-editing";
 import type { AiWaitingReason } from "./chat";
 
 export type NotesLanguagePolicy = "meeting" | "en" | "pt" | "fr" | "de";
@@ -36,6 +37,9 @@ export interface NotesJob {
 export interface NotesMetadata {
  /** Null is unknown legacy/unguarded provenance, never verified against current text. */
  sourceRevision: string | null;
+ /** Preserved historical identity whose missing witness cannot be verified. Requires null/stale. */
+ unverifiedSourceRevision?: string;
+ sourceIdentity?: TranscriptSourceIdentity;
  templateId?: string;
  templateName?: string;
  templateHash?: string;

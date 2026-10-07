@@ -56,4 +56,5 @@ export default defineConfig({
 		outDir: "dist",
 		emptyOutDir: true,
 	},
+ worker: { format: 'es' },
 });

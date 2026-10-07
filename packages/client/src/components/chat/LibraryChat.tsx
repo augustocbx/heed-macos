@@ -6,7 +6,7 @@ import {chatApi} from '@/api/chat';
 import {ApiError} from '@/api/client';
 import {useLocale} from '@/lib/i18n';
 import {fmtDuration} from '@/lib/format';
-import {useSessionsStore} from '@/stores/sessions';
+import {beginSessionRequest,useSessionsStore} from '@/stores/sessions';
 import {useUIStore} from '@/stores/ui';
 import {chatErrorMessages} from './chat-errors';
 import styles from './MeetingChat.module.css';
@@ -33,7 +33,7 @@ export function LibraryChat(){
  const mutate=async(command:ChatCommand)=>{const current=++version.current;setSaving(true);setError('');try{const thread=await libraryChatApi.command(scope,command);if(mounted.current&&version.current===current){++sequence.current;setContext(previous=>previous?{...previous,thread}:null);return true;}}catch(error){if(mounted.current&&version.current===current){setError(error instanceof Error?error.message:'chat-storage-failed');if(error instanceof ApiError&&error.status===409)pending.current=null;}}finally{if(mounted.current&&version.current===current)setSaving(false);}return false;};
  const send=async()=>{if(!context?.preview.ready||!question.trim()||!models.includes(model)||saving)return;if(!pending.current||pending.current.question!==question.trim()||pending.current.model!==model)pending.current={action:'send',requestId:crypto.randomUUID(),question:question.trim(),model,expectedSourceRevision:context.preview.snapshot.key,expectedThreadRevision:context.thread.revision};if(await mutate(pending.current)){pending.current=null;setQuestion('');}};
  const openCitation=async(turn:LibraryChatTurn,citation:TranscriptEvidence)=>{
-  const current=++version.current;setSaving(true);setError('');try{const session=await libraryChatApi.source(scope,turn.snapshot.key,citation.id);if(mounted.current&&current===version.current){if(session.id!==citation.sessionId||session.transcriptRevision!==citation.sourceRevision)throw new Error('scope-changed');useSessionsStore.getState().view(session);useUIStore.setState({currentPage:'sessions',chatSourceFocus:citation,taskSourceSeek:null});}}catch(error){if(mounted.current&&current===version.current)setError(error instanceof Error?error.message:'chat-storage-failed');}finally{if(mounted.current&&current===version.current)setSaving(false);}
+  const current=++version.current,order=beginSessionRequest(citation.sessionId);setSaving(true);setError('');try{const session=await libraryChatApi.source(scope,turn.snapshot.key,citation.id);if(mounted.current&&current===version.current){if(session.id!==citation.sessionId||session.transcriptRevision!==citation.sourceRevision)throw new Error('scope-changed');const accepted=useSessionsStore.getState().accept(session,order);if(accepted.transcriptRevision!==citation.sourceRevision)throw new Error('scope-changed');useSessionsStore.getState().view(accepted);useUIStore.setState({currentPage:'sessions',chatSourceFocus:citation,taskSourceSeek:null});}}catch(error){if(mounted.current&&current===version.current)setError(error instanceof Error?error.message:'chat-storage-failed');}finally{if(mounted.current&&current===version.current)setSaving(false);}
  };
  const labels=context?.preview.availableLabels||[];const running=context?.thread.turns.some(turn=>turn.status==='running'||turn.status==='waiting');
  return <section className={styles.chat} aria-label={tr('Meeting chat')}>

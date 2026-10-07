@@ -152,3 +152,5 @@
 .seekable:hover { background: var(--blue-pale); }
 .seekable:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .activeSegment { background: var(--blue-pale); box-shadow: inset 3px 0 var(--blue); }
+.editText { margin:4px 0 12px; padding:4px 8px; border:1px solid var(--border); border-radius:6px; color:var(--text-muted); background:none; cursor:pointer; font:inherit; font-size:12px; }
+.editText:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }

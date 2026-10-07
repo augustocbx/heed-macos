@@ -1,0 +1,19 @@
+.dialog { width:min(720px,calc(100vw - 32px)); padding:24px; color:var(--text); }
+.dialog h2 { margin:0 0 12px; font-size:20px; }
+.dialog h3 { margin:18px 0 8px; font-size:15px; }
+.dialog p { font-size:13px; line-height:1.5; }
+.dialog fieldset { border:1px solid var(--border-light); border-radius:var(--radius-sm); padding:12px; margin:16px 0; }
+.dialog legend { padding:0 6px; font-size:13px; }
+.dialog label { display:flex; align-items:center; gap:8px; margin:9px 0; font-size:13px; overflow-wrap:anywhere; }
+.dialog input[type=checkbox] { flex-shrink:0; }
+.format { justify-content:space-between; }
+.dialog select,.dialog button { padding:8px 12px; color:var(--text); background:var(--white); border:1px solid var(--border-light); border-radius:var(--radius-sm); font:inherit; }
+.dialog button { cursor:pointer; }
+.dialog button:disabled { opacity:.55; cursor:default; }
+.dialog :focus-visible { outline:2px solid var(--blue); outline-offset:3px; }
+.preview { border-top:1px solid var(--border-light); margin-top:18px; padding-top:8px; }
+.preview pre { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; font-size:13px; line-height:1.6; }
+.hint,.provenance { color:var(--text-3); }
+.error { color:var(--red); }
+.actions { display:flex; justify-content:flex-end; gap:10px; margin-top:18px; flex-wrap:wrap; }
+@media(max-width:480px) { .dialog { padding:16px; } .format { align-items:flex-start; flex-direction:column; } }

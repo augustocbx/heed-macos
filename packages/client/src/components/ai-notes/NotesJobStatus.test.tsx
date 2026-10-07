@@ -1,7 +1,9 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import type { NotesJob, Session } from '@heed/shared';
 import { NotesJobStatus } from './NotesJobStatus';
+import { useSessionsStore } from '@/stores/sessions';
+import { transcriptEditingApi } from '@/api/transcript-editing';
 import { setLocale } from '@/lib/i18n';
 const job = { id: 'job', sourceRevision: 'r1', status: 'running', templateId: 'general', templateName: 'General', model: 'local:latest', language: 'pt', generatedCharacters: 24, retryable: true } as NotesJob;
 const session = { id: 's', transcriptRevision: 'r1', aiNotes: '', notesJobs: { 'notes-r1': job } } as unknown as Session;
@@ -53,4 +55,16 @@ test('waiting notes identify changing AI blockers with a truthful legacy fallbac
 test('queued notes show the queue reason before another job starts', () => {
  render(<NotesJobStatus session={{...session,notesJobs:{'notes-r1':{...job,status:'queued',waitingReason:'queued'}}}}/>);
  expect(screen.getByText('Waiting for local AI resources.')).toBeInTheDocument();
+});
+
+test('a notes control finishing beside discard accepts its response only once',async()=>{
+ const candidate={id:'discarded',requestId:'stage',requestSignature:'sig',createdAt:'2026-10-06T12:00:00Z',baseGuard:{expectedTranscriptRevision:'r1',expectedTranscriptVersion:1},transcript:'Candidate',segments:[],speakers:[],language:'en',duration:1};
+ const pending={...session,title:'Meeting',createdAt:candidate.createdAt,duration:1,language:'en',transcript:'Current',segments:[],speakers:[],tags:[],pinned:false,summary:'',transcriptVersion:1,transcriptEditing:{schemaVersion:1 as const,activeGenerationId:'g',generations:[],edits:[],candidates:[candidate],candidateRequestReceipts:[]}};
+ useSessionsStore.setState({sessions:[pending],viewing:pending});
+ const discarded={...pending,transcriptEditing:{...pending.transcriptEditing,candidates:[]}};
+ vi.stubGlobal('fetch',vi.fn(async(url:string)=>Response.json(url==='/api/notes/jobs'?pending:discarded)));
+ render(<NotesJobStatus session={pending}/>);
+ await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'Cancel automatic notes'}));await transcriptEditingApi.discard(pending.id,candidate.id,'discard');});
+ await waitFor(()=>expect(screen.getByRole('button',{name:'Cancel automatic notes'})).toBeEnabled());
+ expect(useSessionsStore.getState().viewing?.transcriptEditing?.candidates).toEqual([]);
 });
