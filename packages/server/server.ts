@@ -1,5 +1,6 @@
 import type { AiWaitingReason } from "@heed/shared";
 import {configuredServicePorts} from './lib/service-ports';
+import { meetingExportResponse } from './lib/meeting-export-http';
 import {ServiceDiagnostics} from './lib/service-diagnostics';
 import {isTranscriptionHealth} from '../shared/lib/service-identity';
 import {createGoogleDriveController} from './lib/connectors/google-drive-runtime';
@@ -2649,6 +2650,8 @@ const server = Bun.serve({
   if(chatResponse)return chatResponse;
   const libraryChatResult=await libraryChatResponse(req,libraryChatService,desktopRequestAllowed(req));
   if(libraryChatResult)return libraryChatResult;
+  const exportResponse = await meetingExportResponse(req, { session: id => notesService.get(id), tasks: id => tasksService.snapshot(id).tasks, now: () => new Date().toISOString() }, desktopRequestAllowed(req));
+  if (exportResponse) return exportResponse;
   const transcriptResult=await transcriptEditingResponse(req,transcriptService,desktopRequestAllowed(req));
   if(transcriptResult)return transcriptResult;
 
