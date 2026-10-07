@@ -98,7 +98,7 @@ const dictionaries = JSON.parse(
     bun,
     [
       "-e",
-      `import {CHAT_TRANSLATIONS as a} from ${JSON.stringify(join(root, "packages/client/src/lib/translations-chat.ts"))};import {LIBRARY_CHAT_TRANSLATIONS as b} from ${JSON.stringify(join(root, "packages/client/src/lib/translations-library-chat.ts"))};import {RETRIEVAL_TRANSLATIONS as c} from ${JSON.stringify(join(root, "packages/client/src/lib/translations-retrieval.ts"))}; console.log(JSON.stringify({...a,...b,...c}))`,
+      `import {CHAT_TRANSLATIONS as a} from ${JSON.stringify(join(root, "packages/client/src/lib/translations-chat.ts"))};import {LIBRARY_CHAT_TRANSLATIONS as b} from ${JSON.stringify(join(root, "packages/client/src/lib/translations-library-chat.ts"))};import {RETRIEVAL_TRANSLATIONS as c} from ${JSON.stringify(join(root, "packages/client/src/lib/translations-retrieval.ts"))}; import {STORAGE_TRANSLATIONS as d} from ${JSON.stringify(join(root, "packages/client/src/lib/translations-storage.ts"))};import {SHELL_TRANSLATIONS as e} from ${JSON.stringify(join(root, "packages/client/src/lib/translations-shell.ts"))}; import {CONTENT_TRANSLATIONS as f} from ${JSON.stringify(join(root, "packages/client/src/lib/translations-content.ts"))}; console.log(JSON.stringify({...a,...b,...c,...d,...e,...f}))`,
     ],
     { cwd: root, encoding: "utf8" },
   ),
@@ -850,6 +850,217 @@ try {
       `Library native ANY/ALL select and textarea/Tab keyboard captured at 360px in ${locale}.`,
     );
   }
+  // Exercise the real storage review without exposing internal cache filenames.
+  const pointerPath = join(temporary, "library/indexes/retrieval/active.json");
+  const retainedBefore = new Map();
+  for (const source of sources.values())
+    retainedBefore.set(source.id, {
+      sourceSha256: hash(
+        await readFile(join(temporary, "sessions", source.id + ".json")),
+      ),
+      audioSha256: hash(await readFile(source.files.wav)),
+      revision: source.transcriptRevision,
+      version: source.transcriptVersion,
+    });
+  const assertRetained = async () => {
+    const acceptedSessions = await request("/api/sessions");
+    for (const source of sources.values()) {
+      const before = retainedBefore.get(source.id);
+      assert.equal(
+        hash(await readFile(join(temporary, "sessions", source.id + ".json"))),
+        before.sourceSha256,
+      );
+      assert.equal(hash(await readFile(source.files.wav)), before.audioSha256);
+      const accepted = acceptedSessions.find(
+        (session) => session.id === source.id,
+      );
+      assert.ok(accepted);
+      assert.equal(accepted.transcriptRevision, before.revision);
+      assert.equal(accepted.transcriptVersion, before.version);
+      assert.deepEqual(accepted.segments, source.segments);
+    }
+    assert.equal(hash(await readFile(audioPath)), hash(audio));
+  };
+  manifest.storageReviews = [];
+  let storageCard, reviewedStorage;
+  for (const locale of ["en", "pt-BR", "fr", "de"]) {
+    await request("/api/ui-locale", { locale });
+    await page.evaluate(
+      (locale) => localStorage.setItem("heed-locale", locale),
+      locale,
+    );
+    const before = await wait(async () => {
+      const status = await request("/api/storage");
+      return (
+        status.reservedBytes === 0 &&
+        status.reclaimableCacheBytes > 0 &&
+        status.reclaimableCacheBytes === status.categories.indexes &&
+        status
+      );
+    }, "Search cache did not become idle and fully disposable");
+    const pointerBefore = hash(await readFile(pointerPath));
+    const limit = before.usedBytes - 1;
+    assert.ok(limit > 1_048_576);
+    const inputValue = String(limit / 1_000_000_000);
+    assert.equal(Number(inputValue) * 1_000_000_000, limit);
+    await page.goto(origin + "/#settings");
+    await page.setViewportSize({ width: 360, height: 740 });
+    storageCard = page.getByRole("article", {
+      name: label("Local meeting storage", locale),
+    });
+    const input = storageCard.getByLabel(
+      label("Maximum local meeting data (GB)", locale),
+    );
+    await wait(() => input.isEnabled());
+    await input.fill(inputValue);
+    const reviewResponse = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/storage/preview" &&
+        response.request().method() === "POST",
+    );
+    await storageCard
+      .getByRole("button", { name: label("Review change", locale), exact: true })
+      .click();
+    const response = await reviewResponse;
+    assert.equal(response.status(), 200);
+    reviewedStorage = await response.json();
+    assert.equal(reviewedStorage.requestedLimit, limit);
+    assert.deepEqual(reviewedStorage.removals, []);
+    assert.equal(reviewedStorage.derivedCache.bytes, before.categories.indexes);
+    assert.ok(reviewedStorage.derivedCache.files > 0);
+    const review = storageCard.getByRole("region", {
+      name: label("Review storage change", locale),
+    });
+    const format = new Intl.NumberFormat(locale, { maximumFractionDigits: 9 });
+    const expectedSummary = label(
+      "Local search data ({count} files, {size} GB) will be cleared and can be rebuilt when space is available. Clearing search data preserves transcripts and audio.",
+      locale,
+    )
+      .replace("{count}", String(reviewedStorage.derivedCache.files))
+      .replace(
+        "{size}",
+        format.format(reviewedStorage.derivedCache.bytes / 1_000_000_000),
+      );
+    assert.equal(
+      await review.getByText(expectedSummary, { exact: true }).count(),
+      1,
+    );
+    assert.equal(await review.getByRole("listitem").count(), 0);
+    assert.ok(
+      !/index\.sqlite|active\.json|[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}/i.test(
+        await review.innerText(),
+      ),
+    );
+    await review.scrollIntoViewIfNeeded();
+    manifest.layoutChecks.push(
+      await page.evaluate(() => ({
+        kind: "storage",
+        locale: localStorage.getItem("heed-locale"),
+        width: innerWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+      })),
+    );
+    await shot("storage-cache-review-narrow-" + locale);
+    const cancel = review.getByRole("button", {
+      name: label("Cancel", locale),
+      exact: true,
+    });
+    await cancel.focus();
+    await page.keyboard.press("Enter");
+    await review.waitFor({ state: "detached" });
+    const cancelled = await request("/api/storage");
+    assert.equal(cancelled.limitBytes, before.limitBytes);
+    assert.equal(cancelled.categories.indexes, before.categories.indexes);
+    assert.equal(hash(await readFile(pointerPath)), pointerBefore);
+    await assertRetained();
+    manifest.storageReviews.push({
+      locale,
+      width: 360,
+      requestedLimit: limit,
+      removals: reviewedStorage.removals,
+      derivedCache: reviewedStorage.derivedCache,
+      cancelPreserved: true,
+    });
+    record(
+      `Real cache-only storage preview and keyboard Cancel preserve index, sources and every WAV at 360px in ${locale}.`,
+    );
+  }
+  // The last locale performs a separate, explicitly reviewed confirmation.
+  const finalPreviewResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/storage/preview" &&
+      response.request().method() === "POST",
+  );
+  await storageCard
+    .getByRole("button", { name: label("Review change", "de"), exact: true })
+    .click();
+  const finalPreview = await finalPreviewResponse;
+  assert.equal(finalPreview.status(), 200);
+  const finalReview = await finalPreview.json();
+  assert.deepEqual(finalReview.removals, []);
+  assert.ok(finalReview.derivedCache.bytes > 0);
+  const applyResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/storage/settings" &&
+      response.request().method() === "POST",
+  );
+  const confirm = storageCard.getByRole("button", {
+    name: label("Confirm storage change", "de"),
+    exact: true,
+  });
+  await confirm.focus();
+  await page.keyboard.press("Enter");
+  const applied = await applyResponse;
+  assert.equal(applied.status(), 200);
+  const appliedStorage = await applied.json();
+  assert.equal(appliedStorage.limitBytes, finalReview.requestedLimit);
+  assert.equal(appliedStorage.categories.indexes, 0);
+  assert.equal(existsSync(pointerPath), false);
+  await assertRetained();
+  record(
+    "Explicit real cache-only Confirm retires the complete search generation, retaining all source bytes/guards and every WAV.",
+  );
+  await request("/api/ui-locale", { locale: "en" });
+  await page.evaluate(() => localStorage.setItem("heed-locale", "en"));
+  await meeting("qa-pt");
+  await send("João corrigido after cache cleanup?");
+  const fallback = await completed(
+    "João corrigido after cache cleanup?",
+    "qa-pt",
+  );
+  assert.equal(fallback.answer.coverage.retrieval.strategy, "fallback");
+  assert.ok(
+    fallback.answer.coverage.retrieval.partialReasons.some((reason) =>
+      ["index-missing", "index-capacity"].includes(reason),
+    ),
+  );
+  assert.equal(fallback.answer.coverage.retrieval.indexedMeetings, 0);
+  assert.equal(fallback.answer.coverage.retrieval.indexComplete, false);
+  assert.ok(
+    Number.isSafeInteger(fallback.answer.coverage.retrieval.searchedEvidence),
+  );
+  assert.ok(fallback.answer.coverage.retrieval.searchedEvidence <= 256);
+  assert.ok(fallback.answer.coverage.retrieval.suppliedEvidence > 0);
+  assert.ok(
+    fallback.answer.coverage.retrieval.suppliedEvidence <=
+      fallback.answer.coverage.retrieval.searchedEvidence,
+  );
+  assert.equal(fallback.sourceRevision, edited.transcriptRevision);
+  assert.equal(
+    fallback.answer.claims[0].citations[0].quote,
+    edited.segments[0].text,
+  );
+  await assertRetained();
+  manifest.storageCleanup = {
+    reviewed: finalReview.derivedCache,
+    mediaRemovals: finalReview.removals,
+    limitBytes: appliedStorage.limitBytes,
+    sourceAndAudioPreserved: true,
+    fallback: fallback.answer.coverage.retrieval,
+  };
+  record(
+    "After cache-only cleanup, real UI chat uses bounded current-source fallback and cites the corrected Unicode text; no real model was invoked.",
+  );
   const persisted = await thread("qa-pt");
   await stop();
   await start();
