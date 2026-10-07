@@ -1,0 +1,688 @@
+{
+  "schemaVersion": 1,
+  "seed": 69,
+  "license": "Repository MIT license; authored synthetic QA content",
+  "generator": "scripts/qa/retrieval-corpus.ts",
+  "cohorts": [
+    {
+      "meetings": 1,
+      "questions": 13,
+      "sha256": "82b1caec711e6735766369288a952053f8b0ebcd832d75d0f88d6c8a0e6e8c16",
+      "expected": [
+        {
+          "id": "between-samples-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "all",
+              "labels": [],
+              "match": "any"
+            }
+          },
+          "kind": "literal",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:1:0"
+          ]
+        },
+        {
+          "id": "between-samples-pt",
+          "language": "pt",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "all",
+              "labels": [],
+              "match": "any"
+            }
+          },
+          "kind": "literal",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:3:0"
+          ]
+        },
+        {
+          "id": "paraphrase-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "all",
+              "labels": [],
+              "match": "any"
+            }
+          },
+          "kind": "paraphrase",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:11:0"
+          ]
+        },
+        {
+          "id": "paraphrase-pt",
+          "language": "pt",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "paraphrase",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:7:0",
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:9:0"
+          ]
+        },
+        {
+          "id": "contradiction-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "contradiction",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:1:0",
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:5:0"
+          ]
+        },
+        {
+          "id": "dated-pt",
+          "language": "pt",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "dated",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:7:0",
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:9:0"
+          ]
+        },
+        {
+          "id": "any-labels-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery",
+                "Reviewed"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "literal",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:1:0"
+          ]
+        },
+        {
+          "id": "all-labels-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery",
+                "Reviewed"
+              ],
+              "match": "all"
+            }
+          },
+          "kind": "negative",
+          "relevantEvidenceIds": []
+        },
+        {
+          "id": "single-meeting-pt",
+          "language": "pt",
+          "scope": {
+            "kind": "meeting",
+            "sessionId": "qa-69-0000"
+          },
+          "kind": "literal",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:3:0"
+          ]
+        },
+        {
+          "id": "no-answer-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "negative",
+          "relevantEvidenceIds": []
+        },
+        {
+          "id": "no-answer-pt",
+          "language": "pt",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "negative",
+          "relevantEvidenceIds": []
+        },
+        {
+          "id": "excluded-only-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "excluded-only",
+          "relevantEvidenceIds": []
+        },
+        {
+          "id": "excluded-only-pt",
+          "language": "pt",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "excluded-only",
+          "relevantEvidenceIds": []
+        }
+      ]
+    },
+    {
+      "meetings": 100,
+      "questions": 13,
+      "sha256": "5d9cf9df27bd98a42d5e02eff6ae30b03b66a211b18b68bf22d478adcbf00c7e",
+      "expected": [
+        {
+          "id": "between-samples-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "all",
+              "labels": [],
+              "match": "any"
+            }
+          },
+          "kind": "literal",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:1:0"
+          ]
+        },
+        {
+          "id": "between-samples-pt",
+          "language": "pt",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "all",
+              "labels": [],
+              "match": "any"
+            }
+          },
+          "kind": "literal",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:3:0"
+          ]
+        },
+        {
+          "id": "paraphrase-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "all",
+              "labels": [],
+              "match": "any"
+            }
+          },
+          "kind": "paraphrase",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:11:0"
+          ]
+        },
+        {
+          "id": "paraphrase-pt",
+          "language": "pt",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "paraphrase",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:7:0",
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:9:0"
+          ]
+        },
+        {
+          "id": "contradiction-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "contradiction",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:1:0",
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:5:0",
+            "qa-69-0050:372a5b90149e0b6d9fc7ceee75c4e488333f451e5dbc066a178b48384de374d5:1:0"
+          ]
+        },
+        {
+          "id": "dated-pt",
+          "language": "pt",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "dated",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:7:0",
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:9:0"
+          ]
+        },
+        {
+          "id": "any-labels-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery",
+                "Reviewed"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "literal",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:1:0",
+            "qa-69-0050:372a5b90149e0b6d9fc7ceee75c4e488333f451e5dbc066a178b48384de374d5:1:0"
+          ]
+        },
+        {
+          "id": "all-labels-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery",
+                "Reviewed"
+              ],
+              "match": "all"
+            }
+          },
+          "kind": "literal",
+          "relevantEvidenceIds": [
+            "qa-69-0050:372a5b90149e0b6d9fc7ceee75c4e488333f451e5dbc066a178b48384de374d5:1:0"
+          ]
+        },
+        {
+          "id": "single-meeting-pt",
+          "language": "pt",
+          "scope": {
+            "kind": "meeting",
+            "sessionId": "qa-69-0000"
+          },
+          "kind": "literal",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:3:0"
+          ]
+        },
+        {
+          "id": "no-answer-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "negative",
+          "relevantEvidenceIds": []
+        },
+        {
+          "id": "no-answer-pt",
+          "language": "pt",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "negative",
+          "relevantEvidenceIds": []
+        },
+        {
+          "id": "excluded-only-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "excluded-only",
+          "relevantEvidenceIds": []
+        },
+        {
+          "id": "excluded-only-pt",
+          "language": "pt",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "excluded-only",
+          "relevantEvidenceIds": []
+        }
+      ]
+    },
+    {
+      "meetings": 1000,
+      "questions": 13,
+      "sha256": "ee84101c63005610f43def0702136192b6ba3577e93a4727607f885c57e37e1f",
+      "expected": [
+        {
+          "id": "between-samples-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "all",
+              "labels": [],
+              "match": "any"
+            }
+          },
+          "kind": "literal",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:1:0"
+          ]
+        },
+        {
+          "id": "between-samples-pt",
+          "language": "pt",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "all",
+              "labels": [],
+              "match": "any"
+            }
+          },
+          "kind": "literal",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:3:0"
+          ]
+        },
+        {
+          "id": "paraphrase-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "all",
+              "labels": [],
+              "match": "any"
+            }
+          },
+          "kind": "paraphrase",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:11:0"
+          ]
+        },
+        {
+          "id": "paraphrase-pt",
+          "language": "pt",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "paraphrase",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:7:0",
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:9:0"
+          ]
+        },
+        {
+          "id": "contradiction-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "contradiction",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:1:0",
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:5:0",
+            "qa-69-0500:1b7fbed27698c96f7e0444aa40ecb5d3d4fb1aff3cd7738a941dbcceaf05721d:1:0"
+          ]
+        },
+        {
+          "id": "dated-pt",
+          "language": "pt",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "dated",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:7:0",
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:9:0"
+          ]
+        },
+        {
+          "id": "any-labels-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery",
+                "Reviewed"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "literal",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:1:0",
+            "qa-69-0500:1b7fbed27698c96f7e0444aa40ecb5d3d4fb1aff3cd7738a941dbcceaf05721d:1:0"
+          ]
+        },
+        {
+          "id": "all-labels-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery",
+                "Reviewed"
+              ],
+              "match": "all"
+            }
+          },
+          "kind": "literal",
+          "relevantEvidenceIds": [
+            "qa-69-0500:1b7fbed27698c96f7e0444aa40ecb5d3d4fb1aff3cd7738a941dbcceaf05721d:1:0"
+          ]
+        },
+        {
+          "id": "single-meeting-pt",
+          "language": "pt",
+          "scope": {
+            "kind": "meeting",
+            "sessionId": "qa-69-0000"
+          },
+          "kind": "literal",
+          "relevantEvidenceIds": [
+            "qa-69-0000:86cc128056c4b8d955ce26b2e00924adf392ff8e4c868cae749adab6a82d1657:3:0"
+          ]
+        },
+        {
+          "id": "no-answer-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "negative",
+          "relevantEvidenceIds": []
+        },
+        {
+          "id": "no-answer-pt",
+          "language": "pt",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "negative",
+          "relevantEvidenceIds": []
+        },
+        {
+          "id": "excluded-only-en",
+          "language": "en",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "excluded-only",
+          "relevantEvidenceIds": []
+        },
+        {
+          "id": "excluded-only-pt",
+          "language": "pt",
+          "scope": {
+            "kind": "library",
+            "scope": {
+              "mode": "labels",
+              "labels": [
+                "Delivery"
+              ],
+              "match": "any"
+            }
+          },
+          "kind": "excluded-only",
+          "relevantEvidenceIds": []
+        }
+      ]
+    }
+  ]
+}
