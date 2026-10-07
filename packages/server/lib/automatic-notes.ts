@@ -8,6 +8,8 @@ import type { Template } from "../../shared/types/template";
 import type { SessionTags } from "./session-tags";
 import { atomicWriteJson } from "./atomic-json";
 import { sanitizeTranscriptionDiagnostics } from "./final-recording";
+import { sourceRevision } from "../../shared/lib/transcript-source";
+export { sourceRevision } from "../../shared/lib/transcript-source";
 
 export interface NotesGenerationInput {
  session: Session;
@@ -31,9 +33,6 @@ export interface GuardedSessionPatch extends SessionPatch {
 }
 export interface NotesRetryOptions { jobId?: string; replaceExisting?: boolean; expectedNotesHash?: string; }
 export function notesHash(text: string): string { return createHash("sha256").update(text).digest("hex"); }
-export function sourceRevision(session: Pick<Session, "transcript" | "language" | "speakers" | "segments">): string {
- return notesHash(JSON.stringify({ transcript: session.transcript, language: session.language, speakers: session.speakers || [], segments: (session.segments || []).map(({ speaker, start, end, text, channel }) => ({ speaker, start, end, text, channel })) }));
-}
 export function renderNotesTranscript(session: Session): string {
  return session.segments?.length ? session.segments.map(segment => `[${segment.speaker || "Unknown speaker"}] ${segment.text}`).join("\n") : session.transcript;
 }
