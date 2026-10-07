@@ -14,6 +14,7 @@ const failedMessage:Record<string,string>={
  'model-missing':'Choose an installed local model to generate task suggestions.',
  'local-only':'Task suggestions require a local model.',
  'ollama-unavailable':'Start Ollama and retry task suggestions.',
+ 'generation-timeout':'Task suggestion generation timed out. Retry to review the final transcript.',
 };
 export function TasksPanel({session,onSeek,onShowTranscript}:Props){
  const {tr}=useLocale();const [snapshot,setSnapshot]=useState<TasksSnapshot>({tasks:[]});const [loaded,setLoaded]=useState(false);
@@ -68,7 +69,8 @@ export function TasksPanel({session,onSeek,onShowTranscript}:Props){
   {session&&<section aria-label={tr('Suggested tasks')}>
    <h3>{tr('Suggested tasks')}</h3>
    {!session.transcriptFinalized&&<p>{tr('Task suggestions require the final transcript.')}</p>}
-   {session.transcriptFinalized&&(!review||['queued','running','waiting','superseded'].includes(review.status))&&<p role="status">{tr('Waiting for local task suggestions…')}</p>}
+   {session.transcriptFinalized&&review?.status==='running'&&<p role="status">{tr('Generating local task suggestions…')}</p>}
+   {session.transcriptFinalized&&(!review||['queued','waiting','superseded'].includes(review.status))&&<p role="status">{tr('Waiting for local task suggestions…')}</p>}
    {review?.status==='failed'&&<div role="status"><p>{tr(failedMessage[review.error||'']||'Task suggestion generation failed. Retry to review the final transcript.')}</p><button type="button" disabled={busy} onClick={()=>void mutate(async()=>{setSnapshot(await tasksApi.retry(session.id));})}>{tr('Retry task suggestions')}</button></div>}
    {currentReview&&suggestions.length===0&&<p>{tr('No unreviewed task suggestions.')}</p>}
    {suggestions.map(suggestion=>{

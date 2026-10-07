@@ -63,8 +63,33 @@ test("UTF-8 and JSON split across streaming chunks include the final frame witho
 });
 test("finite timeout aborts blocked requests and external cancellation stops the stream", async () => {
  const fetcher = ((_url: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => init!.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }))) as typeof fetch;
- await expect(generateLocalNotes({ ...input, fetch: fetcher, timeoutMs: 5 })).rejects.toThrow("ollama-unavailable");
+ await expect(generateLocalNotes({ ...input, fetch: fetcher, timeoutMs: 5 })).rejects.toThrow("generation-timeout");
  const controller = new AbortController(); const run = generateLocalNotes({ ...input, fetch: fetcher, signal: controller.signal }); controller.abort(); await expect(run).rejects.toThrow();
+});
+test("a valid streaming generation continues beyond the inactivity deadline", async () => {
+ const fake=transport();let frames=0;let cancelled=false;
+ const fetcher=(async(url:string|URL|Request,init?:RequestInit)=>{
+  if(!String(url).endsWith('/api/generate'))return fake.fetcher(url,init);
+  return new Response(new ReadableStream({async pull(controller){
+   await Bun.sleep(70);if(cancelled)return;
+   frames++;controller.enqueue(new TextEncoder().encode(JSON.stringify({response:'part',done:frames===3})+'\n'));
+   if(frames===3)controller.close();
+  },cancel(){cancelled=true;}}));
+ }) as typeof fetch;
+ expect(await generateLocalNotes({...input,fetch:fetcher,timeoutMs:120,maxDurationMs:1000})).toBe('partpartpart');
+});
+test("a stalled generation stream reports timeout rather than stopped Ollama", async () => {
+ const fake=transport();const fetcher=(async(url:string|URL|Request,init?:RequestInit)=>String(url).endsWith('/api/generate')
+  ?new Response(new ReadableStream({start(controller){controller.enqueue(new TextEncoder().encode('{"response":"part","done":false}\n'));}}))
+  :fake.fetcher(url,init)) as typeof fetch;
+ await expect(generateLocalNotes({...input,fetch:fetcher,timeoutMs:20,maxDurationMs:1000})).rejects.toThrow('generation-timeout');
+});
+test("a continuously active stream still respects the total generation limit", async () => {
+ const fake=transport();let cancelled=false;const fetcher=(async(url:string|URL|Request,init?:RequestInit)=>{
+  if(!String(url).endsWith('/api/generate'))return fake.fetcher(url,init);
+  return new Response(new ReadableStream({async pull(controller){await Bun.sleep(20);if(!cancelled)controller.enqueue(new TextEncoder().encode('{"response":"part","done":false}\n'));},cancel(){cancelled=true;}}));
+ }) as typeof fetch;
+ await expect(generateLocalNotes({...input,fetch:fetcher,timeoutMs:100,maxDurationMs:75})).rejects.toThrow('generation-timeout');
 });
 test("installed model listing excludes cloud stubs and fails on unavailable Ollama", async () => {
  const fake = transport({ models: ["local:latest", "remote:cloud"] });
