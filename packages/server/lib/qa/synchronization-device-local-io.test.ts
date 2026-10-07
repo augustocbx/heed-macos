@@ -222,3 +222,28 @@ test('concrete original namespace callback records accept canonical durable prop
  f.sessions.create(meeting);expect(f.sessions.read(meeting.id)?.title).toBe(meeting.title);const local=await f.library.queueLocal(meeting.id);expect(local.local).toBe(true);expect(f.quota.snapshot().reservedBytes).toBe(0);
  });
 });
+
+
+test('held adapter read/write handles refuse after issuance persistence uncertainty and still close',async()=>{
+ await fixture(async f=>{const path=join(f.root,'sessions','held-poison.json'),second=join(f.root,'sessions','uncertain.json');grantFile(f,path,100);grantFile(f,second,100);const write=f.io.createFile(path,100);write.append(Buffer.from('original'));write.sync();const read=f.io.openRead(path,100);
+ try{f.fail('issued');expect(()=>f.io.createFile(second,100)).toThrow('issue persistence');f.fail('');const refuses=(run:()=>unknown)=>{try{run();return false;}catch{return true;}};
+ expect([refuses(()=>read.readAt(0,1)),refuses(()=>read.verify()),refuses(()=>write.append(Buffer.from(' forbidden'))),refuses(()=>write.sync()),refuses(()=>write.verify())]).toEqual([true,true,true,true,true]);expect(fs.readFileSync(path,'utf8')).toBe('original');expect(fs.existsSync(second)).toBe(true);expect(f.entries.has(relative(f.root,second))).toBe(false);
+ }finally{write.close();write.close();read.close();read.close();}
+ });
+});
+
+test('paused adapter stream refuses its next chunk after issuance persistence uncertainty and closes',async()=>{
+ await fixture(async f=>{const path=join(f.root,'sessions','paused-poison.json'),second=join(f.root,'sessions','uncertain-stream.json');grantFile(f,path,70_000);grantFile(f,second,100);const write=f.io.createFile(path,70_000);write.append(Buffer.alloc(70_000,65));write.close();const stream=f.io.stream(path,70_000)[Symbol.asyncIterator]();expect((await stream.next()).value.length).toBe(65_536);const close=spyOn(fs,'closeSync');
+ try{f.fail('issued');expect(()=>f.io.createFile(second,100)).toThrow('issue persistence');f.fail('');const count=close.mock.calls.length;await expect(stream.next()).rejects.toThrow();expect(close.mock.calls.length).toBeGreaterThan(count);expect(fs.readFileSync(path).length).toBe(70_000);}finally{await stream.return?.();close.mockRestore();}
+ });
+});
+
+for(const phase of ['file','parent'] as const)test('required atomic '+phase+' fsync failure poisons authority and retains the production quota claim',async()=>{
+ await fixture(async f=>{const path=join(f.root,'sessions','sync-uncertain.json');f.allow(path,'phase');f.save();const parent=binding.localIdentity(dirname(path)),budget=f.quota.atomicWriteBudget.bind(f.quota);let temporary='',claim='',injected=false;
+ setAtomicWriteBudget((target,bytes,temp)=>{temporary=temp!;f.allow(temporary,'atomic-copy',bytes);const release=budget(target,bytes,temp);const reservations=f.events.filter((e:any)=>e.value?.reservations).at(-1).value.reservations;claim=Object.keys(reservations).find(id=>reservations[id].paths.includes(temporary))!;return release;});
+ const sync=fs.fsyncSync,hook=spyOn(fs,'fsyncSync').mockImplementation(fd=>{const stat=fs.fstatSync(fd,{bigint:true});const matches=phase==='file'?stat.isFile()&&temporary&&fs.existsSync(temporary)&&String(stat.ino)===binding.localIdentity(temporary).inode:stat.isDirectory()&&String(stat.ino)===parent.inode;
+ if(!injected&&matches){injected=true;if(phase==='parent')expect(fs.readFileSync(path,'utf8')).toBe('committed but uncertain');throw new Error('Synthetic required '+phase+' fsync failure');}sync(fd);});
+ try{expect(()=>f.io.writeAtomic(path,'committed but uncertain')).toThrow('required '+phase+' fsync');expect(injected).toBe(true);expect(claim).not.toBe('');expect(f.quota.allocation(claim)).not.toBe(null);expect(()=>f.io.exists(path)).toThrow();expect(()=>f.io.syncDirectory(dirname(path))).toThrow();if(phase==='parent'){expect(fs.readFileSync(path,'utf8')).toBe('committed but uncertain');expect(fs.existsSync(temporary)).toBe(false);}else{expect(fs.existsSync(path)).toBe(false);expect(fs.readFileSync(temporary,'utf8')).toBe('committed but uncertain');}
+ }finally{hook.mockRestore();}
+ });
+});
