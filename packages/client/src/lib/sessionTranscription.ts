@@ -1,4 +1,5 @@
 import { tr } from "./i18n.ts";
+import { guardForSession } from "./acceptedSession";
 import type { Session, SessionPatch, TranscribeResult } from '@heed/shared';
 import { transcribe, type TranscribeHandlers } from '@/api/transcribe';
 import { applySpeakerNames, reconcileSpeakerNames } from './speakerNames';
@@ -13,6 +14,7 @@ export async function retranscribeSession(
  save: (id: string, patch: SessionPatch) => Promise<void>,
 ) {
  if (!session.files?.wav) throw new Error(tr("The saved audio is unavailable."));
+ const guard = guardForSession(session);
  let completed: TranscribeResult | null = null;
  await transcribe({url:session.files.wav,language,diarize:true,recording_finalize:true,final_model:model},
   {...handlers,onResult:result=>{completed=result;}});
@@ -28,7 +30,7 @@ export async function retranscribeSession(
  }).map(speaker=>[speaker,speaker]));
  const mapped = applySpeakerNames(result.segments,result.speakers,result.embeddings || {},
   reconcileSpeakerNames(session.segments,result.segments,names));
- await save(session.id,{expectedTranscriptRevision:session.transcriptRevision,transcript:result.text,language:result.metadata.language,transcriptFinalized:true,
+ await save(session.id,{...guard,transcript:result.text,language:result.metadata.language,transcriptFinalized:true,
   transcriptionModel:result.metadata.model || model, transcriptionDiagnostics:result.transcriptionDiagnostics,
   ...(Number.isFinite(result.duration) && (result.duration || 0)>0 ? {duration:result.duration} : {}),...mapped});
 }

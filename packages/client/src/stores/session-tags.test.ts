@@ -5,7 +5,7 @@ import { sessionsApi } from "@/api/sessions";
 import type { Session, TagSnapshot } from "@heed/shared";
 vi.mock("@/api/tags", () => ({ tagsApi: { list: vi.fn(), mutate: vi.fn() } }));
 vi.mock("@/api/sessions", () => ({ sessionsApi: { patch: vi.fn(), list: vi.fn(), create: vi.fn(), delete: vi.fn() } }));
-const session = { id: "a", title: "Meeting", tags: ["Planning"], tagsRevision: "old" } as Session;
+const session = { id: "a", title: "Meeting", tags: ["Planning"], tagsRevision: "old", transcriptRevision:"source",transcriptVersion:1 } as Session;
 beforeEach(() => {
   vi.resetAllMocks();
   useSessionsStore.setState({ sessions: [session], viewing: session, loading: false, tagsBusy: false, tagsError: "", tagRevision: "1", tagCatalog: [{ name: "Planning", meetingCount: 1 }], lastTagChange: null });
@@ -108,10 +108,10 @@ test("silent polling refreshes notes while preserving tag suggestions and guards
 });
 test("a late hashtag save cannot revert a newer manual-note provenance or transcript guard", async () => {
   let finishTags!: (saved: Session) => void;
-  vi.mocked(sessionsApi.patch).mockImplementation((_id, patch) => patch.tags ? new Promise(resolve => { finishTags = resolve; }) : Promise.resolve({ ...session, aiNotes: "Manual", transcriptRevision: "new-source", notesMetadata: { origin: "manual", stale: false, sourceRevision: "new-source" } }));
+  vi.mocked(sessionsApi.patch).mockImplementation((_id, patch) => patch.tags ? new Promise(resolve => { finishTags = resolve; }) : Promise.resolve({ ...session, aiNotes: "Manual", transcriptRevision: "new-source", transcriptVersion:2, notesMetadata: { origin: "manual", stale: false, sourceRevision: "new-source" } }));
   const tagging = useSessionsStore.getState().update("a", { tags: ["Planning", "New"] });
   await useSessionsStore.getState().update("a", { aiNotes: "Manual" });
   finishTags({ ...session, tags: ["Planning", "New"], transcriptRevision: "old-source", notesMetadata: { origin: "automatic", stale: false, sourceRevision: "old-source" } });
   await tagging;
-  expect(useSessionsStore.getState().viewing).toMatchObject({ aiNotes: "Manual", transcriptRevision: "new-source", notesMetadata: { origin: "manual" } });
+  expect(useSessionsStore.getState().viewing).toMatchObject({ aiNotes: "Manual", transcriptRevision: "new-source", transcriptVersion:2, notesMetadata: { origin: "manual" } });
 });

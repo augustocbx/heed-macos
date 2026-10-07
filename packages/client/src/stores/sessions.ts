@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { tagKey, uniqueTags, type Session, type SessionPatch, type TagSnapshot } from "@heed/shared";
 import { sessionsApi } from "@/api/sessions.ts";
 import { tagsApi, type TagCommand } from "@/api/tags";
+import { acceptedSourceKeys, acceptedDerivedKeys, guardForSession, mergeAcceptedSession, sessionVersion } from "@/lib/acceptedSession";
 import { ApiError } from "@/api/client";
 
 interface SessionsState {
@@ -14,7 +15,7 @@ interface SessionsState {
   tagsError: string;
   lastTagChange: TagCommand | null;
   load: (silent?: boolean) => Promise<void>;
-  accept: (session: Session) => void;
+  accept: (session: Session, requestOrder?: number) => Session;
   loadTags: () => Promise<void>;
   mutateTag: (command: TagCommand) => Promise<void>;
   create: (session: Partial<Session>) => Promise<Session>;
@@ -25,6 +26,15 @@ interface SessionsState {
 let generation = 0;
 let tagGeneration = 0;
 let loadSequence = 0;
+const issuedRequests = new Map<string, number>();
+const appliedRequests = new Map<string, number>();
+const metadataOwners = new Map<string, Map<string, number>>();
+export function beginSessionRequest(id: string): number {
+  ++generation;
+  const order = (issuedRequests.get(id) ?? 0) + 1;
+  issuedRequests.set(id, order);
+  return order;
+}
 const notesGenerations = new Map<string, number>();
 const notesFields = ["aiNotes", "transcript", "language", "speakers", "segments", "transcriptFinalized"] as const;
 function catalogFor(sessions: Session[], known: TagSnapshot["tags"] = []): TagSnapshot["tags"] {
@@ -41,8 +51,8 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
     const source = preserveMembership ? state.sessions : snapshot.sessions;
     const sessions = source.map(entry => {
       const saved = snapshot.sessions.find(s => s.id === entry.id);
-      const current = state.sessions.find(s => s.id === entry.id);
-      return !saved ? entry : full || !current ? saved : { ...current, tags: saved.tags, tagsRevision: saved.tagsRevision };
+      const current = state.sessions.find(s => s.id === entry.id) ?? (state.viewing?.id === entry.id ? state.viewing : null);
+      return !saved ? entry : full ? current ? mergeAcceptedSession(current, saved) : saved : !current ? saved : { ...current, tags: saved.tags, tagsRevision: saved.tagsRevision };
     });
     const membershipChanged = preserveMembership && (sessions.length !== snapshot.sessions.length || sessions.some(s => !snapshot.sessions.some(saved => saved.id === s.id)));
     const savedView = sessions.find(s => s.id === state.viewing?.id);
@@ -66,16 +76,22 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
     sessions: [], loading: false, viewing: null,
     tagCatalog: [], tagRevision: "", tagsBusy: false, tagsError: "", lastTagChange: null,
     load: (silent = false) => refresh(true, silent),
-    accept: session => {
+    accept: (session, requestOrder) => {
+      const current = get().sessions.find(existing => existing.id === session.id) ?? (get().viewing?.id === session.id ? get().viewing : null);
+      const order = requestOrder ?? beginSessionRequest(session.id);
+      if (current && order < (appliedRequests.get(session.id) ?? 0) && sessionVersion(session) <= sessionVersion(current)) return current;
+      appliedRequests.set(session.id, Math.max(order, appliedRequests.get(session.id) ?? 0));
       ++generation;
       notesGenerations.set(session.id, (notesGenerations.get(session.id) ?? 0) + 1);
       set(state => {
-        const current = state.sessions.find(existing => existing.id === session.id);
-        // Notes controls can finish after an inline edit; they do not own tag fields.
-        const saved = current ? { ...session, tags: current.tags, tagsRevision: current.tagsRevision } : session;
-        const sessions = current ? state.sessions.map(existing => existing.id === session.id ? saved : existing) : [saved, ...state.sessions];
+        const listed = state.sessions.some(existing => existing.id === session.id);
+        const current = state.sessions.find(existing => existing.id === session.id) ?? (state.viewing?.id === session.id ? state.viewing : null);
+        // Transcript and notes responses do not own independent meeting metadata.
+        const saved = current ? { ...mergeAcceptedSession(current, session), title: current.title, pinned: current.pinned, tags: current.tags, tagsRevision: current.tagsRevision } : session;
+        const sessions = listed ? state.sessions.map(existing => existing.id === session.id ? saved : existing) : [saved, ...state.sessions];
         return { sessions, viewing: state.viewing?.id === session.id ? saved : state.viewing, tagCatalog: catalogFor(sessions, state.tagCatalog), ...(current ? {} : { tagRevision: "" }) };
       });
+      return get().sessions.find(saved => saved.id === session.id)!;
     },
     loadTags: () => refresh(false),
     mutateTag: async command => {
@@ -109,29 +125,49 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
       return created;
     },
     update: async (id, patch) => {
-      const changesNotes = notesFields.some(key => Object.hasOwn(patch, key));
-      const notesVersion = (notesGenerations.get(id) ?? 0) + (changesNotes ? 1 : 0);
-      if (changesNotes) notesGenerations.set(id, notesVersion);
+      const changesSource = acceptedSourceKeys.some(key => Object.hasOwn(patch, key));
+      const changesNotes = changesSource || notesFields.some(key => Object.hasOwn(patch, key));
+      const current = get().sessions.find(s => s.id === id) ?? (get().viewing?.id === id ? get().viewing : null);
+      let payload = patch.tags === undefined ? patch : { ...patch, tagsRevision: current?.tagsRevision };
+      // Reject incomplete guards before changing request ownership or busy state.
+      if (changesSource || Object.hasOwn(patch, "aiNotes")) {
+        if (patch.expectedTranscriptRevision !== undefined || patch.expectedTranscriptVersion !== undefined) {
+          if (!patch.expectedTranscriptRevision || !Number.isSafeInteger(patch.expectedTranscriptVersion) || patch.expectedTranscriptVersion! < 0)
+            throw new Error("The transcript source is unavailable. Refresh before saving.");
+        } else {
+          if (!current) throw new Error("The transcript source is unavailable. Refresh before saving.");
+          payload = { ...payload, ...guardForSession(current) };
+        }
+      }
       const changesTags = patch.tags !== undefined;
       if (changesTags && get().tagsBusy) throw new Error("Wait for the current tag change to finish.");
+      const notesVersion = (notesGenerations.get(id) ?? 0) + (changesNotes ? 1 : 0);
+      if (changesNotes) notesGenerations.set(id, notesVersion);
       if (changesTags) set({ tagsBusy: true });
       ++generation;
-      const tagVersion = patch.tags === undefined ? tagGeneration : ++tagGeneration;
-      const current = get().sessions.find(s => s.id === id) ?? get().viewing;
-      const payload = patch.tags === undefined ? patch : { ...patch, tagsRevision: current?.tagsRevision };
+      const tagVersion = changesTags ? ++tagGeneration : tagGeneration;
+      const order = beginSessionRequest(id);
+      const owners = metadataOwners.get(id) ?? new Map<string, number>();
+      for (const key of Object.keys(patch)) if (!key.startsWith("expected") && !acceptedSourceKeys.includes(key as never)) owners.set(key, order);
+      metadataOwners.set(id, owners);
       try {
         const updated = await sessionsApi.patch(id, payload);
+        appliedRequests.set(id, Math.max(order, appliedRequests.get(id) ?? 0));
         ++generation;
         set(state => {
           const merge = (existing: Session) => {
-            const fields = Object.fromEntries(Object.keys(patch).map(key => [key, updated[key as keyof Session]]));
-            if (changesNotes && notesVersion === notesGenerations.get(id)) {
-              for (const key of ["transcriptRevision", "notesMetadata", "notesJobs", "transcriptFinalized"] as const) {
-                if (updated[key] !== undefined) fields[key] = updated[key];
-              }
-            } else if (changesNotes) {
-              for (const key of notesFields) delete fields[key];
+            const authoritative = mergeAcceptedSession(existing, updated);
+            const newer = sessionVersion(updated) > sessionVersion(existing);
+            const fields: Partial<Session> = {};
+            for (const key of Object.keys(patch)) {
+              if (!key.startsWith("expected") && !acceptedSourceKeys.includes(key as never) && metadataOwners.get(id)?.get(key) === order)
+                Object.assign(fields, { [key]: authoritative[key as keyof Session] });
             }
+            if (newer) {
+              for (const key of [...acceptedSourceKeys, ...acceptedDerivedKeys]) Object.assign(fields, { [key]: authoritative[key] });
+            } else if (changesNotes && notesVersion === notesGenerations.get(id) && order >= (appliedRequests.get(id) ?? 0) && sessionVersion(updated) >= sessionVersion(existing)) {
+              for (const key of ["aiNotes", "notesMetadata", "notesJobs"] as const) Object.assign(fields, { [key]: updated[key] });
+            } else if (changesNotes) { delete fields.aiNotes; }
             if (tagVersion !== tagGeneration) { delete fields.tags; delete fields.tagsRevision; }
             else if (patch.tags !== undefined) fields.tagsRevision = updated.tagsRevision;
             return { ...existing, ...fields, updatedAt: updated.updatedAt } as Session;
@@ -161,6 +197,9 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
         return { sessions, tagCatalog: catalogFor(sessions, state.tagCatalog), viewing: state.viewing?.id === id ? null : state.viewing, tagRevision: "" };
       });
     },
-    view: session => set({ viewing: session }),
+    view: session => set(state => {
+      const current = state.sessions.find(saved => saved.id === session?.id);
+      return { viewing: session && current ? mergeAcceptedSession(current, session) : session };
+    }),
   };
 });

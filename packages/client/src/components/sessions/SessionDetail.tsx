@@ -18,6 +18,7 @@ import { Spinner } from "@/components/shared/Spinner.tsx";
 import { TagEditor } from "./TagEditor";
 import { TitleInput } from "./TitleInput.tsx";
 import { SessionAudioPlayer } from "./SessionAudioPlayer.tsx";
+import { guardForSession } from "@/lib/acceptedSession";
 import { applySpeakerNames } from "@/lib/speakerNames.ts";
 import { RetranscribeDialog } from "./RetranscribeDialog";
 import { useRecordingStore } from "@/stores/recording";
@@ -66,7 +67,8 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
  useEffect(()=>{if(activeTab==="speakers")textRef.current?.querySelector<HTMLElement>('[aria-current="true"]')?.scrollIntoView?.({block:"center"});},[activeTab,focusedSource]);
  const [playbackTime,setPlaybackTime] = useState<number|null>(null);
  const [audioDuration,setAudioDuration] = useState<number|null>(null);
- useEffect(()=>{setPlaybackTime(null);setAudioDuration(null);setSpeakerNames({});},[session.id]);
+ useEffect(()=>{setPlaybackTime(null);setAudioDuration(null);},[session.id]);
+ useEffect(()=>{setSpeakerNames({});},[session.id, session.transcriptRevision, session.transcriptVersion]);
  const seekAudio = (seconds:number) => {
   const audio=audioRef.current;
   if(!audio || audio.error || !Number.isFinite(seconds) || seconds<0)return;
@@ -128,6 +130,7 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 		setStreamingNotes("");
 		setActiveTab("notes");
 		try {
+			const guard = guardForSession(session);
 			let acc = "";
 			await generateNotes(
 				session.segments?.length ? session.segments.map(segment => `${segment.speaker}: ${segment.text}`).join("\n") : session.transcript,
@@ -136,7 +139,7 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 				{
 					onToken: (tok) => { acc += tok; setStreamingNotes(acc); },
 					onDone: async (full) => {
-						await update(session.id, { aiNotes: full, expectedNotes: session.aiNotes || "", expectedTranscriptRevision: session.transcriptRevision });
+						await update(session.id, { aiNotes: full, expectedNotes: session.aiNotes || "", ...guard });
       setStreamingNotes("");
 					},
 				},
@@ -151,7 +154,6 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 			}
 		} finally {
 			setGenerating(false);
-   setStreamingNotes("");
 		}
 	};
 
@@ -159,7 +161,7 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 		const names = { ...speakerNames, [original]: newName };
 		setSpeakerNames(names);
 		try {
-			await update(session.id, applySpeakerNames(session.segments || [], session.speakers || [], session.embeddings || {}, names));
+			await update(session.id, { ...applySpeakerNames(session.segments || [], session.speakers || [], session.embeddings || {}, names), ...guardForSession(session) });
 		} catch {
 			setSpeakerNames((latest) => {
 				if (latest[original] !== newName) return latest;
@@ -177,8 +179,10 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 			s.speaker === from ? { ...s, speaker: into } : s,
 		);
 		const newSpeakers = (session.speakers || []).filter((s) => s !== from);
-		await update(session.id, { segments: newSegments, speakers: newSpeakers });
-		showToast(tr("Merged"));
+		try {
+   await update(session.id, { segments: newSegments, speakers: newSpeakers, ...guardForSession(session) });
+   showToast(tr("Merged"));
+  } catch (error) { showToast(tr("Error: {message}", undefined, {message: tr((error as Error).message)})); }
 	};
 
 	const displayNotes = streamingNotes || session.aiNotes || "";
