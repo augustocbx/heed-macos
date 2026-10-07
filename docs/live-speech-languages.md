@@ -10,4 +10,15 @@ If the selected path cannot support the saved language, start refuses before cap
 
 With preview off, live engine/model/effective language are null and no live ASR, diarization, microphone filtering or warmup is issued. Audio remains available for final processing. Final detected language, timestamps, speaker attribution, diagnostic provenance and corrected accepted source remain authoritative; provisional PT selection never overwrites them.
 
-Registered support is distinct from measured accuracy. The public evaluation cohort contains authored eSpeak NG synthetic speech, short utterances, names, technical vocabulary, alternating EN/PT, concatenated within-turn switching, two-channel overlap and silence. It does not establish human regional accents or natural bilingual quality. Actual two-Mac runs and manual public-prediction review are documented in [the issue 70 QA record](qa/issue-70-live-languages.md). Until those results exist, measured language/mixed capability remains unverified. Broader live segmentation and diarization improvements stay in issue #22.
+Registered support is distinct from measured accuracy. The public evaluation cohort contains authored eSpeak NG synthetic speech, short utterances, names, technical vocabulary, alternating EN/PT, concatenated within-turn switching, two-channel overlap and silence. It does not establish human regional accents or natural bilingual quality. Actual two-Mac runs and manual public-prediction review are documented in [the issue 70 QA record](qa/issue-70-live-languages.md). The tested multilingual base path recognized the short Portuguese greeting in all repetitions, but names, technical terms and mixed speech had substantial errors; mixed reliability remains unverified. These synthetic results do not establish natural-accent accuracy. Broader live segmentation and diarization improvements stay in issue #22.
+
+
+| Selected engine/model path | Registered live choice | Final language path | Measured scope |
+|---|---|---|---|
+| Native Mac final Parakeet v3 + MLX multilingual Whisper preview | Fixed EN/PT on the actual registered MLX model | Existing EN/PT automatic detector + full Parakeet recognition | MLX base/native final evaluated on both Macs; mixed reliability failed the synthetic cohort gate |
+| Registered multilingual MLX or CTranslate2 Whisper tiny/base/small/medium/large-v3 | Fixed EN/PT; no live automatic choice offered | Actual selected final engine/detector is reported separately | Capability/lifecycle contracts tested; other weights/CT2 accuracy not measured here |
+| Registered `.en` MLX/CTranslate2 model | EN; PT refuses before capture | Reported independently, even if final supports PT | Rejection tested; never portrayed as Portuguese-capable |
+| Explicitly selected native Parakeet streaming path | Registered fixed EN/PT; not the default Mac preview | Full native final plus detector | Capability contract tested; native live quality not measured here |
+| Unknown/unavailable live identity | No inferred language support; explicit persistent final-only available | Existing final pipeline when ready | Failure/admission/final-only tested |
+
+French/German interface translations remain available. Their speech recognition research and broader live-quality improvements remain in #22.
