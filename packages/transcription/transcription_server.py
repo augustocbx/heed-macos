@@ -1301,6 +1301,18 @@ def transcribe(wav_path, language="auto", srt_output=None):
     }
 
 
+def _language_capabilities():
+    from live_language import path_capability, language_capabilities
+    current = whisper_model_live
+    kind = getattr(current, "kind", None) or ("mlx" if active_engine == "parakeet" else active_engine)
+    model = getattr(current, "model_name", None) or ("base" if active_engine == "parakeet" else whisper_model_live_name)
+    live = path_capability(kind, model, "chunk", current is not None, enabled=preview_enabled)
+    if current is not None and getattr(current, "alive", True) is False:
+        live["state"] = "unavailable"
+    final = path_capability(active_engine, "parakeet-v3" if active_engine == "parakeet" else whisper_model_name, "full", models_ready["whisper"])
+    return language_capabilities(live, final)
+
+
 def _language_support():
     """What the UI should offer for the ACTIVE engine: the supported codes (None = all
     Whisper langs the client already lists) and whether language auto-detection works."""
@@ -2515,6 +2527,7 @@ class Handler(BaseHTTPRequestHandler):
                 "pyannote_info": pyannote_runtime_info,
                 "live_tuning": live_tuning,
                 "languages": _language_support(),
+                "languageCapabilities": _language_capabilities(),
                 "load_error": load_error,
             })
         elif self.path == "/voices":

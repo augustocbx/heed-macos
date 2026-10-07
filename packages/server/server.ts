@@ -2296,6 +2296,7 @@ async function handleHealth(refresh=false): Promise<Response> {
 		whisper_info: txServer.whisper_info || null,
 		pyannote_info: txServer.pyannote_info || null,
 		languages: txServer.languages || null,  // engine-aware language support (Parakeet=28, Whisper=all)
+		languageCapabilities: txServer.languageCapabilities || null,
 	});
 }
 
