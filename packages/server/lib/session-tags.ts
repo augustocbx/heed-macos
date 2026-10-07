@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fsyncSync, fstatSync, lstatSync, openSync, opendirSync, readFileSync, readSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {reserveAtomicWrite} from './atomic-json';
 import { normalizeTag, tagKey, uniqueTags, type Session, type SessionPatch, type TagMutation, type TagSnapshot } from "@heed/shared";
@@ -86,11 +86,46 @@ function validateRecoveryBounds(session: Session): void {
  if (state && (state.candidates.length > 2 || state.candidates.some(candidate => Buffer.byteLength(JSON.stringify(candidate)) > 16_000_000) || state.candidateRequestReceipts.length > 1_000)) throw new TagError("Transcript candidate state exceeds the size limit", 409);
 }
 
+export type CommittedSessionChange = { kind: "upsert"; session: Session } | { kind: "delete"; sessionId: string } | { kind: "invalidate" };
 /** All operations are synchronous after request parsing, so one server cannot interleave commits. */
 export class SessionTags {
   private journal: string;
+  private recovering = false;
+  private committedListeners = new Set<{ listener: (change: CommittedSessionChange) => void; onError: (error: unknown) => void }>();
   constructor(private directory: string, private io = { writeAtomic: atomicWrite }) {
     this.journal = join(directory, ".tag-transaction");
+  }
+  subscribeCommitted(listener: (change: CommittedSessionChange) => void, onError: (error: unknown) => void): () => void {
+    const subscription = { listener, onError }; this.committedListeners.add(subscription);
+    return () => { this.committedListeners.delete(subscription); };
+  }
+  private notifyCommitted(change: CommittedSessionChange): void {
+    for (const subscription of [...this.committedListeners]) {
+      try { subscription.listener(structuredClone(change)); }
+      catch (error) { try { subscription.onError(error); } catch { /* Observers cannot turn durable success into a failed save. */ } }
+    }
+  }
+  private commitRecord(session: Session): Session {
+    try {
+      this.io.writeAtomic(this.path(session.id), JSON.stringify({ ...session, tagsRevision: undefined }, null, 2));
+      const saved = this.read(session.id)!; this.notifyCommitted({ kind: "upsert", session: saved }); return saved;
+    } catch (error) {
+      // Rename may already have succeeded before a durability/budget cleanup error.
+      // Invalidate scope metadata without publishing a potentially tentative upsert.
+      this.notifyCommitted({ kind: "invalidate" }); throw error;
+    }
+  }
+  /** Streaming enumeration avoids parsing or allocating an entire library during discovery. */
+  *sourceIds(maximum: number): IterableIterator<string> {
+    if (!Number.isSafeInteger(maximum) || maximum < 1) throw new TagError("Invalid source discovery budget");
+    this.recover(); const directory = opendirSync(this.directory); let count = 0;
+    try {
+      for (let entry = directory.readSync(); entry; entry = directory.readSync()) {
+        if (!entry.name.endsWith(".json")) continue;
+        if (++count > maximum) throw new TagError("Source discovery capacity exceeded", 409);
+        yield entry.name.slice(0, -5);
+      }
+    } finally { directory.closeSync(); }
   }
 
   private path(id: string): string {
@@ -101,7 +136,10 @@ export class SessionTags {
   }
 
   recover(): void {
+    if (this.recovering) return;
     if (!existsSync(this.journal)) return;
+    this.recovering = true;
+    try {
     if (!lstatSync(this.journal).isFile()) throw new TagError("Invalid tag transaction", 500);
     const journal: Journal = JSON.parse(readFileSync(this.journal, "utf8"));
     if (!Array.isArray(journal.entries) || typeof journal.committed !== "boolean") throw new TagError("Invalid tag transaction", 500);
@@ -113,17 +151,35 @@ export class SessionTags {
     if (!journal.committed) {
       for (const entry of journal.entries) this.io.writeAtomic(this.path(entry.id), entry.before);
       unlinkSync(this.journal);
+      this.notifyCommitted({ kind: "invalidate" });
     } else {
       // The commit is durable; a cleanup failure must not turn success into a false failed save.
       try { unlinkSync(this.journal); } catch { /* Retry cleanup on the next request. */ }
+      for (const entry of journal.entries) { const session = this.read(entry.id); if (session) this.notifyCommitted({ kind: "upsert", session }); }
     }
+    } catch (error) { this.notifyCommitted({ kind: "invalidate" }); throw error; }
+    finally { this.recovering = false; }
   }
 
-  read(id: string): Session | null {
+  read(id: string, maximumBytes?: number): Session | null {
     this.recover();
     const path = this.path(id);
     if (!existsSync(path)) return null;
-    const session = JSON.parse(readFileSync(path, "utf8")) as Session;
+    let raw: string;
+    if (maximumBytes === undefined) raw = readFileSync(path, "utf8");
+    else {
+      if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) throw new TagError("Invalid source record budget");
+      const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const stat = fstatSync(fd);
+        if (!stat.isFile() || stat.size > maximumBytes) throw new TagError("Source record exceeds the retrieval size limit", 409);
+        const buffer = Buffer.alloc(stat.size + 1); let bytes = 0;
+        while (bytes < buffer.length) { const received = readSync(fd, buffer, bytes, buffer.length - bytes, null); if (!received) break; bytes += received; }
+        if (bytes > stat.size) throw new TagError("Source record changed during retrieval read", 409);
+        raw = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, bytes));
+      } finally { closeSync(fd); }
+    }
+    const session = JSON.parse(raw) as Session;
     if (!session || session.id !== id || (session.tags !== undefined && (!Array.isArray(session.tags) || session.tags.some(t => typeof t !== "string")))) {
       throw new TagError("Invalid meeting file", 500);
     }
@@ -198,8 +254,7 @@ export class SessionTags {
     }
     validateRecoveryBounds(next);
     if (current && same(current, next)) return current;
-    this.io.writeAtomic(this.path(id), JSON.stringify({ ...next, tagsRevision: undefined }, null, 2));
-    return this.read(id)!;
+    return this.commitRecord(next);
   }
 
   /** Candidate/receipt metadata never changes the accepted source or accepted history. */
@@ -213,8 +268,7 @@ export class SessionTags {
     if (!before && after && (after.edits.length || after.generations.length !== 1 || !same(after.generations[0]?.segments, current.segments ?? []) || after.generations[0]?.transcript !== current.transcript)) throw new TagError("Invalid transcript baseline");
     if (before && after && (before.candidateRequestReceipts.some(receipt => !after.candidateRequestReceipts.some(saved => same(receipt, saved))) || before.candidates.some(candidate => !after.candidates.some(saved => same(candidate, saved)) && !after.candidateRequestReceipts.some(receipt => receipt.candidateId === candidate.id && receipt.status === "discarded")))) throw new TagError("Transcript candidate receipts cannot be removed", 409);
     validateRecoveryBounds(next);
-    this.io.writeAtomic(this.path(id), JSON.stringify({ ...next, tagsRevision: undefined }, null, 2));
-    return this.read(id)!;
+    return this.commitRecord(next);
   }
 
   /** Trusted synchronous metadata writes preserve assignments exactly. */
@@ -223,8 +277,7 @@ export class SessionTags {
     if (!current) throw new TagError("Meeting not found", 404);
     if (acceptedSourceChanged(current, session) || (session.transcriptVersion ?? 0) !== current.transcriptVersion || (session.transcriptRevision !== undefined && session.transcriptRevision !== current.transcriptRevision) || !same(current.transcriptEditing, session.transcriptEditing)) throw new TagError("Metadata save cannot replace transcript state", 409);
     validateRecoveryBounds(session);
-    this.io.writeAtomic(this.path(session.id), JSON.stringify({ ...session, tagsRevision: undefined }, null, 2));
-    return this.read(session.id)!;
+    return this.commitRecord(session);
   }
 
   patch(id: string, patch: SessionPatch): Session {
@@ -242,7 +295,7 @@ export class SessionTags {
   remove(id: string): void {
     this.recover();
     const path = this.path(id);
-    if (existsSync(path)) unlinkSync(path);
+    if (existsSync(path)) { unlinkSync(path); this.notifyCommitted({ kind: "delete", sessionId: id }); }
   }
 
   mutate(input: TagMutation): TagSnapshot {

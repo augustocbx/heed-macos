@@ -1,6 +1,6 @@
 /** Hard production maxima; callers may reduce limits for constrained workloads and tests. */
 const maxima = {
- catalogSources: 20_000, sourceRecordBytes: 67_108_864, databaseBytes: 67_108_864, workingDiskBytes: 201_326_592,
+ catalogSources: 20_000, catalogBytes: 16_777_216, sourceRecordBytes: 67_108_864, databaseBytes: 67_108_864, workingDiskBytes: 201_326_592,
  evidenceRows: 250_000, postingRows: 2_000_000, evidenceSlice: 128, queryRows: 100_000, queryMilliseconds: 250,
  queryTerms: 64, queryCharacters: 2_000, queryBytes: 8_000, candidateHits: 64, globalHits: 48, sourceWinners: 16,
  anchors: 16, excerpts: 32, fallbackSources: 4, fallbackEvidence: 256, fallbackSourceBytes: 67_108_864,
