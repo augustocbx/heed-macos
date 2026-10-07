@@ -19,6 +19,7 @@ from protocol import (
 )
 from transport import DirectTransport
 from transaction import Transaction
+from acceptance import observe_parent, validate_parent_bounds, public_spec, bootstrap, preflight_workspace
 
 
 def validate_binding(value):
@@ -71,6 +72,9 @@ def validate_startup(value):
         return None, None
     fields = {
         "probe": (),
+        "qa-observe-parent": ("identity",),
+        "qa-create-child": ("binding", "spec", "workspace", "selectedScope"),
+        "qa-join-child": ("binding", "spec", "workspace", "selectedScope", "evidence"),
         "initialize": ("identity", "destinationId"),
         "transaction": ("binding", "context", "appDir"),
     }
@@ -79,6 +83,24 @@ def validate_startup(value):
     exact(value, ("protocol", "action", "endpoint", "credentials", *fields[action]))
     endpoint = validate_endpoint(value["endpoint"])
     credentials = validate_credentials(value["credentials"])
+    if action in ("qa-create-child", "qa-join-child"):
+        binding = validate_binding(value["binding"])
+        spec = public_spec(value["spec"])
+        if binding["endpoint"] != endpoint or value["selectedScope"] != ("parent" if action == "qa-create-child" else "child"):
+            raise SmbError("invalid-input")
+        workspace = exact(value["workspace"], ("path", "identity", "receipts", "quota"))
+        validate_app_dir(workspace["path"])
+        validate_parent_bounds(endpoint)
+        if action == "qa-create-child" and 1 + len(endpoint["folder"].split("/")) >= 64:
+            raise SmbError("bounds-exceeded")
+        if action == "qa-join-child":
+            from acceptance import validate_evidence
+            validate_evidence(value["evidence"], spec)
+            if endpoint["folder"].split("/")[-1] != spec["child"]:
+                raise SmbError("invalid-input")
+    if action == "qa-observe-parent":
+        validate_identity(value["identity"])
+        validate_parent_bounds(endpoint)
     if action == "initialize":
         validate_identity(value["identity"])
         if not isinstance(value["destinationId"], str) or not UUID.fullmatch(
@@ -128,11 +150,25 @@ def serve(source, sink, backend_factory=None):
                 ),
             )
             return
+        if action in ("qa-create-child", "qa-join-child"):
+            preflight_workspace(startup)
         transport = DirectTransport(
             endpoint,
             credentials,
             backend=backend_factory() if backend_factory else None,
         )
+        if action in ("qa-create-child", "qa-join-child"):
+            value = bootstrap(transport, startup)
+            transport.close()
+            transport = None
+            emit(sink, dict(ok=True, value=value))
+            return
+        if action == "qa-observe-parent":
+            value = observe_parent(transport, startup["identity"])
+            transport.close()
+            transport = None
+            emit(sink, dict(ok=True, value=value))
+            return
         if action in ("probe", "initialize"):
             value = (
                 transport.probe()

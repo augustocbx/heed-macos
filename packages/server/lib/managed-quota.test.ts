@@ -88,3 +88,12 @@ test('restart releases only interrupted manual imports and removes their staging
  const restarted=new ManagedQuota(s.options);expect(existsSync(stage)).toBe(false);expect(existsSync(audio)).toBe(true);expect(restarted.allocation(`media-${job}`)).toBeNull();expect(restarted.allocation('capture-pending')?.bytes).toBe(200);
 });
 test('legacy text sidecars remain protected when eligible audio is evicted',()=>{const s=setup();const audio=join(s.media,'capture.wav'),text=join(s.media,'capture.txt');writeFileSync(audio,'a'.repeat(40));writeFileSync(text,'transcript');const preview=s.quota.preview(20);expect(preview.removals.map(file=>file.path)).toEqual([audio]);s.quota.apply(20,preview.token);expect(existsSync(text)).toBe(true);expect(s.quota.snapshot().categories.text).toBe(10);});
+
+test('explicit ledger storage keeps construction and reservation off the pathname filesystem',()=>{
+ const fixture=setup();const sentinel=join(fixture.root,'not-a-directory');writeFileSync(sentinel,'owned fixture sentinel');
+ const writes:unknown[]=[];const quota=new ManagedQuota({ledgerPath:join(sentinel,'ledger'),roots:{},getLimit:()=>1000,setLimit:()=>{},protectedPaths:()=>[],ledgerStorage:{load:()=>null,save:(value:unknown)=>{writes.push(structuredClone(value));}}} as any);
+ quota.reserve('qa-fixture',512,[]);expect(quota.allocation('qa-fixture')).toEqual({bytes:512,paths:[]});expect(writes).toHaveLength(1);
+});
+test('default pathname ledger keeps rejecting an existing null document',()=>{
+ const s=setup();writeFileSync(s.options.ledgerPath,'null');expect(()=>new ManagedQuota(s.options)).toThrow();
+});

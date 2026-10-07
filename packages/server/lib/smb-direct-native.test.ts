@@ -594,3 +594,14 @@ test('I4 prelaunch validation and cancellation prove no helper while preserving 
   expect(cancellation.guardianStopped).toBe(true);
   expect(launches).toBe(0);
 });
+
+test('QA observer crosses only stdin and waits for owned guardian exit',async()=>{
+ const h=helper(`let raw='';for await(const x of Bun.stdin.stream())raw+=Buffer.from(x);const r=JSON.parse(raw);if(r.action!=='qa-observe-parent'||process.argv.join(' ').includes('secret-never-log'))process.exit(2);console.log(JSON.stringify({ok:true,value:{identity:r.identity,ancestors:[],security:'signed',readOnly:false,namespaceSafe:true}}));`);
+ const native=new PythonDirectSmbNative({runner:h.runner});const result=await native.acceptance({action:'qa-observe-parent',endpoint,credentials,identity}) as any;expect(result.identity).toEqual(identity);expect(await h.child.exited).toBe(0);expect(()=>process.kill(h.child.pid,0)).toThrow();
+});
+test('QA startup bounds refuse before launch and cancellation provides actual stop proof',async()=>{
+ let launches=0;const native=new PythonDirectSmbNative({runner:()=>{launches++;throw Error('must not launch');}});
+ await expect(native.acceptance({action:'qa-create-child',endpoint,credentials,binding,spec:{sentinel:'x'.repeat(65536)},workspace:{},selectedScope:'parent'})).rejects.toThrow();expect(launches).toBe(0);
+ const h=helper(`process.on('SIGTERM',()=>{});for await(const x of Bun.stdin.stream()){};setInterval(()=>{},1000);`),controller=new AbortController();const pending=new PythonDirectSmbNative({runner:h.runner,timeoutMs:5000}).acceptance({action:'qa-observe-parent',endpoint,credentials,identity},controller.signal);const timer=setTimeout(()=>controller.abort(),100);
+ try{let error:any;try{await pending;}catch(e){error=e;}expect(error?.guardianStopped).toBe(true);expect(()=>process.kill(h.child.pid,0)).toThrow();}finally{clearTimeout(timer);controller.abort();await pending.catch(()=>{});}
+});

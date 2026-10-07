@@ -11,6 +11,8 @@ import type {PortableCommit,DeletionCapabilities,RemoteInventory,DeletionRecord,
 export interface CloudBinding {bookmark:string;account:string;identity:string}
 export interface CloudObservation {ubiquitous:boolean;uploaded?:boolean;uploading?:boolean;downloaded?:string;errorCode?:number;state:string;remoteChecksumVerified:false}
 export interface CloudRequest {privateRoot?:string;connectionGeneration?:string;action:'pick'|'probe'|'create'|'list'|'read'|'write'|'status'|'hydrate'|'watch'|'inventory'|'remove-exact'|'retire-pending';destinationVersion?:1|2;jobId?:string;binding?:CloudBinding;destinationId?:string;stagingId?:string;path?:string;bytes?:number;sha256?:string;maxBytes?:number}
+export interface CloudAcceptanceRequest extends Omit<CloudRequest,'action'> {action:'qa-observe-parent'|'qa-create-child'|'qa-join-child';spec?:unknown;workspace?:unknown;selectedScope?:'parent'|'child';evidence?:unknown}
+export interface CloudAcceptanceNative {acceptance(request:CloudAcceptanceRequest,signal?:AbortSignal):Promise<unknown>}
 export interface CloudNative {
  json(request:CloudRequest,signal?:AbortSignal):Promise<unknown>;
  stream(request:CloudRequest,max:number,signal?:AbortSignal):AsyncIterable<Uint8Array>;
@@ -35,23 +37,29 @@ export function cloudHeader(value:unknown):{format:'heed-portable-library';schem
 export function cloudBinding(value:unknown):CloudBinding {const b=value as CloudBinding;if(!b||Object.keys(b).sort().join(',')!=='account,bookmark,identity'||![b.account,b.bookmark].every(v=>typeof v==='string'&&v.length>0&&v.length<=65536&&/^[A-Za-z0-9+/]+=*$/.test(v))||typeof b.identity!=='string'||!/^\d+:\d+$/.test(b.identity))throw cloudUnavailable();return b;}
 export class MacCloudNative implements CloudNative {
  constructor(private helper=fileURLToPath(new URL('../../../desktop/icloud-folder/.build/heed-icloud',import.meta.url))){}
- private async spawn(request:CloudRequest,signal?:AbortSignal){
+ private async spawn(request:CloudRequest|CloudAcceptanceRequest,signal?:AbortSignal){
   signal?.throwIfAborted();const process=track(Bun.spawn([this.helper],{stdin:'pipe',stdout:'pipe',stderr:'pipe'}));
   const diagnostic=boundedOutput(process.stderr,4096).catch(()=>null);let termination:ReturnType<typeof setTimeout>|undefined;
   const abort=()=>{try{process.kill('SIGTERM');}catch{}termination??=setTimeout(()=>{try{process.kill('SIGKILL');}catch{}},1000);};
-  const timer=setTimeout(abort,request.action==='pick'?120000:Math.min(3600000,30000+Math.ceil((request.bytes??request.maxBytes??0)/1_000_000)*1000));signal?.addEventListener('abort',abort,{once:true});
+  const timer=setTimeout(abort,request.action==='pick'||request.action==='qa-create-child'||request.action==='qa-join-child'?120000:Math.min(3600000,30000+Math.ceil((request.bytes??request.maxBytes??0)/1_000_000)*1000));signal?.addEventListener('abort',abort,{once:true});
   const clean=()=>{clearTimeout(timer);if(termination)clearTimeout(termination);signal?.removeEventListener('abort',abort);};
   try{process.stdin.write(JSON.stringify(request)+'\n');}catch{abort();await process.exited;await diagnostic;clean();throw cloudUnavailable();}
   return {process,diagnostic,abort,clean};
  }
- private async *read(request:CloudRequest,max:number,signal?:AbortSignal,typed=false){
-  const {process,diagnostic,abort,clean}=await this.spawn(request,signal);let size=0;
+ private async *read(request:CloudRequest|CloudAcceptanceRequest,max:number,signal?:AbortSignal,typed=false){
+  const {process,diagnostic,abort,clean}=await this.spawn(request,signal);let size=0;let failure:unknown;
   try{process.stdin.end();for await(const chunk of process.stdout){signal?.throwIfAborted();size+=chunk.length;if(size>max)throw cloudUnavailable();yield chunk;}
    const exit=await process.exited;signal?.throwIfAborted();if(exit!==0)throw typed?nativeFailure(await diagnostic):cloudUnavailable();
-  }finally{abort();await process.exited;await diagnostic;clean();}
+  }catch(error){failure=error;throw error;}finally{abort();await process.exited;await diagnostic;clean();if(request.action.startsWith('qa-')&&failure instanceof Error)Object.defineProperty(failure,'guardianStopped',{value:true,enumerable:false});}
  }
  stream(request:CloudRequest,max:number,signal?:AbortSignal){return this.read(request,max,signal);}
  async json(request:CloudRequest,signal?:AbortSignal){const chunks:Uint8Array[]=[];for await(const chunk of this.read(request,['list','inventory'].includes(request.action)?2_000_000:150000,signal,true))chunks.push(chunk);try{return JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{throw cloudUnavailable();}}
+ async acceptance(request:CloudAcceptanceRequest,signal?:AbortSignal):Promise<unknown>{
+  const keys=request.action==='qa-observe-parent'?['action','binding']:request.action==='qa-create-child'?['action','binding','connectionGeneration','spec','workspace','selectedScope']:request.action==='qa-join-child'?['action','binding','connectionGeneration','spec','workspace','selectedScope','evidence']:[];
+  if(!keys.length||Object.keys(request).sort().join(',')!==keys.sort().join(',')||Buffer.byteLength(JSON.stringify(request))>150000)throw cloudUnavailable();cloudBinding(request.binding);
+  const chunks:Uint8Array[]=[];for await(const chunk of this.read(request,150000,signal,true))chunks.push(chunk);
+  try{return JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{throw cloudUnavailable();}
+ }
  async write(request:CloudRequest,source:AsyncIterable<Uint8Array>,signal?:AbortSignal){
   const {process,diagnostic,abort,clean}=await this.spawn(request,signal);const response=boundedOutput(process.stdout,4096).catch(()=>null);let size=0;
   try{for await(const chunk of source){signal?.throwIfAborted();size+=chunk.length;if(size>(request.bytes??0))throw cloudUnavailable();

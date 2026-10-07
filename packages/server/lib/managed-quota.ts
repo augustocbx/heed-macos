@@ -21,7 +21,9 @@ export interface QuotaSnapshot {
  categories:Record<ManagedCategory,number>;
 }
 export interface QuotaPreview extends QuotaSnapshot {requestedLimit:number;removals:Array<{path:string;bytes:number}>;token:string}
+export interface QuotaLedgerStorage {load():unknown|null;save(value:unknown):void}
 interface Options {
+ ledgerStorage?:QuotaLedgerStorage;
  ledgerPath:string;roots:Partial<Record<ManagedCategory,string[]>>;getLimit:()=>number;setLimit:(bytes:number)=>void;
  protectedPaths:()=>string[];onEvicted?:(paths:string[])=>void;
 }
@@ -31,9 +33,11 @@ export class ManagedQuota {
  private reservations:Record<string,Reservation>={};
  private atomicWrites:Record<string,{path:string;temporary:string;allocationId:string}>={};
  constructor(private options:Options){
-  mkdirSync(dirname(options.ledgerPath),{recursive:true,mode:0o700});
-  if(existsSync(options.ledgerPath)){
-   const ledger=JSON.parse(readFileSync(options.ledgerPath,'utf8'));
+  if(!options.ledgerStorage)mkdirSync(dirname(options.ledgerPath),{recursive:true,mode:0o700});
+  const pathnameExists=options.ledgerStorage?false:existsSync(options.ledgerPath);
+  const stored=options.ledgerStorage?options.ledgerStorage.load():pathnameExists?JSON.parse(readFileSync(options.ledgerPath,'utf8')):null;
+  if(options.ledgerStorage?stored!==null:pathnameExists){
+   const ledger=stored as {version:number;reservations:Record<string,Reservation>;atomicWrites?:Record<string,{path:string;temporary:string;allocationId:string}>};
    if(ledger.version!==1 || !ledger.reservations || typeof ledger.reservations!=='object')throw new Error('Invalid quota reservation ledger; retain it for recovery');
    for(const [id,entry] of Object.entries(ledger.reservations)){
     const item=entry as Reservation;
@@ -64,7 +68,7 @@ export class ManagedQuota {
    if(recovered)this.persist();
   }
  }
- private persist(){atomicWriteJson(this.options.ledgerPath,{version:1,reservations:this.reservations,atomicWrites:this.atomicWrites});}
+ private persist(){const value={version:1,reservations:this.reservations,atomicWrites:this.atomicWrites};if(this.options.ledgerStorage)this.options.ledgerStorage.save(value);else atomicWriteJson(this.options.ledgerPath,value);}
  private managedPath(path:string):boolean{
   const target=resolve(path);
   return Object.values(this.options.roots).flat().some(root=>{

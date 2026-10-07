@@ -301,3 +301,12 @@ export function validateDirectContext(value: unknown): DirectSmbTransactionConte
 		throw directSmbError('invalid-input');
 	return c as unknown as DirectSmbTransactionContext;
 }
+
+/** Explicit QA-only startup interface; ordinary native test doubles remain unchanged. */
+export interface DirectSmbAcceptanceRequest {
+ action:'qa-observe-parent'|'qa-create-child'|'qa-join-child';
+ endpoint:DirectSmbEndpoint;credentials:DirectSmbCredentials;
+ identity?:DirectSmbIdentity;binding?:DirectSmbBinding;spec?:unknown;workspace?:unknown;
+ selectedScope?:'parent'|'child';evidence?:unknown;
+}
+export interface DirectSmbAcceptanceNative {acceptance(request:DirectSmbAcceptanceRequest,signal?:AbortSignal):Promise<unknown>}

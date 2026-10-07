@@ -128,6 +128,7 @@ func requireHeader(_ files: ScopedFiles, destinationId: String?, version: Int = 
     guard let destinationId = destinationId, let value = try header(files), value["destinationId"] as? String == destinationId, value["schemaVersion"] as? Int == version else { throw CloudFailure("Library identity changed") }
 }
 struct CloudRequest: Decodable {
+    var acceptanceFrame: Data?
     let action: String
     let binding: CloudBinding?
     let path: String?
@@ -146,7 +147,16 @@ func dictionaryJSON(_ value: Any) throws { FileHandle.standardOutput.write(try J
 func readRequest() throws -> CloudRequest {
     var header = Data()
     while let byte = try FileHandle.standardInput.read(upToCount: 1), !byte.isEmpty {
-        if byte[0] == 10 { return try JSONDecoder().decode(CloudRequest.self, from: header) }
+        if byte[0] == 10 {
+            var request = try JSONDecoder().decode(CloudRequest.self, from: header)
+            if request.action.hasPrefix("qa-") {
+                let value = try acceptanceJSON(header)
+                let expected = request.action == "qa-observe-parent" ? ["action","binding"] : request.action == "qa-create-child" ? ["action","binding","connectionGeneration","spec","workspace","selectedScope"] : request.action == "qa-join-child" ? ["action","binding","connectionGeneration","spec","workspace","selectedScope","evidence"] : []
+                guard !expected.isEmpty,Set(value.keys)==Set(expected),let rawBinding=value["binding"] as? [String:Any],Set(rawBinding.keys)==Set(["bookmark","account","identity"]) else {throw CloudFailure("Invalid acceptance request")}
+                request.acceptanceFrame=header
+            }
+            return request
+        }
         header.append(byte); guard header.count <= 2_100_000 else { throw CloudFailure("Request too large") }
     }
     throw CloudFailure("Incomplete request")
@@ -173,6 +183,13 @@ func runtime() throws {
     let request = try readRequest()
     if request.action == "pick" { try outputJSON(selectedBinding()); return }
     guard let binding = request.binding else { throw CloudFailure("Missing folder binding") }
+    if request.action.hasPrefix("qa-") {
+        if request.action == "qa-observe-parent" {try dictionaryJSON(acceptanceObserve(binding));return}
+        guard let frame=request.acceptanceFrame,let generation=request.connectionGeneration else {throw CloudFailure("Acceptance request unavailable")}
+        let value=try acceptanceJSON(frame)
+        guard let spec=value["spec"] as? [String:Any],let workspace=value["workspace"] as? [String:Any],value["selectedScope"] as? String == (request.action == "qa-create-child" ? "parent":"child") else {throw CloudFailure("Invalid acceptance preparation")}
+        try dictionaryJSON(acceptanceBootstrap(action:request.action,binding:binding,generation:generation,spec:spec,workspace:workspace,evidence:value["evidence"] as? [String:Any]));return
+    }
     try withBinding(binding) { root in
         switch request.action {
         case "probe":

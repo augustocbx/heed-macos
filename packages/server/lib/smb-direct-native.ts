@@ -1,3 +1,4 @@
+import type {DirectSmbAcceptanceRequest} from './smb-direct-types';
 import type {PendingRemoteTransaction} from './portable-provider';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomBytes } from 'node:crypto';
@@ -103,7 +104,7 @@ function rpcValue(action: string, value: Record<string, unknown>) {
 	return value;
 }
 /** Validate duplicate keys as well as JSON syntax before interpreting a helper frame. */
-function decodeFrame(data: Uint8Array): Record<string, unknown> {
+export function decodeFrame(data: Uint8Array): Record<string, unknown> {
 	try {
 		const raw = new TextDecoder('utf-8', { fatal: true }).decode(data);
 		if (raw.includes('\r')) throw directSmbError('invalid-protocol');
@@ -579,6 +580,7 @@ export class PythonDirectSmbNative implements DirectSmbNative {
 		transaction: boolean,
 		signal?: AbortSignal,
 		decode?: (value: unknown) => T,
+        timeoutMs=this.timeoutMs,
 	) {
 		if (signal?.aborted) throw stoppedFailure(signal.reason, true);
 		let child: Child;
@@ -593,7 +595,7 @@ export class PythonDirectSmbNative implements DirectSmbNative {
 				throw stoppedFailure(error, signal?.aborted && error === signal.reason);
 			throw responseError((error as { code?: unknown })?.code);
 		}
-		const session = new DirectRpcSession(child, this.timeoutMs, signal);
+		const session = new DirectRpcSession(child, timeoutMs, signal);
 		try {
 			const probe = await session.startup<T>(
 				{ protocol: 1, ...request },
@@ -629,6 +631,20 @@ export class PythonDirectSmbNative implements DirectSmbNative {
 		await session.close();
 		return result;
 	}
+    async acceptance(request:DirectSmbAcceptanceRequest,signal?:AbortSignal):Promise<unknown>{
+        this.prelaunch(()=>{
+            const keys=request.action==='qa-observe-parent'?['action','endpoint','credentials','identity']:request.action==='qa-create-child'?['action','endpoint','credentials','binding','spec','workspace','selectedScope']:request.action==='qa-join-child'?['action','endpoint','credentials','binding','spec','workspace','selectedScope','evidence']:[];
+            exactObject(request,keys);validateDirectEndpoint(request.endpoint);validateDirectCredentials(request.credentials);
+            if(!keys.length||Buffer.byteLength(JSON.stringify({protocol:1,...request}))>65535)throw directSmbError('invalid-input');
+            if(request.action==='qa-observe-parent')validateDirectIdentity(request.identity);
+            else validateDirectBinding(request.binding);
+        });
+        const {session,probe}=await this.start<unknown>(request as unknown as Record<string,unknown>,false,signal,value=>{
+            if(Buffer.byteLength(JSON.stringify(value))>150000)throw directSmbError('invalid-protocol');return value;
+        },Math.min(this.timeoutMs,request.action==='qa-observe-parent'?30000:120000));
+        return this.oneshot(session,()=>probe);
+    }
+
 	async pending(
 		binding: DirectSmbBinding,
 		appDir: string,

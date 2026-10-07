@@ -13,6 +13,7 @@ func protocolTests() throws {
         guard issue == (domain == "UnknownPrivateDomain" ? .unavailable : .permissionDenied) else { throw CloudFailure("Only known permission domains may classify a failure") }
     }
     guard cloudIssue(NSError(domain: NSCocoaErrorDomain, code: 999999, userInfo: [NSLocalizedDescriptionKey: "iCloud account changed " + sentinel])) == .unavailable else { throw CloudFailure("Raw descriptions cannot classify failures") }
+    try acceptanceObserverTests();try acceptanceOwnershipTests();try acceptanceQueryTests()
     try remoteDeletionTests(); try admissionRecoveryTests()
     func check(_ value: Bool, _ message: String) throws { if !value { throw CloudFailure(message) } }
     func rejects(_ operation: () throws -> Void) throws {
@@ -110,4 +111,83 @@ func admissionRecoveryTests() throws {
     refused=false;do {let copied=try CloudAdmission(privateRoot:copiedRoot.path,generation:"original",remoteIdentity:files.identity,path:path,bytes:data.count,hash:digest(data));try write(copied)}catch {refused=true};guard refused else {throw CloudFailure("Copied private receipt cannot grant admission authority")}
     let target=root.appendingPathComponent(path);try FileManager.default.removeItem(at:target);try data.write(to:target)
     refused=false;do {try write(receipt())}catch {refused=true};guard refused else {throw CloudFailure("Replicated equal bytes with a new inode must not recover")}
+}
+
+func acceptanceObserverTests() throws {
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("heed-qa-observer-\(UUID().uuidString)").resolvingSymlinksInPath()
+    try FileManager.default.createDirectory(at: base, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: base) }
+    let files = try ScopedFiles(root: base)
+    let bookmark = try base.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+    let binding = CloudBinding(bookmark: bookmark.base64EncodedString(), account: Data("synthetic".utf8).base64EncodedString(), identity: files.identity)
+    var accounts = 0, starts = 0, stops = 0, resolutions = 0
+    let environment = AcceptanceEnvironment(resolve: { data, options, stale in
+        guard options.contains(.withoutUI), options.contains(.withoutMounting), options.contains(.withSecurityScope) else { throw CloudFailure("Observer resolution must suppress mounts and UI") }
+        resolutions += 1
+        return try URL(resolvingBookmarkData: data, options: options, relativeTo: nil, bookmarkDataIsStale: &stale)
+    }, account: { _ in accounts += 1 }, ubiquitous: { _ in true }, start: { _ in starts += 1; return true }, stop: { _ in stops += 1 })
+    let result = try acceptanceObserve(binding, environment: environment)
+    guard result["identity"] as? String == files.identity, accounts >= 2, resolutions == 1, starts == 1, stops == 1,
+          !FileManager.default.fileExists(atPath: base.appendingPathComponent("heed-library.json").path),
+          try FileManager.default.contentsOfDirectory(atPath: base.path).isEmpty else { throw CloudFailure("Metadata observer must not create state") }
+    var refused = false
+    do { _ = try acceptanceObserve(CloudBinding(bookmark:binding.bookmark,account:binding.account,identity:"1:2"),environment:environment) } catch { refused = true }
+    guard refused, starts == stops else { throw CloudFailure("Changed identity refuses with balanced scope") }
+    refused = false
+    do { _ = try acceptanceJSON(Data("{\"action\":\"qa-observe-parent\",\"action\":\"probe\"}".utf8)) } catch { refused = true }
+    guard refused else { throw CloudFailure("Duplicate action must refuse") }
+}
+
+func acceptanceOwnershipTests() throws {
+    let base=URL(fileURLWithPath:"/private/tmp").appendingPathComponent("heed-qa-ownership-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at:base,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700]);defer {try? FileManager.default.removeItem(at:base)}
+    let parent=base.appendingPathComponent("parent");try FileManager.default.createDirectory(at:parent,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])
+    let run=UUID().uuidString.lowercased(),destination=UUID().uuidString.lowercased()
+    let spec:[String:Any]=["version":1,"runId":run,"destinationId":destination,"provider":"icloud","destinationVersion":2,"child":"heed-qa-\(run)","aliases":["a","b"],"locales":["en","pt"],"fixtureSchema":1,"fixtureHash":String(repeating:"a",count:64)]
+    func workspace(_ name:String) throws -> [String:Any] {
+        let root=base.appendingPathComponent(name)
+        for url in [root,root.appendingPathComponent("acceptance"),root.appendingPathComponent("quota")] {try FileManager.default.createDirectory(at:url,withIntermediateDirectories:false,attributes:[.posixPermissions:0o700])}
+        let names=["guard","receipt","checkpoint","parent-binding","child-binding"].map {root.appendingPathComponent("acceptance/\($0)").path}.sorted()
+        let ledger:[String:Any]=["version":1,"reservations":["qa-ledger-\(run)":["bytes":8192,"paths":[]],"qa-bootstrap-\(run)":["bytes":332768,"paths":names]],"atomicWrites":[:]]
+        let file=root.appendingPathComponent("quota/ledger");try JSONSerialization.data(withJSONObject:ledger).write(to:file);try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:file.path)
+        return ["path":root.path,"identity":try acceptanceLocalDescriptor(root),"receipts":try acceptanceLocalDescriptor(root.appendingPathComponent("acceptance")),"quota":try acceptanceLocalDescriptor(root.appendingPathComponent("quota"))]
+    }
+    let environment=AcceptanceEnvironment(resolve:{data,options,stale in try URL(resolvingBookmarkData:data,options:options,relativeTo:nil,bookmarkDataIsStale:&stale)},account:{_ in},ubiquitous:{_ in true},start:{$0.startAccessingSecurityScopedResource()},stop:{$0.stopAccessingSecurityScopedResource()})
+    func binding(_ url:URL) throws -> CloudBinding {CloudBinding(bookmark:try url.bookmarkData(options:.withSecurityScope,includingResourceValuesForKeys:nil,relativeTo:nil).base64EncodedString(),account:Data("synthetic-account".utf8).base64EncodedString(),identity:try ScopedFiles(root:url).identity)}
+    let a=try workspace("a"),parentBinding=try binding(parent)
+    let first=try acceptanceBootstrap(action:"qa-create-child",binding:parentBinding,generation:"fixture-generation",spec:spec,workspace:a,evidence:nil,environment:environment,machine:{"synthetic-physical-a"})
+    guard FileManager.default.fileExists(atPath:(a["path"] as! String)+"/acceptance/parent-binding"),FileManager.default.fileExists(atPath:(a["path"] as! String)+"/acceptance/child-binding") else {throw CloudFailure("Private acceptance bindings must be durable")}
+    let second=try acceptanceBootstrap(action:"qa-create-child",binding:parentBinding,generation:"fixture-generation",spec:spec,workspace:a,evidence:nil,environment:environment,machine:{"synthetic-physical-a"})
+    guard first["phase"] as? String=="initialized",second["phase"] as? String=="initialized" else {throw CloudFailure("Original allocated child must resume")}
+    let child=parent.appendingPathComponent("heed-qa-\(run)"),childFiles=try ScopedFiles(root:child)
+    guard try header(childFiles)?["destinationId"] as? String==destination else {throw CloudFailure("Actual v2 header required")}
+    let b=try workspace("b"),childBinding=try binding(child)
+    let evidence:[String:Any]=["runId":run,"destinationId":destination,"provider":"icloud","destinationVersion":2,"child":"heed-qa-\(run)","initialized":true]
+    let joined=try acceptanceBootstrap(action:"qa-join-child",binding:childBinding,generation:"participant-generation",spec:spec,workspace:b,evidence:evidence,environment:environment,machine:{"synthetic-physical-b"})
+    guard joined["role"] as? String=="participant" else {throw CloudFailure("Independent participant role required")}
+    var refused=false
+    do {_=try acceptanceBootstrap(action:"qa-create-child",binding:parentBinding,generation:"fixture-generation",spec:spec,workspace:a,evidence:nil,environment:environment,machine:{"copied-physical-device"})}catch{refused=true}
+    guard refused else {throw CloudFailure("Copied device authority must refuse")}
+    let receiptURL=URL(fileURLWithPath:(a["path"] as! String)+"/acceptance/receipt")
+    let original=try Data(contentsOf:receiptURL);var invalid=try acceptanceJSON(original);invalid["phase"]="joined"
+    try JSONSerialization.data(withJSONObject:invalid).write(to:receiptURL)
+    var resolutions=0;var guarded=environment;guarded.resolve={_,_,_ in resolutions+=1;throw CloudFailure("Unexpected resolution")}
+    refused=false;do {_=try acceptanceBootstrap(action:"qa-create-child",binding:parentBinding,generation:"fixture-generation",spec:spec,workspace:a,evidence:nil,environment:guarded,machine:{"synthetic-physical-a"})}catch{refused=true}
+    guard refused,resolutions==0 else {throw CloudFailure("Creator cannot resume participant phase")}
+    try original.write(to:receiptURL)
+    invalid=try acceptanceJSON(original);invalid["phase"]="allocating";invalid["child"]=NSNull();invalid["childFile"]=NSNull()
+    try JSONSerialization.data(withJSONObject:invalid).write(to:receiptURL)
+    refused=false;do {_=try acceptanceBootstrap(action:"qa-create-child",binding:parentBinding,generation:"fixture-generation",spec:spec,workspace:a,evidence:nil,environment:guarded,machine:{"synthetic-physical-a"})}catch{refused=true}
+    guard refused,resolutions==0,FileManager.default.fileExists(atPath:child.path) else {throw CloudFailure("Ambiguous child must retain and refuse before resolution")}
+    var malformed=spec;malformed["fixtureSchema"]=true;refused=false;do {_=try acceptanceSpec(malformed)}catch{refused=true}
+    guard refused else {throw CloudFailure("Boolean schema must refuse")}
+
+}
+
+func acceptanceQueryTests() throws {
+    let value=try acceptancePhysicalQuery(executable:URL(fileURLWithPath:"/usr/bin/printf"),arguments:["\"IOPlatformUUID\" = \"11111111-1111-4111-8111-111111111111\""])
+    guard value=="11111111-1111-4111-8111-111111111111" else {throw CloudFailure("Synthetic query failed")}
+    let started=ProcessInfo.processInfo.systemUptime;var refused=false
+    do {_=try acceptancePhysicalQuery(executable:URL(fileURLWithPath:"/bin/sleep"),arguments:["3"],timeout:0.05)}catch{refused=true}
+    guard refused,ProcessInfo.processInfo.systemUptime-started<1 else {throw CloudFailure("Owned query deadline must kill and reap")}
 }
