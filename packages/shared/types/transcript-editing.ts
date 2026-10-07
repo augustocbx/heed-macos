@@ -1,9 +1,11 @@
 import type { Segment, TranscriptionDiagnostics } from "./speaker.ts";
+import type { TranscribeResult } from "./api.ts";
 
 export interface TranscriptGuard {
  expectedTranscriptRevision: string;
  expectedTranscriptVersion: number;
 }
+export interface CandidateInput { requestId: string; base: TranscriptGuard; result: TranscribeResult; }
 export type TranscriptTarget = { kind: "segment"; index: number } | { kind: "document" };
 export interface ReplaceInput {
  query: string;

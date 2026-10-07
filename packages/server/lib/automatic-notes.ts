@@ -6,6 +6,7 @@ import type { Session, SessionPatch } from "../../shared/types/session";
 import type { AutomaticNotesSettings, NotesJob } from "../../shared/types/notes";
 import type { Template } from "../../shared/types/template";
 import { SessionTags, TagError, acceptedSourceChanged, checkTranscriptGuard, normalizeNotesSource, sourcePatch, speakerOnly } from "./session-tags";
+import { applyCandidateAcceptance, transcriptOperationReceipt, validateTranscriptRequestId } from "./transcript-service";
 import type { TranscriptCommand, TranscriptGuard } from "../../shared/types/transcript-editing";
 import { applyTextCommand, normalizeTranscriptSession, renderAcceptedTranscript, transcriptCommandSignature } from "./transcript-editing";
 import { sanitizeTranscriptionDiagnostics } from "./final-recording";
@@ -115,14 +116,15 @@ export class AutomaticNotesService {
   return saved;
  }
  commitTranscript(id: string, command: TranscriptCommand): Session {
-  if (!command || typeof command.requestId !== "string" || !command.requestId.trim() || command.requestId.length > 128) throw new TagError("Invalid transcript request ID");
+  if (!command || typeof command !== "object") throw new TagError("Invalid transcript command");
+  validateTranscriptRequestId(command.requestId);
   const current = this.require(id), signature = transcriptCommandSignature(command);
-  const receipt = current.transcriptEditing?.edits.find(edit => edit.requestId === command.requestId);
+  const receipt = transcriptOperationReceipt(current, command.requestId);
   if (receipt) {
    if (receipt.requestSignature !== signature) throw new TagError("Transcript request ID was reused with different contents", 409);
    return current;
   }
-  if (command.action === "accept-candidate") throw new TagError("Candidate acceptance is not available yet");
+  if (command.action === "accept-candidate") return this.replaceAccepted(id, command, current => applyCandidateAcceptance(current, command, this.timestamp()));
   return this.replaceAccepted(id, command, current => applyTextCommand(current, command, this.timestamp()));
  }
  replaceAccepted(id: string, guard: TranscriptGuard, build: (current: Session) => Session): Session {
