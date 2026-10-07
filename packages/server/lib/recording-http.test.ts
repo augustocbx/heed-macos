@@ -208,7 +208,10 @@ test("restart recovery finalizes and saves once without any browser, preserving 
 test("completed status hydrates current meeting edits and never resurrects a deleted meeting",async()=>{
  const manifest = join(directory,"recording-manifest.json");
  const persisted = readFileSync(manifest,"utf8");
- const updated = await request("/api/sessions?id=recovery-fixture",{speakers:["Ana Silva"],segments:[{speaker:"Ana Silva",channel:"sys",text:"Bom dia",start:0,end:2.25}],aiNotes:"User-edited notes"},undefined,"PATCH");
+ const current = (await request("/api/sessions")).body.find((session: {id:string}) => session.id === "recovery-fixture");
+ const renamed = await request("/api/sessions?id=recovery-fixture",{expectedTranscriptRevision:current.transcriptRevision,expectedTranscriptVersion:current.transcriptVersion,speakers:["Ana Silva"],segments:current.segments.map((segment:Record<string,unknown>)=>({...segment,speaker:"Ana Silva",auto:false}))},undefined,"PATCH");
+ expect(renamed.status).toBe(200);
+ const updated = await request("/api/sessions?id=recovery-fixture",{expectedTranscriptRevision:renamed.body.transcriptRevision,expectedTranscriptVersion:renamed.body.transcriptVersion,expectedNotes:renamed.body.aiNotes,aiNotes:"User-edited notes"},undefined,"PATCH");
  expect(updated.status).toBe(200);
  for (const snapshot of [
   (await request("/api/recording/status")).body,

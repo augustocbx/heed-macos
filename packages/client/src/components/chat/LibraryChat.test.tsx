@@ -15,7 +15,7 @@ function context(scope:LibraryChatScope):LibraryChatContext{
  const snapshot={key:scope.mode==='all'?'all-key':scope.match==='all'?'both-key':'narrow-key',scope,sources:ids.map(sessionId=>({sessionId,title:sessionId==='secret'?'Planning secret':sessionId,tags:['Entrevistas'],sourceRevision:sessionId==='meeting-a'?'source-a':'source-b'}))};
  return {preview:{snapshot,ready:ids.length>0,matchingCount:ids.length,unavailableCount:0,availableLabels:['Entrevistas','Planejamento']},thread:{id:scope.mode==='all'?'all-thread':'label-thread',revision:'thread-one',scope,turns:scope.mode==='all'?[{id:'broad-turn',requestId:'broad',question:'Broad question',model:'local',sourceRevision:'all-key',snapshot,status:'completed',createdAt:'now',updatedAt:'now',attempts:1,answer:{claims:[{text:'BROAD_SECRET_ANSWER',citations:[evidence]}],coverage:{complete:false,reviewedChunks:2,totalChunks:8,answerLimited:false}}}]:[]}};
 }
-beforeEach(()=>{vi.clearAllMocks();localStorage.clear();useLocaleStore.setState({locale:'en'});useSessionsStore.setState({viewing:null});useUIStore.setState({currentPage:'chat'});vi.mocked(chatApi.models).mockResolvedValue({models:['local']});vi.mocked(libraryChatApi.context).mockImplementation(async(scope)=>context(scope));vi.mocked(libraryChatApi.command).mockImplementation(async(scope)=>context(scope).thread);vi.mocked(libraryChatApi.source).mockResolvedValue({id:'meeting-a',title:'Source meeting',transcriptRevision:'source-a',transcriptFinalized:true,files:{}} as Session);});
+beforeEach(()=>{vi.clearAllMocks();localStorage.clear();useLocaleStore.setState({locale:'en'});useSessionsStore.setState({sessions:[],viewing:null});useUIStore.setState({currentPage:'chat'});vi.mocked(chatApi.models).mockResolvedValue({models:['local']});vi.mocked(libraryChatApi.context).mockImplementation(async(scope)=>context(scope));vi.mocked(libraryChatApi.command).mockImplementation(async(scope)=>context(scope).thread);vi.mocked(libraryChatApi.source).mockResolvedValue({id:'meeting-a',title:'Source meeting',transcriptRevision:'source-a',transcriptFinalized:true,files:{}} as Session);});
 
 test('empty scope remains unready and selecting multiple labels previews visible any/all inclusion',async()=>{
  render(<LibraryChat/>);await screen.findByRole('button',{name:'Entrevistas'});expect(screen.getByText('Choose labels or explicitly select All meetings before asking.')).toBeInTheDocument();
@@ -66,4 +66,32 @@ test('waiting answers identify changing blockers while preserving evidence and s
  expect(screen.getByText('BROAD_SECRET_ANSWER')).toBeInTheDocument();
  fireEvent.click(screen.getByRole('button',{name:'Cancel answer'}));
  await waitFor(()=>expect(libraryChatApi.command).toHaveBeenCalledWith(result.thread.scope,{action:'cancel',turnId:'waiting-turn'}));
+});
+
+test('a held citation source response cannot restore discarded candidates or an old title',async()=>{
+ const candidate={id:'discarded',requestId:'stage',requestSignature:'sig',createdAt:'2026-10-06T12:00:00Z',baseGuard:{expectedTranscriptRevision:'source-a',expectedTranscriptVersion:1},transcript:'Candidate',segments:[],speakers:[],language:'en',duration:1};
+ const old={id:'meeting-a',title:'Old title',createdAt:candidate.createdAt,duration:1,language:'en',transcript:'Current',segments:[],speakers:[],tags:[],pinned:false,aiNotes:'',summary:'',transcriptVersion:1,transcriptRevision:'source-a',transcriptEditing:{schemaVersion:1 as const,activeGenerationId:'g',generations:[],edits:[],candidates:[candidate],candidateRequestReceipts:[]}};
+ useSessionsStore.setState({sessions:[old]});let finish!:(session:Session)=>void;
+ vi.mocked(libraryChatApi.source).mockImplementation(()=>new Promise(resolve=>finish=resolve));
+ localStorage.setItem('heed-library-chat-scope',JSON.stringify({mode:'all',labels:[],match:'any'}));
+ render(<LibraryChat/>);await screen.findByText('BROAD_SECRET_ANSWER');fireEvent.click(screen.getByRole('button',{name:/meeting-a.*12s/}));
+ const current={...old,title:'Renamed',transcriptEditing:{...old.transcriptEditing,candidates:[]}};
+ const accepted=useSessionsStore.getState().accept(current);
+ useSessionsStore.setState({sessions:[{...accepted,title:"Renamed"}]});finish(old);
+ await waitFor(()=>expect(useUIStore.getState().currentPage).toBe('sessions'));
+ expect(useSessionsStore.getState().viewing).toBe(useSessionsStore.getState().sessions[0]);
+ expect(useSessionsStore.getState().viewing).toMatchObject({title:'Renamed',transcriptEditing:{candidates:[]}});
+});
+
+test('a newer citation source synchronizes accepted cache while retaining independently saved metadata',async()=>{
+ const old={id:'meeting-a',title:'Renamed',createdAt:'2026-10-06T12:00:00Z',duration:1,language:'en',transcript:'Current',segments:[],speakers:[],tags:['Current tag'],pinned:true,aiNotes:'',summary:'',transcriptVersion:2,transcriptRevision:'source-a'};
+ useSessionsStore.setState({sessions:[old]});let finish!:(session:Session)=>void;
+ vi.mocked(libraryChatApi.source).mockImplementation(()=>new Promise(resolve=>finish=resolve));
+ localStorage.setItem('heed-library-chat-scope',JSON.stringify({mode:'all',labels:[],match:'any'}));
+ render(<LibraryChat/>);await screen.findByText('BROAD_SECRET_ANSWER');fireEvent.click(screen.getByRole('button',{name:/meeting-a.*12s/}));
+ finish({...old,title:'Old response title',tags:[],pinned:false,transcriptVersion:3});
+ await waitFor(()=>expect(useUIStore.getState().currentPage).toBe('sessions'));
+ expect(useSessionsStore.getState().sessions[0]).toMatchObject({transcriptVersion:3,title:'Renamed',tags:['Current tag'],pinned:true});
+ useSessionsStore.getState().accept(old);
+ expect(useSessionsStore.getState().viewing?.transcriptVersion).toBe(3);
 });

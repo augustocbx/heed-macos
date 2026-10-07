@@ -51,6 +51,7 @@ interface Props {
  playbackTime?: number|null;
  focusedSegmentIndex?: number;
  onSeek?: (seconds:number)=>void;
+ onEditText?: (index:number)=>void;
 }
 
 export function SpeakerView({
@@ -66,6 +67,7 @@ export function SpeakerView({
  playbackTime,
  focusedSegmentIndex,
  onSeek,
+ onEditText,
 }: Props) {
 	useLocale();
 	const showToast = useUIStore((s) => s.showToast);
@@ -210,9 +212,10 @@ export function SpeakerView({
        onKeyDown={canSeek ? event=>{
         if(event.key==='Enter'||event.key===' '){event.preventDefault();onSeek?.(seg.start);}
        } : undefined}>
-							{animateLast ? <TypewriterText text={seg.text} speed={25} /> : seg.text}
+							{animateLast ? <TypewriterText text={seg.text} speed={25} /> : seg.text || (onEditText ? tr('Empty transcript text') : '')}
 							{animateLast && <span className={styles.cursor} />}
 						</div>
+      {onEditText&&<button type="button" className={styles.editText} disabled={editingDisabled} onClick={()=>onEditText(i)}>{tr('Edit segment {number}',undefined,{number:i+1})}</button>}
 					</div>
 				);
 			})}

@@ -42,6 +42,7 @@ import { track, gracefulStop, installShutdownHooks } from "./lib/process.ts";
 import { sseResponse } from "./lib/sse.ts";
 import { sessionAudioResponse } from "./lib/session-audio.ts";
 import { SessionTags, TagError, tagResponse } from "./lib/session-tags.ts";
+import { TranscriptEditingError } from "./lib/transcript-editing.ts";
 const sessionTags = new SessionTags(SESSIONS_DIR);
 import { RecordingCoordinator } from "./lib/recording-coordinator.ts";
 import {ProcessingMaintenance, retainProcessingStream} from './lib/processing-maintenance.ts';
@@ -49,6 +50,8 @@ import type { FinalCapture, RecordingSnapshot } from "../shared/types/recording-
 import { DesktopPermissions, permissionRecoverySummary, desktopRequestAllowed as permissionRequestAllowed, permissionAction, permissionReport } from "./lib/desktop-permissions.ts";
 import { removeChannelCopies } from "./lib/audio-retention.ts";
 import {validManagedLimit} from './lib/managed-quota.ts';
+import {TranscriptService} from './lib/transcript-service.ts';
+import {transcriptEditingResponse} from './lib/transcript-editing-http.ts';
 import {createAppQuota} from './lib/app-storage.ts';
 import {reserveCapture,reserveFinalization,releaseCapture} from './lib/capture-quota.ts';
 import { type CaptureMode, nativeCaptureCommand, nativeRecordingCommand, verifyNativeHandshake, isNativeProtocolLine } from "./lib/native-capture.ts";
@@ -158,7 +161,7 @@ const managedQuota=createAppQuota({
  },
 });
 
-portableRuntime=new PortableLibraryRuntime({root:LIBRARY_DIR,sessions:sessionTags,sessionsDir:SESSIONS_DIR,recordingsDir:UPLOAD_DIR,quota:managedQuota,protectedPaths:captureProtectedPaths});
+portableRuntime=new PortableLibraryRuntime({root:LIBRARY_DIR,sessions:sessionTags,sessionsDir:SESSIONS_DIR,recordingsDir:UPLOAD_DIR,quota:managedQuota,protectedPaths:captureProtectedPaths,replaceAccepted:(id,guard,build)=>notesService.replaceAccepted(id,guard,build)});
 /** Connectors lease this single catalog owner for their entire provider tick. */
 export function getPortableLibrary(){return portableRuntime!.get();}
 /** Device preference lives outside the portable schema and managed-meeting quota. */
@@ -1144,7 +1147,7 @@ async function handleDesktopFloat(): Promise<Response> {
 // --- Sessions CRUD ---
 function sessionError(error: unknown): Response {
  const message = error instanceof Error ? error.message : "Could not save the meeting.";
- const status = error instanceof TagError ? error.status : (error as { code?: string })?.code || error instanceof SyntaxError ? 500 : /not found/i.test(message) ? 404 : /changed|replacement|already running/i.test(message) ? 409 : 400;
+ const status = error instanceof TagError || error instanceof TranscriptEditingError ? error.status : (error as { code?: string })?.code || error instanceof SyntaxError ? 500 : /not found/i.test(message) ? 404 : /changed|replacement|already running/i.test(message) ? 409 : 400;
  return Response.json({error:message},{status});
 }
 function handleListSessions(): Response { try { return Response.json(notesService.list()); } catch (error) { return sessionError(error); } }
@@ -2493,6 +2496,7 @@ const tasksService: MeetingTasksService = new MeetingTasksService({
  isBusy:() => processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || chatService.busy || libraryChatService.busy || chatPending(),
  generate:(session,signal) => generateTaskSuggestions(session,signal,{baseUrl:OLLAMA_HOST,model:getCurrentModel() || "",numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))}),
 });
+const transcriptService = new TranscriptService({notes:notesService,store:sessionTags});
 notesService.recover();
 const chatService: MeetingChatService = new MeetingChatService({
  directory:join(APP_DIR,"chat"), getSession:id=>notesService.get(id),
@@ -2624,6 +2628,8 @@ const server = Bun.serve({
   if(chatResponse)return chatResponse;
   const libraryChatResult=await libraryChatResponse(req,libraryChatService,desktopRequestAllowed(req));
   if(libraryChatResult)return libraryChatResult;
+  const transcriptResult=await transcriptEditingResponse(req,transcriptService,desktopRequestAllowed(req));
+  if(transcriptResult)return transcriptResult;
 
   if (url.pathname === "/api/tasks") return tasksResponse(req,tasksService,PORT);
   if (url.pathname === "/api/recording/settings") return handleRecordingSettings(req);
