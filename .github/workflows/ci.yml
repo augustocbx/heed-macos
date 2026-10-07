@@ -69,3 +69,7 @@ jobs:
           bash packages/desktop/install-menubar.sh --build-only
           swiftc -O -target "$(uname -m)-apple-macos14.0" packages/desktop/macos/*.swift -o "$RUNNER_TEMP/heed-packaged-menu-check" -framework AppKit
           (cd "$RUNNER_TEMP" && ./heed-packaged-menu-check --self-test)
+      - name: Production transcript correction browser and storage workflow
+        run: |
+          bunx playwright install chromium
+          node scripts/qa/transcript-corrections-ui.mjs --output "$RUNNER_TEMP/transcript-corrections-ui"
