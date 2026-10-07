@@ -443,7 +443,7 @@ struct MenuLocalization {
             "A recording command is already pending": "Ein Aufnahmebefehl wartet bereits auf Ausführung"
         ]
     ]
-    static func text(_ key: String, locale: String) -> String { translations[normalize(locale)]?[key] ?? MeetingModeLocalization.translations[key]?[normalize(locale)] ?? LiveLanguageLocalization.translations[key]?[normalize(locale)] ?? key }
+    static func text(_ key: String, locale: String) -> String { translations[normalize(locale)]?[key] ?? MeetingModeLocalization.translations[key]?[normalize(locale)] ?? LiveLanguageLocalization.translations[key]?[normalize(locale)] ?? ScreenCaptureGuideLocalization.translations[key]?[normalize(locale)] ?? key }
     static func format(_ key: String, locale: String, value: String) -> String {
         String(format: text(key, locale: locale), value)
     }

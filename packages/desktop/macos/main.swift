@@ -192,6 +192,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private var lastPermissionCommandID: String?
     private let permissionReports = SerializedPermissionReports()
     private var screenCaptureRecovery = ScreenCaptureRecovery(arguments: CommandLine.arguments)
+    private lazy var screenPermissionGuide = ScreenCaptureGuideWindow()
     private let slackAccessMenu = NSMenuItem(title: "Allow Slack log access…", action: #selector(authorizeSlackLogs), keyEquivalent: "")
     private let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
@@ -524,8 +525,13 @@ final class MenuController: NSObject, NSApplicationDelegate {
     }
     @objc private func openScreenSettings() {
         if updateQARoot() != nil { poll(); return }
-        if !screenCaptureAuthorized { _ = CGRequestScreenCaptureAccess() }
-        openPrivacyPane("Privacy_ScreenCapture")
+        switch ScreenCaptureActionRoute.forPreflight(screenCaptureAuthorized) {
+        case .directPane:
+            openPrivacyPane("Privacy_ScreenCapture")
+        case .guidedReplacement:
+            _ = CGRequestScreenCaptureAccess()
+            showScreenPermissionGuide(openPane: true)
+        }
     }
     @objc private func recheckPermissions() {
         if updateQARoot() != nil {
@@ -569,8 +575,14 @@ final class MenuController: NSObject, NSApplicationDelegate {
                 }
             } else { openPrivacyPane("Privacy_Microphone"); finish(nil) }
         case "screenCapture":
-            if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
-            openPrivacyPane("Privacy_ScreenCapture"); finish(nil)
+            switch ScreenCaptureActionRoute.forPreflight(CGPreflightScreenCaptureAccess()) {
+            case .directPane:
+                openPrivacyPane("Privacy_ScreenCapture")
+            case .guidedReplacement:
+                _ = CGRequestScreenCaptureAccess()
+                showScreenPermissionGuide(openPane: true)
+            }
+            finish(nil)
         case "recoverScreenCapture":
             if screenCaptureRecovery.consumeResume(commandID: request.id, action: request.action) {
                 if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
@@ -755,7 +767,14 @@ final class MenuController: NSObject, NSApplicationDelegate {
         alert.messageText = text("Recording permissions")
         alert.informativeText = text("Enable Heed under System Settings > Privacy & Security > Microphone and Screen & System Audio Recording. If capture remains unavailable, turn the affected permission off and on, then quit and reopen Heed. A restricted microphone requires your device administrator. Reauthorize Slack or shared folders only if their access no longer works. Heed never resets permissions automatically.")
         alert.addButton(withTitle: text("Settings and permissions…")); alert.addButton(withTitle: text("Close"))
-        if alert.runModal() == .alertFirstButtonReturn {openSettings()}
+        if alert.runModal() == .alertFirstButtonReturn { openSettings() }
+    }
+    private func showScreenPermissionGuide(openPane: Bool) {
+        screenPermissionGuide.didRecheck = { [weak self] in
+            self?.recheckPermissions()
+        }
+        screenPermissionGuide.show(locale: locale)
+        if openPane { openPrivacyPane("Privacy_ScreenCapture") }
     }
     @objc private func toggleSlackAuto() { configureDetection(app: "slack", enabled: !slackAutoEnabled) }
     @objc private func toggleMeetingAuto(_ sender: NSMenuItem) {
@@ -826,6 +845,7 @@ if CommandLine.arguments.contains("--update-client-self-test") {
     try updateClientSelfTests()
     print("Heed update client fixture self-tests passed")
 } else if CommandLine.arguments.contains("--self-test") {
+    try screenCaptureGuideSelfTests()
     permissionRecoverySelfTests()
     serializedPermissionReportSelfTests()
     try updateSelfTests()

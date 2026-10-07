@@ -27,6 +27,8 @@ describe('permission settings', () => {
   expect(await screen.findByRole('alert')).toHaveTextContent('Authorization canceled');
   expect(screen.getByRole('button', { name: 'Open microphone settings' })).toBeEnabled();
   expect(screen.getByRole('button', { name: 'Open system audio settings' })).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Open system audio settings' }));
+  expect(await screen.findByText('Complete authorization in the macOS window. This page checks permissions automatically.')).toBeInTheDocument();
  });
  it('shows missing permissions and sends each authorization to the native app', async () => {
   snapshot = state({ ...authorized, microphone: 'denied', screenCapture: false, slackLogs: false });
@@ -36,6 +38,17 @@ describe('permission settings', () => {
    fireEvent.click(screen.getByRole('button', { name }));
    await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.body === JSON.stringify({ action }))).toBe(true));
    await waitFor(() => expect(screen.getByRole('button', { name })).toBeEnabled());
+  }
+ });
+ it('points system audio requests to the native replacement guide without claiming access', async () => {
+  snapshot = state({ ...authorized, screenCapture: false });
+  render(<PermissionsPage />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Authorize system audio' }));
+  expect(await screen.findByText('Follow the Heed guide beside System Settings, then check permission again in that window.')).toBeInTheDocument();
+  expect(screen.getByText('Permissions needed')).toBeInTheDocument();
+  expect(screen.queryByText('Permissions authorized')).not.toBeInTheDocument();
+  for (const locale of ['pt-BR', 'fr', 'de'] as const) {
+   expect(tr('Follow the Heed guide beside System Settings, then check permission again in that window.', locale)).not.toBe('Follow the Heed guide beside System Settings, then check permission again in that window.');
   }
  });
  it('does not treat unknown states or optional Slack access as authorization', async () => {
