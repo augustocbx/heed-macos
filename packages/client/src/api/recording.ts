@@ -1,12 +1,13 @@
+import type {VocabularySelection} from '@heed/shared';
 import type { SystemRecordStartResponse, RecordingSnapshot } from "@heed/shared";
 import { apiClient } from "./client.ts";
 
 export const recordingApi = {
-	start: (mode: "mic" | "system" | "both" = "both", requestId:string=crypto.randomUUID()) =>
-		apiClient.post<SystemRecordStartResponse & {snapshot?:RecordingSnapshot}>("/api/sysrecord/start", { mode, requestId }),
- recordFinalOnly: async (mode: "mic" | "system" | "both" = "both", requestId:string=crypto.randomUUID()) => {
+	start: (mode: "mic" | "system" | "both" = "both", requestId:string=crypto.randomUUID(),vocabulary?:VocabularySelection) =>
+		apiClient.post<SystemRecordStartResponse & {snapshot?:RecordingSnapshot}>("/api/sysrecord/start", { mode, requestId, ...(vocabulary?{vocabulary}:{}) }),
+ recordFinalOnly: async (mode: "mic" | "system" | "both" = "both", requestId:string=crypto.randomUUID(),vocabulary?:VocabularySelection) => {
   await apiClient.post("/api/recording/settings", {enabled:false});
-  try{return await recordingApi.start(mode,requestId);}
+  try{return await recordingApi.start(mode,requestId,vocabulary);}
   catch(error){if(error instanceof Error)Object.assign(error,{persistedOff:true});throw error;}
  },
 	stop: (meetingId:string,requestId:string=crypto.randomUUID()) => apiClient.post<{

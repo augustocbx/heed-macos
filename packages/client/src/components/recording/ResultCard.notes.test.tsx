@@ -57,3 +57,5 @@ test.each([true,false])('all-empty accepted source disables derived notes on GPU
 test('result view can review durable drafts without saved audio or another recognition call',()=>{
  const base={expectedTranscriptRevision:'r',expectedTranscriptVersion:0};useSessionsStore.setState({sessions:[{...session,transcriptEditing:{schemaVersion:1,activeGenerationId:'g',generations:[],edits:[],candidateRequestReceipts:[],candidates:[{id:'draft',createdAt:'2026-10-06',requestId:'stage',requestSignature:'sig',baseGuard:base,transcript:'Pending draft',segments:[],speakers:[],language:'pt',duration:1}]}}]});vi.stubGlobal('fetch',vi.fn());render(<ResultCard/>);fireEvent.click(screen.getByRole('button',{name:'Review new transcript'}));expect(screen.getByText('Pending draft')).toBeVisible();expect(screen.getByRole('button',{name:'Start transcription'})).toBeDisabled();expect(fetch).not.toHaveBeenCalled();
 });
+
+vi.mock('@/components/recording/VocabularySelection',()=>({VocabularySelection:()=>null}));

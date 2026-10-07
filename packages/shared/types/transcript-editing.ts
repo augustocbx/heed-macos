@@ -26,6 +26,8 @@ export interface RecognitionGeneration {
  speakers: string[];
  language: string;
  transcriptionModel?: string;
+ vocabularyRun?: import('./vocabulary').VocabularyRun;
+ liveVocabularyRuns?: import('./vocabulary').VocabularyRun[];
  duration: number;
  transcriptionDiagnostics?: TranscriptionDiagnostics;
 }

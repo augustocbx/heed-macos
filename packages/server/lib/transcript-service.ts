@@ -1,3 +1,4 @@
+import {validateVocabularyRun} from '../../shared/lib/vocabulary';
 import { createHash, randomUUID } from "node:crypto";
 import type { Session } from "../../shared/types/session";
 import type { Segment, TranscriptionDiagnostics } from "../../shared/types/speaker";
@@ -52,6 +53,7 @@ function candidateFields(raw: unknown, sanitize: (value: unknown) => Transcripti
  }
  const diagnostics = sanitize(raw.transcriptionDiagnostics);
  return { transcript: raw.text, segments, speakers, language: raw.metadata.language as string, transcriptionModel: raw.metadata.model as string, duration: raw.duration as number,
+  ...(raw.metadata.vocabularyRun?{vocabularyRun:validateVocabularyRun(raw.metadata.vocabularyRun)}:{}),
   ...(embeddings !== undefined ? { embeddings } : {}), ...(diagnostics ? { transcriptionDiagnostics: diagnostics } : {}) };
 }
 /** Acceptance is a pure builder; the notes service owns the single guarded source commit. */
@@ -69,7 +71,7 @@ export function applyCandidateAcceptance(current: Session, command: Extract<Tran
  const generation = { ...recognized, ...mapped, id: candidate.id, createdAt: now, origin: "recognition" as const };
  // Embeddings belong only to current accepted state, not recognition recovery history.
  const { embeddings: _historyEmbeddings, ...history } = generation;
- return { ...current, transcript: candidate.transcript, ...mapped, language: candidate.language, duration: candidate.duration, transcriptionModel: candidate.transcriptionModel, transcriptionDiagnostics: candidate.transcriptionDiagnostics, transcriptFinalized: true,
+ return { ...current, transcript: candidate.transcript, ...mapped, language: candidate.language, duration: candidate.duration, transcriptionModel: candidate.transcriptionModel, vocabularyRun:candidate.vocabularyRun, liveVocabularyRuns:undefined, transcriptionDiagnostics: candidate.transcriptionDiagnostics, transcriptFinalized: true,
   transcriptEditing: { ...state, activeGenerationId: candidate.id, generations: [...state.generations, history], candidates: state.candidates.filter(value => value.id !== candidate.id), candidateRequestReceipts: [...state.candidateRequestReceipts,
    { requestId, requestSignature, candidateId: candidate.id, status: "accepted" }, { requestId: command.requestId, requestSignature: transcriptCommandSignature(command), candidateId: candidate.id, status: "accepted" }] } };
 }

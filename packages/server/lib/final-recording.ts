@@ -1,3 +1,4 @@
+import {validateVocabularyRun} from '../../shared/lib/vocabulary';
 import type { TranscriptionChannelDiagnostics, TranscriptionDiagnostics, TranscriptionWarning } from "../../shared/types/speaker.ts";
 
 const levelFields = ["rawRms", "rawPeak", "cleanedRms"] as const;
@@ -38,7 +39,7 @@ export function finalRecordingResult(fin: any, path: string) {
  const text = segments.map((t: any) => t.text).join("\n");
  const transcriptionDiagnostics=sanitizeTranscriptionDiagnostics(fin.diagnostics);
  return { success: true, finalized: true, duration:typeof fin.duration === "number" && Number.isFinite(fin.duration) && fin.duration >= 0 ? fin.duration : undefined, text, segments, speakers: [...new Set(segments.map((t: any) => t.speaker))], embeddings: fin.embeddings || {}, autoNamed,
-  metadata: { language: fin.language as "en" | "pt", model: fin.model || "parakeet-v3" }, files: { wav: path, srt: "", txt: "" }, wordCount: text.split(/\s+/).filter(Boolean).length,
+  metadata: { language: fin.language as "en" | "pt", model: fin.model || "parakeet-v3", ...(fin.vocabularyRun?{vocabularyRun:validateVocabularyRun(fin.vocabularyRun)}:{}) }, files: { wav: path, srt: "", txt: "" }, wordCount: text.split(/\s+/).filter(Boolean).length,
   ...(transcriptionDiagnostics ? {transcriptionDiagnostics} : {}) };
 }
 

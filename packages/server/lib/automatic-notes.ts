@@ -1,3 +1,4 @@
+import {validateVocabularyRun} from '../../shared/lib/vocabulary';
 import type { AiWaitingReason } from "@heed/shared";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -81,7 +82,7 @@ export class AutomaticNotesService {
   const id = input.id || (input.files?.wav ? `recording-${notesHash(input.files.wav).slice(0, 32)}` : `session-${randomUUID()}`);
   const existing = this.get(id); if (existing) return existing;
   const transcriptionDiagnostics=sanitizeTranscriptionDiagnostics(input.transcriptionDiagnostics);
-  const session: Session = { id, title: input.title || "Untitled meeting", createdAt: input.createdAt || this.timestamp(), duration: input.duration || 0, language: input.language || "en", transcript: input.transcript || "", speakers: input.speakers || [], segments: input.segments || [], aiNotes: input.aiNotes || "", summary: input.summary || "", tags: input.tags || [], pinned: !!input.pinned, files: input.files, embeddings: input.embeddings, transcriptionModel: input.transcriptionModel, liveModel: input.liveModel, transcriptFinalized: input.transcriptFinalized === true };
+  const session: Session = { id, title: input.title || "Untitled meeting", createdAt: input.createdAt || this.timestamp(), duration: input.duration || 0, language: input.language || "en", transcript: input.transcript || "", speakers: input.speakers || [], segments: input.segments || [], aiNotes: input.aiNotes || "", summary: input.summary || "", tags: input.tags || [], pinned: !!input.pinned, files: input.files, embeddings: input.embeddings, transcriptionModel: input.transcriptionModel, liveModel: input.liveModel, transcriptFinalized: input.transcriptFinalized === true, ...(input.vocabularyRun?{vocabularyRun:validateVocabularyRun(input.vocabularyRun)}:{}), ...(input.liveVocabularyRuns?{liveVocabularyRuns:input.liveVocabularyRuns.map(validateVocabularyRun)}:{}) };
   if(transcriptionDiagnostics) session.transcriptionDiagnostics=transcriptionDiagnostics;
   if (session.segments.length) session.transcript = renderAcceptedTranscript(session.segments);
   session.transcriptRevision = sourceRevision(session);

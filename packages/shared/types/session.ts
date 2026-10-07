@@ -18,6 +18,8 @@ export interface Session {
 	duration: number;
 	language: string;
  transcriptionModel?: string;
+ vocabularyRun?: import('./vocabulary').VocabularyRun;
+ liveVocabularyRuns?: import('./vocabulary').VocabularyRun[];
  liveModel?: string;
 	transcript: string;
 	speakers: string[];

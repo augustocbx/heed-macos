@@ -129,7 +129,7 @@ export function transcriptRecoveryState(session: Session, now: string): Transcri
  const diagnostics = sanitizeTranscriptionDiagnostics(session.transcriptionDiagnostics);
  return { schemaVersion: 1, activeGenerationId: id, generations: [{ id, createdAt: now, origin: "legacy-preserved", transcript: session.transcript,
   segments: structuredClone(session.segments), speakers: [...session.speakers], language: session.language, duration: session.duration,
-  ...(session.transcriptionModel !== undefined ? { transcriptionModel: session.transcriptionModel } : {}), ...(diagnostics ? { transcriptionDiagnostics: diagnostics } : {}) }],
+  ...(session.transcriptionModel !== undefined ? { transcriptionModel: session.transcriptionModel } : {}), ...(session.vocabularyRun?{vocabularyRun:structuredClone(session.vocabularyRun)}:{}), ...(session.liveVocabularyRuns?{liveVocabularyRuns:structuredClone(session.liveVocabularyRuns)}:{}), ...(diagnostics ? { transcriptionDiagnostics: diagnostics } : {}) }],
   edits: [], candidates: [], candidateRequestReceipts: [] };
 }
 /** No persistence, version increment, timestamps on the session, or derived-state invalidation. */

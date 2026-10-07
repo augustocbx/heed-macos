@@ -1,0 +1,9 @@
+.panel {min-width:0;max-width:700px;margin:16px auto;padding:18px;border:1px solid var(--border);border-radius:12px;background:var(--white);color:var(--text);}
+.panel legend {font-weight:600;padding:0 8px;}
+.panel label {display:grid;gap:8px;margin:12px 0;font-weight:600;}
+.panel select,.panel textarea {width:100%;min-width:0;box-sizing:border-box;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--white);color:var(--text);font:inherit;}
+.panel textarea {min-height:76px;resize:vertical;}
+.panel p {font-size:13px;line-height:1.5;overflow-wrap:anywhere;margin:10px 0 0;color:var(--text-2);}
+.panel select:focus-visible,.panel textarea:focus-visible {outline:3px solid var(--blue-light);outline-offset:2px;}
+.panel:disabled {opacity:.7;}
+@media(max-width:640px){.panel{padding:12px;margin:12px 0;}}

@@ -335,3 +335,5 @@ test("generated fallback labels do not replace newly available speaker attributi
     "System (unattributed)",
   ]);
 });
+
+vi.mock('@/components/recording/VocabularySelection',()=>({VocabularySelection:()=>null}));
