@@ -1,4 +1,4 @@
-import type { Segment } from "./speaker.ts";
+import type { Segment, TranscriptionDiagnostics } from "./speaker.ts";
 import type { Session } from "./session.ts";
 
 export type CaptureMode = "both" | "mic" | "system";
@@ -11,6 +11,7 @@ export interface FinalCapture {
   liveModel?: string;
   turns: Segment[];
   embeddings?: Record<string, number[]>;
+  transcriptionDiagnostics?: TranscriptionDiagnostics;
 }
 export interface RecordingSnapshot {
   meetingId: string | null;

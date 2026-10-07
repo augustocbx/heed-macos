@@ -4,7 +4,8 @@ import { RecoveryBanner } from "./RecoveryBanner";
 import { useRecordingStore } from "@/stores/recording";
 
 const orphan = {path:"/recordings/capture.wav",created:"2026-10-05T10:00:00Z",duration_estimate_s:20,size_mb:1,is_dual:true};
-const result = {success:true,finalized:true,text:"Bom dia",metadata:{language:"pt",model:"small"},speakers:["Ana"],segments:[{speaker:"Ana",text:"Bom dia",start:0,end:2,channel:"sys"}],files:{wav:orphan.path}};
+const diagnostics={version:1,aecApplied:false,channels:{mic:{rawRms:.03,rawPeak:2000,cleanedRms:.03,asrSegments:1,diarizationSegments:0,usableEmbeddings:0,retainedSegments:1,discardedSegments:0,discardReasons:{},fallbackSegments:1,diarizationFailed:true}},warnings:['microphone-attribution-fallback']};
+const result = {transcriptionDiagnostics:diagnostics,success:true,finalized:true,text:"Bom dia",metadata:{language:"pt",model:"small"},speakers:["Ana"],segments:[{speaker:"Ana",text:"Bom dia",start:0,end:2,channel:"sys"}],files:{wav:orphan.path}};
 beforeEach(() => { useRecordingStore.getState().reset(); });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -18,7 +19,7 @@ test("recovery saves only after the complete authoritative stream with the detec
  }));
  render(<RecoveryBanner/>);
  fireEvent.click(await screen.findByRole("button",{name:"Recover"}));
- await waitFor(() => expect(patch).toMatchObject({transcriptFinalized:true,language:"pt",speakers:["Ana"]}));
+ await waitFor(() => expect(patch).toMatchObject({transcriptionDiagnostics:diagnostics,transcriptFinalized:true,language:"pt",speakers:["Ana"]}));
 });
 
 test("a result followed by a final stream error does not create an automatic job", async () => {

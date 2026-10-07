@@ -41,6 +41,7 @@ export interface TranscribeResult {
 	success: true;
  finalized?: boolean;
  duration?: number;
+ transcriptionDiagnostics?: import("./speaker.ts").TranscriptionDiagnostics;
 	text: string;
 	files: { wav: string; srt: string; txt: string };
 	metadata: { language: string; model: string };

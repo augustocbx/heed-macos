@@ -1,5 +1,20 @@
 /** UI translations; source English is the fallback. Recorded speech and user names are unchanged. */
 export const CONTENT_TRANSLATIONS: Record<string, {"pt-BR": string; fr: string; de: string}> = {
+  "All recognized microphone text was filtered as possible echo. Check the saved audio and transcript.": {
+    "pt-BR": "Todo o texto reconhecido do microfone foi filtrado como possível eco. Confira o áudio salvo e a transcrição.",
+    "fr": "Tout le texte reconnu du microphone a été filtré comme écho possible. Vérifiez l’audio enregistré et la transcription.",
+    "de": "Der gesamte erkannte Mikrofontext wurde als mögliches Echo gefiltert. Prüfen Sie die gespeicherte Aufnahme und das Transkript."
+  },
+  "Some microphone speech has uncertain speaker labels. Review the transcript and speaker names.": {
+    "pt-BR": "Algumas falas do microfone têm identificação de falante incerta. Revise a transcrição e os nomes dos falantes.",
+    "fr": "L’identité du locuteur est incertaine pour certaines paroles du microphone. Vérifiez la transcription et les noms des locuteurs.",
+    "de": "Bei einigen Mikrofonbeiträgen ist die Sprecherzuordnung unsicher. Prüfen Sie das Transkript und die Sprechernamen."
+  },
+  "Some participant speech has uncertain speaker labels. Review the transcript and speaker names.": {
+    "pt-BR": "Algumas falas dos participantes têm identificação de falante incerta. Revise a transcrição e os nomes dos falantes.",
+    "fr": "L’identité du locuteur est incertaine pour certaines paroles des participants. Vérifiez la transcription et les noms des locuteurs.",
+    "de": "Bei einigen Teilnehmerbeiträgen ist die Sprecherzuordnung unsicher. Prüfen Sie das Transkript und die Sprechernamen."
+  },
   "Could not display the transcript. Your recording is safe.": {
     "pt-BR": "Não foi possível exibir a transcrição. Sua gravação está segura.",
     "fr": "Impossible d’afficher la transcription. Votre enregistrement est conservé.",
