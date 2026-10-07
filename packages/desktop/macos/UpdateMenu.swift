@@ -51,7 +51,7 @@ final class UpdateMenu: NSObject {
     private let menu = NSMenu()
     private let installedVersionItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     var check: (() -> Void)?; var install: (() -> Void)?; var retry: (() -> Void)?
-    var permissions: (() -> Void)?; var settings: (() -> Void)?; var guidance: (() -> Void)?
+    var permissions: (() -> Void)?; var settings: (() -> Void)?; var guidance: (() -> Void)?; var screenGuide: (() -> Void)?
     private var snapshot = UpdateSnapshot()
     private var home = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".heed")
     func render(_ snapshot: UpdateSnapshot, build: InstalledMenuBuild?, locale: String) {
@@ -111,5 +111,5 @@ final class UpdateMenu: NSObject {
     @objc private func notesAction() {if let url = notesURL {NSWorkspace.shared.open(url)}}
     @objc private func logAction() {if let url = validLog {NSWorkspace.shared.open(url)}}
     @objc private func microphoneSettings() {NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)}
-    @objc private func screenSettings() {NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)}
+    @objc private func screenSettings() {screenGuide?()}
 }
