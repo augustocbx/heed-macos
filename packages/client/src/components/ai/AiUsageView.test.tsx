@@ -8,7 +8,7 @@ const entry: AiUsageEntry = { attemptId: 'attempt-1', reservationId: 'reservatio
 beforeEach(() => setLocale('en'));
 test.each(['en', 'pt-BR', 'fr', 'de'] as const)('distinguishes estimates, provider counts, charges and invoices in %s', locale => {
  setLocale(locale); render(<AiUsageView snapshot={snapshot} />);
- for (const text of ['Usage on this Mac', 'Token estimates use provider-reported counts and dated prices. They are estimates, not invoices; conditional fees may be missing.', 'Provider-reported request charges are separate from token estimates and are not a final invoice. Do not add these amounts together.', 'Input and output totals already include cache and reasoning subsets. Missing or unsupported counts are unknown, not zero.', 'These controls apply only to Heed on this Mac. They cannot cap your entire provider account; provider invoices may differ.']) expect(screen.getByText(tr(text, locale))).toBeInTheDocument();
+ for (const text of ['Usage on this Mac', 'Token estimates use provider-reported counts and dated prices. They are estimates, not invoices; conditional fees may be missing.', 'Provider-reported request charges are separate from token estimates and are not a final invoice. Do not add these amounts together.', 'Reported token categories may overlap; inclusion in input or output totals is not established for every provider. Do not add the categories together. Missing or unsupported counts are unknown, not zero.', 'These controls apply only to Heed on this Mac. They cannot cap your entire provider account; provider invoices may differ.']) expect(screen.getByText(tr(text, locale))).toBeInTheDocument();
  expect(screen.getByText(tr('No attempts are shown. This does not prove there are no charges outside Heed.', locale))).toBeInTheDocument();
 });
 test('does not add held amounts twice or invent remaining balance', () => {
@@ -26,7 +26,8 @@ test.each(['en', 'pt-BR', 'fr', 'de'] as const)('keeps cancelled charged attempt
  const microAmounts = { en: '$0.000001', 'pt-BR': 'US$ 0,000001', fr: '0,000001 $US', de: '0,000001 $' };
  expect(within(cancelled).getAllByText(microAmounts[locale])).toHaveLength(3);
  expect(within(cancelled).getByText(tr('Input: {input}; output: {output}', locale, { input: '10', output: '8' }))).toBeInTheDocument();
- expect(within(cancelled).getByText(tr('Included subsets — cached input: {cached}; cache writes: {writes}; reasoning: {reasoning}', locale, { cached: '3', writes: tr('Unknown', locale), reasoning: '2' }))).toBeInTheDocument();
+ expect(within(cancelled).getByText(tr('Reported categories — cached input: {cached}; cache writes: {writes}; reasoning: {reasoning}', locale, { cached: '3', writes: tr('Unknown', locale), reasoning: '2' }))).toBeInTheDocument();
+ expect(screen.queryByText(/Included subsets/)).not.toBeInTheDocument();
  expect(within(rows[2]).getByText('2')).toBeInTheDocument(); expect(within(rows[2]).getByText(tr('Timeout', locale))).toBeInTheDocument();
 });
 test('marks unknown whole-attempt liability even when token prices are known and omits arbitrary content/secrets', () => {

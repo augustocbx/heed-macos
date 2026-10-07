@@ -264,11 +264,6 @@ export const AI_TRANSLATIONS: Record<string, Record<'pt-BR' | 'fr' | 'de', strin
   "fr": "Les frais de requête signalés par le fournisseur sont distincts des estimations de jetons et ne constituent pas une facture finale. N’additionnez pas ces montants.",
   "de": "Vom Anbieter gemeldete Anfragekosten sind von Token-Schätzungen getrennt und keine endgültige Rechnung. Diese Beträge nicht addieren."
  },
- "Input and output totals already include cache and reasoning subsets. Missing or unsupported counts are unknown, not zero.": {
-  "pt-BR": "Os totais de entrada e saída já incluem os subconjuntos de cache e raciocínio. Contagens ausentes ou não compatíveis são desconhecidas, não zero.",
-  "fr": "Les totaux d’entrée et de sortie incluent déjà les sous-ensembles de cache et de raisonnement. Les comptages manquants ou non pris en charge sont inconnus, pas nuls.",
-  "de": "Eingabe- und Ausgabetotale enthalten bereits Cache- und Reasoning-Teilmengen. Fehlende oder nicht unterstützte Zählungen sind unbekannt, nicht null."
- },
  "Active period start": {
   "pt-BR": "Início do período ativo",
   "fr": "Début de la période active",
@@ -453,11 +448,6 @@ export const AI_TRANSLATIONS: Record<string, Record<'pt-BR' | 'fr' | 'de', strin
   "pt-BR": "Entrada: {input}; saída: {output}",
   "fr": "Entrée : {input} ; sortie : {output}",
   "de": "Eingabe: {input}; Ausgabe: {output}"
- },
- "Included subsets — cached input: {cached}; cache writes: {writes}; reasoning: {reasoning}": {
-  "pt-BR": "Subconjuntos incluídos — entrada em cache: {cached}; gravações em cache: {writes}; raciocínio: {reasoning}",
-  "fr": "Sous-ensembles inclus — entrée en cache : {cached} ; écritures de cache : {writes} ; raisonnement : {reasoning}",
-  "de": "Enthaltene Teilmengen — Cache-Eingabe: {cached}; Cache-Schreibvorgänge: {writes}; Reasoning: {reasoning}"
  },
  "Prices exclude taxes and negotiated terms.": {
   "pt-BR": "Preços não incluem impostos nem condições negociadas.",
@@ -648,5 +638,15 @@ export const AI_TRANSLATIONS: Record<string, Record<'pt-BR' | 'fr' | 'de', strin
   "pt-BR": "store:false desativa o armazenamento de estado de Responses, não a retenção de auditoria; ZDR exige um acordo separado.",
   "fr": "store:false désactive le stockage d’état de Responses, pas la conservation d’audit ; ZDR nécessite un accord distinct.",
   "de": "store:false deaktiviert die Responses-Zustandsspeicherung, nicht die Audit-Speicherung; ZDR erfordert eine gesonderte Vereinbarung."
+ },
+ "Reported token categories may overlap; inclusion in input or output totals is not established for every provider. Do not add the categories together. Missing or unsupported counts are unknown, not zero.": {
+  "pt-BR": "As categorias de tokens informadas podem se sobrepor; a inclusão nos totais de entrada ou saída não está estabelecida para todos os provedores. Não some as categorias. Contagens ausentes ou não compatíveis são desconhecidas, não zero.",
+  "fr": "Les catégories de jetons signalées peuvent se chevaucher ; leur inclusion dans les totaux d’entrée ou de sortie n’est pas établie pour tous les fournisseurs. N’additionnez pas les catégories. Les comptages manquants ou non pris en charge sont inconnus, pas nuls.",
+  "de": "Gemeldete Token-Kategorien können sich überschneiden; ihre Einbeziehung in Eingabe- oder Ausgabetotale ist nicht für jeden Anbieter nachgewiesen. Kategorien nicht addieren. Fehlende oder nicht unterstützte Zählungen sind unbekannt, nicht null."
+ },
+ "Reported categories — cached input: {cached}; cache writes: {writes}; reasoning: {reasoning}": {
+  "pt-BR": "Categorias informadas — entrada em cache: {cached}; gravações em cache: {writes}; raciocínio: {reasoning}",
+  "fr": "Catégories signalées — entrée en cache : {cached} ; écritures de cache : {writes} ; raisonnement : {reasoning}",
+  "de": "Gemeldete Kategorien — Cache-Eingabe: {cached}; Cache-Schreibvorgänge: {writes}; Reasoning: {reasoning}"
  }
 };

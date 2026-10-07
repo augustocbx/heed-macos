@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, afterEach, expect, test, vi } from 'vitest';
 import type { AiBudgetPolicy, AiPreset } from '@heed/shared';
 import { ApiError } from '@/api/client';
@@ -61,6 +61,63 @@ test('refreshes from a newly supplied authoritative policy', () => {
  const { rerender } = render(<AiSpendingSettings policy={policy} onSave={vi.fn()} />);
  rerender(<AiSpendingSettings policy={{ ...policy, jobLimitMicroUsd: 3 }} onSave={vi.fn()} />);
  expect(screen.getByLabelText('Job limit (USD)')).toHaveValue('0.000003');
+});
+test('preserves an edited draft when the parent supplies an equivalent policy object', () => {
+ const save = vi.fn(); const { rerender } = render(<AiSpendingSettings policy={policy} onSave={save} />);
+ fireEvent.change(screen.getByLabelText('Job limit (USD)'), { target: { value: '2.000001' } });
+ rerender(<AiSpendingSettings policy={{ ...policy }} onSave={save} />);
+ expect(screen.getByLabelText('Job limit (USD)')).toHaveValue('2.000001');
+});
+test('preserves rejected-save draft and feedback across equivalent policy refreshes', async () => {
+ const save = vi.fn().mockRejectedValue(new ApiError('ignored', 503, 'budget-unavailable'));
+ const { rerender } = render(<AiSpendingSettings policy={policy} onSave={save} />);
+ fireEvent.change(screen.getByLabelText('Job limit (USD)'), { target: { value: '2.000001' } }); submit();
+ await screen.findByRole('alert'); rerender(<AiSpendingSettings policy={{ ...policy }} onSave={save} />);
+ expect(screen.getByLabelText('Job limit (USD)')).toHaveValue('2.000001');
+ expect(screen.getByRole('alert')).toHaveTextContent('Spending records are unavailable.');
+});
+test('retains rejected anchor repair across an equivalent authoritative refresh', async () => {
+ vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(1800000000000);
+ const future = { ...policy, periodStart: 1800000100000 };
+ const save = vi.fn().mockRejectedValueOnce(new ApiError('ignored', 400, 'invalid-budget-policy')).mockImplementationOnce(async (next: AiBudgetPolicy) => next);
+ const { rerender } = render(<AiSpendingSettings policy={future} onSave={save} />);
+ fireEvent.click(screen.getByRole('button', { name: 'Use current time as period start' })); submit(); await screen.findByRole('alert');
+ rerender(<AiSpendingSettings policy={{ ...future }} onSave={save} />);
+ expect(screen.getByRole('alert')).toHaveTextContent('The spending policy was rejected.');
+ expect(screen.getByText('The period start has changed in this draft. Save to apply it.')).toBeInTheDocument();
+ submit(); await screen.findByRole('status'); expect(save.mock.calls[1][0].periodStart).toBe(1800000000000);
+});
+function deferredSave() {
+ let resolve!: (value: AiBudgetPolicy) => void; let reject!: (error: unknown) => void;
+ const promise = new Promise<AiBudgetPolicy>((success, failure) => { resolve = success; reject = failure; });
+ return { promise, resolve, reject, save: vi.fn(() => promise) };
+}
+test.each(['success', 'failure'] as const)('ignores obsolete save %s after a meaningful authoritative update', async outcome => {
+ const pending = deferredSave(); const { rerender } = render(<AiSpendingSettings policy={policy} onSave={pending.save} />);
+ fireEvent.change(screen.getByLabelText('Job limit (USD)'), { target: { value: '2.000001' } }); submit();
+ const newer = { ...policy, jobLimitMicroUsd: 3000001, periodDays: 7, periodStart: policy.periodStart + 1000 };
+ rerender(<AiSpendingSettings policy={newer} onSave={pending.save} />);
+ await act(async () => { if (outcome === 'success') pending.resolve({ ...policy, jobLimitMicroUsd: 2000001 }); else pending.reject(new ApiError('ignored', 503, 'budget-period-not-started')); await pending.promise.catch(() => {}); });
+ expect(screen.getByLabelText('Job limit (USD)')).toHaveValue('3.000001'); expect(screen.getByLabelText('Period length (days)')).toHaveValue('7');
+ expect(screen.queryByRole('status')).not.toBeInTheDocument(); expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+ expect(screen.queryByRole('button', { name: 'Use current time as period start' })).not.toBeInTheDocument();
+ expect(screen.getByRole('button', { name: 'Save spending limits' })).toBeEnabled();
+});
+test('accepts save success when the parent echoes the same authoritative saved policy before resolution', async () => {
+ const pending = deferredSave(); const { rerender } = render(<AiSpendingSettings policy={policy} onSave={pending.save} />);
+ fireEvent.change(screen.getByLabelText('Job limit (USD)'), { target: { value: '2' } }); submit();
+ const confirmed = { ...policy, jobLimitMicroUsd: 1000001 };
+ rerender(<AiSpendingSettings policy={{ ...confirmed }} onSave={pending.save} />);
+ await act(async () => { pending.resolve(confirmed); await pending.promise; });
+ expect(screen.getByLabelText('Job limit (USD)')).toHaveValue('1.000001'); expect(screen.getByRole('status')).toHaveTextContent('Spending limits saved.');
+});
+test('a delayed parent echo of the saved policy preserves edits made after save confirmation', async () => {
+ const confirmed = { ...policy, jobLimitMicroUsd: 1000001 }; const save = vi.fn(async () => confirmed);
+ const { rerender } = render(<AiSpendingSettings policy={policy} onSave={save} />);
+ submit(); await screen.findByRole('status');
+ fireEvent.change(screen.getByLabelText('Job limit (USD)'), { target: { value: '4.000001' } });
+ rerender(<AiSpendingSettings policy={{ ...confirmed }} onSave={save} />);
+ expect(screen.getByLabelText('Job limit (USD)')).toHaveValue('4.000001'); expect(screen.queryByRole('status')).not.toBeInTheDocument();
 });
 test('future anchor repair changes draft only and preserves failed repair for retry', async () => {
  vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(1800000000000);

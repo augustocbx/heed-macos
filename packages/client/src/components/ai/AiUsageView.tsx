@@ -16,7 +16,7 @@ export function AiUsageView({ snapshot }: { snapshot: AiUsageSnapshot }) {
   <p>{tr('These controls apply only to Heed on this Mac. They cannot cap your entire provider account; provider invoices may differ.')}</p>
   <p>{tr('Token estimates use provider-reported counts and dated prices. They are estimates, not invoices; conditional fees may be missing.')}</p>
   <p>{tr('Provider-reported request charges are separate from token estimates and are not a final invoice. Do not add these amounts together.')}</p>
-  <p>{tr('Input and output totals already include cache and reasoning subsets. Missing or unsupported counts are unknown, not zero.')}</p>
+  <p>{tr('Reported token categories may overlap; inclusion in input or output totals is not established for every provider. Do not add the categories together. Missing or unsupported counts are unknown, not zero.')}</p>
   <dl className={styles.summary}>
    <div><dt>{tr('Active period start')}</dt><dd><time dateTime={new Date(snapshot.periodStart).toISOString()}>{date(snapshot.periodStart)}</time></dd></div>
    <div><dt>{tr('Accounted liability (includes held amounts)')}</dt><dd>{money(snapshot.liabilityMicroUsd)}</dd></div>
@@ -41,7 +41,7 @@ export function AiUsageView({ snapshot }: { snapshot: AiUsageSnapshot }) {
       <td>{money(entry.liabilityMicroUsd)}{entry.periodStart < snapshot.periodStart && <small>{tr('Older-period allocation')}</small>}{entry.unknownLiability && <small>{tr('Whole request liability is unknown; known token prices do not establish the full charge.')}</small>}</td>
       <td>{money(accounting?.tokenEstimate.amountMicroUsd ?? null)}{accounting?.tokenEstimate.status === 'stale' ? <small>{tr('Stale pricing')}</small> : (!accounting || accounting.tokenEstimate.status === 'unknown') && <small>{tr('Unknown pricing or usage')}</small>}{!!accounting?.uncertainty.length && <small>{tr('Accounting evidence remains uncertain.')}</small>}</td>
       <td>{money(accounting?.reportedCharge?.amountMicroUsd ?? null)}{accounting?.reportedCharge && <small>{tr('Rounded up to six decimal places for spending controls.')}</small>}</td>
-      <td>{usage ? <>{tr('Input: {input}; output: {output}', { input: count(usage.inputTokens), output: count(usage.outputTokens) })}<small>{tr('Included subsets — cached input: {cached}; cache writes: {writes}; reasoning: {reasoning}', { cached: count(usage.cachedInputTokens), writes: count(usage.cacheWriteTokens), reasoning: count(usage.reasoningTokens) })}</small></> : tr('Unknown')}</td>
+      <td>{usage ? <>{tr('Input: {input}; output: {output}', { input: count(usage.inputTokens), output: count(usage.outputTokens) })}<small>{tr('Reported categories — cached input: {cached}; cache writes: {writes}; reasoning: {reasoning}', { cached: count(usage.cachedInputTokens), writes: count(usage.cacheWriteTokens), reasoning: count(usage.reasoningTokens) })}</small></> : tr('Unknown')}</td>
      </tr>;
     })}</tbody>
    </table>

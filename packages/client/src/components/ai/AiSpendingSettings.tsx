@@ -12,6 +12,7 @@ export interface AiSpendingSettingsProps {
  presets?: readonly AiPreset[];
 }
 const draftOf = (policy: AiBudgetPolicy) => ({ job: usdDraft(policy.jobLimitMicroUsd), period: usdDraft(policy.periodLimitMicroUsd), days: String(policy.periodDays), attempts: String(policy.maxRemoteAttempts), anchor: policy.periodStart, unknown: policy.unknownCost });
+const policyKey = (policy: AiBudgetPolicy) => [policy.jobLimitMicroUsd, policy.periodLimitMicroUsd, policy.periodDays, policy.periodStart, policy.maxRemoteAttempts, policy.unknownCost].join('|');
 type Draft = ReturnType<typeof draftOf>;
 type Field = 'job' | 'period' | 'days' | 'attempts';
 function safeUrl(value: string): string | undefined {
@@ -21,13 +22,19 @@ export function AiSpendingSettings({ policy, onSave, presets }: AiSpendingSettin
  const { locale, tr } = useLocale(); const id = useId(); const form = useRef<HTMLFormElement>(null);
  const [draft, setDraft] = useState(() => draftOf(policy));
  const confirmedAnchor = useRef(policy.periodStart);
+ const key = policyKey(policy);
+ const authority = useRef({ key, revision: 0 });
  const [errors, setErrors] = useState<Partial<Record<Field, string>>>({});
  const [failure, setFailure] = useState<string | null>(null); const [periodFailure, setPeriodFailure] = useState(false);
  const [saving, setSaving] = useState(false); const [saved, setSaved] = useState(false);
  const inFlight = useRef(false);
- useEffect(() => { confirmedAnchor.current = policy.periodStart; setDraft(draftOf(policy)); setErrors({}); setFailure(null); setPeriodFailure(false); setSaved(false); }, [policy]);
+ useEffect(() => {
+  if (key === authority.current.key) return;
+  authority.current = { key, revision: authority.current.revision + 1 };
+  confirmedAnchor.current = policy.periodStart; setDraft(draftOf(policy)); setErrors({}); setFailure(null); setPeriodFailure(false); setSaved(false);
+ }, [key]);
  const change = (patch: Partial<Draft>) => { setDraft(current => ({ ...current, ...patch })); setErrors({}); setFailure(null); setSaved(false); };
-  const futureAnchor = draft.anchor > Date.now();
+ const futureAnchor = draft.anchor > Date.now();
  const repairAvailable = futureAnchor || periodFailure;
  const save = async (event: FormEvent) => {
   event.preventDefault(); if (inFlight.current) return;
@@ -44,11 +51,17 @@ export function AiSpendingSettings({ policy, onSave, presets }: AiSpendingSettin
   if (first) { form.current?.querySelector<HTMLInputElement>(`[name="${first}"]`)?.focus(); return; }
   if (futureAnchor) { setPeriodFailure(true); setFailure('Check this Mac’s date and time. The budget period has not started; choose the current time below only if the clock is correct, then save.'); return; }
   inFlight.current = true; setSaving(true);
+  const revision = authority.current.revision;
   try {
    const confirmed = await onSave({ jobLimitMicroUsd: job!, periodLimitMicroUsd: period!, periodDays: days, periodStart: draft.anchor, maxRemoteAttempts: attempts, unknownCost: draft.unknown });
+   const confirmedKey = policyKey(confirmed);
+   // A parent may echo this same response before the callback resolves.
+   if (authority.current.revision !== revision && authority.current.key !== confirmedKey) return;
+   authority.current = { key: confirmedKey, revision: authority.current.revision + 1 };
    confirmedAnchor.current = confirmed.periodStart;
    setDraft(draftOf(confirmed)); setSaved(true); setPeriodFailure(false);
   } catch (error) {
+   if (authority.current.revision !== revision) return;
    const code = error instanceof ApiError ? error.code : undefined;
    if (code === 'budget-period-not-started') { setPeriodFailure(true); setFailure('Check this Mac’s date and time. The budget period has not started; choose the current time below only if the clock is correct, then save.'); }
    else if (code === 'invalid-budget-policy') setFailure('The spending policy was rejected. Check the limits and this Mac’s date and time, then retry saving.');
