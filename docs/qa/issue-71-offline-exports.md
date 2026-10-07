@@ -1,0 +1,21 @@
+# Issue 71 offline export evidence
+
+## Scope
+
+The acceptance runner exercises the built production interface, actual protected API routes and the module worker, with isolated synthetic meetings and a silent PCM fixture. Browser routing permits only the owned loopback API origin. A local fixture sidecar records requests and rejects any assertion implying a provider generation call. This is export runtime evidence, not physical recording or transcription-quality evidence.
+
+## Two-Mac production runtime
+
+The final integrated production runner at `14b12c1260119397ce3eb3769983310178580c64` generated nine files independently on the MacBook Air M1 (16 GiB) and MacBook Pro M4 Pro (48 GiB): transcript-only short/multi-page/Portuguese PDFs, unknown-notes-only PDF, completed-tasks-only PDF, SRT, two VTTs and a PDF frozen before a later title edit. Independent pypdf 6.1.3 extraction and Poppler rendering verified all nine PDF pages (the long file has four). All nine rendered pages on each Mac were visually inspected for glyphs, margins, fixed font size, reading order, headings and footers. Independent subtitle parsing and native Chromium TextTrack compared cue count, times and decoded literal text, including accents, overlap, markup/entities and arrows.
+
+The run observed zero external requests, zero provider mutation requests, unchanged audio SHA-256 and no browser page errors. Owned workers terminated; download/TextTrack Blob URLs were revoked. Scope changes invalidated preview; an actual title conflict prevented Save; an edit after validation left output frozen; cancellation terminated a live long-PDF worker and navigation remained responsive. Escape restored focus to the persistent meeting control. English, Brazilian Portuguese, French and German dialogs were inspected at 360×740, with native Tab containment and no clipped controls. The API stopped and its port was successfully rebound after cleanup on both Macs. The runner waits for asynchronous default task discovery before choosing scope, then asserts exact selected task IDs, so transcript-only files do not accidentally include default tasks. Both completed runs report nine verified files/nine PDF pages, zero external attempts, zero provider mutations, unchanged retained audio and zero page errors.
+
+The actual HTTP correction/revert/notes/task workflow test passed 31 assertions. It proves hash-ABA rejection through local version, changed task status and reviewed notes conflicts, repeat validation without source/task disk changes, frozen content and audio preservation. A production run also exposed old Google Fonts requests and an action menu below the viewport; both were corrected, with a meaningful failing/then-passing menu regression.
+
+## Integrated verification and review
+
+The reviewed issue 7 source/editor/history/candidate interfaces are integrated. The final export implementation and produced files were independently reviewed at `14b12c1260119397ce3eb3769983310178580c64`: all 18 rendered PDF pages and eight narrow locale dialogs across both Macs were personally inspected, and every artifact digest/native VTT cue was checked. No blocker remained. The subsequent issue 7 history-target correction preserves the opening meeting and uses its newest accepted version; it changes neither export DTOs nor PDF/subtitle/worker output.
+
+Full integrated server regression passed **748 tests / 4,352 assertions / 103 files**. Client regression passed **475 tests / 82 files**, with a successful production build/typecheck. Independent export tests passed 18 server tests/122 assertions and 43 client tests. The complete server compiler diagnostics match the 82 independently verified inherited main-baseline diagnostics exactly. Both final actual browser runs reported nine files, seven checks, zero external/provider mutation requests, zero page errors and unchanged audio, with verified owned cleanup.
+
+Public raw artifacts/logs remain outside tracked source. Exact-head CI and final committed/pushed state, owned-service verification and safe worktree removal are checked separately before the authorized merge. No installed application or private meeting was changed. macOS 14+ remains the target; paired runtime on macOS 27.0.1 does not claim exhaustive OS-version testing.
