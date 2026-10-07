@@ -18,8 +18,10 @@
     },
     "OFL.txt": {
       "archivePath": "OFL.txt",
-      "bytes": 4396,
-      "sha256": "cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a"
+      "bytes": 4395,
+      "sha256": "e2e177a32561584d4fc13aaa3cd8e53758a12910f013fe9ca125419111722029",
+      "sourceSha256": "cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a",
+      "formatting": "Trailing spaces removed; license text unchanged."
     }
   }
 }
