@@ -10,6 +10,8 @@ export interface FinalCapture {
   language: "en" | "pt";
   model: string;
   liveModel?: string;
+ vocabularyRun?: import('./vocabulary').VocabularyRun;
+ liveVocabularyRuns?: import('./vocabulary').VocabularyRun[];
   turns: Segment[];
   embeddings?: Record<string, number[]>;
   transcriptionDiagnostics?: TranscriptionDiagnostics;
@@ -24,10 +26,13 @@ export interface RecordingSnapshot {
   startedAt: number | null;
   path: string | null;
   liveModel?: string;
+ vocabularyRun?: import('./vocabulary').VocabularyRun;
+ liveVocabularyRuns?: import('./vocabulary').VocabularyRun[];
   /** Effective mode at admission; missing legacy manifests mean enabled. */
   realTimeTranscription?: boolean;
   liveSpeechLanguage?: LiveSpeechLanguage;
   liveOptions?: LiveCaptureOptions;
+  vocabulary?: import("./vocabulary").VocabularySnapshot;
   seconds: number;
   mode: CaptureMode;
   segments: Segment[];

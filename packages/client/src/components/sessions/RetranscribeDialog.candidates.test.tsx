@@ -302,3 +302,5 @@ test.each(["completion", "retry"] as const)(
     ).toEqual([]);
   },
 );
+
+vi.mock('@/components/recording/VocabularySelection',()=>({VocabularySelection:()=>null}));

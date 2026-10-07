@@ -1,3 +1,6 @@
+import {LocalVocabulary} from './lib/vocabulary';
+import {vocabularyHttp} from './lib/vocabulary-http';
+import type {VocabularySelection,VocabularyRun} from '../shared/types/vocabulary';
 import type { AiWaitingReason } from "@heed/shared";
 import type { LanguageCapabilities, LiveCaptureOptions } from "@heed/shared";
 import {configuredLiveSpeechLanguage, recordingSettingsPatch, resolveLiveCaptureOptions, validatedLanguageCapabilities, rejectRecordingOverrides, previewResultMatches, LiveLanguageError} from "./lib/live-language";
@@ -134,6 +137,7 @@ const FALLBACK_MODEL = process.env.HEED_MODEL || null;
 // App paths + persistent config (loadConfig/saveConfig/micLabel/TrxConfig) now live in
 // ./lib/app-config.ts — single source of truth (the stale lib/config.ts duplicate was deleted).
 ensureAppDirs([UPLOAD_DIR]);
+const vocabularyStore=new LocalVocabulary(join(APP_DIR,"vocabulary.json"));
 const processingMaintenance = new ProcessingMaintenance({
  path:join(APP_DIR,'update-maintenance.json'),
  active:existingProcessing,
@@ -437,6 +441,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
  let uploadFile:File|null=null;
  let recordingFinalize = false;
  let finalModelOverride: string | null = null;
+ let vocabularySelection:VocabularySelection|undefined;
 
 	const contentType = req.headers.get("content-type") || "";
 
@@ -444,6 +449,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 		const formData = await req.formData();
   recordingFinalize = formData.get("recording_finalize") === "true";
   finalModelOverride = formData.get("final_model") as string | null;
+  try{const raw=formData.get("vocabulary");if(raw!==null){if(typeof raw!=="string"||raw.length>100000)throw Error("Invalid vocabulary selection");vocabularySelection=JSON.parse(raw);}}catch(error){return Response.json({error:(error as Error).message},{status:400});}
 		const file = formData.get("file") as File | null;
 		const url = formData.get("url") as string | null;
 		language = (formData.get("language") as string) || "auto";
@@ -461,12 +467,15 @@ async function handleTranscribe(req: Request): Promise<Response> {
 		const body = await req.json();
   recordingFinalize = body.recording_finalize === true;
   finalModelOverride = body.final_model || null;
+  vocabularySelection=body.vocabulary;
 		input = body.url || body.input;
 		language = body.language || "auto";
 		diarize = body.diarize || false;
 		if (!input) return Response.json({ error: "No input provided" }, { status: 400 });
 	}
 
+ let vocabulary;
+ try{vocabulary=vocabularyStore.snapshot(vocabularySelection);}catch(error){return Response.json({error:(error as Error).message},{status:400});}
  if (recordingFinalize) {
   try { recordingFinalizationOptions(language, finalModelOverride); } catch (error) { return Response.json({error:(error as Error).message}, {status:400}); }
   if (recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning) return Response.json({error:"Wait for the current recording or final transcription to finish"}, {status:409});
@@ -531,7 +540,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 
     if (recordingFinalize) {
      send("step", {message:"Detecting meeting language and retranscribing the complete recording..."});
-     const fin = await postJSON("/finalize", {wav_path:wavPath,work_directory:workDirectory, ...recordingFinalizationOptions(language, finalModelOverride), allowed_languages:["en","pt"], dual:isDualChannel, mic_name:micLabel()});
+     const fin = await postJSON("/finalize", {wav_path:wavPath,work_directory:workDirectory, vocabulary, ...recordingFinalizationOptions(language, finalModelOverride), allowed_languages:["en","pt"], dual:isDualChannel, mic_name:micLabel()});
      send("result", finalRecordingResult(fin, wavPath));
      return;
     }
@@ -547,6 +556,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 						diarize,
 						dual_channel: isDualChannel,
       work_directory:workDirectory,
+      vocabulary,
 					}),
 				});
 
@@ -566,6 +576,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 				let finalEmbeddings: Record<string, unknown> = {};
 				let finalLanguage = language;
 				let finalWhisperModel = "small";
+    let vocabularyRun:VocabularyRun|undefined;
 
 				while (true) {
 					const { done, value } = await reader.read();
@@ -598,6 +609,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 										finalText = data.text || "";
 										finalLanguage = data.language || language;
 										finalWhisperModel = data.model || finalWhisperModel;
+          vocabularyRun=data.vocabularyRun;
 										finalFiles = data.files || { wav: wavPath, srt: data.srt_path || "", txt: data.txt_path || "" };
 										break;
 									case "complete":
@@ -605,7 +617,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 											success: true,
 											text: finalText,
 											files: finalFiles,
-											metadata: { language: finalLanguage, model: finalWhisperModel },
+											metadata: { language: finalLanguage, model: finalWhisperModel, vocabularyRun },
 											speakers: finalSpeakers,
 											segments: finalSegments,
 											embeddings: finalEmbeddings,
@@ -1371,7 +1383,7 @@ async function handleSysRecordStart(req: Request): Promise<Response> {
  try {
   const body = await req.json();
   rejectRecordingOverrides(body);
-  const state = hydratedRecordingSnapshot(await recordingCoordinator.start(controlRequestId(body), body.mode ?? "both"));
+  const state = hydratedRecordingSnapshot(await recordingCoordinator.start(controlRequestId(body), body.mode ?? "both",body.vocabulary));
   if (state.state === "recording") meetingDetection.manualOverride();
   return Response.json({...state, snapshot:state, recording:state.state === "recording", path:state.path, language:state.liveOptions?.effectiveLanguage ?? null});
  } catch (error) { return recordingControlError(error); }
@@ -1649,6 +1661,7 @@ function acceptLiveResult(value:any):boolean {
  const options=recordingCoordinator.snapshot().liveOptions;
  if(!options || !previewResultMatches(options,value)){previewUnavailable();return false;}
  if(liveUnavailableReported){liveUnavailableReported=false;for(const listener of liveListeners)listener("quality",{ok:true});}
+ try{if(value.vocabularyRun)recordingCoordinator.recordVocabularyRun(value.vocabularyRun);}catch{previewUnavailable();return false;}
  recordingLiveModel=value.model;recordingCoordinator.updateLiveModel(value.model);return true;
 }
 let liveTuning = { chunk_s: 3.0, interval_ms: 2000, mode: "chunk" as "chunk" | "full" | "stream" };
@@ -1722,7 +1735,7 @@ async function processFullLive(
 			if (existsSync(outPath) && Bun.file(outPath).size > 1000) {
 				const res = await fetch(`${TRANSCRIPTION_SERVER}/transcribe-live`, {
 					method: "POST", headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ wav_path: outPath, language: lang, task:"transcribe", audio_s: dur }),
+					body: JSON.stringify({ vocabulary:recordingCoordinator.snapshot().vocabulary, wav_path: outPath, language: lang, task:"transcribe", audio_s: dur }),
                     signal: liveAbort.signal,
 				});
 				if (!res.ok) previewUnavailable();
@@ -1778,10 +1791,11 @@ async function processStreamLive(
 		} catch { return; }
 	}
 	if (!streamStarted) {
-		const ok = await postLiveJSON("/stream/start", { language: lang, task:"transcribe", channel: "mic" });
-		if (!ok) return;
+		const ok = await postLiveJSON("/stream/start", { vocabulary:recordingCoordinator.snapshot().vocabulary, language: lang, task:"transcribe", channel: "mic" });
+		if (!ok?.ok) return;
+		if(!ok.vocabularyRun || !acceptLiveResult(ok))return;
 		if (isDual) {
-			await postLiveJSON("/stream/start", { language: lang, task:"transcribe", channel: "sys" });
+			await postLiveJSON("/stream/start", { vocabulary:recordingCoordinator.snapshot().vocabulary, language: lang, task:"transcribe", channel: "sys" });
 			await postLiveJSON("/diar/start", {});
 		}
 		streamStarted = true;
@@ -2010,7 +2024,7 @@ function startLiveTranscribe() {
 					const txRes = await fetch(`${TRANSCRIPTION_SERVER}/transcribe-live`, {
 						method: "POST",
 						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify({ wav_path: chunkPath, language: lang, task:"transcribe", audio_s: chunkDur }),
+						body: JSON.stringify({ vocabulary:recordingCoordinator.snapshot().vocabulary, wav_path: chunkPath, language: lang, task:"transcribe", audio_s: chunkDur }),
                         signal: liveAbort.signal,
 					});
 					const whisperMs = Date.now() - whisperStart;
@@ -2067,7 +2081,7 @@ function startLiveTranscribe() {
 							const sysRes = await fetch(`${TRANSCRIPTION_SERVER}/transcribe-live`, {
 								method: "POST",
 								headers: { "Content-Type": "application/json" },
-								body: JSON.stringify({ wav_path: sysChunkPath, language: lang, task:"transcribe" }),
+								body: JSON.stringify({ vocabulary:recordingCoordinator.snapshot().vocabulary, wav_path: sysChunkPath, language: lang, task:"transcribe" }),
                                 signal: liveAbort.signal,
 							});
 							if (!sysRes.ok) previewUnavailable();
@@ -2195,7 +2209,7 @@ async function stopCapture(onCaptureStopped: () => void): Promise<FinalCapture> 
 }
 async function finalizeCapture(path: string): Promise<FinalCapture> {
  if (!existsSync(path)) throw new Error("Recording file not created");
- const fin = await postJSON("/finalize",{wav_path:path,work_directory:recordingWorkDirectory,language:"auto",allowed_languages:["en","pt"],dual:path.includes("dual-capture-"),mic_name:micLabel()});
+ const fin = await postJSON("/finalize",{wav_path:path,work_directory:recordingWorkDirectory,vocabulary:recordingCoordinator.snapshot().vocabulary,language:"auto",allowed_languages:["en","pt"],dual:path.includes("dual-capture-"),mic_name:micLabel()});
  const result = finalRecordingResult(fin,path);
  // Final ASR must return the actual WAV duration instead of wall-clock capture time.
  if (result.duration === undefined) {
@@ -2205,7 +2219,7 @@ async function finalizeCapture(path: string): Promise<FinalCapture> {
   result.duration = measured;
  }
  recordingLanguage = result.metadata.language;
- return {path,duration:result.duration,language:result.metadata.language,model:result.metadata.model,liveModel:recordingLiveModel || recordingCoordinator.snapshot().liveModel,turns:result.segments,embeddings:result.embeddings,
+ return {path,duration:result.duration,language:result.metadata.language,model:result.metadata.model,vocabularyRun:result.metadata.vocabularyRun,liveModel:recordingLiveModel || recordingCoordinator.snapshot().liveModel,turns:result.segments,embeddings:result.embeddings,
   ...(result.transcriptionDiagnostics ? {transcriptionDiagnostics:result.transcriptionDiagnostics} : {})};
 }
 
@@ -2476,7 +2490,7 @@ async function handleDesktopControl(req: Request, pathname: string): Promise<Res
    const id = controlRequestId(body);
    const previous = recordingCoordinator.snapshot();
    const manualStop = body.action === "stop" && previous.meetingId === body.meetingId && ["starting","recording"].includes(previous.state);
-   const state = body.action === "start" ? await recordingCoordinator.start(id,body.mode ?? "both") : await recordingCoordinator.stop(id,body.meetingId);
+   const state = body.action === "start" ? await recordingCoordinator.start(id,body.mode ?? "both",body.vocabulary) : await recordingCoordinator.stop(id,body.meetingId);
    if (manualStop || (body.action === "start" && state.state === "recording")) meetingDetection.manualOverride();
    return Response.json({ok:true,id,status:desktopRecordingStatus(),snapshot:hydratedRecordingSnapshot(state)});
   }
@@ -2602,6 +2616,7 @@ notesTimer.unref();
 
 const recordingCoordinator = new RecordingCoordinator({
  manifestPath:join(APP_DIR,"recording-manifest.json"),
+ resolveVocabulary:selection=>vocabularyStore.snapshot(selection),
  maintenanceBlocked:()=>processingMaintenance.blocked(),
  realTimeTranscription,
  meetingMode:configuredMeetingMode,
@@ -2733,6 +2748,7 @@ const server = Bun.serve({
   if(transcriptResult)return transcriptResult;
 
   if (url.pathname === "/api/tasks") return tasksResponse(req,tasksService,PORT);
+  if (url.pathname === "/api/vocabulary" || url.pathname === "/api/vocabulary/export" || url.pathname === "/api/vocabulary/snapshot") return !desktopRequestAllowed(req)?new Response(null,{status:403}):vocabularyHttp(req,vocabularyStore);
   if (url.pathname === "/api/recording/settings") return handleRecordingSettings(req);
   if (url.pathname === "/api/notes/settings") return handleNotesSettings(req);
   if (method === "GET" && url.pathname === "/api/notes/models") return handleNotesModels(req);

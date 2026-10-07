@@ -37,6 +37,7 @@ def path_capability(engine_kind, model_name, mode, loaded, model_revision=None, 
             "supportedLanguages": languages,
             "automatic": {"modelSupported": bool(auto), "pipelineAvailable": bool(auto or (valid and engine_kind == "parakeet" and mode == "full")), "offered": False},
             "mixedLanguage": "unverified", "mode": mode if valid else None,
+            "vocabulary": {"status":"recognition-context" if valid and engine_kind in ("mlx","ctranslate2") else "unsupported", "interface":"initial_prompt" if valid and engine_kind in ("mlx","ctranslate2") else None, "scope":"first-window" if engine_kind in ("mlx","ctranslate2") else None},
             "adaptiveModels": [{"model": name, "modelIdentity": registered_identity(engine_kind, name),
                                 "languages": [language for language in ("en", "pt") if model_supports_language(engine_kind, name, language)]} for name in candidates]}
 

@@ -1,3 +1,5 @@
+import type {VocabularySelection,VocabularySnapshot,VocabularyRun} from '../../shared/types/vocabulary';
+import {validateVocabularySnapshot,validateVocabularyRun} from '../../shared/lib/vocabulary';
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -20,7 +22,7 @@ export interface RecordingAdapter {
 interface Receipt { signature: string; meetingId: string | null }
 interface Manifest { version: 1; snapshot: RecordingSnapshot; receipts: Record<string, Receipt>; maintenanceOwner?:string }
 const busy = new Set(["starting", "recording", "stopping", "finalizing"]);
-const initial = (): RecordingSnapshot => ({meetingId:null,state:"idle",revision:0,startedAt:null,path:null,seconds:0,mode:"both",segments:[],speakerNames:{},session:null,error:null,maintenance:false,realTimeTranscription:true,meetingMode:"audio-transcript",audioCleanup:undefined,audioDiscardRequested:undefined,finalCapture:undefined});
+const initial = (): RecordingSnapshot => ({meetingId:null,state:"idle",revision:0,startedAt:null,path:null,seconds:0,mode:"both",segments:[],speakerNames:{},session:null,error:null,maintenance:false,realTimeTranscription:true,meetingMode:"audio-transcript",audioCleanup:undefined,audioDiscardRequested:undefined,finalCapture:undefined,vocabulary:undefined,liveVocabularyRuns:undefined});
 
 /** Owns recording lifetime independently of HTTP clients and browser subscriptions. */
 export class RecordingCoordinator {
@@ -29,11 +31,12 @@ export class RecordingCoordinator {
   private operations = new Map<string, {signature:string; promise:Promise<RecordingSnapshot>}>();
   private startOperation?: Promise<RecordingSnapshot>;
   private pendingStartMode?: CaptureMode;
+  private pendingVocabulary?:string;
   private stopOperation?: Promise<RecordingSnapshot>;
   private listeners = new Set<(snapshot: RecordingSnapshot) => void>();
   private livePersistedAt = 0;
   private maintenanceOwner:string|undefined;
-  constructor(private options: {manifestPath: string; adapter: RecordingAdapter; now?: () => number; write?: typeof atomicWriteJson; maintenanceBlocked?:()=>boolean; realTimeTranscription?:()=>boolean;meetingMode?:()=>MeetingMode;resolveLiveOptions?:()=>Promise<LiveCaptureOptions>}) {
+  constructor(private options: {manifestPath: string; adapter: RecordingAdapter; now?: () => number; write?: typeof atomicWriteJson; maintenanceBlocked?:()=>boolean; realTimeTranscription?:()=>boolean;meetingMode?:()=>MeetingMode;resolveLiveOptions?:()=>Promise<LiveCaptureOptions>;resolveVocabulary?:(selection?:VocabularySelection)=>VocabularySnapshot}) {
     mkdirSync(dirname(options.manifestPath),{recursive:true,mode:0o700});
     if (!existsSync(options.manifestPath)) return;
     const manifest = JSON.parse(readFileSync(options.manifestPath,"utf8")) as Manifest;
@@ -82,20 +85,20 @@ export class RecordingCoordinator {
     const previous=this.receipts;this.receipts=this.withReceipt(id,signature);
     try{this.persist();}catch(error){this.receipts=previous;throw error;}
   }
-  start(requestId:string,mode:CaptureMode="both"):Promise<RecordingSnapshot> {
-    return this.command(requestId,`start:${mode}`,async()=>{
+  start(requestId:string,mode:CaptureMode="both",vocabulary?:VocabularySelection):Promise<RecordingSnapshot> {
+    return this.command(requestId,`start:${mode}:${JSON.stringify(vocabulary??null)}`,async()=>{
       if(!["both","mic","system"].includes(mode))throw new Error("Choose a supported capture mode");
       if(this.startOperation){
-        if(this.pendingStartMode!==mode)throw Error("A different capture mode is pending admission");
-        if(this.admissionPending)return this.startOperation.then(state=>{this.remember(requestId,`start:${mode}`);return state;});
-        this.remember(requestId,`start:${mode}`);return this.startOperation;
+        if(this.pendingStartMode!==mode || this.pendingVocabulary!==JSON.stringify(vocabulary??null))throw Error("A different capture mode is pending admission");
+        if(this.admissionPending)return this.startOperation.then(state=>{this.remember(requestId,`start:${mode}:${JSON.stringify(vocabulary??null)}`);return state;});
+        this.remember(requestId,`start:${mode}:${JSON.stringify(vocabulary??null)}`);return this.startOperation;
       }
       if(this.value.maintenance || this.options.maintenanceBlocked?.())throw new Error("Recording is unavailable during maintenance");
-      if(this.value.state === "recording" || this.value.state === "starting"){this.remember(requestId,`start:${mode}`);return this.snapshot();}
+      if(this.value.state === "recording" || this.value.state === "starting"){this.remember(requestId,`start:${mode}:${JSON.stringify(vocabulary??null)}`);return this.snapshot();}
       if(this.value.state === "failed" && this.value.path && (!this.value.session || this.value.audioCleanup?.status === "pending"))throw new Error("Recover the interrupted meeting before starting another recording");
       if(this.value.state === "stopping" || this.value.state === "finalizing")throw new Error("Wait for the active meeting to finish");
       if(this.receipts[requestId])return this.snapshot();
-      this.pendingStartMode=mode;
+      this.pendingStartMode=mode;this.pendingVocabulary=JSON.stringify(vocabulary??null);
       this.startOperation=(async()=>{
         // Defer execution so synchronous admission failure cannot leave a rejected pending owner.
         await Promise.resolve();
@@ -104,7 +107,8 @@ export class RecordingCoordinator {
           const liveOptions:LiveCaptureOptions=this.options.resolveLiveOptions?await this.options.resolveLiveOptions():{realTimeTranscription:enabled,requestedLanguage:"en",effectiveLanguage:enabled?"en":null,engine:null,mode:null,initialModel:null,initialModelIdentity:null,capabilityKey:null,compatibleModels:[]};
           if(this.value.maintenance || this.options.maintenanceBlocked?.())throw Error("Recording is unavailable during maintenance");
           const meetingMode=this.options.meetingMode?.() ?? "audio-transcript";
-          this.change({...initial(),...(meetingMode === "transcript-only"?{audioCleanup:{status:"pending" as const,requestedAt:new Date(this.now()).toISOString()}}:{}),meetingId:randomUUID(),mode,meetingMode,realTimeTranscription:liveOptions.realTimeTranscription,liveSpeechLanguage:liveOptions.requestedLanguage,liveOptions,revision:this.value.revision,startedAt:this.now(),state:"starting"},{id:requestId,signature:`start:${mode}`});
+          const vocabularySnapshot=this.options.resolveVocabulary?.(vocabulary);
+          this.change({...initial(),...(meetingMode === "transcript-only"?{audioCleanup:{status:"pending" as const,requestedAt:new Date(this.now()).toISOString()}}:{}),...(vocabularySnapshot?{vocabulary:validateVocabularySnapshot(vocabularySnapshot)}:{}),meetingId:randomUUID(),mode,meetingMode,realTimeTranscription:liveOptions.realTimeTranscription,liveSpeechLanguage:liveOptions.requestedLanguage,liveOptions,revision:this.value.revision,startedAt:this.now(),state:"starting"},{id:requestId,signature:`start:${mode}:${JSON.stringify(vocabulary??null)}`});
           const result=await this.options.adapter.start(mode,this.value.meetingId!,path=>this.change({path}),liveOptions);
           if(this.value.state!=="starting")throw new Error(this.value.error || "Capture stopped during startup");
           if(!result.path)throw new Error("Capture did not create an audio writer");
@@ -114,7 +118,7 @@ export class RecordingCoordinator {
           if(this.value.path && !existsSync(this.value.path))this.change({path:null});
           if(this.value.state==="starting")this.fail(error);throw error;
         }
-        finally {this.startOperation=undefined;this.pendingStartMode=undefined;}
+        finally {this.startOperation=undefined;this.pendingStartMode=undefined;this.pendingVocabulary=undefined;}
       })();
       return this.startOperation;
     });
@@ -179,7 +183,7 @@ export class RecordingCoordinator {
     const transcript=fields.segments.map(s=>s.text).join("\n");const words=transcript.split(/\s+/).filter(Boolean);
     const transcriptionDiagnostics=sanitizeTranscriptionDiagnostics(result.transcriptionDiagnostics);
     let session=(this.value.meetingMode === "transcript-only"?this.options.adapter.read?.(this.value.meetingId!):undefined) ?? this.options.adapter.save({id:this.value.meetingId!,title:words.length ? words.slice(0,8).join(" ")+(words.length>8?"...":"") : "Recording without detected speech",
-      createdAt:new Date(this.value.startedAt || this.now()).toISOString(),duration:result.duration,language:result.language,transcriptionModel:result.model,liveModel:result.liveModel,
+      createdAt:new Date(this.value.startedAt || this.now()).toISOString(),duration:result.duration,language:result.language,transcriptionModel:result.model,liveModel:result.liveModel,vocabularyRun:result.vocabularyRun,liveVocabularyRuns:this.value.liveVocabularyRuns,
       transcript,...fields,transcriptFinalized:true,meetingMode:this.value.meetingMode,
       ...(this.value.meetingMode === "transcript-only"?{audioCleanup:this.value.audioCleanup,audioUnavailableReason:"transcript-only" as const}:{}),...(transcriptionDiagnostics ? {transcriptionDiagnostics} : {}),files:{wav:result.path,srt:"",txt:""},aiNotes:"",summary:"",tags:[],pinned:false});
     if(!session?.id || !session.transcriptFinalized)throw new Error("Final recording persistence did not confirm a saved meeting");
@@ -244,6 +248,13 @@ export class RecordingCoordinator {
     // Periodic provisional checkpoints avoid an fsync for every live token.
     if(this.now()-this.livePersistedAt>=1000){this.persist();this.livePersistedAt=this.now();}
     this.publish();
+  }
+  recordVocabularyRun(value:unknown) {
+    if(!["starting","recording"].includes(this.value.state))return;
+    const run=validateVocabularyRun(value),runs=this.value.liveVocabularyRuns??[];
+    if(JSON.stringify(run.snapshot)!==JSON.stringify(this.value.vocabulary))throw Error("Live vocabulary snapshot changed");
+    if(runs.some(previous=>JSON.stringify(previous)===JSON.stringify(run)))return;
+    this.change({liveVocabularyRuns:[...runs,run].slice(-20)});
   }
   updateLiveModel(model:string) {
     if(!["starting","recording"].includes(this.value.state)||this.value.liveModel===model)return;

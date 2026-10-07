@@ -51,3 +51,16 @@ class ManualTranscriptionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class VocabularyFinalTests(ManualTranscriptionTests):
+    def test_frozen_vocabulary_is_forwarded_to_existing_full_worker(self):
+        from vocabulary_test import snapshot
+        value = snapshot([{'term':'João','language':'pt'}])
+        result, _, transcribe, _ = self.run_final(language='pt',final_model='small',manual=True,vocabulary=value)
+        self.assertEqual(transcribe.call_args.kwargs['vocabulary'],value)
+        self.assertEqual(result['vocabularyRun']['configuration']['prompt'],'João')
+    def test_invalid_vocabulary_rejected_before_loading_or_language_detection(self):
+        with patch('engines.ParakeetEngine') as native, patch('meeting_language.detect_meeting_language') as detection:
+            with self.assertRaises(ValueError):
+                server.finalize_recording('audio.wav',vocabulary={'bad':True})
+            native.assert_not_called();detection.assert_not_called()

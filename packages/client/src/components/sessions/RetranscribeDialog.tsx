@@ -1,3 +1,4 @@
+import {VocabularySelection} from '../recording/VocabularySelection';
 import { tr, useLocale } from "@/lib/i18n";
 import { useEffect, useRef, useState } from "react";
 import type { CandidateInput, Session } from "@heed/shared";
@@ -38,6 +39,8 @@ export function RetranscribeDialog({
   const [selected, setSelected] = useState(candidates[0]?.id ?? "");
   const candidate =
     candidates.find((draft) => draft.id === selected) ?? candidates[0];
+  const [vocabulary,setVocabulary]=useState<import("@heed/shared").VocabularySelection>({});
+  const [vocabularyValid,setVocabularyValid]=useState(true);
   const [model, setModel] = useState<FinalTranscriptionModel>("parakeet-v3");
   const [language, setLanguage] = useState<MeetingLanguage>("auto");
   const [busy, setBusy] = useState(false),
@@ -102,7 +105,7 @@ export function RetranscribeDialog({
       saving ||
       unsaved ||
       candidates.length >= 2 ||
-      (!current.files?.wav || current.meetingMode === "transcript-only")
+      !current.files?.wav || current.meetingMode === "transcript-only" || !vocabularyValid
     )
       return;
     if (state.recording || state.processing) {
@@ -124,6 +127,7 @@ export function RetranscribeDialog({
         language,
         { onStep: setStep, onProgress: setProgress },
         saveDraft,
+        vocabulary,
       );
     } catch (e) {
       setError((e as Error).message);
@@ -208,6 +212,7 @@ export function RetranscribeDialog({
             <option value="pt">{tr("Portuguese (Brazil)")}</option>
           </select>
         </label>
+        <VocabularySelection finalModel={model} value={vocabulary} onChange={setVocabulary} onValidityChange={setVocabularyValid} disabled={busy||saving}/>
         <p className={styles.hint}>
           {tr(
             "Models may need to download on first use. Larger models use more memory and take longer.",
@@ -248,7 +253,7 @@ export function RetranscribeDialog({
             recordingBusy ||
             !!unsaved ||
             candidates.length >= 2 ||
-            (!current.files?.wav || current.meetingMode === "transcript-only")
+            !current.files?.wav || current.meetingMode === "transcript-only" || !vocabularyValid
           }
           onClick={() => void start()}
         >
