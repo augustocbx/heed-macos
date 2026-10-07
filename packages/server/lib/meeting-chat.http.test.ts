@@ -50,7 +50,12 @@ test("isolated HTTP chat persists across restart, cancels generation and rejects
   expect((await request("/api/sessions/synthetic/chat",{action:"cancel",turnId:active.id})).status).toBe(200);
   await waitFor(async()=>unloads>0);
   expect((await request("/api/sessions/synthetic/chat")).body.turns[1].status).toBe("cancelled");
-  await request("/api/sessions?id=synthetic",{transcript:"Edited synthetic transcript"},{method:"PATCH"});
+  const current=(await request("/api/sessions")).body.find((session:{id:string})=>session.id==='synthetic');
+  const corrected=await request("/api/sessions/synthetic/transcript/commands",{
+   expectedTranscriptRevision:current.transcriptRevision,expectedTranscriptVersion:current.transcriptVersion,
+   action:'edit',requestId:'chat-source-correction',target:{kind:'segment',index:0},text:'Edited synthetic transcript',
+  });
+  expect(corrected.status).toBe(200);expect(corrected.body.transcript).toBe('Edited synthetic transcript');
   const stale=(await request("/api/sessions/synthetic/chat")).body;expect(stale.turns[0].stale).toBe(true);
   expect((await request("/api/sessions/synthetic/chat",{action:"clear",expectedThreadRevision:stale.revision})).status).toBe(200);
   expect((await request("/api/sessions/synthetic/chat")).body.turns).toHaveLength(0);

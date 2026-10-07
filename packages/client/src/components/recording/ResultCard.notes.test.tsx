@@ -29,7 +29,7 @@ test('manual notes use saved meeting language and speaker labels with compare-an
  const generate = requests.find(request => request.url === '/api/summarize')!;
  expect(JSON.parse(String(generate.init!.body))).toMatchObject({ language: 'pt', transcript: 'Ana: Bom dia' });
  const persist = requests.find(request => request.init?.method === 'PATCH')!;
- expect(JSON.parse(String(persist.init!.body))).toEqual({ aiNotes: 'Saved notes', expectedNotes: '', expectedTranscriptRevision: 'r' });
+ expect(JSON.parse(String(persist.init!.body))).toEqual({ aiNotes: 'Saved notes', expectedNotes: '', expectedTranscriptRevision: 'r', expectedTranscriptVersion: 0 });
 });
 test('result notes update from automatic saved-session changes', () => {
  render(<ResultCard />); fireEvent.click(screen.getByText('AI Notes'));
@@ -40,4 +40,12 @@ test('manual generation is disabled while automatic generation is pending', () =
  useSessionsStore.setState({ sessions: [{ ...session, notesJobs: { 'notes-r': { sourceRevision: 'r', status: 'running' } } } as unknown as Session] });
  render(<ResultCard />); fireEvent.click(screen.getByText('AI Notes'));
  expect(screen.getByRole('button', { name: /Generate AI notes/ })).toBeDisabled();
+});
+
+test('a notes conflict keeps the completed result draft without changing accepted notes',async()=>{
+ vi.stubGlobal('fetch',vi.fn(async(url:string)=>url==='/api/summarize'?new Response('data: {"token":"Retained draft"}\n\ndata: {"done":true}\n\n'):Response.json({error:'Transcript changed'},{status:409})));
+ render(<ResultCard/>);fireEvent.click(screen.getByText('AI Notes'));fireEvent.click(screen.getByRole('button',{name:/Generate AI notes/}));
+ await waitFor(()=>expect(screen.getByText('Retained draft')).toBeVisible());
+ await waitFor(()=>expect(screen.getByRole('button',{name:/Generate AI notes/})).toBeEnabled());
+ expect(useSessionsStore.getState().sessions[0].aiNotes).toBe('');expect(useRecordingStore.getState().notesText).toBe('');
 });

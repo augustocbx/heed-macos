@@ -36,6 +36,10 @@ const metadataFields = ["title", "aiNotes", "summary", "tags", "pinned", "files"
 const same = (a: unknown, b: unknown): boolean => isDeepStrictEqual(JSON.parse(JSON.stringify(a ?? null)), JSON.parse(JSON.stringify(b ?? null)));
 const acceptedFields = (session: Session) => Object.fromEntries(sourceFields.map(key => [key, session[key]]));
 export function acceptedSourceChanged(before: Session, after: Session): boolean { return !same(acceptedFields(before), acceptedFields(after)); }
+export function acceptedTranscriptChanged(before:Session,after:Session):boolean {
+ const history=(session:Session)=>session.transcriptEditing?{activeGenerationId:session.transcriptEditing.activeGenerationId,generations:session.transcriptEditing.generations,edits:session.transcriptEditing.edits}:undefined;
+ return acceptedSourceChanged(before,after)||!same(history(before),history(after));
+}
 export function sourcePatch(patch: SessionPatch): boolean { return sourceFields.some(key => Object.hasOwn(patch, key)); }
 export function transcriptGuard(session: Session): TranscriptGuard { return { expectedTranscriptRevision: sourceRevision(session), expectedTranscriptVersion: session.transcriptVersion ?? 0 }; }
 export function checkTranscriptGuard(session: Session, guard: TranscriptGuard | null): void {
@@ -247,7 +251,7 @@ export class SessionTags {
     let next = build(current ? structuredClone(current) : null);
     if (!next || next.id !== id || (current && next.createdAt !== current.createdAt)) throw new TagError("Invalid accepted meeting identity");
     if ((!current || acceptedSourceChanged(current, next)) && next.segments?.length) next = { ...next, transcript: renderAcceptedTranscript(next.segments) };
-    const changed = !current || acceptedSourceChanged(current, next) || (!!current.transcriptEditing && !!next.transcriptEditing && current.transcriptEditing.activeGenerationId !== next.transcriptEditing.activeGenerationId);
+    const changed = !current || acceptedTranscriptChanged(current, next);
     const oldVersion = current?.transcriptVersion ?? 0;
     if (changed && oldVersion === Number.MAX_SAFE_INTEGER) throw new TagError("Transcript version limit reached", 409);
     if (current?.transcriptFinalized && changed) next = { ...next, transcriptEditing: preserveRecovery(current, next) };

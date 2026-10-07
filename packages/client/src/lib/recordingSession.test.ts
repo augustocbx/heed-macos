@@ -9,7 +9,7 @@ const segment = { speaker: "Speaker 1", start: 1.25, end: 3.5, text: "hello", ch
 
 test("saves manual names in session data without losing synchronization or embeddings", async () => {
  useRecordingStore.getState().renameSpeaker("Speaker 1", "Ana");
- vi.mocked(sessionsApi.create).mockResolvedValue({ id: "session" } as never);
+ vi.mocked(sessionsApi.create).mockResolvedValue({ id: "session", transcriptRevision:"created",transcriptVersion:1 } as never);
  await createRecordingSession({ segments: [segment], speakers: ["Speaker 1"], embeddings: { "Speaker 1": [1, 2] } });
  expect(sessionsApi.create).toHaveBeenCalledWith({
   segments: [{ ...segment, speaker: "Ana", auto: false }], speakers: ["Ana"], embeddings: { Ana: [1, 2] },
@@ -20,10 +20,10 @@ test("saves manual names in session data without losing synchronization or embed
 test("saves edits made while the session was being created", async () => {
  let resolve!: (value: never) => void;
  vi.mocked(sessionsApi.create).mockImplementation(() => new Promise(r => { resolve = r; }));
- vi.mocked(sessionsApi.patch).mockResolvedValue({ id: "session" } as never);
+ vi.mocked(sessionsApi.patch).mockResolvedValue({ id: "session", transcriptRevision:"created",transcriptVersion:1 } as never);
  const pending = createRecordingSession({ segments: [segment], speakers: ["Speaker 1"] });
  useRecordingStore.getState().renameSpeaker("Speaker 1", "Ana");
- resolve({ id: "session" } as never);
+ resolve({ id: "session", transcriptRevision:"created",transcriptVersion:1 } as never);
  await pending;
  expect(sessionsApi.patch).toHaveBeenCalledWith("session", expect.objectContaining({ speakers: ["Ana"] }));
 });
@@ -37,7 +37,7 @@ test("renaming a session produces persistable data and preserves other participa
 });
 
 test("commits finality with saved names and publishes the ID only after persistence succeeds", async () => {
- vi.mocked(sessionsApi.create).mockResolvedValue({ id: "final" } as never);
+ vi.mocked(sessionsApi.create).mockResolvedValue({ id: "final", transcriptRevision:"created",transcriptVersion:1 } as never);
  let resolve!: (value: never) => void;
  vi.mocked(sessionsApi.patch).mockImplementation(() => new Promise(r => { resolve = r; }));
  const pending = createRecordingSession({ transcriptFinalized: true, segments: [segment], speakers: ["Speaker 1"] });
@@ -45,7 +45,7 @@ test("commits finality with saved names and publishes the ID only after persiste
  expect(sessionsApi.create).toHaveBeenCalledWith(expect.objectContaining({ transcriptFinalized: false }));
  expect(sessionsApi.patch).toHaveBeenCalledWith("final", expect.objectContaining({ transcriptFinalized: true, speakers: ["Speaker 1"] }));
  expect(useRecordingStore.getState().currentSessionId).toBeNull();
- resolve({ id: "final" } as never);
+ resolve({ id: "final", transcriptRevision:"final",transcriptVersion:2 } as never);
  await pending;
  expect(useRecordingStore.getState().currentSessionId).toBe("final");
 });
@@ -55,15 +55,16 @@ test("persists names edited during the follow-up save before returning", async (
  let patchResolve!: (value: never) => void;
  vi.mocked(sessionsApi.create).mockImplementation(() => new Promise(r => { createResolve = r; }));
  vi.mocked(sessionsApi.patch).mockImplementationOnce(() => new Promise(r => { patchResolve = r; }))
-  .mockResolvedValue({ id: "final" } as never);
+  .mockResolvedValue({ id: "final", transcriptRevision:"renamed-again",transcriptVersion:3 } as never);
  const pending = createRecordingSession({ transcriptFinalized: true, segments: [segment], speakers: ["Speaker 1"] });
  useRecordingStore.getState().renameSpeaker("Speaker 1", "Ana");
- createResolve({ id: "final" } as never);
+ createResolve({ id: "final", transcriptRevision:"created",transcriptVersion:1 } as never);
  await Promise.resolve();
  useRecordingStore.getState().renameSpeaker("Speaker 1", "Alice");
- patchResolve({ id: "final" } as never);
+ patchResolve({ id: "final", transcriptRevision:"renamed",transcriptVersion:2 } as never);
  await pending;
  expect(sessionsApi.patch).toHaveBeenLastCalledWith("final", expect.objectContaining({ speakers: ["Alice"], transcriptFinalized: true }));
+ expect(vi.mocked(sessionsApi.patch).mock.calls.map(([,patch])=>patch.expectedTranscriptVersion)).toEqual([1,2,3]);
  expect(vi.mocked(sessionsApi.patch).mock.calls.slice(0, -1).every(([, patch]) => patch.transcriptFinalized === false)).toBe(true);
 });
 
@@ -75,7 +76,7 @@ test("locks speaker edits only across the final commit and unlocks after acknowl
  await Promise.resolve();
  useRecordingStore.getState().renameSpeaker("Speaker 1", "Late name");
  expect(useRecordingStore.getState().speakerNames).toEqual({});
- expect(sessionsApi.patch).toHaveBeenCalledWith("final", expect.objectContaining({expectedTranscriptRevision:"revision", transcriptFinalized:true}));
+ expect(sessionsApi.patch).toHaveBeenCalledWith("final", expect.objectContaining({expectedTranscriptRevision:"revision", expectedTranscriptVersion:0, transcriptFinalized:true}));
  resolve({id:"final"} as never);await pending;
  useRecordingStore.getState().renameSpeaker("Speaker 1", "After save");
  expect(useRecordingStore.getState().speakerNames["Speaker 1"]).toBe("After save");
@@ -89,7 +90,7 @@ test("duplicate final notifications return a completed session without replacing
 });
 
 test("failed final name save leaves no success ID", async () => {
- vi.mocked(sessionsApi.create).mockResolvedValue({ id: "final" } as never);
+ vi.mocked(sessionsApi.create).mockResolvedValue({ id: "final", transcriptRevision:"created",transcriptVersion:1 } as never);
  vi.mocked(sessionsApi.patch).mockRejectedValue(new Error("Save failed"));
  await expect(createRecordingSession({ transcriptFinalized: true, segments: [segment], speakers: ["Speaker 1"] })).rejects.toThrow("Save failed");
  expect(useRecordingStore.getState().currentSessionId).toBeNull();

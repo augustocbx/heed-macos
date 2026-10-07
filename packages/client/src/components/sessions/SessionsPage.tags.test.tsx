@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act,fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import type { Session } from "@heed/shared";
 import { SessionsPage } from "./SessionsPage";
@@ -66,4 +66,10 @@ test.each(["rename", "delete"] as const)("a historical %s does not change a recr
   await waitFor(() => expect(useSessionsStore.getState().tagRevision).toBe("4"));
   expect(screen.queryByText("Beta weekly")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "#Planning" }).className).toContain("tagFilterActive");
+});
+test('literal search immediately follows accepted corrections while earlier notes stay stale',async()=>{
+ render(<SessionsPage/>);await waitFor(()=>expect(tagsApi.list).toHaveBeenCalled());
+ fireEvent.change(screen.getByPlaceholderText('Search meetings...'),{target:{value:'<b>João</b>.*'}});expect(screen.queryByText('Alpha weekly')).not.toBeInTheDocument();
+ const corrected={...meetings[0]!,transcript:'<b>João</b>.*',transcriptRevision:'b'.repeat(64),transcriptVersion:2,aiNotes:'Earlier notes',notesMetadata:{origin:'manual' as const,sourceRevision:'a'.repeat(64),stale:true}};
+ act(()=>useSessionsStore.getState().accept(corrected));expect(screen.getByText('Alpha weekly')).toBeInTheDocument();expect(useSessionsStore.getState().sessions[0]!.notesMetadata?.stale).toBe(true);
 });

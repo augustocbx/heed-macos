@@ -1,9 +1,11 @@
 import type { Segment, TranscriptionDiagnostics } from "./speaker.ts";
+import type { TranscribeResult } from "./api.ts";
 
 export interface TranscriptGuard {
  expectedTranscriptRevision: string;
  expectedTranscriptVersion: number;
 }
+export interface CandidateInput { requestId: string; base: TranscriptGuard; result: TranscribeResult; }
 export type TranscriptTarget = { kind: "segment"; index: number } | { kind: "document" };
 export interface ReplaceInput {
  query: string;
@@ -27,6 +29,12 @@ export interface RecognitionGeneration {
  duration: number;
  transcriptionDiagnostics?: TranscriptionDiagnostics;
 }
+/** Hash identity at an accepted action, without duplicating its replayable text. */
+export interface TranscriptSourceIdentity {
+ language: string;
+ speakers: string[];
+ segments: Array<Pick<Segment, "speaker" | "start" | "end" | "channel">>;
+}
 export interface TranscriptEdit {
  id: string;
  /** Present together on local actions; omitted when importing portable history. */
@@ -36,6 +44,7 @@ export interface TranscriptEdit {
  kind: "edit" | "replace" | "revert";
  changes: TextChange[];
  createdAt: string;
+ sourceIdentity?: TranscriptSourceIdentity;
  beforeRevision: string;
  afterRevision: string;
 }
