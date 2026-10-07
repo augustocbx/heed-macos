@@ -168,6 +168,20 @@ test("incomplete source and unsupported language persist retryable failures inde
  expect(job(service.create(meeting({ transcript: "", segments: [] })))).toMatchObject({ status: "failed", reason: "transcript-empty" });
  expect(job(service.create(meeting({ files: { wav: "unsupported.wav" }, language: "es" })))).toMatchObject({ status: "failed", reason: "language-unsupported" });
 });
+test("clearing every accepted segment fails notes admission without using speaker labels as source text", async () => {
+ let calls = 0;
+ const { service } = fixture({ generate: async () => { calls++; return "Unsupported notes"; } });
+ const initial = service.create(meeting({ segments: [
+  { speaker: "Ana", start: 0, end: 1, text: "First sentence." },
+  { speaker: "Bruno", start: 1, end: 2, text: "Second sentence." },
+ ] }));
+ const cleared = service.replaceAccepted(initial.id, transcriptGuard(initial), current => ({ ...current, segments: current.segments.map(segment => ({ ...segment, text: "" })) }));
+ expect(cleared.transcript).toBe("\n");
+ expect(Object.values(cleared.notesJobs || {}).find(job => job.sourceRevision === cleared.transcriptRevision)).toMatchObject({ status: "failed", reason: "transcript-empty" });
+ await service.tick();
+ expect(calls).toBe(0);
+ expect(service.get(cleared.id)!.aiNotes).toBe("");
+});
 test("speaker channel changes supersede notes and minimal legacy sessions can be renamed safely", async () => {
  const { service, sessionsDir } = fixture(); const first = service.create(meeting()); await service.tick();
  const changed = service.replaceAccepted(first.id, transcriptGuard(first), current=>({...current,segments:first.segments.map(segment=>({...segment,channel:"mic"}))}));

@@ -1,0 +1,77 @@
+.dialog {
+  width: min(720px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+}
+.dialog h2 {
+  margin: 0 0 16px;
+  font-size: 20px;
+}
+.field {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+}
+.field textarea {
+  width: 100%;
+  min-height: 100px;
+  resize: vertical;
+  box-sizing: border-box;
+  background: var(--bg-input, var(--bg));
+  color: inherit;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  font: inherit;
+}
+.field select {
+  max-width: 100%;
+  font: inherit;
+}
+.actions,
+.options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 16px 0;
+}
+.actions button,
+.dialog button {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: inherit;
+  cursor: pointer;
+}
+.dialog button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.dialog :focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+.text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  border-left: 2px solid var(--border);
+  padding: 8px 12px;
+}
+.hint {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.error {
+  color: var(--red, #e75c65);
+}
+.changes {
+  display: grid;
+  gap: 12px;
+}
+.change {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+}
