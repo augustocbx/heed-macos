@@ -36,6 +36,12 @@ test("waiting turns can be cancelled and failed turns can be retried without app
  const view=render(<MeetingChat session={session} onCitation={vi.fn()}/>);fireEvent.click(await screen.findByRole("button",{name:"Cancel answer"}));await waitFor(()=>expect(chatApi.command).toHaveBeenCalledWith(session.id,{action:"cancel",turnId:"turn-a"}));
  view.unmount();vi.mocked(chatApi.get).mockResolvedValue({...saved,turns:[{...saved.turns[0]!,status:"failed",reason:"model-missing",answer:undefined}]});render(<MeetingChat session={session} onCitation={vi.fn()}/>);fireEvent.click(await screen.findByRole("button",{name:"Retry answer"}));await waitFor(()=>expect(chatApi.command).toHaveBeenCalledWith(session.id,{action:"retry",turnId:"turn-a"}));
 });
+test('a timed-out answer does not claim the local model is unavailable',async()=>{
+ vi.mocked(chatApi.get).mockResolvedValue({...saved,turns:[{...saved.turns[0]!,status:'failed',reason:'generation-timeout',answer:undefined}]});
+ render(<MeetingChat session={session} onCitation={vi.fn()}/>);
+ expect(await screen.findByText('Chat answer timed out. Please retry.')).toBeInTheDocument();
+ expect(screen.queryByText('Local chat unavailable. Start Ollama and retry.')).not.toBeInTheDocument();
+});
 
 test("a poll started during a save cannot overwrite the committed turn",async()=>{
  const {act}=await import("@testing-library/react");vi.useFakeTimers();

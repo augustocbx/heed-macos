@@ -19,7 +19,7 @@ export function chatFailure(error:unknown):string {
  if(error instanceof RetrievalCatalogError)return error.reason;
  if(error instanceof RetrievalQueryError)return 'invalid-question';
  if(error instanceof RetrievalUnavailableError)return 'retrieval-unavailable';
- const known=new Set(['model-missing','model-incompatible','model-unavailable','context-limit','model-response-incomplete','generation-failed','cancelled','invalid-answer','invalid-evidence','model-timeout']);
+ const known=new Set(['model-missing','model-incompatible','model-unavailable','context-limit','model-response-incomplete','generation-failed','generation-timeout','cancelled','invalid-answer','invalid-evidence','model-timeout']);
  return error instanceof Error&&known.has(error.message)?error.message:'generation-failed';
 }
 export function validateChatQuestion(question:string){try{normalizeRetrievalQuery(question);}catch(error){if(error instanceof RetrievalQueryError)throw new ChatError('invalid-question');if(!(error instanceof RetrievalUnavailableError))throw error;}}

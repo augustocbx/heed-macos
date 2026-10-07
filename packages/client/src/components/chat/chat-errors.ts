@@ -11,6 +11,7 @@ export const chatErrorMessages:Record<string,string>={
  "model-missing":"The selected local model is not installed. Choose another model.",
  "model-incompatible":"This model cannot answer questions. Choose an installed chat model.",
  "ollama-unavailable":"Local chat unavailable. Start Ollama and retry.",
+ "generation-timeout":"Chat answer timed out. Please retry.",
  "local-only":"Chat requires an installed local model.",
  "invalid-evidence":"The model returned unsupported citations. Retry or choose another model.",
  "invalid-answer":"The model returned an invalid answer. Retry or choose another model.",

@@ -11,6 +11,7 @@ const reasons: Record<string, string> = {
  'resources-busy': 'Waiting for recording, transcription or local AI resources.',
  disabled: 'Automatic notes are disabled.',
  'ollama-unavailable': 'Local notes model unavailable. Start Ollama and retry.',
+ 'generation-timeout': 'Notes generation timed out. Please retry.',
  'local-only': 'Choose a local notes model. Cloud models are not supported.',
  'template-missing': 'Notes template is no longer available.',
  'notes-changed': 'Notes changed. Previous generation was discarded.',

@@ -125,7 +125,12 @@ export class MeetingTasksService {
  }
  async preempt():Promise<void>{const active=this.active;if(!active)return;active.controller.abort();await active.done;}
  async tick():Promise<void>{
-  if(this.active)return;const store=this.read();let changed=false;
+  if(this.active){
+   const current=this.options.getSession(this.active.sessionId);
+   if(!current||!current.transcriptFinalized||sourceRevision(current)!==this.active.revision)this.active.controller.abort();
+   return;
+  }
+  const store=this.read();let changed=false;
   for(const review of Object.values(store.reviews))if(review.status==='running'){review.status='waiting';review.error='interrupted';changed=true;}
   for(const session of this.options.listSessions())if(session.transcriptFinalized&&session.transcript.trim()){
    const revision=sourceRevision(session);if(store.reviews[session.id]?.sourceRevision!==revision){store.reviews[session.id]={sessionId:session.id,sourceRevision:revision,status:'queued',suggestions:[],updatedAt:this.now()};changed=true;}
@@ -144,7 +149,7 @@ export class MeetingTasksService {
   const current=this.options.getSession(session.id);
   if(!current||!current.transcriptFinalized||sourceRevision(current)!==active.revision)review.status='superseded';
   else if(active.controller.signal.aborted){review.status='waiting';review.error='interrupted';}
-  else if(error){review.status='failed';review.error=['model-missing','local-only','ollama-unavailable','incomplete-output','Invalid task output','Invalid task evidence','Invalid task text','Invalid task'].includes(error)?error:'generation-failed';}
+  else if(error){review.status='failed';review.error=['model-missing','local-only','ollama-unavailable','generation-timeout','incomplete-output','Invalid task output','Invalid task evidence','Invalid task text','Invalid task'].includes(error)?error:'generation-failed';}
   else{review.status='ready';review.suggestions=suggestions!.map(suggestion=>({...suggestion,...store.decisions[suggestion.id]}));delete review.error;}
   review.updatedAt=this.now();this.save(store);
  }
