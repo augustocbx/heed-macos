@@ -14,6 +14,8 @@ export type NotesJobStatus = "queued" | "waiting" | "running" | "completed" | "f
 export interface NotesJob {
  id: string;
  sourceRevision: string;
+ /** Device-local accepted version bound when queued/admitted; excluded from portable records. */
+ sourceVersion?: number;
  status: NotesJobStatus;
  templateId: string;
  templateName: string;
@@ -32,7 +34,8 @@ export interface NotesJob {
 }
 
 export interface NotesMetadata {
- sourceRevision: string;
+ /** Null is unknown legacy/unguarded provenance, never verified against current text. */
+ sourceRevision: string | null;
  templateId?: string;
  templateName?: string;
  templateHash?: string;
