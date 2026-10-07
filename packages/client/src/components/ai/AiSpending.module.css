@@ -1,0 +1,30 @@
+.card { background: var(--white); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 16px 0 20px; min-width: 0; }
+.card h2 { margin: 0 0 8px; font-size: 17px; }
+.card h3 { font-size: 14px; margin: 16px 0 8px; }
+.card p, .card li, .card summary { color: var(--text-2); font-size: 13px; line-height: 1.5; }
+.card a { color: var(--blue); overflow-wrap: anywhere; }
+.fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 16px 0; }
+.field { display: flex; flex-direction: column; gap: 8px; font-size: 13px; min-width: 0; }
+.field input, .field select { width: 100%; box-sizing: border-box; padding: 8px; background: var(--white); color: var(--text); border: 1px solid var(--border); border-radius: 6px; font: inherit; }
+.field input[aria-invalid=true] { border-color: var(--red, #dc2626); }
+.field small { color: var(--text-2); line-height: 1.5; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.actions button { padding: 7px 12px; border: 1px solid var(--blue); border-radius: 6px; color: white; background: var(--blue); font: inherit; font-weight: 600; cursor: pointer; }
+.actions button:disabled { opacity: .5; cursor: default; }
+.card :is(input, select, button, a, summary, [tabindex]):focus-visible { outline: 3px solid var(--blue-light); outline-offset: 3px; }
+.card [role=alert] { color: var(--red, #b91c1c); }
+.summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; font-size: 13px; margin: 16px 0; }
+.summary dt { color: var(--text-2); }
+.summary dd { margin: 4px 0 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.tableRegion { overflow-x: auto; max-width: 100%; }
+.table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.table caption { text-align: left; margin-bottom: 8px; font-weight: 600; }
+.table th, .table td { text-align: left; vertical-align: top; padding: 10px 8px; border-bottom: 1px solid var(--border); min-width: 100px; }
+.table th { color: var(--text-2); font-weight: 600; }
+.table td { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; max-width: 260px; }
+.table small { display: block; color: var(--text-2); margin-top: 6px; line-height: 1.5; }
+.catalog { margin-top: 16px; }
+.catalog article + article { border-top: 1px solid var(--border); margin-top: 12px; }
+.links { display: flex; flex-wrap: wrap; gap: 12px; }
+.anchor { font-size: 13px; overflow-wrap: anywhere; }
+@media (max-width: 520px) { .fields, .summary { grid-template-columns: minmax(0, 1fr); } .card { padding: 16px; } }
