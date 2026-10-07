@@ -22,6 +22,7 @@ export function applyRecordingSnapshot(snapshot:RecordingSnapshot) {
   const saved=snapshot.state==="completed" && !!session?.transcriptFinalized;
   const segments=saved?session.segments:snapshot.segments;
   useRecordingStore.setState({
+    realTimeTranscription:snapshot.realTimeTranscription !== false,
     coordinatorMeetingId:snapshot.meetingId,coordinatorRevision:snapshot.revision,
     coordinatorState:snapshot.state,coordinatorError:snapshot.error,coordinatorPath:snapshot.path,
     ...(active?{dismissedMeetingId:null}:{}),

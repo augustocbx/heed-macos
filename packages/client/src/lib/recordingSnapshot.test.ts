@@ -45,3 +45,7 @@ it("reset preserves an empty idle screen when the previous completed meeting is 
   applyRecordingSnapshot(complete);useRecordingStore.getState().reset();applyRecordingSnapshot(complete);
   expect(useRecordingStore.getState().transcript).toBe("");expect(useRecordingStore.getState().seconds).toBe(0);
 });
+it("restores the admitted final-only mode independently of later preferences",()=>{
+ applyRecordingSnapshot(snapshot({realTimeTranscription:false,segments:[]}));
+ expect(useRecordingStore.getState().realTimeTranscription).toBe(false);
+});

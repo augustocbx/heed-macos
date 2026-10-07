@@ -21,6 +21,8 @@ import subprocess
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from preview_preference import saved_preview_preference
 
 # Threading HTTP server so health/hardware checks don't block while whisper is processing.
 # Without this, the server is single-threaded and ANY request during transcription hangs.
@@ -31,6 +33,34 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 # Different model instances (final vs live) CAN run concurrently.
 whisper_lock = threading.Lock()
 whisper_live_lock = threading.Lock()
+
+# Serialize startup, live admission, and release. Final inference owns separate locks/resources.
+preview_lock = threading.RLock()
+preview_enabled = saved_preview_preference()
+
+@contextmanager
+def preview_lease():
+    with preview_lock:
+        if not preview_enabled:
+            raise RuntimeError("Real-time transcription is disabled for this recording.")
+        yield
+
+def configure_preview(enabled):
+    global preview_enabled, whisper_model_live, live_governor, models_warm
+    if not isinstance(enabled, bool):
+        raise ValueError("Choose a valid real-time transcription setting.")
+    with preview_lock:
+        preview_enabled = enabled
+        if not enabled:
+            owned = whisper_model_live
+            whisper_model_live = None
+            live_governor = None
+            if owned is not None and owned is not whisper_model:
+                close = getattr(owned, "close", None)
+                if close: close()
+        # Re-enabling is lazy; no wait for a warm-only flag can deadlock capture.
+        models_warm = True
+        return {"enabled":preview_enabled, "warm":models_warm}
 
 warnings.filterwarnings("ignore")
 # HF_HUB_OFFLINE is set AFTER model loading in load_models() so that
@@ -848,15 +878,34 @@ def _load_whisper_with_fallback(model_name, devices, warmup_path, label="whisper
     raise RuntimeError(f"{label}: no whisper model could be loaded")
 
 
+def _load_preview_with_fallback(model_name, devices, warmup_path, label="live"):
+    from preview_worker import PreviewWhisper
+    start = _WHISPER_FALLBACK_ORDER.index(model_name) if model_name in _WHISPER_FALLBACK_ORDER else 2
+    for name in _WHISPER_FALLBACK_ORDER[start:]:
+        preview = None
+        try:
+            preview = PreviewWhisper(name, active_engine, devices)
+            list(preview.transcribe(warmup_path, language="en")[0])
+            return preview, name
+        except Exception as error:
+            if preview is not None: preview.close()
+            print(f"[heed] {label}: '{name}' failed ({str(error)[:80]}); stepping down", flush=True)
+    raise RuntimeError("No live transcription model could be loaded")
+
+
 def _swap_live_model(new_model):
     """Hot-swap the live preview model when the governor decides to degrade/recover.
     Loads + warms the new model OUTSIDE the transcribe lock, then swaps the reference under it."""
     global whisper_model_live, whisper_model_live_name
     try:
-        eng, name = _load_whisper_with_fallback(new_model, _devices, _warmup_path, "live-swap")
+        eng, name = _load_preview_with_fallback(new_model, _devices, _warmup_path, "live-swap")
         with whisper_live_lock:
+            previous = whisper_model_live
             whisper_model_live = eng
             whisper_model_live_name = name
+            if previous is not whisper_model:
+                close = getattr(previous, "close", None)
+                if close: close()
         print(f"[heed] Governor: live model -> {name}", flush=True)
         return True
     except Exception as e:
@@ -865,6 +914,10 @@ def _swap_live_model(new_model):
 
 
 def load_models():
+    with preview_lock:
+        _load_models()
+
+def _load_models():
     global whisper_model, whisper_model_live, diarize_pipeline, whisper_model_name, whisper_model_live_name, whisper_runtime_info, pyannote_runtime_info, diarize_backend
     global live_governor, _devices, _warmup_path, live_tuning, active_engine, models_warm
 
@@ -881,19 +934,24 @@ def load_models():
     # --- Hardware-aware model selection: CapabilityProbe -> ModelPolicy -> verify-the-pick.
     # If anything in the new path fails, fall back to the legacy conservative picker so heed
     # NEVER hard-fails at startup (first robustness guarantee).
-    try:
-        import capability, policy
-        caps = capability.probe(log=lambda m: print(m, flush=True))
-        plan = policy.decide(caps, measure_final_rtf=capability.measure_model_rtf)
-        whisper_model_name = plan.final_model
-        whisper_model_live_name = plan.live_model
-        pick_reason = plan.reason
-    except Exception as e:
-        print(f"[heed] Capability probe failed ({e}) — using legacy picker", flush=True)
+    if preview_enabled:
+        try:
+            import capability, policy
+            caps = capability.probe(log=lambda m: print(m, flush=True))
+            plan = policy.decide(caps, measure_final_rtf=capability.measure_model_rtf)
+            whisper_model_name = plan.final_model
+            whisper_model_live_name = plan.live_model
+            pick_reason = plan.reason
+        except Exception as error:
+            print(f"[heed] Capability probe failed ({error}) — using legacy picker", flush=True)
+            whisper_pick = pick_whisper_models(devices)
+            whisper_model_name, whisper_model_live_name = whisper_pick["final"], whisper_pick["live"]
+            pick_reason = whisper_pick["reason"]
+    else:
+        # No capability benchmark may load a preview/shared native model just for idle startup.
         whisper_pick = pick_whisper_models(devices)
-        whisper_model_name = whisper_pick["final"]
-        whisper_model_live_name = whisper_pick["live"]
-        pick_reason = whisper_pick["reason"]
+        whisper_model_name, whisper_model_live_name = whisper_pick["final"], whisper_pick["live"]
+        pick_reason = "Final-only mode: conservative selection without startup inference"
     whisper_quality = "very_good"
     whisper_speed = "fast"
     if whisper_model_name == "medium":
@@ -948,18 +1006,18 @@ def load_models():
         print(f"[heed] Whisper final={whisper_model_name} ready in {time.time()-t:.1f}s ({engine_kind})", flush=True)
         # Live preview: a SEPARATE, lighter model for low latency. Reuse the final instance if they
         # ended up the same name (saves memory). Live also degrades gracefully on its own.
-        if whisper_model_live_name and whisper_model_live_name != whisper_model_name:
+        if preview_enabled and whisper_model_live_name and whisper_model_live_name != whisper_model_name:
             t_live = time.time()
             print(f"[heed] Loading live whisper {whisper_model_live_name} ({engine_kind})...", flush=True)
-            whisper_model_live, whisper_model_live_name = _load_whisper_with_fallback(whisper_model_live_name, devices, _warmup_path, "live")
+            whisper_model_live, whisper_model_live_name = _load_preview_with_fallback(whisper_model_live_name, devices, _warmup_path, "live")
             print(f"[heed] Whisper live={whisper_model_live_name} ready in {time.time()-t_live:.1f}s", flush=True)
-        else:
+        elif preview_enabled:
             whisper_model_live = whisper_model
             whisper_model_live_name = whisper_model_name
             print(f"[heed] Whisper live = final (same {whisper_model_live_name} instance, saves RAM)", flush=True)
     else:
         models_ready["whisper"] = True  # parakeet handles transcription; whisper lazy-loads if needed
-        print(f"[heed] Whisper NOT loaded at boot (engine=parakeet) — lazy on file-upload only, frees ~1-3GB RAM", flush=True)
+        print(f"[heed] Whisper NOT loaded at boot (engine=parakeet) — lazy on final/file work", flush=True)
 
     # Arm the RuntimeGovernor for the live preview: it self-corrects the live model under
     # recording-time contention (the 8-15s regression). Ceiling = the policy's live pick so it
@@ -967,8 +1025,8 @@ def load_models():
     try:
         from governor import RuntimeGovernor
         live_governor = RuntimeGovernor(start_model=whisper_model_live_name,
-                                        ceiling=whisper_model_live_name, floor="tiny")
-        print(f"[heed] Live governor armed (start={whisper_model_live_name}, floor=tiny)", flush=True)
+                                        ceiling=whisper_model_live_name, floor="tiny") if preview_enabled else None
+        if preview_enabled: print(f"[heed] Live governor armed (start={whisper_model_live_name}, floor=tiny)", flush=True)
     except Exception as e:
         live_governor = None
         print(f"[heed] Live governor unavailable (non-critical): {e}", flush=True)
@@ -984,7 +1042,7 @@ def load_models():
     print(f"[heed] Live: mode={live_tuning['mode']} interval={live_tuning['interval_ms']}ms ({engine_kind})", flush=True)
 
     # Warm only the lightweight live ASR and dedicated diarizer before allowing recording.
-    if engine_kind == "parakeet":
+    if engine_kind == "parakeet" and preview_enabled:
         # A real speech clip exercises inference kernels that silence may skip.
         _voice_clip = os.path.join(os.path.dirname(__file__), "_warmup_voice.wav")
         warm_clip = _voice_clip if os.path.exists(_voice_clip) else _warmup_path
@@ -1028,7 +1086,7 @@ def load_models():
     if engine_kind == "parakeet" and engines.parakeet_available():
         try:
             t = time.time()
-            engines.get_parakeet_diar()  # ensure the dedicated diarization sidecar (GPU) is up
+            if preview_enabled: engines.get_parakeet_diar()  # ensure the dedicated diarization sidecar (GPU) is up
             diarize_backend = "parakeet"
             models_ready["pyannote"] = True
             pyannote_runtime_info = {
@@ -1164,15 +1222,17 @@ def _ensure_whisper():
 def _ensure_whisper_live():
     """Use a small, independent live preview; never reuse a large final model."""
     global whisper_model_live, whisper_model_live_name
+    if not preview_enabled:
+        raise RuntimeError("Real-time transcription is disabled for this recording.")
     if whisper_model_live is None:
-        import engines
         with whisper_live_lock:
             if whisper_model_live is None:
                 if active_engine == "parakeet":
-                    whisper_model_live = engines.MLXEngine("base")
+                    from preview_worker import PreviewWhisper
+                    whisper_model_live = PreviewWhisper("base", active_engine, _devices)
                     whisper_model_live_name = "base"
                 else:
-                    whisper_model_live, whisper_model_live_name = _load_whisper_with_fallback(
+                    whisper_model_live, whisper_model_live_name = _load_preview_with_fallback(
                         "base", _devices, _warmup_path, "live-lazy")
     return whisper_model_live
 
@@ -2409,6 +2469,8 @@ class Handler(BaseHTTPRequestHandler):
                 "commit": HEED_COMMIT,
                 "ready": all(models_ready.values()),
                 "warm": models_warm,
+                "preview_enabled":preview_enabled,
+                "preview_state":"disabled" if not preview_enabled else "lazy" if whisper_model_live is None else "loaded",
                 **models_ready,
                 "whisper_info": whisper_runtime_info,
                 "pyannote_info": pyannote_runtime_info,
@@ -2424,8 +2486,27 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, 404)
 
     def do_POST(self):
+        preview_paths = ("/transcribe-live", "/stream/start", "/stream/feed", "/stream/finish",
+                         "/diar/start", "/diar/feed", "/diar/finish", "/diar/live", "/mic/filter")
+        if self.path in preview_paths:
+            try:
+                with preview_lease():
+                    return self._post()
+            except RuntimeError as error:
+                self._json({"error":str(error)}, 409)
+                return
+        return self._post()
+
+    def _post(self):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length)) if length else {}
+
+        if self.path == "/preview/configure":
+            try:
+                self._json(configure_preview(body.get("enabled")))
+            except ValueError as error:
+                self._json({"error":str(error)}, 400)
+            return
 
         if self.path == "/transcribe":
             if not models_ready["whisper"]:

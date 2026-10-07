@@ -168,3 +168,20 @@ test("abandon manifest failure retains archived final checkpoint and rolls back 
  const archive=JSON.parse(readFileSync(join(f.directory,"recording-recovery",`${active.meetingId}.json`),"utf8"));expect(archive.snapshot).toEqual(failed);expect(readFileSync(f.capture.path,"utf8")).toBe("retained audio");
  f.restore();await f.coordinator.abandon("committed-abandon",active.meetingId!);const durable=JSON.parse(readFileSync(f.manifestPath,"utf8"));expect(durable.receipts["uncommitted-abandon"]).toBeUndefined();expect(durable.receipts["committed-abandon"]).toBeDefined();
 });
+
+test("snapshots the device preference at admission and preserves it through recovery and finalization", async () => {
+  let enabled = false;
+  const base = setup();
+  const coordinator = new RecordingCoordinator({manifestPath:base.manifestPath,adapter:base.adapter,realTimeTranscription:()=>enabled});
+  const active = await coordinator.start("final-only", "both");
+  expect(active.realTimeTranscription).toBe(false);
+  enabled = true;
+  coordinator.live("segment", {speaker:"Preview",text:"Must not be admitted",start:0,end:1});
+  expect(coordinator.snapshot().segments).toEqual([]);
+  const recovered = new RecordingCoordinator({manifestPath:base.manifestPath,adapter:base.adapter,realTimeTranscription:()=>enabled});
+  expect(recovered.snapshot().realTimeTranscription).toBe(false);
+  const done = await recovered.retry("recover", active.meetingId!);
+  expect(done.session).toMatchObject({transcript:"Vamos entregar sexta.",speakers:["Speaker 1"],transcriptFinalized:true});
+  expect(done.realTimeTranscription).toBe(false);
+  expect((await recovered.start("next", "mic")).realTimeTranscription).toBe(true);
+});
