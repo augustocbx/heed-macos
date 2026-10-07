@@ -32,6 +32,7 @@ const jsonRequest = async (path:string, body?:unknown, method = "POST", headers:
 const list = async ():Promise<Session[]> => (await fetch(`${base}/api/sessions`)).json();
 const currentJob = (session:Session):NotesJob|undefined => Object.values(session.notesJobs || {}).find(job => job.sourceRevision === session.transcriptRevision);
 const get = async (id:string) => (await list()).find(session => session.id === id)!;
+const transcriptGuard = (session:Session) => ({ expectedTranscriptRevision: session.transcriptRevision!, expectedTranscriptVersion: session.transcriptVersion! });
 
 async function startApp() {
  app = Bun.spawn([process.execPath,resolve(import.meta.dir,"../server.ts")],{cwd:resolve(import.meta.dir,"../../.."),env:{...process.env,PORT:base.split(":").at(-1)!,HEED_APP_DIR:directory,HEED_RECORDINGS_DIR:join(directory,"media"),OLLAMA_HOST:`http://127.0.0.1:${transport.port}`,HEED_TRANSCRIPTION_URL:`http://127.0.0.1:${transport.port}`},stdout:"ignore",stderr:"pipe"});
@@ -91,7 +92,8 @@ test("HTTP settings default off, validate installed models, and block external o
 test("final speaker commit creates one durable job, using the final Portuguese input", async () => {
  const first = await jsonRequest("/api/sessions",{files:{wav:join(directory,"media","capture.wav")},transcriptFinalized:false,language:"pt",transcript:"Bom dia",speakers:["Speaker 1"],segments:[{speaker:"Speaker 1",channel:"sys",text:"Bom dia",start:0,end:2}]});
  expect(currentJob(first.body)).toBeUndefined();
- const final = await jsonRequest(`/api/sessions?id=${first.body.id}`,{transcriptFinalized:true,speakers:["Ana"],segments:[{speaker:"Ana",channel:"sys",text:"Bom dia",start:0,end:2}]},"PATCH");
+ const final = await jsonRequest(`/api/sessions?id=${first.body.id}`,{...transcriptGuard(first.body),transcriptFinalized:true,speakers:["Ana"],segments:[{speaker:"Ana",channel:"sys",text:"Bom dia",start:0,end:2}]},"PATCH");
+ expect(final.status).toBe(200);
  expect(Object.values(final.body.notesJobs)).toHaveLength(1);
  const complete = await until(()=>get(first.body.id),session=>currentJob(session)?.status === "completed");
  expect(complete.notesMetadata).toMatchObject({origin:"automatic",language:"pt",model:"fixture:1b",stale:false});
@@ -122,10 +124,23 @@ test("recording transcription preempts and unloads notes, then resumes after its
 
 test("manual edits reject stale saves and preserve notes after retranscription", async () => {
  const existing = await get("preempt");
- const manual = await jsonRequest("/api/sessions?id=preempt",{aiNotes:"Edited notes",expectedTranscriptRevision:existing.transcriptRevision,expectedNotes:existing.aiNotes},"PATCH");
+ const manual = await jsonRequest("/api/sessions?id=preempt",{aiNotes:"Edited notes",...transcriptGuard(existing),expectedNotes:existing.aiNotes},"PATCH");
+ expect(manual.status).toBe(200);
  expect(manual.body.notesMetadata.origin).toBe("manual");
  expect((await jsonRequest("/api/sessions?id=preempt",{aiNotes:"Late result",expectedNotes:existing.aiNotes},"PATCH")).status).toBe(409);
- const changed = await jsonRequest("/api/sessions?id=preempt",{transcript:"Revised meeting"},"PATCH");
+ const staged = await jsonRequest("/api/sessions/preempt/transcript/candidates", {
+  requestId: "manual-notes-retranscription", base: transcriptGuard(manual.body),
+  result: { success: true, finalized: true, text: "Revised meeting", duration: 1, wordCount: 2,
+   speakers: [], segments: [], metadata: { language: "en", model: "small" }, files: { wav: "", srt: "", txt: "" } },
+ });
+ expect(staged.status).toBe(200);
+ expect(staged.body.aiNotes).toBe("Edited notes");
+ expect(staged.body.transcript).toBe(existing.transcript);
+ const changed = await jsonRequest("/api/sessions/preempt/transcript/commands", {
+  ...transcriptGuard(staged.body), requestId: "accept-manual-notes-retranscription", action: "accept-candidate",
+  candidateId: staged.body.transcriptEditing.candidates[0].id,
+ });
+ expect(changed.status).toBe(200);
  expect(changed.body.aiNotes).toBe("Edited notes");expect(changed.body.notesMetadata.stale).toBe(true);
  expect(currentJob(changed.body)?.reason).toBe("existing-notes");
  const job = currentJob(changed.body)!;
@@ -159,7 +174,7 @@ test("HTTP meeting and tag endpoints preserve notes guards and reject stale assi
  expect((await jsonRequest("/api/sessions?id=tags-http", { tags: [], tagsRevision: created.body.tagsRevision }, "PATCH")).status).toBe(409);
  const current = await get("tags-http");
  expect((await jsonRequest("/api/sessions?id=tags-http", { tags: [], tagsRevision: current.tagsRevision }, "PATCH")).status).toBe(200);
- expect((await jsonRequest("/api/sessions?id=tags-http", { aiNotes: "Edited notes", expectedNotes: "Manual notes", expectedTranscriptRevision: current.transcriptRevision }, "PATCH")).status).toBe(200);
+ expect((await jsonRequest("/api/sessions?id=tags-http", { aiNotes: "Edited notes", expectedNotes: "Manual notes", ...transcriptGuard(current) }, "PATCH")).status).toBe(200);
 });
 
 test("HTTP session reads and writes fail closed when tag recovery cannot proceed", async () => {
@@ -210,6 +225,7 @@ test("multiple tag assignments survive process restarts, retranscription, speake
   const result = JSON.parse(results[0]!.split("\ndata: ")[1]!) as TranscribeResult;
   expect(result).toMatchObject({ success: true, finalized: true, text: "Bom dia", speakers: ["Ana"], metadata: { language: "pt", model: "small" } });
   const saved = await jsonRequest("/api/sessions?id=tagged-retranscription", {
+   ...transcriptGuard(await get("tagged-retranscription")),
    transcript: result.text, transcriptFinalized: true, language: result.metadata.language,
    transcriptionModel: result.metadata.model, speakers: result.speakers, segments: result.segments, embeddings: result.embeddings,
   }, "PATCH");
@@ -219,6 +235,7 @@ test("multiple tag assignments survive process restarts, retranscription, speake
   await until(() => get("tagged-retranscription"), session => currentJob(session)?.status === "running" && currentJob(session)!.generatedCharacters > 0);
 
   const renamed = await jsonRequest("/api/sessions?id=tagged-retranscription", {
+   ...transcriptGuard(await get("tagged-retranscription")),
    speakers: ["Ana Silva"], segments: [{ ...result.segments[0], speaker: "Ana Silva", auto: false }], embeddings: { "Ana Silva": [1, 2] },
   }, "PATCH");
   expect(renamed.status).toBe(200);

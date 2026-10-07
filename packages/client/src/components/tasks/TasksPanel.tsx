@@ -3,7 +3,7 @@ import type {Session,TaskEvidence,TaskFields as Fields,TaskPatch,TaskView,TasksS
 import {useLocale} from '@/lib/i18n';
 import {tasksApi} from '@/api/tasks';
 import {sessionsApi} from '@/api/sessions';
-import {useSessionsStore} from '@/stores/sessions';
+import {beginSessionRequest,useSessionsStore} from '@/stores/sessions';
 import {useUIStore} from '@/stores/ui';
 import {TaskFields} from './TaskFields';
 import {TaskSources} from './TaskSources';
@@ -48,8 +48,9 @@ export function TasksPanel({session,onSeek,onShowTranscript}:Props){
    return;
   }
   await mutate(async()=>{
-   const meeting=(await sessionsApi.list()).find(s=>s.id===task.sessionId);if(!meeting)throw new Error('Source meeting deleted');
-   useSessionsStore.getState().accept(meeting);useSessionsStore.getState().view(meeting);
+   const order=beginSessionRequest(task.sessionId);
+   const fetched=(await sessionsApi.list()).find(s=>s.id===task.sessionId);if(!fetched)throw new Error('Source meeting deleted');
+   const meeting=useSessionsStore.getState().accept(fetched,order);useSessionsStore.getState().view(meeting);
    const currentSource=task.sourceState==='available'&&meeting.transcriptRevision===task.sourceRevision&&(!evidence||evidence.sourceRevision===task.sourceRevision);
    useUIStore.setState({currentPage:'sessions',
     chatSourceFocus:currentSource&&evidence?{...evidence,id:`${task.sessionId}:${task.sourceRevision}:${evidence.segmentIndex}:0`,sessionId:task.sessionId,segmentIndex:meeting.segments?.length?evidence.segmentIndex:null,paragraphIndex:null}:null,

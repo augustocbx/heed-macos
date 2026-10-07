@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import type { Session, NotesJob } from '@heed/shared';
 import { automaticNotesApi } from '@/api/automaticNotes';
-import { useSessionsStore } from '@/stores/sessions';
 import { aiWaitingMessage } from '@/lib/ai-waiting';
 import { useLocale } from '@/lib/i18n';
 import styles from './AutomaticNotes.module.css';
@@ -29,7 +28,6 @@ export function NotesJobStatus({ session, compact = false }: { session: Session;
  const { tr } = useLocale();
  const [busy, setBusy] = useState(false);
  const [error, setError] = useState(false);
- const accept = useSessionsStore(state => state.accept);
  const job = currentNotesJob(session);
  const metadata = session.notesMetadata;
  const unknown = !!metadata && metadata.sourceRevision === null;
@@ -40,8 +38,7 @@ export function NotesJobStatus({ session, compact = false }: { session: Session;
   if (replace && !window.confirm(tr(replacementPrompt))) return;
   setBusy(true); setError(false);
   try {
-   const updated = await automaticNotesApi.control({ sessionId: session.id, jobId: job!.id, action, ...(replace ? { replaceExisting: true as const, expectedNotes: session.aiNotes } : {}) });
-   accept(updated);
+   await automaticNotesApi.control({ sessionId: session.id, jobId: job!.id, action, ...(replace ? { replaceExisting: true as const, expectedNotes: session.aiNotes } : {}) });
   } catch { setError(true); }
   finally { setBusy(false); }
  };
