@@ -54,6 +54,16 @@ export const STORAGE_TRANSLATIONS: Record<string, Record<string,string>> = {
     "fr": "Médias locaux récupérables",
     "de": "Entfernbare lokale Medien"
   },
+  "Rebuildable local search data": {
+    "pt-BR": "Dados de busca local que podem ser reconstruídos",
+    "fr": "Données de recherche locale pouvant être reconstruites",
+    "de": "Wiederherstellbare lokale Suchdaten"
+  },
+  "Local search data ({count} files, {size} GB) will be cleared and can be rebuilt when space is available. This cleanup keeps transcripts and audio.": {
+    "pt-BR": "Os dados de busca local ({count} arquivos, {size} GB) serão removidos e poderão ser reconstruídos quando houver espaço disponível. Esta limpeza preserva transcrições e áudio.",
+    "fr": "Les données de recherche locale ({count} fichiers, {size} GB) seront supprimées et pourront être reconstruites lorsque de l’espace sera disponible. Ce nettoyage conserve les transcriptions et l’audio.",
+    "de": "Lokale Suchdaten ({count} Dateien, {size} GB) werden entfernt und können bei verfügbarem Speicherplatz neu erstellt werden. Diese Bereinigung erhält Transkripte und Audio."
+  },
   "Available budget": {
     "pt-BR": "Espaço disponível",
     "fr": "Espace disponible",
