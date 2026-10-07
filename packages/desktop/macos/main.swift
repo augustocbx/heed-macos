@@ -679,7 +679,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
             guard let self=self else {return};self.sending=false
             switch result {
             case .success(let action):self.liveLanguageSettings=action.settings
-            case .failure:self.statusMenu.title=self.text("Could not save meeting mode. Try again.")
+            case .failure:self.showStatusMessage(self.text("Could not save meeting mode. Try again."))
             }
             self.updateMenu()
         }
@@ -727,7 +727,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
     @objc private func stopRecording() { command("stop") }
     private func showStatusMessage(_ message: String) {
         statusMessage = (message, Date().addingTimeInterval(8))
-        statusMenu.title = message
+        updateMenu()
     }
     private func openVerifiedInterface(settings: Bool) {
         bootServices()
