@@ -113,7 +113,7 @@ function parseClaims(text: string, evidence: ChatEvidence[], metadataCoverage:Me
  if (!result || Object.keys(result).some(key=>!['claims','notFound'].includes(key)) || !Array.isArray(result.claims) || result.claims.length > 12 || typeof result.notFound !== "boolean" || (result.notFound && result.claims.length)) throw new ChatError("invalid-answer", 502);
  const sources = new Map(evidence.map(item => [item.id, item]));
  const normalizedQuestion=question.normalize('NFD').replace(/\p{M}/gu,'').toLowerCase();
- const namedSpeaker=/(?:\bwith|\bcom|\bavec|\bmit)\s+(?:(?:o|a|the|le|la|der|die)\s+)?([\p{Lu}][\p{L}\p{M}'-]*)/u.exec(question)?.[1]?.normalize('NFD').replace(/\p{M}/gu,'').toLowerCase();
+ const namedSpeaker=/(?:\bwith|\bcom|\bavec|\bmit)\s+(?:(?:o|a|the|le|la|der|die)\s+)?([\p{L}][\p{L}\p{M}'-]*)/u.exec(question)?.[1]?.normalize('NFD').replace(/\p{M}/gu,'').toLowerCase();
  return result.claims.map(claim => {
   if (!claim || Object.keys(claim).some(key=>!['text','evidenceIds'].includes(key)) || typeof claim.text !== "string" || !claim.text.trim() || claim.text.length > 2000 || !Array.isArray(claim.evidenceIds) || !claim.evidenceIds.length || claim.evidenceIds.length > 20) throw new ChatError("invalid-evidence", 502);
   const citations = [...new Set(claim.evidenceIds as unknown[])].map(id => {

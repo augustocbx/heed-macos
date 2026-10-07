@@ -94,7 +94,10 @@ test('one eligible meeting can answer latest speaker despite many matching excer
 test('a name mentioned by another speaker cannot prove a latest meeting with that person',async()=>{
  const s=meeting();s.segments=[{speaker:'Ana',text:'Bruno will receive the notes.',start:0,end:1}];
  const evidence=transcriptEvidence(s),metadata=meetingMetadataEvidence(s)!;
- await expect(answerRetrieved({evidence,metadata:[metadata],metadataCoverage:{selectedMeetings:1,suppliedMeetings:1,complete:true},coverage:testCoverage(evidence),question:'When was the latest meeting with Bruno?',history:[],model:'local',generate:async()=>JSON.stringify({claims:[{text:'The latest meeting with Bruno was on October 5, 2026.',evidenceIds:[evidence[0]!.id,metadata.id]}],notFound:false})})).rejects.toThrow('invalid-evidence');
+ for(const question of ['When was the latest meeting with Bruno?','When was the latest meeting with bruno?','Quando foi a última reunião com o bruno?']){
+  await expect(answerRetrieved({evidence,metadata:[metadata],metadataCoverage:{selectedMeetings:1,suppliedMeetings:1,complete:true},coverage:testCoverage(evidence),question,history:[],model:'local',generate:async()=>JSON.stringify({claims:[{text:'The latest meeting with Bruno was on October 5, 2026.',evidenceIds:[evidence[0]!.id,metadata.id]}],notFound:false})})).rejects.toThrow('invalid-evidence');
+  await expect(answerRetrieved({evidence:[],metadata:[metadata],metadataCoverage:{selectedMeetings:1,suppliedMeetings:1,complete:true},coverage:testCoverage([]),question,history:[],model:'local',generate:async()=>JSON.stringify({claims:[{text:'The latest meeting with Bruno was on October 5, 2026.',evidenceIds:[metadata.id]}],notFound:false})})).rejects.toThrow('invalid-evidence');
+ }
 });
 
 test("generation respects the retrieved excerpt set and discloses context/model-call limits",async()=>{
