@@ -33,6 +33,28 @@ test('citation navigation opens its correct meeting and retains text focus witho
  localStorage.setItem('heed-library-chat-scope',JSON.stringify({mode:'all',labels:[],match:'any'}));render(<LibraryChat/>);await screen.findByText('BROAD_SECRET_ANSWER');fireEvent.click(screen.getByRole('button',{name:/meeting-a.*12s/}));
  await waitFor(()=>expect(useSessionsStore.getState().viewing?.id).toBe('meeting-a'));expect(useUIStore.getState().currentPage).toBe('sessions');expect(useUIStore.getState().chatSourceFocus).toMatchObject({sessionId:'meeting-a',sourceRevision:'source-a',segmentIndex:0});expect(libraryChatApi.source).toHaveBeenCalledWith(expect.objectContaining({mode:'all'}),'all-key',evidence.id);
 });
+test('meeting time citation opens its scoped meeting without a fake transcript focus',async()=>{
+ const previousTimezone=process.env.TZ;process.env.TZ='America/Sao_Paulo';
+ const metadata={kind:'meeting-metadata' as const,id:'meeting-a:meeting-metadata:metadata-a',sessionId:'meeting-a',sourceRevision:'metadata-a',recordedAt:'2026-04-15T14:30:00Z'};
+ localStorage.setItem('heed-library-chat-scope',JSON.stringify({mode:'all',labels:[],match:'any'}));
+ vi.mocked(libraryChatApi.context).mockImplementation(async(scope)=>{const result=context(scope);result.thread.turns[0].answer!.claims=[{text:'The meeting was recorded on April 15.',citations:[metadata]}];return result;});
+ try{
+  render(<LibraryChat/>);await screen.findByText('The meeting was recorded on April 15.');
+  expect(screen.getByText(/Meeting date and time/)).toBeInTheDocument();
+  expect(screen.getByText(/11:30/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:/Open meeting/}));
+  await waitFor(()=>expect(useSessionsStore.getState().viewing?.id).toBe('meeting-a'));
+  expect(useUIStore.getState().chatSourceFocus).toBeNull();
+  expect(libraryChatApi.source).toHaveBeenCalledWith(expect.objectContaining({mode:'all'}),'all-key',metadata.id);
+ }finally{if(previousTimezone===undefined)delete process.env.TZ;else process.env.TZ=previousTimezone;}
+});
+test('partial meeting date coverage is visible beside transcript retrieval counts',async()=>{
+ localStorage.setItem('heed-library-chat-scope',JSON.stringify({mode:'all',labels:[],match:'any'}));
+ vi.mocked(libraryChatApi.context).mockImplementation(async(scope)=>{const result=context(scope);result.thread.turns[0].answer!.coverage.metadata={selectedMeetings:12,suppliedMeetings:8,complete:false};return result;});
+ render(<LibraryChat/>);await screen.findByText('BROAD_SECRET_ANSWER');
+ expect(screen.getByText('Meeting dates: 8 of 12 eligible meetings supplied.')).toBeInTheDocument();
+ expect(screen.getByText('Meeting date coverage is partial. The latest meeting cannot be established across this selection.')).toBeInTheDocument();
+});
 test('historical answers retain quotes but disable source navigation and retry',async()=>{
  localStorage.setItem('heed-library-chat-scope',JSON.stringify({mode:'all',labels:[],match:'any'}));
  vi.mocked(libraryChatApi.context).mockImplementation(async(scope)=>{const result=context({...scope,mode:'all'});result.thread.turns[0].stale=true;return result;});render(<LibraryChat/>);await screen.findByText('BROAD_SECRET_ANSWER');expect(screen.getByText('Historical answer: labels, meetings or transcripts changed.')).toBeInTheDocument();expect(screen.getByRole('button',{name:/meeting-a.*12s/})).toBeDisabled();

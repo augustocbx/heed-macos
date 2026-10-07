@@ -8,7 +8,7 @@ import {RetrievalCatalogError,type RetrievalCatalog} from './retrieval-catalog';
 import type {MeetingRetriever} from './meeting-retrieval';
 import type {RetrievalSnapshot} from '../../shared/types/retrieval';
 import {notesHash,sourceRevision} from './automatic-notes';
-import {answerMeetingQuestion,iterateTranscriptEvidence,ChatError,chatFailure,validateChatQuestion,readChatCommand,type ChatGenerator} from './meeting-chat';
+import {answerMeetingQuestion,iterateTranscriptEvidence,meetingMetadataEvidence,selectedMeetingMetadata,ChatError,chatFailure,validateChatQuestion,readChatCommand,type ChatGenerator} from './meeting-chat';
 
 export function normalizeChatScope(value:unknown):LibraryChatScope {
  const scope=value as LibraryChatScope;
@@ -19,7 +19,7 @@ export function normalizeChatScope(value:unknown):LibraryChatScope {
 }
 const scopeId=(scope:LibraryChatScope)=>notesHash(JSON.stringify(scope));
 type LocalLibraryTurn=LibraryChatTurn&{retrievalKey?:string};
-interface Options {directory:string;getSession:(id:string)=>Session|null;catalog:Pick<RetrievalCatalog,'state'|'resolve'|'validate'|'preview'>;retriever:Pick<MeetingRetriever,'retrieve'|'materialize'>;isBusy:()=>boolean;waitingReason?:()=>AiWaitingReason;generate:ChatGenerator;write?:typeof atomicWriteJson;}
+interface Options {directory:string;getSession:(id:string)=>Session|null;catalog:Pick<RetrievalCatalog,'state'|'resolve'|'validate'|'preview'|'describe'>;retriever:Pick<MeetingRetriever,'retrieve'|'materialize'>;isBusy:()=>boolean;waitingReason?:()=>AiWaitingReason;generate:ChatGenerator;write?:typeof atomicWriteJson;}
 
 /** Selection filtering precedes evidence extraction, history selection and generation. */
 export class LibraryChatService {
@@ -89,6 +89,7 @@ export class LibraryChatService {
   const id=evidenceId.split(':')[0]!,stamp=this.capture(scope).sources.find(source=>source.sessionId===id);
   if(!stamp)throw new ChatError('invalid-evidence',409);const session=this.options.getSession(id);
   if(!session||!session.transcriptFinalized||sourceRevision(session)!==stamp.sourceRevision||(session.transcriptVersion??0)!==stamp.transcriptVersion)throw new ChatError('scope-changed',409);
+  if(meetingMetadataEvidence(session)?.id===evidenceId)return {...session,transcriptRevision:stamp.sourceRevision};
   for(const evidence of iterateTranscriptEvidence(session))if(evidence.id===evidenceId)return {...session,transcriptRevision:stamp.sourceRevision};
   throw new ChatError('invalid-evidence',409);
  }
@@ -109,7 +110,8 @@ export class LibraryChatService {
    const history=thread.turns.filter(turn=>turn.id!==snapshot.id&&turn.createdAt<=snapshot.createdAt&&turn.status==='completed'&&turn.snapshot.key===snapshot.snapshot.key&&(!this.localKey(turn)||this.localKey(turn)===retrieval.key)).slice(-4).map(turn=>({question:turn.question,answer:turn.answer}));
    const result=await this.options.retriever.retrieve(retrieval,snapshot.question,controller.signal),evidence=await this.options.retriever.materialize(result,controller.signal);
    const check=()=>{this.options.catalog.validate(retrieval);if(this.options.isBusy())throw new ChatError('resources-busy',409);if(controller.signal.aborted)throw new ChatError('cancelled',409);};check();
-   answer=await answerMeetingQuestion({evidence,coverage:result.coverage,question:snapshot.question,model:snapshot.model,history,signal:controller.signal,generate:async input=>{check();const text=await this.options.generate(input);check();return text;}});
+   const {metadata,coverage:metadataCoverage}=selectedMeetingMetadata(this.options.catalog.describe(retrieval));
+   answer=await answerMeetingQuestion({evidence,metadata,metadataCoverage,coverage:result.coverage,question:snapshot.question,model:snapshot.model,history,signal:controller.signal,generate:async input=>{check();const text=await this.options.generate(input);check();return text;}});
    this.options.catalog.validate(retrieval);await this.options.retriever.materialize(result,controller.signal);this.options.catalog.validate(retrieval);
   }catch(error){reason=chatFailure(error);}
   if(controller.signal.aborted)return;

@@ -1,4 +1,4 @@
-import { RetrievalCoverageView, retrievalEmptyMessage } from './RetrievalCoverage';
+import { MeetingMetadataCoverageView, RetrievalCoverageView, retrievalEmptyMessage } from './RetrievalCoverage';
 import { aiWaitingMessage } from "@/lib/ai-waiting";
 import {chatErrorMessages} from "./chat-errors";
 import { useEffect, useRef, useState } from "react";
@@ -6,14 +6,15 @@ import type { ChatCommand, ChatThread, Session, TranscriptEvidence } from "@heed
 import { ApiError } from "@/api/client";
 import { chatApi } from "@/api/chat";
 import { useLocale } from "@/lib/i18n";
-import { fmtDuration } from "@/lib/format";
+import { fmtDuration, fmtMeetingDateTime } from "@/lib/format";
 import styles from "./MeetingChat.module.css";
+import { isMeetingMetadataCitation } from "./citation";
 
 const errorReason=(value:unknown)=>value instanceof Error ? value.message : String(value);
 
 interface Props {session:Session;onCitation:(citation:TranscriptEvidence)=>void;}
 export function MeetingChat({session,onCitation}:Props) {
- const {tr}=useLocale();
+ const {tr,locale}=useLocale();
  const [thread,setThread]=useState<ChatThread|null>(null);
  const [models,setModels]=useState<string[]>([]);const [model,setModel]=useState("");
  const [question,setQuestion]=useState("");const [error,setError]=useState("");const [saving,setSaving]=useState(false);
@@ -53,7 +54,7 @@ export function MeetingChat({session,onCitation}:Props) {
  const running=thread?.turns.some(turn=>turn.status==="running"||turn.status==="waiting");
  return <section className={styles.chat} aria-label={tr("Meeting chat")}>
   <p className={styles.scope}>{tr("Chat scope: this meeting only.")} <strong>{session.title}</strong></p>
-  <p className={styles.hint}>{tr("Answers use the saved final transcript and stay on this Mac. Check cited evidence before relying on an answer.")}</p>
+  <p className={styles.hint}>{tr("Answers use saved final transcripts and meeting details on this Mac. Check cited evidence before relying on an answer.")}</p>
   {!session.transcriptFinalized&&<p role="status">{tr("Chat becomes available after the final transcript is saved.")}</p>}
   {error&&<p role="alert" className={styles.error}>{errorText(error)}</p>}
   <div className={styles.controls}>
@@ -72,12 +73,16 @@ export function MeetingChat({session,onCitation}:Props) {
   <div className={styles.history} aria-live="polite">
    {thread?.turns.map(turn=><article key={turn.id} className={styles.turn}>
     <p className={styles.question}>{turn.question}</p><small>{turn.model}</small>
-    {(turn.stale||turn.sourceRevision!==session.transcriptRevision)&&<p className={styles.warning}>{tr("This answer uses an older transcript revision. Its evidence is retained below.")}</p>}
+    {(turn.stale||turn.sourceRevision!==session.transcriptRevision)&&<p className={styles.warning}>{tr("This answer uses an older transcript or meeting record. Its evidence is retained below.")}</p>}
     {(turn.status==="waiting"||turn.status==="running")&&<div><p role="status">{tr(turn.status==="waiting" ? aiWaitingMessage(turn.waitingReason) : "Reviewing transcript evidence…")}</p><button onClick={()=>void mutate({action:"cancel",turnId:turn.id})} disabled={saving}>{tr("Cancel answer")}</button></div>}
     {(turn.status==="failed"||turn.status==="cancelled")&&<div><p role="status">{turn.status==="cancelled"&&!turn.reason ? tr("Answer cancelled.") : errorText(turn.reason||"interrupted")}</p><button onClick={()=>void mutate({action:"retry",turnId:turn.id,...(model ? {model} : {})})} disabled={saving}>{tr("Retry answer")}</button></div>}
     {turn.status==="completed"&&turn.answer&&<div>
      {!turn.answer.claims.length&&<p>{tr(turn.answer.coverage.retrieval?.version===1 ? retrievalEmptyMessage(turn.answer.coverage.retrieval) : turn.answer.coverage.complete ? "Not found in this meeting." : "No supporting evidence found in the reviewed excerpts.")}</p>}
-     {turn.answer.claims.map((claim,index)=><div key={index} className={styles.claim}><p>{claim.text}</p><div className={styles.citations}>{claim.citations.map(citation=><details key={citation.id}>
+     {turn.answer.claims.map((claim,index)=><div key={index} className={styles.claim}><p>{claim.text}</p><div className={styles.citations}>{claim.citations.map(citation=>isMeetingMetadataCitation(citation)?<details key={citation.id}>
+      <summary>{tr("Meeting date and time")}</summary>
+      <p>{tr("Recorded start")}: <time dateTime={citation.recordedAt}>{fmtMeetingDateTime(citation.recordedAt,locale)}</time></p>
+      {citation.durationSeconds!==undefined&&<p>{tr("Duration: {duration}",{duration:fmtDuration(Math.floor(citation.durationSeconds))})}</p>}
+     </details>:<details key={citation.id}>
       <summary>{tr("Transcript evidence")} · {citation.speaker||tr("Transcript")}</summary>
       <blockquote>{citation.quote}</blockquote>
       <button disabled={turn.stale||citation.sourceRevision!==session.transcriptRevision} onClick={()=>onCitation(citation)}>{citation.speaker||tr("Transcript")} · {citation.start===null ? tr("Open source text") : fmtDuration(Math.floor(citation.start))}</button>
@@ -89,6 +94,7 @@ export function MeetingChat({session,onCitation}:Props) {
      {!turn.answer.coverage.complete&&<p className={styles.warning}>{tr("Coverage is partial. Evidence was sampled across the recording; missing topics may exist in unreviewed excerpts.")}</p>}
      </>}
      {turn.answer.coverage.answerLimited&&<p className={styles.warning}>{tr("The displayed answer was limited to 40 supported statements. Ask a narrower question.")}</p>}
+     {turn.answer.coverage.metadata&&<MeetingMetadataCoverageView coverage={turn.answer.coverage.metadata}/>}
     </div>}
    </article>)}
   </div>

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AiWaitingReason, Session } from "@heed/shared";
 import { sourceRevision } from "./automatic-notes";
-import { MeetingChatService, chatFailure, transcriptEvidence, answerMeetingQuestion as answerRetrieved } from "./meeting-chat";
+import { MeetingChatService, chatFailure, transcriptEvidence, meetingMetadataEvidence, answerMeetingQuestion as answerRetrieved } from "./meeting-chat";
 import {controlledChatRetrieval,testCoverage} from './chat-retrieval-test-utils';
 const answerMeetingQuestion=({sessions,...input}:any)=>{const evidence=sessions.flatMap(transcriptEvidence).slice(0,32);return answerRetrieved({...input,evidence,coverage:testCoverage(evidence)});};
 const dirs: string[] = [];
@@ -32,8 +32,69 @@ test("answers reject invented citations and factual claims without evidence", as
  await expect(answerMeetingQuestion({sessions:[s],question:"Budget?",history:[],model:"local",generate:async()=>result("invented")})).rejects.toThrow("invalid-evidence");
  await expect(answerMeetingQuestion({sessions:[s],question:"Budget?",history:[],model:"local",generate:async()=>JSON.stringify({claims:[{text:"Approved",evidenceIds:[]}],notFound:false})})).rejects.toThrow("invalid-evidence");
  const answer = await answerMeetingQuestion({sessions:[s],question:"Budget?",history:[],model:"local",generate:async (input:any)=>result(input.evidence[0]!.id)});
- expect(answer.claims[0]!.citations[0]!.quote).toBe("O orçamento não foi aprovado.");
+ expect(answer.claims[0]!.citations[0]).toMatchObject({quote:"O orçamento não foi aprovado."});
  expect(answer.coverage.complete).toBe(false);
+});
+
+test("recorded start is distinct, revision-qualified metadata and missing dates supply none", async () => {
+ const s=meeting(),metadata=meetingMetadataEvidence(s);
+ expect(metadata).toMatchObject({kind:'meeting-metadata',sessionId:s.id,recordedAt:'2026-10-05T12:00:00.000Z',durationSeconds:40});
+ expect(metadata!.id).toContain(':meeting-metadata:');
+ expect(meetingMetadataEvidence({...s,createdAt:'invalid'})).toBeNull();
+ expect(meetingMetadataEvidence({...s,createdAt:'2026-02-30T12:00:00Z'})).toBeNull();
+ expect(meetingMetadataEvidence({...s,createdAt:'2026-10-06T12:00:00Z'})!.id).not.toBe(metadata!.id);
+ const evidence=transcriptEvidence(s),coverage=testCoverage(evidence);
+ await expect(answerRetrieved({evidence,metadata:[metadata!],coverage,question:'When was the meeting?',history:[],model:'local',generate:async()=>result(evidence[0]!.id).replace('The budget was not approved.','The meeting was on October 5, 2026.')})).rejects.toThrow('invalid-evidence');
+ const answer=await answerRetrieved({evidence,metadata:[metadata!],coverage:testCoverage(evidence),question:'When was the meeting?',history:[],model:'local',generate:async input=>JSON.stringify({claims:[{text:'The meeting was on October 5, 2026.',evidenceIds:[input.metadata[0]!.id]}],notFound:false})});
+ expect(answer.claims[0]!.citations[0]).toEqual(metadata);
+ expect(answer.coverage.retrieval!.citedEvidence).toBe(0);
+});
+
+test("metadata-only questions generate and reject unsupplied or incomplete latest claims",async()=>{
+ const s=meeting(),metadata=meetingMetadataEvidence(s)!,coverage=testCoverage([]);
+ const answer=await answerRetrieved({evidence:[],metadata:[metadata],metadataCoverage:{selectedMeetings:1,suppliedMeetings:1,complete:true},coverage,question:'When?',history:[],model:'local',generate:async input=>JSON.stringify({claims:[{text:'October 5, 2026 at 12:00 UTC.',evidenceIds:[input.metadata[0]!.id]}],notFound:false})});
+ expect(answer.claims[0]!.citations[0]!.id).toBe(metadata.id);
+ await expect(answerRetrieved({evidence:[],metadata:[metadata],metadataCoverage:{selectedMeetings:2,suppliedMeetings:1,complete:false},coverage:testCoverage([]),question:'What was latest?',history:[],model:'local',generate:async input=>JSON.stringify({claims:[{text:'The latest meeting was October 5, 2026.',evidenceIds:[input.metadata[0]!.id]}],notFound:false})})).rejects.toThrow('invalid-evidence');
+});
+
+test('Portuguese natural dates and clock times cannot cite transcript speech as recording metadata',async()=>{
+ const s=meeting(),evidence=transcriptEvidence(s),metadata=meetingMetadataEvidence(s)!;
+ for(const claim of ['A reunião ocorreu em 5 de outubro de 2026.', 'A reunião começou às 08h19.', 'The meeting was on October 5, 2026.']){
+  await expect(answerRetrieved({evidence,metadata:[metadata],coverage:testCoverage(evidence),question:'Quando?',history:[],model:'local',generate:async()=>JSON.stringify({claims:[{text:claim,evidenceIds:[evidence[0]!.id]}],notFound:false})})).rejects.toThrow('invalid-evidence');
+ }
+ const answer=await answerRetrieved({evidence:[],metadata:[metadata],coverage:testCoverage([]),question:'Quando?',history:[],model:'local',generate:async()=>JSON.stringify({claims:[{text:'A reunião ocorreu em 5 de outubro de 2026.',evidenceIds:[metadata.id]}],notFound:false})});
+ expect(answer.claims[0]!.citations[0]!.id).toBe(metadata.id);
+});
+test('a spoken deadline date and the word may remain valid transcript claims',async()=>{
+ const s=meeting(),evidence=transcriptEvidence(s);
+ const answer=await answerRetrieved({evidence,coverage:testCoverage(evidence),question:'What did the team say about the deadline?',history:[],model:'local',generate:async()=>JSON.stringify({claims:[{text:'The deadline may move to May 5, 2027.',evidenceIds:[evidence[0]!.id]}],notFound:false})});
+ expect(answer.claims[0]!.citations[0]!.id).toBe(evidence[0]!.id);
+});
+test('a bare calendar answer to a latest meeting question still requires metadata and complete coverage',async()=>{
+ const s=meeting(),evidence=transcriptEvidence(s),metadata=meetingMetadataEvidence(s)!;
+ const question='Quando foi a última reunião com Ana?';
+ await expect(answerRetrieved({evidence,metadata:[metadata],coverage:testCoverage(evidence),question,history:[],model:'local',generate:async()=>JSON.stringify({claims:[{text:'Foi em 5 de outubro de 2026.',evidenceIds:[evidence[0]!.id]}],notFound:false})})).rejects.toThrow('invalid-evidence');
+ const partial=testCoverage(evidence);partial.lookupComplete=false;
+ await expect(answerRetrieved({evidence,metadata:[metadata],coverage:partial,question,history:[],model:'local',generate:async()=>JSON.stringify({claims:[{text:'Foi em 5 de outubro de 2026.',evidenceIds:[metadata.id,evidence[0]!.id]}],notFound:false})})).rejects.toThrow('invalid-evidence');
+});
+
+test('latest speaker claim refuses incomplete transcript matches even when all eight dates were supplied',async()=>{
+ const sessions=Array.from({length:8},(_,i)=>({...meeting(),id:`meeting-${i}`,createdAt:`2026-10-${String(i+1).padStart(2,'0')}T12:00:00Z`}));
+ const metadata=sessions.map(s=>meetingMetadataEvidence(s)!),evidence=transcriptEvidence(sessions[0]!)[0]!,coverage=testCoverage([evidence]);
+ coverage.selectedMeetings=8;coverage.searchedMeetings=8;coverage.matchedEvidence=17;coverage.retrievedEvidence=1;
+ const claim={claims:[{text:'The latest meeting with Ana was on October 1, 2026.',evidenceIds:[metadata[0]!.id,evidence.id]}],notFound:false};
+ await expect(answerRetrieved({evidence:[evidence],metadata,metadataCoverage:{selectedMeetings:8,suppliedMeetings:8,complete:true},coverage,question:'When was the latest meeting with Ana?',history:[],model:'local',generate:async()=>JSON.stringify(claim)})).rejects.toThrow('invalid-evidence');
+});
+test('one eligible meeting can answer latest speaker despite many matching excerpts being omitted',async()=>{
+ const s=meeting(),evidence=transcriptEvidence(s),metadata=meetingMetadataEvidence(s)!,coverage=testCoverage(evidence);
+ coverage.matchedEvidence=77;coverage.retrievedEvidence=32;
+ const answer=await answerRetrieved({evidence,metadata:[metadata],metadataCoverage:{selectedMeetings:1,suppliedMeetings:1,complete:true},coverage,question:'When was the latest meeting with Ana?',history:[],model:'local',generate:async()=>JSON.stringify({claims:[{text:'The latest meeting with Ana was on October 5, 2026.',evidenceIds:[evidence[0]!.id,metadata.id]}],notFound:false})});
+ expect(answer.claims[0]!.citations).toHaveLength(2);
+});
+test('a name mentioned by another speaker cannot prove a latest meeting with that person',async()=>{
+ const s=meeting();s.segments=[{speaker:'Ana',text:'Bruno will receive the notes.',start:0,end:1}];
+ const evidence=transcriptEvidence(s),metadata=meetingMetadataEvidence(s)!;
+ await expect(answerRetrieved({evidence,metadata:[metadata],metadataCoverage:{selectedMeetings:1,suppliedMeetings:1,complete:true},coverage:testCoverage(evidence),question:'When was the latest meeting with Bruno?',history:[],model:'local',generate:async()=>JSON.stringify({claims:[{text:'The latest meeting with Bruno was on October 5, 2026.',evidenceIds:[evidence[0]!.id,metadata.id]}],notFound:false})})).rejects.toThrow('invalid-evidence');
 });
 
 test("generation respects the retrieved excerpt set and discloses context/model-call limits",async()=>{
@@ -83,6 +144,23 @@ test("saved answers become stale without mutating their citations", async () => 
  service.command(s.id,{action:"send",requestId:"a",question:"Budget?",model:"local",expectedSourceRevision:s.transcriptRevision!});await flush();
  s={...s,segments:s.segments.map(v=>({...v,speaker:"Renamed"}))};s.transcriptRevision=sourceRevision(s);
  expect(service.get(s.id).turns[0]!.stale).toBe(true);expect(service.get(s.id).turns[0]!.answer!.claims[0]!.citations[0]!.id).toBe(original);
+});
+
+test('single-meeting generation supplies recorded metadata and date changes stale its saved answer',async()=>{
+ let s=meeting();const service=new MeetingChatService({...controlledChatRetrieval(()=>[s]),directory:directory(),getSession:()=>s,isBusy:()=>false,generate:async input=>JSON.stringify({claims:[{text:'The meeting was recorded on October 5, 2026.',evidenceIds:[input.metadata[0]!.id]}],notFound:false})});
+ service.command(s.id,{action:'send',requestId:'recorded-at',question:'When was the meeting?',model:'local',expectedSourceRevision:s.transcriptRevision!});await flush();
+ const turn=service.get(s.id).turns[0]!;
+ expect(turn.answer!.claims[0]!.citations[0]).toMatchObject({kind:'meeting-metadata',recordedAt:'2026-10-05T12:00:00.000Z'});
+ expect(turn.answer!.coverage.retrieval!.citedEvidence).toBe(0);
+ s={...s,createdAt:'2026-10-06T12:00:00Z'};
+ expect(service.get(s.id).turns[0]).toMatchObject({stale:true});
+});
+
+test('a queued meeting question fails when recorded time changes before retrieval',async()=>{
+ let s=meeting(),busy=true;const service=new MeetingChatService({...controlledChatRetrieval(()=>[s]),directory:directory(),getSession:()=>s,isBusy:()=>busy,generate:async()=>{throw new Error('Stale meeting must not generate');}});
+ service.command(s.id,{action:'send',requestId:'queued-time',question:'When was the meeting?',model:'local',expectedSourceRevision:s.transcriptRevision!});
+ s={...s,createdAt:'2026-10-06T12:00:00Z'};busy=false;await service.tick();
+ expect(service.get(s.id).turns[0]).toMatchObject({status:'failed',reason:'source-changed',stale:true});
 });
 
 test("meeting deletion removes chat and cannot resurrect a late answer", async () => {

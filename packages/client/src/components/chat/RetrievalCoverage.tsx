@@ -1,4 +1,4 @@
-import type { RetrievalCoverage, RetrievalPartialReason } from "@heed/shared";
+import type { MeetingMetadataCoverage, RetrievalCoverage, RetrievalPartialReason } from "@heed/shared";
 import { useLocale } from "@/lib/i18n";
 import styles from "./MeetingChat.module.css";
 const reasons: Record<RetrievalPartialReason, string> = {
@@ -23,6 +23,13 @@ export function retrievalEmptyMessage(coverage: RetrievalCoverage): string {
     coverage.matchedEvidence === 0
     ? "No lexical matches found. This does not establish that the topic is absent from the selected transcripts."
     : "No supporting evidence found in the supplied excerpts.";
+}
+export function MeetingMetadataCoverageView({ coverage }: { coverage: MeetingMetadataCoverage }) {
+  const { tr } = useLocale();
+  return <>
+    <p className={styles.hint}>{tr("Meeting dates: {supplied} of {selected} eligible meetings supplied.", { supplied: coverage.suppliedMeetings, selected: coverage.selectedMeetings })}</p>
+    {!coverage.complete && <p className={styles.warning}>{tr("Meeting date coverage is partial. The latest meeting cannot be established across this selection.")}</p>}
+  </>;
 }
 export function RetrievalCoverageView({
   coverage,
@@ -71,7 +78,7 @@ export function RetrievalCoverageView({
       </p>
       <p className={styles.hint}>
         {tr(
-          "Answers use only supplied excerpts. Lexical coverage does not establish whole-transcript absence.",
+          "Answers use only supplied excerpts and meeting details. Lexical coverage does not establish whole-transcript absence.",
         )}
       </p>
       {[...new Set(coverage.partialReasons)].map((reason) => (

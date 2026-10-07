@@ -1,6 +1,6 @@
 import {afterEach,expect,test} from 'bun:test';
 import {join} from 'node:path';
-import {MeetingChatService,readChatCommand} from './meeting-chat';
+import {MeetingChatService,meetingMetadataRevision,readChatCommand} from './meeting-chat';
 import {LibraryChatService} from './library-chat';
 import {RetrievalIndex} from './retrieval-index';
 import {RetrievalCatalog} from './retrieval-catalog';
@@ -24,7 +24,7 @@ test('catalog source failure becomes an actionable failed queued turn instead of
 });
 test('public catalog preview remains byte-compatible and returned display tags cannot mutate authoritative metadata',async()=>{
  const f=await retrievalFixture();f.add('meeting-a','Delivery',['Work']);f.add('meeting-b','Delivery',['Work','Client']);const scope={mode:'labels',labels:['work'],match:'any'} as const,preview=f.catalog.preview({...scope,labels:[...scope.labels]});
- const {createHash}=await import('node:crypto'),expected={scope:{mode:'labels',labels:['work'],match:'any'},sources:['meeting-a','meeting-b'].map(id=>{const s=f.store.read(id)!;return {sessionId:s.id,title:s.title,tags:[...s.tags].sort(),sourceRevision:sourceRevision(s)};})};expect(preview.snapshot.key).toBe(createHash('sha256').update(JSON.stringify(expected)).digest('hex'));
+ const {createHash}=await import('node:crypto'),expected={scope:{mode:'labels',labels:['work'],match:'any'},sources:['meeting-a','meeting-b'].map(id=>{const s=f.store.read(id)!;return {sessionId:s.id,title:s.title,tags:[...s.tags].sort(),sourceRevision:sourceRevision(s)};}),metadata:['meeting-a','meeting-b'].map(id=>meetingMetadataRevision(f.store.read(id)!))};expect(preview.snapshot.key).toBe(createHash('sha256').update(JSON.stringify(expected)).digest('hex'));
  const snapshot=f.catalog.resolve({kind:'library',scope:{...scope,labels:[...scope.labels]}}).snapshot,description=f.catalog.describe(snapshot);description[0].displayTags.push('Forged');expect(f.catalog.preview({...scope,labels:[...scope.labels]}).snapshot).toEqual(preview.snapshot);f.catalog.validate(snapshot);
 });
 test('chunked request bodies are bounded by original UTF8 bytes and malformed scalar JSON is rejected',async()=>{
