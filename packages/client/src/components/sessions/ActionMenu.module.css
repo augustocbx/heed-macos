@@ -6,6 +6,7 @@
 	box-shadow: var(--shadow-lg);
 	padding: 4px;
 	min-width: 180px;
+ max-width: calc(100vw - 16px);
 	z-index: 200;
 	font-family: var(--mono);
 }

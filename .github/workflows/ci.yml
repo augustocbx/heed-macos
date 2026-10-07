@@ -13,8 +13,8 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
-      - name: Install real audio fixture prerequisites
-        run: brew install ffmpeg
+      - name: Install audio and independent PDF fixture prerequisites
+        run: brew install ffmpeg poppler
       - name: Server tests
         run: bun test packages/server/lib
       - name: Validated service configuration and safe process rollback tests
@@ -43,6 +43,13 @@ jobs:
         run: python3 -m py_compile packages/transcription/transcription_server.py packages/transcription/final_echo.py packages/transcription/voice_identity.py packages/transcription/meeting_language.py packages/transcription/manual_transcription.py packages/desktop/browser-meet/native-host.py packages/desktop/browser-meet/register-host.py packages/transcription/managed_work.py packages/transcription/native_worker.py packages/transcription/process_ownership.py packages/transcription/worker_lifecycle.py packages/transcription/doctor.py packages/transcription/engines.py packages/desktop/permission-recovery.py packages/transcription/preview_preference.py packages/transcription/preview_worker.py scripts/check-real-time-resources.py
       - name: Build interface
         run: bun run build
+      - name: Verify production offline exports and independently parse artifacts
+        run: |
+          bunx playwright install chromium
+          python3 -m venv "$RUNNER_TEMP/export-parser"
+          "$RUNNER_TEMP/export-parser/bin/pip" install pypdf==6.1.3
+          node scripts/qa/meeting-exports.mjs --output "$RUNNER_TEMP/meeting-exports"
+          "$RUNNER_TEMP/export-parser/bin/python" scripts/qa/verify-meeting-exports.py --input "$RUNNER_TEMP/meeting-exports" --render "$RUNNER_TEMP/meeting-exports-rendered"
       - name: Check installers
         run: bash -n install-macos.sh packages/desktop/install-menubar.sh packages/desktop/macos/start-services.sh packages/desktop/native-keychain/build.sh packages/desktop/icloud-folder/build.sh scripts/release/build-release.sh scripts/release/install.sh scripts/release/uninstall.sh scripts/release/simulate.sh scripts/release/menu-update-qa.sh
       - name: Release installer helper tests

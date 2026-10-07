@@ -7,6 +7,12 @@ import type { Session } from '@heed/shared';
 const session: Session = { id: 'meeting', title: 'Meeting', createdAt: '2026-10-07', duration: 3, language: 'pt', transcript: 'Corrected João', speakers: ['Ana'], segments: [{ speaker: 'Ana', start: 0, end: 3, text: 'Corrected João' }], aiNotes: '**Reviewed** notes', summary: '', tags: [], pinned: false, transcriptFinalized: true };
 beforeEach(() => useLocaleStore.setState({ locale: 'en' }));
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+test('the export entry remains reachable for a meeting near the narrow viewport bottom', () => {
+ vi.stubGlobal('innerWidth', 360); vi.stubGlobal('innerHeight', 740);
+ vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 260, height: 220 } as DOMRect);
+ const { container } = render(<ActionMenu x={356} y={720} session={session} onClose={vi.fn()} onExport={vi.fn()} onTogglePin={vi.fn()} onDelete={vi.fn()} />);
+ expect(container.firstElementChild).toHaveStyle({ top: '512px', right: '8px' });
+});
 test.each(['{Enter}', ' '])('new export button works with %s and closes the menu with the saved Session', async key => {
  const onExport = vi.fn(), close = vi.fn(); render(<ActionMenu x={20} y={20} session={session} onClose={close} onExport={onExport} onTogglePin={vi.fn()} onDelete={vi.fn()} />);
  const button = screen.getByRole('button', { name: 'Export PDF or subtitles…' }); button.focus(); await userEvent.keyboard(key); expect(onExport).toHaveBeenCalledWith(session); expect(close).toHaveBeenCalledTimes(1);
