@@ -3,6 +3,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { TranscriptHistoryDialog } from "./TranscriptHistoryDialog";
 import { correctionMeeting } from "./transcript.test-support";
 import { transcriptEditingApi } from "@/api/transcript-editing";
+import { useSessionsStore } from "@/stores/sessions";
 vi.mock("@/api/transcript-editing", () => ({
   transcriptEditingApi: { command: vi.fn() },
 }));
@@ -45,7 +46,31 @@ const meeting = () => ({
     candidateRequestReceipts: [],
   },
 });
-beforeEach(() => vi.resetAllMocks());
+beforeEach(() => {
+  vi.resetAllMocks();
+  useSessionsStore.setState({ sessions: [], viewing: null });
+});
+test.each(["before-click", "failed-retry"] as const)("history inverse stays on its opening meeting after navigation: %s", async mode => {
+  const a = { ...meeting(), id: "meeting-a", title: "Meeting A" };
+  const b = { ...meeting(), id: "meeting-b", title: "Meeting B" };
+  useSessionsStore.setState({ sessions: [a, b], viewing: a });
+  vi.mocked(transcriptEditingApi.command).mockRejectedValue(Object.assign(new Error("Disk unavailable"), { status: 409 }));
+  const callbacks = { onClose: vi.fn(), onSaved: vi.fn() };
+  const view = render(<TranscriptHistoryDialog session={a} {...callbacks} />);
+  if (mode === "failed-retry") {
+    fireEvent.click(screen.getByRole("button", { name: "Revert this edit" }));
+    await screen.findByRole("alert");
+  }
+  view.rerender(<TranscriptHistoryDialog session={b} {...callbacks} />);
+  expect(screen.getByText("Meeting A")).toBeVisible();
+  expect(screen.queryByText("Meeting B")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Revert this edit" }));
+  await waitFor(() => expect(transcriptEditingApi.command).toHaveBeenCalledTimes(mode === "failed-retry" ? 2 : 1));
+  const calls = vi.mocked(transcriptEditingApi.command).mock.calls;
+  expect(calls.at(-1)![0]).toBe(a.id);
+  expect(calls.at(-1)![1]).toMatchObject({ expectedTranscriptRevision: a.transcriptRevision, expectedTranscriptVersion: a.transcriptVersion, editId: "edit", action: "revert" });
+  if (mode === "failed-retry") expect(calls[1]).toEqual(calls[0]);
+});
 test("legacy source is labeled honestly; compatible inverse is guarded and failed save keeps recovery text", async () => {
   vi.mocked(transcriptEditingApi.command).mockRejectedValue(
     Object.assign(new Error("Changed"), { status: 409 }),
