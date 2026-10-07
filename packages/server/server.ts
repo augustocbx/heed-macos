@@ -1,3 +1,10 @@
+import {LocalVocabulary} from './lib/vocabulary';
+import {vocabularyHttp} from './lib/vocabulary-http';
+import type {VocabularySelection,VocabularyRun} from '../shared/types/vocabulary';
+import {validateVocabularySnapshot} from '../shared/lib/vocabulary';
+import {MediaImportController,MAX_IMPORT_FILE_BYTES} from './lib/media-import';
+import {mediaImportResponse} from './lib/media-import-http';
+import {transcribeImport} from './lib/media-import-transcription';
 import type { AiWaitingReason } from "@heed/shared";
 import type { LanguageCapabilities, LiveCaptureOptions } from "@heed/shared";
 import {configuredLiveSpeechLanguage, recordingSettingsPatch, resolveLiveCaptureOptions, validatedLanguageCapabilities, rejectRecordingOverrides, previewResultMatches, LiveLanguageError} from "./lib/live-language";
@@ -42,8 +49,8 @@ import {validateProcessingWave} from "./lib/processing-wave.ts";
 import {reserveMediaWork} from "./lib/media-budget.ts";
 import { join, resolve, extname } from "node:path";
 import { homedir, cpus } from "node:os";
-import { downloadFromUrl, normalizeAudio } from "./lib/media.ts";
-import { APP_DIR, LIBRARY_DIR, CONFIG_PATH, SESSIONS_DIR, TEMPLATES_DIR, type TrxConfig, ensureAppDirs, loadConfig, saveConfig, micLabel, realTimeTranscription } from "./lib/app-config.ts";
+import { downloadFromUrl, normalizeAudio, probeImportMedia } from "./lib/media.ts";
+import { APP_DIR, LIBRARY_DIR, CONFIG_PATH, SESSIONS_DIR, TEMPLATES_DIR, type TrxConfig, ensureAppDirs, loadConfig, saveConfig, micLabel, realTimeTranscription, configuredMeetingMode } from "./lib/app-config.ts";
 import { TRANSCRIPTION_SERVER, pyPost as postJSON } from "./lib/transcription-client.ts";
 import { track, gracefulStop, installShutdownHooks } from "./lib/process.ts";
 import { sseResponse } from "./lib/sse.ts";
@@ -51,6 +58,7 @@ import { sessionAudioResponse } from "./lib/session-audio.ts";
 import { SessionTags, TagError, tagResponse } from "./lib/session-tags.ts";
 import { TranscriptEditingError } from "./lib/transcript-editing.ts";
 const sessionTags = new SessionTags(SESSIONS_DIR);
+import {cleanupMeetingAudio,discardOwnedMeetingAudio} from "./lib/meeting-audio-cleanup";
 import { RecordingCoordinator } from "./lib/recording-coordinator.ts";
 import {ProcessingMaintenance, retainProcessingStream} from './lib/processing-maintenance.ts';
 import type { FinalCapture, RecordingSnapshot } from "../shared/types/recording-coordinator.ts";
@@ -63,6 +71,8 @@ import {createAppQuota} from './lib/app-storage.ts';
 import {reserveCapture,reserveFinalization,releaseCapture} from './lib/capture-quota.ts';
 import { type CaptureMode, nativeCaptureCommand, nativeRecordingCommand, verifyNativeHandshake, isNativeProtocolLine } from "./lib/native-capture.ts";
 const desktopPermissions = new DesktopPermissions();
+let mediaImports:MediaImportController|undefined;
+let mediaImportUnavailable=false;
 const retainedProcessing = new Map<string, number>();
 let captureLimitBytes=0;
 let recorderProc: ReturnType<typeof Bun.spawn> | null = null;
@@ -94,8 +104,8 @@ function localAiWaitingReason(includePendingChat = false): AiWaitingReason {
 }
 // These synchronous admission checks cover command-triggered and timer-triggered workers.
 function chatPending() { return chatService.pending || libraryChatService.pending; }
-function audioWorkBusy() {
- return !!(recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning || transcriptionRequests || recordingCoordinator.admissionPending
+function audioWorkBusy(includeImports=true) {
+ return !!((includeImports&&mediaImports?.busy) || recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning || transcriptionRequests || recordingCoordinator.admissionPending
   || ["starting", "stopping", "finalizing"].includes(recordingCoordinator.snapshot().state));
 }
 async function preemptNotes() {
@@ -133,6 +143,7 @@ const FALLBACK_MODEL = process.env.HEED_MODEL || null;
 // App paths + persistent config (loadConfig/saveConfig/micLabel/TrxConfig) now live in
 // ./lib/app-config.ts — single source of truth (the stale lib/config.ts duplicate was deleted).
 ensureAppDirs([UPLOAD_DIR]);
+const vocabularyStore=new LocalVocabulary(join(APP_DIR,"vocabulary.json"));
 const processingMaintenance = new ProcessingMaintenance({
  path:join(APP_DIR,'update-maintenance.json'),
  active:existingProcessing,
@@ -166,7 +177,7 @@ const managedQuota=createAppQuota({
  recordingsDir:UPLOAD_DIR,
  disposableFiles:()=>quotaRetrievalOwner?.disposableFiles()??[],
  disposeFiles:paths=>{if(!quotaRetrievalOwner)throw Error('Retrieval cache is unavailable');meetingRetriever.invalidateCache();quotaRetrievalOwner.reclaim(paths);},
- protectedPaths:()=>[...captureProtectedPaths(),...synchronizationProtectedPaths()],
+ protectedPaths:()=>[...captureProtectedPaths(),...synchronizationProtectedPaths(),...(mediaImports?.protectedPaths()||[]),...(mediaImportUnavailable?[UPLOAD_DIR,join(LIBRARY_DIR,"staging")]:[])],
  onEvicted:paths=>{
   sessionTags.recover();
   for(const session of sessionTags.snapshot().sessions)if(session.files?.wav && paths.includes(session.files.wav)){
@@ -428,6 +439,7 @@ function serveStatic(path: string): Response | null {
 // --- Transcription (SSE) ---
 async function handleTranscribe(req: Request): Promise<Response> {
  if(!permissionRequestAllowed(req,PORT))return new Response(null,{status:403});
+ if(mediaImports?.busy)return Response.json({error:"Wait for the current media import to finish."},{status:409});
  if(recordingCoordinator.snapshot().maintenance)return Response.json({error:"Heed is being updated. Try again when the update finishes."},{status:409});
 	let input: string;
 	let language = "auto";
@@ -436,6 +448,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
  let uploadFile:File|null=null;
  let recordingFinalize = false;
  let finalModelOverride: string | null = null;
+ let vocabularySelection:VocabularySelection|undefined;
 
 	const contentType = req.headers.get("content-type") || "";
 
@@ -443,6 +456,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 		const formData = await req.formData();
   recordingFinalize = formData.get("recording_finalize") === "true";
   finalModelOverride = formData.get("final_model") as string | null;
+  try{const raw=formData.get("vocabulary");if(raw!==null){if(typeof raw!=="string"||raw.length>100000)throw Error("Invalid vocabulary selection");vocabularySelection=JSON.parse(raw);}}catch(error){return Response.json({error:(error as Error).message},{status:400});}
 		const file = formData.get("file") as File | null;
 		const url = formData.get("url") as string | null;
 		language = (formData.get("language") as string) || "auto";
@@ -460,16 +474,20 @@ async function handleTranscribe(req: Request): Promise<Response> {
 		const body = await req.json();
   recordingFinalize = body.recording_finalize === true;
   finalModelOverride = body.final_model || null;
+  vocabularySelection=body.vocabulary;
 		input = body.url || body.input;
 		language = body.language || "auto";
 		diarize = body.diarize || false;
 		if (!input) return Response.json({ error: "No input provided" }, { status: 400 });
 	}
 
+ let vocabulary;
+ try{vocabulary=vocabularyStore.snapshot(vocabularySelection);}catch(error){return Response.json({error:(error as Error).message},{status:400});}
  if (recordingFinalize) {
   try { recordingFinalizationOptions(language, finalModelOverride); } catch (error) { return Response.json({error:(error as Error).message}, {status:400}); }
   if (recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning) return Response.json({error:"Wait for the current recording or final transcription to finish"}, {status:409});
  }
+ if (!uploadFile && !/^https?:\/\//i.test(input) && notesService.list().some(session=>session.meetingMode === "transcript-only" && session.files?.wav && resolve(session.files.wav) === resolve(input)))return Response.json({error:"Transcript-only meetings do not support playback or retranscription.",code:"transcript-only"},{status:410});
  if (!uploadFile && retainedProcessing.get(resolve(input)) === Infinity) {
   return Response.json({error:"This audio is still recording or processing. Wait until it finishes before recovery."}, {status:409});
  }
@@ -529,7 +547,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 
     if (recordingFinalize) {
      send("step", {message:"Detecting meeting language and retranscribing the complete recording..."});
-     const fin = await postJSON("/finalize", {wav_path:wavPath,work_directory:workDirectory, ...recordingFinalizationOptions(language, finalModelOverride), allowed_languages:["en","pt"], dual:isDualChannel, mic_name:micLabel()});
+     const fin = await postJSON("/finalize", {wav_path:wavPath,work_directory:workDirectory, vocabulary, ...recordingFinalizationOptions(language, finalModelOverride), allowed_languages:["en","pt"], dual:isDualChannel, mic_name:micLabel()});
      send("result", finalRecordingResult(fin, wavPath));
      return;
     }
@@ -545,6 +563,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 						diarize,
 						dual_channel: isDualChannel,
       work_directory:workDirectory,
+      vocabulary,
 					}),
 				});
 
@@ -564,6 +583,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 				let finalEmbeddings: Record<string, unknown> = {};
 				let finalLanguage = language;
 				let finalWhisperModel = "small";
+    let vocabularyRun:VocabularyRun|undefined;
 
 				while (true) {
 					const { done, value } = await reader.read();
@@ -596,6 +616,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 										finalText = data.text || "";
 										finalLanguage = data.language || language;
 										finalWhisperModel = data.model || finalWhisperModel;
+          vocabularyRun=data.vocabularyRun;
 										finalFiles = data.files || { wav: wavPath, srt: data.srt_path || "", txt: data.txt_path || "" };
 										break;
 									case "complete":
@@ -603,7 +624,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
 											success: true,
 											text: finalText,
 											files: finalFiles,
-											metadata: { language: finalLanguage, model: finalWhisperModel },
+											metadata: { language: finalLanguage, model: finalWhisperModel, vocabularyRun },
 											speakers: finalSpeakers,
 											segments: finalSegments,
 											embeddings: finalEmbeddings,
@@ -1171,7 +1192,7 @@ function handleListSessions(): Response { try { return Response.json(notesServic
 async function handleCreateSession(req: Request): Promise<Response> {
  try {
   const data = notesService.create(await req.json());
-  if (data.files?.wav) { retainedProcessing.delete(data.files.wav); removeChannelCopies(data.files.wav); }
+  if (data.meetingMode !== "transcript-only" && data.files?.wav) { retainedProcessing.delete(data.files.wav); removeChannelCopies(data.files.wav); }
   pruneAudio();
   return Response.json(notesService.get(data.id));
  } catch (error) { return sessionError(error); }
@@ -1188,6 +1209,8 @@ function handleDeleteSession(url: URL): Response {
  try {
   const id = url.searchParams.get("id");
   if (!id) return Response.json({error:"No id"},{status:400});
+  const session=notesService.get(id);
+  if(session?.meetingMode === "transcript-only" && session.audioCleanup?.status === "pending")return Response.json({error:"Temporary audio cleanup is pending. Retry cleanup or discard temporary audio before deleting this meeting.",code:"audio-cleanup-pending"},{status:409});
   portableRuntime?.markDeleted(id);
   notesService.delete(id);
   chatService.remove(id);
@@ -1367,7 +1390,7 @@ async function handleSysRecordStart(req: Request): Promise<Response> {
  try {
   const body = await req.json();
   rejectRecordingOverrides(body);
-  const state = hydratedRecordingSnapshot(await recordingCoordinator.start(controlRequestId(body), body.mode ?? "both"));
+  const state = hydratedRecordingSnapshot(await recordingCoordinator.start(controlRequestId(body), body.mode ?? "both",body.vocabulary));
   if (state.state === "recording") meetingDetection.manualOverride();
   return Response.json({...state, snapshot:state, recording:state.state === "recording", path:state.path, language:state.liveOptions?.effectiveLanguage ?? null});
  } catch (error) { return recordingControlError(error); }
@@ -1645,6 +1668,7 @@ function acceptLiveResult(value:any):boolean {
  const options=recordingCoordinator.snapshot().liveOptions;
  if(!options || !previewResultMatches(options,value)){previewUnavailable();return false;}
  if(liveUnavailableReported){liveUnavailableReported=false;for(const listener of liveListeners)listener("quality",{ok:true});}
+ try{if(value.vocabularyRun)recordingCoordinator.recordVocabularyRun(value.vocabularyRun);}catch{previewUnavailable();return false;}
  recordingLiveModel=value.model;recordingCoordinator.updateLiveModel(value.model);return true;
 }
 let liveTuning = { chunk_s: 3.0, interval_ms: 2000, mode: "chunk" as "chunk" | "full" | "stream" };
@@ -1718,7 +1742,7 @@ async function processFullLive(
 			if (existsSync(outPath) && Bun.file(outPath).size > 1000) {
 				const res = await fetch(`${TRANSCRIPTION_SERVER}/transcribe-live`, {
 					method: "POST", headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ wav_path: outPath, language: lang, task:"transcribe", audio_s: dur }),
+					body: JSON.stringify({ vocabulary:recordingCoordinator.snapshot().vocabulary, wav_path: outPath, language: lang, task:"transcribe", audio_s: dur }),
                     signal: liveAbort.signal,
 				});
 				if (!res.ok) previewUnavailable();
@@ -1774,10 +1798,11 @@ async function processStreamLive(
 		} catch { return; }
 	}
 	if (!streamStarted) {
-		const ok = await postLiveJSON("/stream/start", { language: lang, task:"transcribe", channel: "mic" });
-		if (!ok) return;
+		const ok = await postLiveJSON("/stream/start", { vocabulary:recordingCoordinator.snapshot().vocabulary, language: lang, task:"transcribe", channel: "mic" });
+		if (!ok?.ok) return;
+		if(!ok.vocabularyRun || !acceptLiveResult(ok))return;
 		if (isDual) {
-			await postLiveJSON("/stream/start", { language: lang, task:"transcribe", channel: "sys" });
+			await postLiveJSON("/stream/start", { vocabulary:recordingCoordinator.snapshot().vocabulary, language: lang, task:"transcribe", channel: "sys" });
 			await postLiveJSON("/diar/start", {});
 		}
 		streamStarted = true;
@@ -2006,7 +2031,7 @@ function startLiveTranscribe() {
 					const txRes = await fetch(`${TRANSCRIPTION_SERVER}/transcribe-live`, {
 						method: "POST",
 						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify({ wav_path: chunkPath, language: lang, task:"transcribe", audio_s: chunkDur }),
+						body: JSON.stringify({ vocabulary:recordingCoordinator.snapshot().vocabulary, wav_path: chunkPath, language: lang, task:"transcribe", audio_s: chunkDur }),
                         signal: liveAbort.signal,
 					});
 					const whisperMs = Date.now() - whisperStart;
@@ -2063,7 +2088,7 @@ function startLiveTranscribe() {
 							const sysRes = await fetch(`${TRANSCRIPTION_SERVER}/transcribe-live`, {
 								method: "POST",
 								headers: { "Content-Type": "application/json" },
-								body: JSON.stringify({ wav_path: sysChunkPath, language: lang, task:"transcribe" }),
+								body: JSON.stringify({ vocabulary:recordingCoordinator.snapshot().vocabulary, wav_path: sysChunkPath, language: lang, task:"transcribe" }),
                                 signal: liveAbort.signal,
 							});
 							if (!sysRes.ok) previewUnavailable();
@@ -2191,7 +2216,7 @@ async function stopCapture(onCaptureStopped: () => void): Promise<FinalCapture> 
 }
 async function finalizeCapture(path: string): Promise<FinalCapture> {
  if (!existsSync(path)) throw new Error("Recording file not created");
- const fin = await postJSON("/finalize",{wav_path:path,work_directory:recordingWorkDirectory,language:"auto",allowed_languages:["en","pt"],dual:path.includes("dual-capture-"),mic_name:micLabel()});
+ const fin = await postJSON("/finalize",{wav_path:path,work_directory:recordingWorkDirectory,vocabulary:recordingCoordinator.snapshot().vocabulary,language:"auto",allowed_languages:["en","pt"],dual:path.includes("dual-capture-"),mic_name:micLabel()});
  const result = finalRecordingResult(fin,path);
  // Final ASR must return the actual WAV duration instead of wall-clock capture time.
  if (result.duration === undefined) {
@@ -2201,7 +2226,7 @@ async function finalizeCapture(path: string): Promise<FinalCapture> {
   result.duration = measured;
  }
  recordingLanguage = result.metadata.language;
- return {path,duration:result.duration,language:result.metadata.language,model:result.metadata.model,liveModel:recordingLiveModel || recordingCoordinator.snapshot().liveModel,turns:result.segments,embeddings:result.embeddings,
+ return {path,duration:result.duration,language:result.metadata.language,model:result.metadata.model,vocabularyRun:result.metadata.vocabularyRun,liveModel:recordingLiveModel || recordingCoordinator.snapshot().liveModel,turns:result.segments,embeddings:result.embeddings,
   ...(result.transcriptionDiagnostics ? {transcriptionDiagnostics:result.transcriptionDiagnostics} : {})};
 }
 
@@ -2268,7 +2293,7 @@ function handleListOrphaned(): Response {
 	const orphans: OrphanedRecording[] = [];
 	for (const f of wavFiles) {
 		const fullPath = join(UPLOAD_DIR, f);
-		if (sessionPaths.has(fullPath) || fullPath === recorderPath || retainedProcessing.get(fullPath) === Infinity) continue;
+		if (sessionPaths.has(fullPath) || fullPath === recorderPath || retainedProcessing.get(fullPath) === Infinity || mediaImportUnavailable || mediaImports?.protectedPaths().includes(fullPath)) continue;
 
 		const stat = Bun.file(fullPath);
 		const sizeBytes = stat.size;
@@ -2301,7 +2326,7 @@ function handleListOrphaned(): Response {
 function handleDiscardOrphaned(url: URL): Response {
 	const path = url.searchParams.get("path");
 	if (!path) return Response.json({ error: "No path" }, { status: 400 });
- if (resolve(path) === recorderPath || retainedProcessing.get(resolve(path)) === Infinity) return Response.json({error:"Audio is still recording or processing"}, {status:409});
+ if (resolve(path) === recorderPath || retainedProcessing.get(resolve(path)) === Infinity || mediaImportUnavailable || mediaImports?.protectedPaths().includes(resolve(path))) return Response.json({error:"Audio is still recording or processing"}, {status:409});
 	// Safety: only allow deleting files inside UPLOAD_DIR
 	if (!path.startsWith(UPLOAD_DIR)) return Response.json({ error: "Invalid path" }, { status: 400 });
 	try {
@@ -2360,7 +2385,7 @@ function desktopRecordingStatus() {
  return {...API_IDENTITY, ...state, snapshot:state, seconds:Math.floor(state.seconds), recording:!!recorderProc && recorderProc.exitCode === null,
   processing:["stopping","finalizing"].includes(state.state) || recordingFinalizationRunning,
   starting:state.state === "starting", pending:false, audioWork:audioWorkBusy(), clientConnected:true, ready:!processingMaintenance.blocked(), maintenance:processingMaintenance.blocked(), maintenanceProtocol:2, processingKinds:processingMaintenance.active(), updateTransactionId:processingMaintenance.transactionId(),
-  realTimeTranscriptionPreference:realTimeTranscription(),
+  realTimeTranscriptionPreference:realTimeTranscription(),meetingModePreference:configuredMeetingMode(),
   smbCommand:smbConnections?.desktopCommand()||null,meetingDetection:meetingDetection.status(),language:recordingLanguage,uiLocale:configuredUiLocale(loadConfig()),storage:{...managedQuota.snapshot(),bytes:managedQuota.snapshot().usedBytes},quotaStopped:!!quotaStopResult};
 }
 /** The coordinator mode remains immutable until capture ends. Settings affect only admission. */
@@ -2406,14 +2431,14 @@ async function handleRecordingSettings(req:Request):Promise<Response> {
   // Recheck after the synchronous durable write: another admitted start may now own preview.
   const current=recordingCoordinator.snapshot();
   if (!["starting","recording","stopping"].includes(current.state)&&!recordingCoordinator.admissionPending) {
-   try {await configurePreview(realTimeTranscription());} catch {engineState="unavailable";}
+   if(Object.hasOwn(patch,"real_time_transcription") || Object.hasOwn(patch,"live_speech_language"))try {await configurePreview(realTimeTranscription());} catch {engineState="unavailable";}
   } else engineState="deferred";
  }
  const current=recordingCoordinator.snapshot();
  const languageCapabilities=await fetchLanguageCapabilities(),liveLanguage=configuredLiveSpeechLanguage(loadConfig());
  const latest=recordingCoordinator.snapshot(),isActive=["starting","recording","stopping"].includes(latest.state);
  const liveLanguageState=!languageCapabilities||languageCapabilities.live.state==="unavailable"?"unavailable":languageCapabilities.live.supportedLanguages.includes(liveLanguage)?"supported":"unsupported";
- return Response.json({enabled:realTimeTranscription(),activeEnabled:isActive?latest.realTimeTranscription !== false:null,liveLanguage,activeLiveLanguage:isActive?latest.liveOptions?.effectiveLanguage ?? null:null,languageCapabilities,liveLanguageState,appliesTo:"next-recording",engineState});
+ return Response.json({meetingMode:configuredMeetingMode(),activeMeetingMode:["starting","recording","stopping","finalizing","failed"].includes(latest.state)?latest.meetingMode:null,enabled:realTimeTranscription(),activeEnabled:isActive?latest.realTimeTranscription !== false:null,liveLanguage,activeLiveLanguage:isActive?latest.liveOptions?.effectiveLanguage ?? null:null,languageCapabilities,liveLanguageState,appliesTo:"next-recording",engineState});
 }
 async function handleRecordingControl(req: Request, pathname: string): Promise<Response> {
  if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
@@ -2427,6 +2452,10 @@ async function handleRecordingControl(req: Request, pathname: string): Promise<R
   const body = await req.json();
   if (pathname === "/api/recording/speakers") return Response.json(recordingCoordinator.rename(body.meetingId,body.expectedRevision,body.speakerNames));
   if (pathname === "/api/recording/retry") return Response.json(hydratedRecordingSnapshot(await recordingCoordinator.retry(controlRequestId(body),body.meetingId)));
+  if (pathname === "/api/recording/discard") {
+   if(body.confirm !== true)return Response.json({error:"Confirm discarding unsaved temporary audio. Saved transcripts are preserved."},{status:400});
+   return Response.json(hydratedRecordingSnapshot(await recordingCoordinator.discard(controlRequestId(body),body.meetingId)));
+  }
   if (pathname === "/api/recording/abandon") {
    const previous=recordingCoordinator.snapshot();
    const state=await recordingCoordinator.abandon(controlRequestId(body),body.meetingId);
@@ -2468,7 +2497,7 @@ async function handleDesktopControl(req: Request, pathname: string): Promise<Res
    const id = controlRequestId(body);
    const previous = recordingCoordinator.snapshot();
    const manualStop = body.action === "stop" && previous.meetingId === body.meetingId && ["starting","recording"].includes(previous.state);
-   const state = body.action === "start" ? await recordingCoordinator.start(id,body.mode ?? "both") : await recordingCoordinator.stop(id,body.meetingId);
+   const state = body.action === "start" ? await recordingCoordinator.start(id,body.mode ?? "both",body.vocabulary) : await recordingCoordinator.stop(id,body.meetingId);
    if (manualStop || (body.action === "start" && state.state === "recording")) meetingDetection.manualOverride();
    return Response.json({ok:true,id,status:desktopRecordingStatus(),snapshot:hydratedRecordingSnapshot(state)});
   }
@@ -2556,6 +2585,18 @@ const tasksService: MeetingTasksService = new MeetingTasksService({
  isBusy:() => processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || chatService.busy || libraryChatService.busy || chatPending(),
  generate:(session,signal) => generateTaskSuggestions(session,signal,{baseUrl:OLLAMA_HOST,model:getCurrentModel() || "",numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))}),
 });
+try {
+ mediaImports=new MediaImportController({
+  vocabularySnapshot:()=>vocabularyStore.snapshot(),validateVocabularySnapshot,
+  jobsDirectory:join(LIBRARY_DIR,'catalog','imports'),recordingsDirectory:UPLOAD_DIR,stagingDirectory:join(LIBRARY_DIR,'staging'),quota:managedQuota,
+  isBusy:()=>processingMaintenance.blocked()||audioWorkBusy(false)||recordingCoordinator.snapshot().state==='recording',
+  probe:probeImportMedia,
+  normalize:async(source,wav,maxBytes,signal)=>{await normalizeAudio(source,wav,{directory:wav,maxBytes,signal},true);},
+  transcribe:async(wav,work,config,onPhase,vocabulary)=>{await preemptNotes();return transcribeImport(wav,work,config,onPhase,vocabulary);},
+  save:session=>notesService.create(session),readSession:id=>notesService.get(id),
+  cleanup:(session,wav,work)=>cleanupMeetingAudio({sessionId:session.id,readSession:id=>notesService.get(id),saveSession:value=>notesService.normalize(sessionTags.save(value)),audioPath:wav,workDirectory:work,recordingsRoots:[UPLOAD_DIR],stagingRoot:join(LIBRARY_DIR,'staging')}),
+ });
+} catch {mediaImportUnavailable=true;console.error('Media imports require recovery. Preserve import journals and protected audio.');}
 const transcriptService = new TranscriptService({notes:notesService,store:sessionTags});
 notesService.recover();
 function retrievalMandatoryBusy(){return processingMaintenance.blocked()||audioWorkBusy()||recordingCoordinator.snapshot().state==='recording'||!!manualNotesController||notesService.busy||tasksService.busy;}
@@ -2594,8 +2635,10 @@ notesTimer.unref();
 
 const recordingCoordinator = new RecordingCoordinator({
  manifestPath:join(APP_DIR,"recording-manifest.json"),
+ resolveVocabulary:selection=>vocabularyStore.snapshot(selection),
  maintenanceBlocked:()=>processingMaintenance.blocked(),
  realTimeTranscription,
+ meetingMode:configuredMeetingMode,
  async resolveLiveOptions(){
   const capabilities=await fetchLanguageCapabilities();
   const config=loadConfig();
@@ -2603,7 +2646,7 @@ const recordingCoordinator = new RecordingCoordinator({
  },
  adapter:{
   async start(mode, _meetingId, attachPath, liveOptions) {
-   if (transcriptionRequests || recordingFinalizationRunning) throw new Error("Wait for the current transcription to finish");
+   if (mediaImports?.busy || transcriptionRequests || recordingFinalizationRunning) throw new Error("Wait for the current transcription to finish");
    recorderStarting = true;
    try {
     await preemptNotes();
@@ -2634,11 +2677,23 @@ const recordingCoordinator = new RecordingCoordinator({
   },
   save(session) {
    const saved = notesService.create(session);
-   if (saved.files?.wav) { retainedProcessing.delete(saved.files.wav); removeChannelCopies(saved.files.wav); cleanupCaptureWork(saved.id); releaseCapture(managedQuota,saved.id); }
+   if (saved.meetingMode !== "transcript-only" && saved.files?.wav) { retainedProcessing.delete(saved.files.wav); removeChannelCopies(saved.files.wav); cleanupCaptureWork(saved.id); releaseCapture(managedQuota,saved.id); }
    return saved;
+  },
+  read:id=>notesService.get(id),
+  cleanup(session) {
+   const original=recordingCoordinator.snapshot().path || session.files?.wav;
+   if(!original)throw Error("Temporary audio cleanup requires its durable owned path");
+   const saved=cleanupMeetingAudio({sessionId:session.id,readSession:id=>notesService.get(id),saveSession:session=>sessionTags.save(session),audioPath:original,workDirectory:join(APP_DIR,'library','staging',`capture-${session.id}`),recordingsRoots:[UPLOAD_DIR,join(LIBRARY_DIR,'media')],stagingRoot:join(LIBRARY_DIR,'staging')});
+   retainedProcessing.delete(original);releaseCapture(managedQuota,session.id);if(recorderPath === original)recorderPath=null;return saved;
+  },
+  discard(path,meetingId) {
+   discardOwnedMeetingAudio({audioPath:path,workDirectory:join(LIBRARY_DIR,'staging',`capture-${meetingId}`),recordingsRoots:[UPLOAD_DIR,join(LIBRARY_DIR,'media')],stagingRoot:join(LIBRARY_DIR,'staging')});
+   retainedProcessing.delete(path);releaseCapture(managedQuota,meetingId);if(recorderPath === path)recorderPath=null;
   },
  },
 });
+void recordingCoordinator.resumeCleanup();
 recordingCoordinator.subscribe(state=>{if(state.state === "failed")void applySavedPreview();});
 if (processingMaintenance.owner()) recordingCoordinator.setMaintenance(true,processingMaintenance.owner()!);
 localAiReady = true;
@@ -2695,6 +2750,7 @@ async function withProcessingAdmission(req:Request, run:()=>Promise<Response>):P
 const server = Bun.serve({
 	hostname: "127.0.0.1",
 	port: PORT,
+	maxRequestBodySize:MAX_IMPORT_FILE_BYTES+1_000_000,
 	idleTimeout: 255, // max allowed — pyannote + whisper can take a while
 	async fetch(req, httpServer) {
   return withProcessingAdmission(req, async () => {
@@ -2702,6 +2758,8 @@ const server = Bun.serve({
 		const method = req.method;
   if(url.pathname === "/.well-known/heed-service")return desktopRequestAllowed(req)?Response.json(API_IDENTITY,{headers:{"Cache-Control":"no-store"}}):new Response(null,{status:403});
   if(url.pathname === "/.well-known/heed-services")return desktopRequestAllowed(req)&&method==='GET'?Response.json(await serviceDiagnostics.get(url.searchParams.get('refresh')==='1'),{headers:{'Cache-Control':'no-store'}}):new Response(null,{status:403});
+  if(url.pathname.startsWith('/api/media/imports')&&mediaImportUnavailable)return Response.json({error:'Media imports require recovery. Preserve the library and its pending recordings.'},{status:503});
+  if(mediaImports){const imported=await mediaImportResponse(req,mediaImports,desktopRequestAllowed(req));if(imported)return imported;}
   const chatResponse=await chatApiResponse(req,chatService,()=>listLocalChatModels(OLLAMA_HOST),desktopRequestAllowed(req));
   if(chatResponse)return chatResponse;
   const libraryChatResult=await libraryChatResponse(req,libraryChatService,desktopRequestAllowed(req));
@@ -2712,6 +2770,7 @@ const server = Bun.serve({
   if(transcriptResult)return transcriptResult;
 
   if (url.pathname === "/api/tasks") return tasksResponse(req,tasksService,PORT);
+  if (url.pathname === "/api/vocabulary" || url.pathname === "/api/vocabulary/export" || url.pathname === "/api/vocabulary/snapshot") return !desktopRequestAllowed(req)?new Response(null,{status:403}):vocabularyHttp(req,vocabularyStore);
   if (url.pathname === "/api/recording/settings") return handleRecordingSettings(req);
   if (url.pathname === "/api/notes/settings") return handleNotesSettings(req);
   if (method === "GET" && url.pathname === "/api/notes/models") return handleNotesModels(req);

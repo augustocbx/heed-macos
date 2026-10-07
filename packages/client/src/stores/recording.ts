@@ -2,9 +2,11 @@ import { tr, useLocale } from "@/lib/i18n.ts";
 import { reconcileSpeakerNames } from "@/lib/speakerNames.ts";
 import { create } from "zustand";
 import type { Segment, TranscribeResult } from "@heed/shared";
-import type { LiveCaptureOptions, LiveSpeechLanguage, CoordinatorState } from "@heed/shared";
+import type { LiveCaptureOptions, LiveSpeechLanguage, CoordinatorState, MeetingMode, AudioCleanup } from "@heed/shared";
 
 interface RecordingState {
+ meetingMode:MeetingMode;
+ audioCleanup:AudioCleanup|null;
  realTimeTranscription: boolean;
  liveOptions: LiveCaptureOptions | null;
  liveSpeechLanguage: LiveSpeechLanguage;
@@ -57,6 +59,7 @@ interface RecordingState {
 }
 
 export const useRecordingStore = create<RecordingState>((set, get) => ({
+ meetingMode:"audio-transcript",audioCleanup:null,
  realTimeTranscription:true,
  liveOptions:null,liveSpeechLanguage:"en",liveModel:null,
  coordinatorMeetingId: null,
@@ -171,7 +174,8 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
 
 	reset: () =>
 		set({
-   realTimeTranscription:true,
+   meetingMode:"audio-transcript",audioCleanup:null,
+ realTimeTranscription:true,
  liveOptions:null,liveSpeechLanguage:"en",liveModel:null,
    dismissedMeetingId:get().coordinatorMeetingId,
    coordinatorMeetingId:null,

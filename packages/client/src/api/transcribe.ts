@@ -8,6 +8,7 @@ export interface TranscribeOptions {
 	language: string;
 	diarize: boolean;
  recording_finalize?: boolean;
+ vocabulary?: import("@heed/shared").VocabularySelection;
  final_model?: "parakeet-v3" | "base" | "small" | "medium" | "large-v3";
 }
 
@@ -32,6 +33,7 @@ export async function transcribe(opts: TranscribeOptions, handlers: TranscribeHa
 	form.append("language", opts.language);
 	form.append("diarize", String(opts.diarize));
  if (opts.recording_finalize) form.append("recording_finalize", "true");
+ if(opts.vocabulary)form.append("vocabulary",JSON.stringify(opts.vocabulary));
  if (opts.final_model) form.append("final_model", opts.final_model);
 
 	const res = await fetch(buildUrl("/api/transcribe"), { method: "POST", body: form });

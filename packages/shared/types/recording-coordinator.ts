@@ -1,5 +1,5 @@
 import type { Segment, TranscriptionDiagnostics } from "./speaker.ts";
-import type { Session } from "./session.ts";
+import type { Session, MeetingMode, AudioCleanup } from "./session.ts";
 import type { LanguageCapabilities, LiveCaptureOptions, LiveSpeechLanguage } from "./live-language.ts";
 
 export type CaptureMode = "both" | "mic" | "system";
@@ -10,21 +10,29 @@ export interface FinalCapture {
   language: "en" | "pt";
   model: string;
   liveModel?: string;
+ vocabularyRun?: import('./vocabulary').VocabularyRun;
+ liveVocabularyRuns?: import('./vocabulary').VocabularyRun[];
   turns: Segment[];
   embeddings?: Record<string, number[]>;
   transcriptionDiagnostics?: TranscriptionDiagnostics;
 }
 export interface RecordingSnapshot {
+  meetingMode?:MeetingMode;
+  audioCleanup?:AudioCleanup;
+  audioDiscardRequested?:boolean;
   meetingId: string | null;
   state: CoordinatorState;
   revision: number;
   startedAt: number | null;
   path: string | null;
   liveModel?: string;
+ vocabularyRun?: import('./vocabulary').VocabularyRun;
+ liveVocabularyRuns?: import('./vocabulary').VocabularyRun[];
   /** Effective mode at admission; missing legacy manifests mean enabled. */
   realTimeTranscription?: boolean;
   liveSpeechLanguage?: LiveSpeechLanguage;
   liveOptions?: LiveCaptureOptions;
+  vocabulary?: import("./vocabulary").VocabularySnapshot;
   seconds: number;
   mode: CaptureMode;
   segments: Segment[];
@@ -36,6 +44,8 @@ export interface RecordingSnapshot {
 }
 
 export interface RecordingSettings {
+  meetingMode?:MeetingMode;
+  activeMeetingMode?:MeetingMode|null;
   liveLanguage?: LiveSpeechLanguage;
   activeLiveLanguage?: LiveSpeechLanguage | null;
   languageCapabilities?: LanguageCapabilities | null;

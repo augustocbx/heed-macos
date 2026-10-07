@@ -9,6 +9,7 @@ export interface SpeechPathCapability {
  automatic: { modelSupported: boolean; pipelineAvailable: boolean; offered: boolean };
  mixedLanguage: "unverified" | "evaluated-limited" | "verified";
  evaluationId?: string;
+ vocabulary?:{status:"recognition-context"|"unsupported";interface:"initial_prompt"|null;scope:"first-window"|null};
  mode: PreviewMode | null;
  adaptiveModels: Array<{ model: string; modelIdentity: string; languages: LiveSpeechLanguage[] }>;
 }

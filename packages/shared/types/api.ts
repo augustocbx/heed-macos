@@ -45,7 +45,7 @@ export interface TranscribeResult {
  transcriptionDiagnostics?: import("./speaker.ts").TranscriptionDiagnostics;
 	text: string;
 	files: { wav: string; srt: string; txt: string };
-	metadata: { language: string; model: string };
+	metadata: { language: string; model: string; vocabularyRun?: import("./vocabulary").VocabularyRun };
 	speakers: string[];
 	segments: import("./speaker.ts").Segment[];
 	embeddings?: Record<string, number[]>;

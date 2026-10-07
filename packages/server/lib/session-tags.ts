@@ -31,7 +31,7 @@ type Entry = { id: string; before: string; after: string };
 type Journal = { committed: boolean; entries: Entry[] };
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const assignmentRevision = (session: Session) => hash(session.tags ?? []);
-const sourceFields = ["transcript", "segments", "speakers", "language", "transcriptFinalized", "transcriptionModel", "duration", "embeddings", "transcriptionDiagnostics"] as const;
+const sourceFields = ["transcript", "segments", "speakers", "language", "transcriptFinalized", "transcriptionModel", "duration", "embeddings", "transcriptionDiagnostics", "vocabularyRun", "liveVocabularyRuns"] as const;
 const metadataFields = ["title", "aiNotes", "summary", "tags", "pinned", "files", "audioArchived", "liveModel"] as const;
 const same = (a: unknown, b: unknown): boolean => isDeepStrictEqual(JSON.parse(JSON.stringify(a ?? null)), JSON.parse(JSON.stringify(b ?? null)));
 const acceptedFields = (session: Session) => Object.fromEntries(sourceFields.map(key => [key, session[key]]));
@@ -60,7 +60,7 @@ export function speakerOnly(before: Session, after: Session): boolean {
 function generation(session: Session, origin: RecognitionGeneration["origin"]): RecognitionGeneration {
  const diagnostics = sanitizeTranscriptionDiagnostics(session.transcriptionDiagnostics);
  return { id: `generation-${randomUUID()}`, createdAt: new Date().toISOString(), origin, transcript: session.transcript, segments: structuredClone(session.segments ?? []), speakers: [...(session.speakers ?? [])], language: session.language, duration: session.duration,
-  ...(session.transcriptionModel !== undefined ? { transcriptionModel: session.transcriptionModel } : {}), ...(diagnostics ? { transcriptionDiagnostics: diagnostics } : {}) };
+  ...(session.transcriptionModel !== undefined ? { transcriptionModel: session.transcriptionModel } : {}), ...(session.vocabularyRun?{vocabularyRun:structuredClone(session.vocabularyRun)}:{}), ...(session.liveVocabularyRuns?{liveVocabularyRuns:structuredClone(session.liveVocabularyRuns)}:{}), ...(diagnostics ? { transcriptionDiagnostics: diagnostics } : {}) };
 }
 function preserveRecovery(current: Session, next: Session): TranscriptEditingState {
  let prior = current.transcriptEditing;
@@ -83,9 +83,9 @@ function preserveRecovery(current: Session, next: Session): TranscriptEditingSta
 function validateRecoveryBounds(session: Session): void {
  const state = session.transcriptEditing;
  if (state && (state.schemaVersion !== 1 || !state.generations.some(value => value.id === state.activeGenerationId))) throw new TagError("Invalid transcript recovery state");
- const { files, embeddings, transcriptionDiagnostics, transcriptVersion, transcriptRevision, transcriptEditing, notesJobs, tagsRevision, audioArchived, ...accepted } = session;
+ const { files, embeddings, transcriptionDiagnostics, vocabularyRun, liveVocabularyRuns, transcriptVersion, transcriptRevision, transcriptEditing, notesJobs, tagsRevision, audioArchived, ...accepted } = session;
  const portable = { ...accepted, transcriptEditing: state ? { schemaVersion: 1, activeGenerationId: state.activeGenerationId,
-  generations: state.generations.map(({ transcriptionDiagnostics, ...value }) => value), edits: state.edits.map(({ requestId, requestSignature, ...value }) => value) } : undefined };
+  generations: state.generations.map(({ transcriptionDiagnostics, vocabularyRun, liveVocabularyRuns, ...value }) => value), edits: state.edits.map(({ requestId, requestSignature, ...value }) => value) } : undefined };
  if (Buffer.byteLength(JSON.stringify(portable)) > 16_000_000) throw new TagError("Accepted transcript and recovery history exceed the size limit", 409);
  if (state && (state.candidates.length > 2 || state.candidates.some(candidate => Buffer.byteLength(JSON.stringify(candidate)) > 16_000_000) || state.candidateRequestReceipts.length > 1_000)) throw new TagError("Transcript candidate state exceeds the size limit", 409);
 }
@@ -228,6 +228,8 @@ export class SessionTags {
   /** Validate the raw client patch before merging so missing revisions cannot be inherited. */
   preparePatch(existing: Session, patch: SessionPatch): SessionPatch {
     if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new TagError("Invalid meeting patch");
+    if (["meetingMode","audioCleanup","audioUnavailableReason"].some(key=>Object.hasOwn(patch,key)))throw new TagError("Meeting archival mode and cleanup receipts cannot be changed by metadata updates");
+    if(existing.meetingMode === "transcript-only" && Object.hasOwn(patch,"files"))throw new TagError("Transcript-only audio paths are owned by durable cleanup",409);
     if (sourcePatch(patch)) checkTranscriptGuard(existing, patch as TranscriptGuard);
     const fields: SessionPatch = Object.fromEntries([...metadataFields, ...sourceFields].filter(key => Object.hasOwn(patch, key)).map(key => [key, patch[key]]));
     if (Object.hasOwn(fields, "transcriptionDiagnostics")) fields.transcriptionDiagnostics = sanitizeTranscriptionDiagnostics(fields.transcriptionDiagnostics);

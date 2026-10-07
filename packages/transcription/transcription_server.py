@@ -1300,12 +1300,15 @@ def _compatible_preview_model(model):
     return bool(identity and model_supports_language(kind, model, _preview_language()) and (preview_live_options is None or identity in preview_live_options["compatibleModels"]))
 
 
-def transcribe(wav_path, language="auto", srt_output=None):
+def transcribe(wav_path, language="auto", srt_output=None, vocabulary=None):
+    from vocabulary import validate_snapshot, run, options
+    vocabulary = validate_snapshot(vocabulary)
     lang = None if language == "auto" else language
     _ensure_whisper()
     # Lock: whisper model is not thread-safe — serialize access.
     with whisper_lock:
-        segments_gen, info = whisper_model.transcribe(wav_path, language=lang, **WHISPER_OPTS)
+        vocabulary_run = run(vocabulary, getattr(whisper_model, "kind", active_engine), whisper_model_name, language)
+        segments_gen, info = whisper_model.transcribe(wav_path, language=lang, **WHISPER_OPTS, **options(vocabulary_run["configuration"]))
         # MUST consume the generator inside the lock (it holds model state)
         segments_list = list(segments_gen)
 
@@ -1335,6 +1338,7 @@ def transcribe(wav_path, language="auto", srt_output=None):
         "txt_path": txt_path,
         "language": info.language if info else language,
         "model": whisper_model_name,
+        "vocabularyRun": vocabulary_run,
     }
 
 
@@ -2068,7 +2072,7 @@ def _final_channel_diagnostics(raw_path, cleaned_path, asr_segments, diarization
 
 
 def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
-                       final_model="parakeet-v3", manual=False, work_directory=None):
+                       final_model="parakeet-v3", manual=False, work_directory=None, vocabulary=None, on_phase=None):
     """Full-audio final pipeline with native Parakeet or an explicitly selected Whisper model.
     Preserve ASR timestamps, diarize the system channel (remote speakers), and for speaker playback
     acoustically reduce echo and remove microphone duplicates only with matching text and timing.
@@ -2078,6 +2082,8 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
     Returns {"turns":[{start,end,speaker,text}], "speakers":[...], "embeddings":{...}, "auto_named":{...}}.
     """
     import engines
+    from vocabulary import validate_snapshot, run
+    vocabulary = validate_snapshot(vocabulary)
     from managed_work import temporary_audio, validate_processing_wave
     from meeting_language import detect_meeting_language
     from manual_transcription import MODELS, transcribe_complete
@@ -2098,18 +2104,23 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
     # The full offline ASR model belongs only to this pass, not the next live recording.
     asr = engines.ParakeetEngine(role="asr") if final_model == "parakeet-v3" else None
     metadata = {"language": language, "language_detection": detection,
-                "model": final_model, "finalized": True, "duration": engines._wav_duration(wav_path)}
+                "model": final_model, "finalized": True, "duration": engines._wav_duration(wav_path),
+                "vocabularyRun": run(vocabulary, "parakeet" if final_model == "parakeet-v3" else "mlx" if engines.is_apple_silicon() else "ctranslate2", final_model, language)}
 
     # Use the FluidAudio path directly on Apple Silicon so this works whether or not the server's
     # boot set the `diarize_backend` global (the harness imports the module without booting).
     def _diar(path):
+        if on_phase:
+            on_phase("diarization")
         if engines.is_apple_silicon():
             return _diarize_parakeet(path)
         return diarize(path)
 
     def segs_for(path):
+        if on_phase:
+            on_phase("transcription")
         if asr is None:
-            return transcribe_complete(path, final_model, language)
+            return transcribe_complete(path, final_model, language, **({"vocabulary": vocabulary} if vocabulary["entries"] or vocabulary["additions"] else {}))
         tok = asr.transcribe_ts(path, language)
         return engines.tokens_to_segments(tok.get("tokens", []))
 
@@ -2432,12 +2443,12 @@ def assign_speakers(diar_segs, srt_segs):
 
 
 # --- Full processing (transcribe first, then diarize with SRT) ---
-def process_full(wav_path, language="auto", do_diarize=False, min_speakers=None, max_speakers=None):
+def process_full(wav_path, language="auto", do_diarize=False, min_speakers=None, max_speakers=None, vocabulary=None):
     results = {}
 
     # Step 1: Transcribe (fast on GPU, ~5s)
     try:
-        results["transcribe"] = transcribe(wav_path, language)
+        results["transcribe"] = transcribe(wav_path, language, vocabulary=vocabulary)
     except Exception as e:
         results["transcribe"] = {"error": str(e)}
 
@@ -2590,8 +2601,17 @@ class Handler(BaseHTTPRequestHandler):
         return self._post()
 
     def _post(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(length)) if length else {}
+        from vocabulary import validate_snapshot, run, options
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length < 0 or length > 1_000_000:
+                raise ValueError("Request exceeds its size limit")
+            body = json.loads(self.rfile.read(length)) if length else {}
+            if not isinstance(body, dict): raise ValueError("Invalid request body")
+            vocabulary = validate_snapshot(body.get("vocabulary"))
+        except (ValueError, TypeError):
+            self._json({"error":"Invalid transcription request or vocabulary"},400)
+            return
 
         if self.path == "/preview/configure":
             try:
@@ -2609,6 +2629,7 @@ class Handler(BaseHTTPRequestHandler):
                 body["wav_path"],
                 body.get("language", "auto"),
                 body.get("srt_output"),
+                vocabulary=vocabulary,
             )
             result["time_ms"] = int((time.time() - t) * 1000)
             self._json(result)
@@ -2628,7 +2649,7 @@ class Handler(BaseHTTPRequestHandler):
                 if ch == "mic":
                     _reset_apm()   # new recording → fresh AEC filter
                     _reset_echo()  # new recording → re-decide whether echo is present
-                self._json({"ok": bool(ok)})
+                self._json({"ok": True, "engine":"parakeet", "model":"parakeet-v3", "modelIdentity":registered_identity("parakeet","parakeet-v3"), "language":language, "task":"transcribe", "vocabularyRun":run(vocabulary, "parakeet", "parakeet-v3", language)} if ok else {"ok":False})
             except Exception as e:
                 self._json({"ok": False, "error": str(e)[:120]}, 200)
 
@@ -2789,7 +2810,7 @@ class Handler(BaseHTTPRequestHandler):
                     model = whisper_model_live
                     kind = getattr(model, "kind", _preview_kind())
                     name = getattr(model, "model_name", whisper_model_live_name)
-                    self._json({"text": "", "language": lang, "task":"transcribe", "engine":kind, "model":name, "modelIdentity":registered_identity(kind,name), "time_ms": 0, "skipped": "silence"})
+                    self._json({"text": "", "language": lang, "task":"transcribe", "engine":kind, "model":name, "modelIdentity":registered_identity(kind,name), "time_ms": 0, "skipped": "silence", "vocabularyRun":run(vocabulary,kind,name,lang)})
                     return
             except Exception:
                 pass  # if check fails, proceed with the engine
@@ -2802,7 +2823,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not _compatible_preview_model(name_used) or engine_used != _preview_kind():
                     self._json({"error":"Preview model does not match admitted identity"}, 409)
                     return
-                segments_gen, info = model_used.transcribe(body["wav_path"], language=lang, task="transcribe", **WHISPER_OPTS)
+                vocabulary_run = run(vocabulary, engine_used, name_used, lang)
+                segments_gen, info = model_used.transcribe(body["wav_path"], language=lang, task="transcribe", **WHISPER_OPTS, **options(vocabulary_run["configuration"]))
                 segments_list = list(segments_gen)
             lines = []
             for seg in segments_list:
@@ -2834,6 +2856,7 @@ class Handler(BaseHTTPRequestHandler):
                 "time_ms": int(process_s * 1000),
                 "gov": gov_info,
                 "quality": assess_audio_quality(_live_text, float(body.get("audio_s", 0) or 0), _peak),
+                "vocabularyRun": vocabulary_run,
             })
 
         elif self.path == "/diarize":
@@ -2851,6 +2874,17 @@ class Handler(BaseHTTPRequestHandler):
             result["time_ms"] = int((time.time() - t) * 1000)
             self._json(result)
 
+        elif self.path == "/finalize-import":
+            from media_import import IMPORT_JOBS
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            def emit(event, data):
+                self.wfile.write(f"event: {event}\ndata: {json.dumps(data)}\n\n".encode())
+                self.wfile.flush()
+            IMPORT_JOBS.stream(emit, finalize_recording, body)
+
         elif self.path == "/finalize":
             # Post-stop: full re-transcription with real timestamps + diarization + mic echo removal.
             t = time.time()
@@ -2863,6 +2897,7 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("final_model", "parakeet-v3"),
                     body.get("manual", False),
                     body.get("work_directory"),
+                    vocabulary=vocabulary,
                 )
             except Exception as e:
                 self._json({"error": str(e)[:200], "turns": [], "finalized": False}, 200)
@@ -2895,10 +2930,10 @@ class Handler(BaseHTTPRequestHandler):
                 is_dual = body.get("dual_channel", False)
 
                 if is_dual:
-                    self._stream_dual(sse, wav_path, language, body.get("min_speakers"), body.get("max_speakers"), body.get("work_directory"))
+                    self._stream_dual(sse, wav_path, language, body.get("min_speakers"), body.get("max_speakers"), body.get("work_directory"), vocabulary=vocabulary)
                 else:
                     # Non-dual: process_full and emit result at end
-                    result = process_full(wav_path, language, body.get("diarize", False), body.get("min_speakers"), body.get("max_speakers"))
+                    result = process_full(wav_path, language, body.get("diarize", False), body.get("min_speakers"), body.get("max_speakers"), vocabulary=vocabulary)
                     tx = result.get("transcribe", {})
                     diar = result.get("diarize", {})
                     for seg in diar.get("segments", []):
@@ -2908,6 +2943,7 @@ class Handler(BaseHTTPRequestHandler):
                         "text": tx.get("text", ""),
                         "language": tx.get("language", language),
                         "model": tx.get("model", whisper_model_name),
+                        "vocabularyRun": tx.get("vocabularyRun"),
                         "srt_path": tx.get("srt_path", ""),
                         "txt_path": tx.get("txt_path", ""),
                     })
@@ -2940,8 +2976,9 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._json({"error": "not found"}, 404)
 
-    def _stream_dual(self, sse, wav_path, language, min_speakers, max_speakers, work_directory=None):
+    def _stream_dual(self, sse, wav_path, language, min_speakers, max_speakers, work_directory=None, vocabulary=None):
         """Stream dual-channel processing with progressive segment emission."""
+        from vocabulary import run, options
         _ensure_whisper()  # file-upload path: load Whisper on demand (parakeet boot skipped it)
         mic_path, sys_path, mic_has, sys_has = split_stereo(wav_path, work_directory)
 
@@ -2959,8 +2996,9 @@ class Handler(BaseHTTPRequestHandler):
         mic_srt_lines = []
         mic_segments_raw = []
         mic_info = None
+        vocabulary_run=run(vocabulary,getattr(whisper_model,"kind",active_engine),whisper_model_name,language)
         if mic_has:
-            segments_gen, mic_info = whisper_model.transcribe(mic_path, language=lang, **WHISPER_OPTS)
+            segments_gen, mic_info = whisper_model.transcribe(mic_path, language=lang, **WHISPER_OPTS, **options(vocabulary_run["configuration"]))
             for idx, seg in enumerate(segments_gen, 1):
                 text = seg.text.strip()
                 if not text or is_degenerate_repetition(text):
@@ -2983,7 +3021,7 @@ class Handler(BaseHTTPRequestHandler):
         sys_raw_segs = []
         sys_info = None
         if sys_has:
-            segments_gen, sys_info = whisper_model.transcribe(sys_path, language=lang, **WHISPER_OPTS)
+            segments_gen, sys_info = whisper_model.transcribe(sys_path, language=lang, **WHISPER_OPTS, **options(vocabulary_run["configuration"]))
             for idx, seg in enumerate(segments_gen, 1):
                 text = seg.text.strip()
                 if not text or is_degenerate_repetition(text):
@@ -3064,6 +3102,7 @@ class Handler(BaseHTTPRequestHandler):
             "text": plain_text,
             "language": detected_lang,
             "model": whisper_model_name,
+            "vocabularyRun": vocabulary_run,
             "srt_path": sys_srt_path or mic_srt_path,
             "txt_path": "",
             "files": {"wav": wav_path, "srt": sys_srt_path or mic_srt_path, "txt": ""},

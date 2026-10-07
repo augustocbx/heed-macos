@@ -40,3 +40,4 @@ test("pending admission owns capture priority; latest preference resolves once a
  preference="en";expect((await coordinator.start("first","mic")).liveSpeechLanguage).toBe("pt");expect(starts).toBe(1);
  }finally{rmSync(directory,{recursive:true,force:true});}
 });
+test('archival preferences require explicit temporary-audio acknowledgement and use separate config',()=>{expect(language.recordingSettingsPatch({meetingMode:'transcript-only',acknowledgeTemporaryAudio:true})).toEqual({meeting_mode:'transcript-only'});expect(language.recordingSettingsPatch({meetingMode:'audio-transcript'})).toEqual({meeting_mode:'audio-transcript'});for(const input of [{meetingMode:'transcript-only'},{meetingMode:'memory-only'},{acknowledgeTemporaryAudio:true}])expect(()=>language.recordingSettingsPatch(input)).toThrow();});

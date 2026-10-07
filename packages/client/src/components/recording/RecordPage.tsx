@@ -1,3 +1,5 @@
+import {VocabularySelection} from './VocabularySelection';
+import {useVocabularyStore} from '@/stores/vocabulary';
 import { tr, useLocale } from "@/lib/i18n.ts";
 import { useRef, useEffect, useState } from "react";
 import { useDesktopControl } from "@/hooks/useDesktopControl.ts";
@@ -12,6 +14,7 @@ import { Timer } from "./Timer.tsx";
 import { Visualizer } from "./Visualizer.tsx";
 import vizStyles from "./Visualizer.module.css";
 import { ResultCard } from "./ResultCard.tsx";
+import {MeetingModeSelect} from "./MeetingModeSelect";
 import { RecordingRecovery } from "./RecordingRecovery";
 import { ErrorBoundary } from "@/components/ErrorBoundary.tsx";
 import styles from "./RecordPage.module.css";
@@ -30,7 +33,7 @@ export function RecordPage() {
 	const micBars = useRef<HTMLDivElement[]>([]);
 	const systemBars = useRef<HTMLDivElement[]>([]);
 
-	const { start, stop, recordFinalOnly, liveStartError, starting } = useRecording({
+	const { start: startRecording, stop, recordFinalOnly: startFinalOnly, liveStartError, starting } = useRecording({
 		micBars,
 		systemBars,
 	});
@@ -51,13 +54,17 @@ export function RecordPage() {
 	const showResult = (recording && realTimeTranscription) || processing || segments.length > 0 || !!transcript;
 	// Block recording button while processing (transcribing + diarizing after stop)
 	const canRecord = !recording && !processing && !starting;
+ const vocabularySelection=useVocabularyStore(s=>s.selection),setVocabularySelection=useVocabularyStore(s=>s.setSelection);
+ const [vocabularyValid,setVocabularyValid]=useState(true);
  const liveOptions=useRecordingStore(s=>s.liveOptions);
  const liveLanguage=useRecordingStore(s=>s.liveSpeechLanguage);
  const liveModel=useRecordingStore(s=>s.liveModel);
 	const [rotatingStep, setRotatingStep] = useState("");
 	const [rotatingStepKey, setRotatingStepKey] = useState(0);
 
-	// Listen for meeting detector trigger
+	const start=()=>{if(vocabularyValid)return startRecording();};
+ const recordFinalOnly=()=>{if(vocabularyValid)return startFinalOnly();};
+ // Listen for meeting detector trigger
 	useEffect(() => {
 		const handler = () => {
 			if (!useRecordingStore.getState().recording && !useRecordingStore.getState().processing) start();
@@ -96,8 +103,10 @@ export function RecordPage() {
 	return (
 		<div>
 			<RecordingRecovery />
+ <VocabularySelection value={vocabularySelection} onChange={setVocabularySelection} onValidityChange={setVocabularyValid} disabled={recording||processing||starting}/>
 			<div className={styles.center}>
 				<Timer seconds={useSeconds()} />
+                <MeetingModeSelect/>
 				<div className={vizStyles.dualWrap}>
 					<Visualizer ref={micBars} barCount={24} variant="mic" label={tr("Microphone")} />
 					<Visualizer ref={systemBars} barCount={24} variant="system" label={tr("System")} />
@@ -110,14 +119,14 @@ export function RecordPage() {
 						</span>
 					</div>
 				) : (
-					<RecordButton recording={recording} onClick={() => (recording ? stop() : canRecord ? start() : null)} />
+					<RecordButton recording={recording} disabled={!recording&&(!canRecord||!vocabularyValid)} onClick={() => (recording ? stop() : canRecord && vocabularyValid ? start() : null)} />
 				)}
 				<div className={styles.label}>
 					{recording ? tr("Recording... click to stop") : processing ? "" : !showResult ? tr("Click to start recording") : ""}
 				</div>
                 {liveStartError && !recording && !processing && <div role="alert">
                   <p>{tr(liveStartError==='live-language-unsupported' ? 'The live model does not support this language. Choose a compatible model or record final-only.' : 'Live language capabilities are unavailable. Retry when the service is ready or record final-only.')}</p>
-                  <button disabled={starting} onClick={()=>void recordFinalOnly()}>{tr('Record final-only (keeps real-time off)')}</button>
+                  <button disabled={starting||!vocabularyValid} onClick={()=>void recordFinalOnly()}>{tr('Record final-only (keeps real-time off)')}</button>
                   <p>{tr('Recording final-only turns real-time transcription off for future recordings. Turn it back on in Settings.')}</p>
                 </div>}
 				{recording && liveQuality && !liveQuality.ok && (

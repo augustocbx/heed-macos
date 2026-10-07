@@ -186,3 +186,20 @@ class AdmittedPreviewTests(unittest.TestCase):
         self.assertEqual(result[0][0]["model"],"base")
         self.assertEqual(result[0][0]["modelIdentity"],"mlx:mlx-community/whisper-base-mlx")
         self.assertEqual(result[0][0]["gov"]["live_model"],"tiny")
+
+
+    def test_native_stream_start_records_unsupported_actual_vocabulary_path(self):
+        import io
+        import transcription_server as server
+        from vocabulary import configuration
+        snapshot={"schemaVersion":1,"libraryVersion":3,"glossaryId":None,"glossaryVersion":None,"entries":[],"additions":[{"term":"João"}]}
+        value=self.options();value.update(engine="parakeet",mode="stream",initialModel="parakeet-v3",initialModelIdentity="parakeet:FluidAudio/parakeet-tdt-0.6b-v3",compatibleModels=["parakeet:FluidAudio/parakeet-tdt-0.6b-v3"])
+        result=[];handler=object.__new__(server.Handler);body=json.dumps({"language":"pt","task":"transcribe","vocabulary":snapshot}).encode()
+        handler.path="/stream/start";handler.headers={"Content-Length":str(len(body))};handler.rfile=io.BytesIO(body);handler._json=lambda response,status=200:result.append((response,status))
+        native=SimpleNamespace(stream_start=lambda language,channel:True)
+        with patch.object(server,"preview_live_options",value),patch("engines.get_parakeet",return_value=native),patch.object(server,"_reset_apm"),patch.object(server,"_reset_echo"):
+            handler._post()
+        response=result[0][0];self.assertTrue(response["ok"]);self.assertEqual(response["engine"],"parakeet");self.assertEqual(response["modelIdentity"],value["initialModelIdentity"])
+        self.assertEqual(response["language"],"pt");self.assertEqual(response["task"],"transcribe")
+        self.assertEqual(response["vocabularyRun"],{"schemaVersion":1,"snapshot":snapshot,"configuration":configuration(snapshot,"parakeet","parakeet-v3","pt")})
+        self.assertEqual(response["vocabularyRun"]["configuration"]["status"],"unsupported")

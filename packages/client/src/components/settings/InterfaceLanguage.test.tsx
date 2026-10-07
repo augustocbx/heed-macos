@@ -37,3 +37,5 @@ vi.mock('./StorageLibrarySettings',()=>({StorageLibrarySettings:()=>null}));
 
 vi.mock("./SmbSettings", () => ({ SmbSettings: () => null }));
 vi.mock('./ICloudFolderSettings',()=>({ICloudFolderSettings:()=>null}));
+
+vi.mock('./VocabularySettings',()=>({VocabularySettings:()=>null}));

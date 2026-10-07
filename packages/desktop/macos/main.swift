@@ -24,14 +24,16 @@ struct ControlStatus: Decodable {
     var state: String? = nil
     var maintenance: Bool? = nil
     var path: String? = nil
+    var meetingMode: String? = nil
     var realTimeTranscription: Bool? = nil
     var liveOptions: AdmittedLiveOptions? = nil
     var liveModel: String? = nil
     func captureLabel(locale: String) -> String {
-        if realTimeTranscription == false { return MenuLocalization.text("Recording • live text off; transcript after stop",locale:locale) }
-        guard let language = liveOptions?.effectiveLanguage else { return MenuLocalization.text("Recording",locale:locale) }
+        let archivalLabel = meetingMode == "transcript-only" ? " • " + MenuLocalization.text("Transcript only",locale:locale) : ""
+        if realTimeTranscription == false { return MenuLocalization.text("Recording • live text off; transcript after stop",locale:locale) + archivalLabel }
+        guard let language = liveOptions?.effectiveLanguage else { return MenuLocalization.text("Recording",locale:locale) + archivalLabel }
         let label = MenuLocalization.text(language == "pt" ? "Brazilian Portuguese" : "English",locale:locale)
-        return "\(MenuLocalization.text("Recording",locale:locale)) • \(label) • \(liveOptions?.engine ?? "?") / \(liveModel ?? liveOptions?.initialModel ?? "?")"
+        return "\(MenuLocalization.text("Recording",locale:locale)) • \(label) • \(liveOptions?.engine ?? "?") / \(liveModel ?? liveOptions?.initialModel ?? "?")\(archivalLabel)"
     }
     var canStart: Bool { ready && !recording && !processing && !pending && starting != true && maintenance != true && (state != "failed" || path == nil) }
     var canStop: Bool { recording && !processing && !pending && starting != true && meetingId != nil }
@@ -64,6 +66,8 @@ final class MenuController: NSObject, NSApplicationDelegate {
     private lazy var liveLanguageClient = LiveLanguageClient(session:session,endpoints:{ [weak self] in self?.endpoints })
     private var liveLanguageSettings: LiveLanguageSettings?
     private var liveLanguageItems: [NSMenuItem] = []
+    private let meetingModeMenu = NSMenuItem(title:"Meeting mode",action:nil,keyEquivalent:"")
+    private var meetingModeItems:[NSMenuItem] = []
     private let liveLanguageMenu = NSMenuItem(title:"Live speech language",action:nil,keyEquivalent:"")
     private let liveLanguageStateMenu = NSMenuItem(title:"",action:nil,keyEquivalent:"")
     private let finalOnlyMenu = NSMenuItem(title:"Record final-only (keeps real-time off)",action:#selector(recordFinalOnly),keyEquivalent:"")
@@ -128,6 +132,12 @@ final class MenuController: NSObject, NSApplicationDelegate {
             let entry = NSMenuItem(title:title,action:#selector(selectLiveLanguage(_:)),keyEquivalent:"")
             entry.target = self; entry.representedObject = code; speechMenu.addItem(entry); liveLanguageItems.append(entry)
         }
+        let archiveMenu = NSMenu()
+        for (title,code) in [("Audio + transcript","audio-transcript"),("Transcript only","transcript-only")] {
+            let entry=NSMenuItem(title:title,action:#selector(selectMeetingMode(_:)),keyEquivalent:"")
+            entry.target=self;entry.representedObject=code;archiveMenu.addItem(entry);meetingModeItems.append(entry)
+        }
+        meetingModeMenu.submenu=archiveMenu;menu.addItem(meetingModeMenu)
         liveLanguageMenu.submenu = speechMenu; menu.addItem(liveLanguageMenu)
         liveLanguageStateMenu.isEnabled = false; menu.addItem(liveLanguageStateMenu)
         finalOnlyMenu.target = self; finalOnlyMenu.isHidden = true; menu.addItem(finalOnlyMenu)
@@ -149,7 +159,7 @@ final class MenuController: NSObject, NSApplicationDelegate {
         let quit = NSMenuItem(title: "Quit menu app", action: #selector(quitApp), keyEquivalent: "")
         menu.addItem(updatesMenu.item)
         quit.target = self; menu.addItem(quit)
-        localizedItems = [(liveLanguageMenu,"Live speech language"),(finalOnlyMenu,"Record final-only (keeps real-time off)"),(startMenu, "Start recording"), (stopMenu, "Stop recording"),
+        localizedItems = [(meetingModeMenu,"Meeting mode"),(liveLanguageMenu,"Live speech language"),(finalOnlyMenu,"Record final-only (keeps real-time off)"),(startMenu, "Start recording"), (stopMenu, "Stop recording"),
             (open, "Open interface"), (settings, "Settings and permissions…"),
             (slackAutoMenu, "Automatically record Slack meetings"),
             (slackAccessMenu, "Allow Slack log access…"), (quit, "Quit menu app")]
@@ -265,6 +275,13 @@ final class MenuController: NSObject, NSApplicationDelegate {
             entry.title = text(language == "pt" ? "Brazilian Portuguese" : "English")
             entry.state = language == (liveLanguageSettings?.liveLanguage ?? "en") ? .on : .off
             entry.isEnabled = liveLanguageSettings != nil && !sending
+        }
+        let activeMode = ["starting","recording","stopping","finalizing","failed"].contains(state?.state ?? "")
+        for entry in meetingModeItems {
+            let selected=entry.representedObject as? String
+            entry.title=text(selected == "transcript-only" ? "Transcript only" : "Audio + transcript")
+            entry.state=selected == (activeMode ? state?.meetingMode : liveLanguageSettings?.meetingMode) ? .on : .off
+            entry.isEnabled=liveLanguageSettings != nil && !sending && !activeMode
         }
         liveLanguageStateMenu.title = state?.recording == true ? state!.captureLabel(locale:locale) : text("Live speech language") + ": " + text(liveLanguageSettings?.liveLanguage == "pt" ? "Brazilian Portuguese" : "English")
         finalOnlyMenu.isHidden = !liveAdmissionUnavailable && !["unsupported","unavailable"].contains(liveLanguageSettings?.liveLanguageState ?? "")
@@ -462,6 +479,24 @@ final class MenuController: NSObject, NSApplicationDelegate {
             self.updateMenu()
         }
     }
+    @objc private func selectMeetingMode(_ sender:NSMenuItem) {
+        guard !sending, let mode=sender.representedObject as? String else {return}
+        if mode == "transcript-only" {
+            let alert=NSAlert();alert.messageText=text("Enable transcript only")
+            alert.informativeText=text("Transcript only uses temporary local audio during capture and final processing. After the final transcript is saved, audio is deleted. Playback and retranscription are unavailable.")
+            alert.addButton(withTitle:text("Enable transcript only"));alert.addButton(withTitle:text("Cancel"))
+            guard alert.runModal() == .alertFirstButtonReturn else {return}
+        }
+        sending=true;languageSettingsGeneration += 1;updateMenu()
+        liveLanguageClient.save(meetingMode:mode) { [weak self] result in
+            guard let self=self else {return};self.sending=false
+            switch result {
+            case .success(let action):self.liveLanguageSettings=action.settings
+            case .failure:self.statusMenu.title=self.text("Could not save meeting mode. Try again.")
+            }
+            self.updateMenu()
+        }
+    }
     @objc private func selectLiveLanguage(_ sender:NSMenuItem) {
         guard !sending, let language = sender.representedObject as? String else { return }
         sending = true; languageSettingsGeneration += 1; updateMenu()
@@ -624,6 +659,9 @@ if CommandLine.arguments.contains("--update-client-self-test") {
     precondition(finalOnly.captureLabel(locale: "en") == "Recording • live text off; transcript after stop")
     for locale in ["pt-BR", "fr", "de"] { precondition(finalOnly.captureLabel(locale: locale) != finalOnly.captureLabel(locale: "en")) }
     precondition(status(true).captureLabel(locale: "en") == "Recording")
+    var transcriptOnly=finalOnly;transcriptOnly.meetingMode="transcript-only"
+    precondition(transcriptOnly.captureLabel(locale:"en") == "Recording • live text off; transcript after stop • Transcript only")
+    for locale in ["pt-BR","fr","de"] {precondition(transcriptOnly.captureLabel(locale:locale) != transcriptOnly.captureLabel(locale:"en"))}
     let portuguese = try JSONDecoder().decode(ControlStatus.self,from:Data("{\"recording\":true,\"processing\":false,\"seconds\":12,\"ready\":true,\"clientConnected\":false,\"pending\":false,\"liveModel\":\"tiny\",\"liveOptions\":{\"effectiveLanguage\":\"pt\",\"engine\":\"mlx\",\"initialModel\":\"base\"}}".utf8))
     for locale in MenuLocalization.locales {
         precondition(portuguese.captureLabel(locale:locale).contains(MenuLocalization.text("Brazilian Portuguese",locale:locale)))

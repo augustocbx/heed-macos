@@ -1,3 +1,4 @@
+import {VocabularySettings} from './VocabularySettings';
 import { useLocale } from "@/lib/i18n.ts";
 import { UI_LOCALES, type Locale } from "@/lib/locale.ts";
 import { useLocaleStore } from "@/stores/locale.ts";
@@ -97,7 +98,8 @@ export function PermissionsPage() {
    {savingLocale && <p role="status">{tr("Saving…")}</p>}
    {localeError && <p role="alert">{tr("Could not save interface language. Check that Heed is running and try again.")}</p>}
   </article>
-  <RealTimeTranscriptionSettings /><LiveSpeechLanguageSettings />
+  <RealTimeTranscriptionSettings /><VocabularySettings/>
+ <LiveSpeechLanguageSettings />
   <AutomaticNotesSettings />
   <RemoteStorageSettings onProviderChanged={()=>setLibrarySelection(value=>value+1)}/>
   <MeetingDetectionSettings />
