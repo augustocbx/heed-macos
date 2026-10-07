@@ -36,7 +36,7 @@ import {reserveMediaWork} from "./lib/media-budget.ts";
 import { join, resolve, extname } from "node:path";
 import { homedir, cpus } from "node:os";
 import { downloadFromUrl, normalizeAudio } from "./lib/media.ts";
-import { APP_DIR, LIBRARY_DIR, CONFIG_PATH, SESSIONS_DIR, TEMPLATES_DIR, type TrxConfig, ensureAppDirs, loadConfig, saveConfig, micLabel } from "./lib/app-config.ts";
+import { APP_DIR, LIBRARY_DIR, CONFIG_PATH, SESSIONS_DIR, TEMPLATES_DIR, type TrxConfig, ensureAppDirs, loadConfig, saveConfig, micLabel, realTimeTranscription } from "./lib/app-config.ts";
 import { TRANSCRIPTION_SERVER, pyPost as postJSON } from "./lib/transcription-client.ts";
 import { track, gracefulStop, installShutdownHooks } from "./lib/process.ts";
 import { sseResponse } from "./lib/sse.ts";
@@ -1355,6 +1355,8 @@ async function handleSysRecordStart(req: Request): Promise<Response> {
 function captureMetadataPaths(id:string){return [join(SESSIONS_DIR,`${id}.json`),join(APP_DIR,'recording-manifest.json'),join(APP_DIR,'recording-recovery',`${id}.json`)];}
 
 async function beginSysRecording(mode: CaptureMode, attachPath: (path: string) => void): Promise<Response> {
+ const preview = recordingCoordinator.snapshot().realTimeTranscription !== false;
+ await configurePreview(preview);
  recordingLanguage = "en";
 
 	if (syscapProc) {
@@ -1365,8 +1367,8 @@ async function beginSysRecording(mode: CaptureMode, attachPath: (path: string) =
 	liveTranscribeOffset = 0;
 	liveChunkProcessing = false;
 	// Pick up the engine-adaptive live cadence (parakeet = fast) before the loop starts.
-	recordingLiveModel = undefined;
-	await refreshLiveTuning();
+	recordingLiveModel = undefined; recordingLiveGeneration=undefined;
+	if (preview) await refreshLiveTuning();
 
 	const ts = Date.now();
 	quotaReachedAt = 0; quotaStopResult = null;
@@ -1465,7 +1467,7 @@ async function beginSysRecording(mode: CaptureMode, attachPath: (path: string) =
  if (writer.exitCode !== null || recorderProc !== writer || (helper && helper.exitCode !== null)) {
   throw new Error("Audio capture ended before recording became ready. Retained audio is available for recovery.");
  }
- startLiveTranscribe();
+ if (preview) startLiveTranscribe();
 
 	// Feed the System (green) visualizer. We sample the growing recorder WAV directly instead of
 	// spawning a second ffmpeg on the monitor device — this works whether the system channel comes
@@ -1611,6 +1613,7 @@ let liveTurns: Array<{ id: number; channel: "mic" | "sys"; speaker: string; base
 // Parakeet (Apple Neural Engine) polls fast with short windows for near-instant words;
 // Whisper keeps the safe 3s/2000ms cadence so slow CPUs never starve. Defaults are safe.
 let recordingLiveModel: string | undefined;
+let recordingLiveGeneration:number|undefined;
 let liveTuning = { chunk_s: 3.0, interval_ms: 2000, mode: "chunk" as "chunk" | "full" | "stream" };
 async function refreshLiveTuning() {
 	try {
@@ -1618,13 +1621,29 @@ async function refreshLiveTuning() {
 		if (r.ok) {
 			const h = await r.json() as { live_tuning?: { chunk_s?: number; interval_ms?: number; mode?: "chunk" | "full" | "stream"; model?: string }; whisper_info?: {live_model?: string} };
 			if(!isTranscriptionHealth(h))return;
-			recordingLiveModel = h.live_tuning?.model || h.whisper_info?.live_model;
+			recordingLiveGeneration=Number(h.pid);
+            recordingLiveModel = h.live_tuning?.model || h.whisper_info?.live_model;
 			if (h.live_tuning?.chunk_s && h.live_tuning?.interval_ms) {
 				liveTuning = { chunk_s: h.live_tuning.chunk_s, interval_ms: h.live_tuning.interval_ms, mode: h.live_tuning.mode || "chunk" };
 				console.log(`[heed] live: mode=${liveTuning.mode} interval=${liveTuning.interval_ms}ms`);
 			}
 		}
 	} catch { /* keep safe defaults */ }
+}
+
+/** A Python-only restart must receive the immutable capture mode before the next live job. */
+async function ensureLiveGeneration():Promise<boolean> {
+ const signal=liveAbort.signal;
+ try{
+  const response=await fetch(`${TRANSCRIPTION_SERVER}/health`,{signal:AbortSignal.any([signal,AbortSignal.timeout(2000)])});
+  const health=await response.json();
+  if(!response.ok || !isTranscriptionHealth(health) || !health.whisper)return false;
+  if(recordingLiveGeneration!==health.pid){
+   await configurePreview(recordingCoordinator.snapshot().realTimeTranscription !== false);
+   recordingLiveGeneration=health.pid;
+  }
+  return !signal.aborted;
+ }catch{return false;}
 }
 
 // Live "full" mode (Parakeet/MLX): re-transcribe the whole growing audio each tick and emit a
@@ -1852,7 +1871,7 @@ async function postLiveJSON(path: string, body: unknown): Promise<any> {
  } catch { return null; }
 }
 function startLiveTranscribe() {
- if (!recorderProc || !recorderPath || liveTranscribeInterval || liveFirstTimeout) return;
+ if (recordingCoordinator.snapshot().realTimeTranscription === false || !recorderProc || !recorderPath || liveTranscribeInterval || liveFirstTimeout) return;
  liveAbort = new AbortController();
  const wavPath = recorderPath;
  const isDual = wavPath.includes("dual-capture-");
@@ -1872,6 +1891,7 @@ function startLiveTranscribe() {
 				// Lock: skip if previous chunk is still processing
 				if (liveChunkProcessing) return;
 				liveChunkProcessing = true;
+                if(!await ensureLiveGeneration()){liveChunkProcessing=false;return;}
 
 				// STREAM mode (Parakeet): feed ONLY the new audio to the sidecar's streaming
 				// session; show the model's append-only partial (confirmed prefix never changes).
@@ -2119,6 +2139,7 @@ async function stopCapture(onCaptureStopped: () => void): Promise<FinalCapture> 
     try { await postJSON("/stream/finish",{channel:"sys"}); await postJSON("/diar/finish",{}); } catch {}
    }
   }
+  await applySavedPreview();
   return await finalizeCapture(path);
  } finally { recorderStopping = false; }
 }
@@ -2292,12 +2313,54 @@ function desktopRecordingStatus() {
  return {...API_IDENTITY, ...state, snapshot:state, seconds:Math.floor(state.seconds), recording:!!recorderProc && recorderProc.exitCode === null,
   processing:["stopping","finalizing"].includes(state.state) || recordingFinalizationRunning,
   starting:state.state === "starting", pending:false, audioWork:audioWorkBusy(), clientConnected:true, ready:!processingMaintenance.blocked(), maintenance:processingMaintenance.blocked(), maintenanceProtocol:2, processingKinds:processingMaintenance.active(), updateTransactionId:processingMaintenance.transactionId(),
+  realTimeTranscriptionPreference:realTimeTranscription(),
   smbCommand:smbConnections?.desktopCommand()||null,meetingDetection:meetingDetection.status(),language:recordingLanguage,uiLocale:configuredUiLocale(loadConfig()),storage:{...managedQuota.snapshot(),bytes:managedQuota.snapshot().usedBytes},quotaStopped:!!quotaStopResult};
+}
+/** The coordinator mode remains immutable until capture ends. Settings affect only admission. */
+let previewConfiguration:Promise<void>=Promise.resolve();
+function configurePreview(enabled:boolean):Promise<void> {
+ const operation=previewConfiguration.catch(()=>{}).then(async()=>{
+ // An admitted recording takes precedence over a pending idle-settings request.
+ const snapshot=recordingCoordinator.snapshot();
+ const effective=["starting","recording","stopping"].includes(snapshot.state)?snapshot.realTimeTranscription !== false:enabled;
+ const response = await fetch(`${TRANSCRIPTION_SERVER}/preview/configure`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:effective}),signal:AbortSignal.timeout(30000)});
+ if (!response.ok) throw new Error("Could not prepare real-time transcription. Check the transcription service and retry.");
+ liveWarmLatched = false;
+ });
+ previewConfiguration=operation;
+ return operation;
+}
+async function applySavedPreview() {
+ if(liveWorker)await liveWorker;
+ try{await configurePreview(realTimeTranscription());}catch(error){console.error("Preview preference could not be applied:",error);}
+}
+async function handleRecordingSettings(req:Request):Promise<Response> {
+ if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
+ if (!["GET","POST","PATCH"].includes(req.method)) return new Response(null,{status:405});
+ const state=recordingCoordinator.snapshot();
+ const active=["starting","recording","stopping"].includes(state.state);
+ let engineState:"ready"|"unavailable"|"deferred"=active?"deferred":"ready";
+ if (req.method !== "GET") {
+  let body;try {body=await req.json();} catch {return Response.json({error:"Choose a valid real-time transcription setting."},{status:400});}
+  if (typeof body?.enabled !== "boolean") return Response.json({error:"Choose a valid real-time transcription setting."},{status:400});
+  saveConfig({real_time_transcription:body.enabled});
+  // Recheck after the synchronous durable write: another admitted start may now own preview.
+  const current=recordingCoordinator.snapshot();
+  if (!["starting","recording","stopping"].includes(current.state)) {
+   try {await configurePreview(realTimeTranscription());} catch {engineState="unavailable";}
+  } else engineState="deferred";
+ }
+ const current=recordingCoordinator.snapshot();
+ return Response.json({enabled:realTimeTranscription(),activeEnabled:["starting","recording","stopping"].includes(current.state)?current.realTimeTranscription !== false:null,appliesTo:"next-recording",engineState});
 }
 async function handleRecordingControl(req: Request, pathname: string): Promise<Response> {
  if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
  try {
-  if (req.method === "GET" && pathname === "/api/recording/status") return Response.json(hydratedRecordingSnapshot());
+  if (req.method === "GET" && pathname === "/api/recording/status") {
+   const snapshot=hydratedRecordingSnapshot();
+   if(new URL(req.url).searchParams.get("inference")==="1")return Response.json({meetingId:snapshot.meetingId,state:snapshot.state,revision:snapshot.revision,realTimeTranscription:snapshot.realTimeTranscription !== false});
+   return Response.json(snapshot);
+  }
   if (req.method !== "POST") return new Response(null,{status:405});
   const body = await req.json();
   if (pathname === "/api/recording/speakers") return Response.json(recordingCoordinator.rename(body.meetingId,body.expectedRevision,body.speakerNames));
@@ -2456,6 +2519,7 @@ notesTimer.unref();
 const recordingCoordinator = new RecordingCoordinator({
  manifestPath:join(APP_DIR,"recording-manifest.json"),
  maintenanceBlocked:()=>processingMaintenance.blocked(),
+ realTimeTranscription,
  adapter:{
   async start(mode, _meetingId, attachPath) {
    if (transcriptionRequests || recordingFinalizationRunning) throw new Error("Wait for the current transcription to finish");
@@ -2470,7 +2534,7 @@ const recordingCoordinator = new RecordingCoordinator({
     if (syscapProc) { try { syscapProc.kill(); } catch {} syscapProc = null; }
     if (recorderProc) { await gracefulStop(recorderProc,1500,"SIGINT"); recorderProc = null; }
     stopLiveTranscribe(); stopLevelMeter();
-    if(!recorderPath || !existsSync(recorderPath)){
+     if(!recorderPath || !existsSync(recorderPath)){
      cleanupCaptureWork(_meetingId);
      releaseCapture(managedQuota,_meetingId);
     }
@@ -2494,6 +2558,7 @@ const recordingCoordinator = new RecordingCoordinator({
   },
  },
 });
+recordingCoordinator.subscribe(state=>{if(state.state === "failed")void applySavedPreview();});
 if (processingMaintenance.owner()) recordingCoordinator.setMaintenance(true,processingMaintenance.owner()!);
 localAiReady = true;
 const retained = recordingCoordinator.snapshot();
@@ -2561,6 +2626,7 @@ const server = Bun.serve({
   if(libraryChatResult)return libraryChatResult;
 
   if (url.pathname === "/api/tasks") return tasksResponse(req,tasksService,PORT);
+  if (url.pathname === "/api/recording/settings") return handleRecordingSettings(req);
   if (url.pathname === "/api/notes/settings") return handleNotesSettings(req);
   if (method === "GET" && url.pathname === "/api/notes/models") return handleNotesModels(req);
   if (method === "POST" && url.pathname === "/api/notes/jobs") return handleNotesJob(req);

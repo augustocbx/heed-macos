@@ -40,11 +40,14 @@ def worker(wav_path=None):
     model = load_model(MODEL, dtype=mx.float16)
     mx.eval(model.parameters())
     if wav_path is None:
-        # Download and compile the lightweight live model too, without keeping it resident.
+        # A preserving reinstall honors the device preference for preview-only warm-up.
+        from preview_preference import saved_preview_preference
+        enabled = saved_preview_preference()
+        # Download and compile the lightweight live model only when enabled.
         import mlx_whisper
         clip = os.path.join(os.path.dirname(__file__), "assets", "bench_sample.wav")
-        mlx_whisper.transcribe(clip, path_or_hf_repo="mlx-community/whisper-base-mlx", language="en")
-        return {"model": MODEL, "live_model": "base", "ready": True}
+        if enabled: mlx_whisper.transcribe(clip, path_or_hf_repo="mlx-community/whisper-base-mlx", language="en")
+        return {"model": MODEL, "live_model": "base" if enabled else None, "ready": True}
     metadata = wave_metadata(wav_path)
     duration, channels = metadata["duration"], metadata["channels"]
     offsets = sorted(set([0.0, max(0.0, duration / 2 - 15), max(0.0, duration - 30)]))

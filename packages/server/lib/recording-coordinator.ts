@@ -16,7 +16,7 @@ export interface RecordingAdapter {
 interface Receipt { signature: string; meetingId: string | null }
 interface Manifest { version: 1; snapshot: RecordingSnapshot; receipts: Record<string, Receipt>; maintenanceOwner?:string }
 const busy = new Set(["starting", "recording", "stopping", "finalizing"]);
-const initial = (): RecordingSnapshot => ({meetingId:null,state:"idle",revision:0,startedAt:null,path:null,seconds:0,mode:"both",segments:[],speakerNames:{},session:null,error:null,maintenance:false});
+const initial = (): RecordingSnapshot => ({meetingId:null,state:"idle",revision:0,startedAt:null,path:null,seconds:0,mode:"both",segments:[],speakerNames:{},session:null,error:null,maintenance:false,realTimeTranscription:true});
 
 /** Owns recording lifetime independently of HTTP clients and browser subscriptions. */
 export class RecordingCoordinator {
@@ -28,14 +28,14 @@ export class RecordingCoordinator {
   private listeners = new Set<(snapshot: RecordingSnapshot) => void>();
   private livePersistedAt = 0;
   private maintenanceOwner:string|undefined;
-  constructor(private options: {manifestPath: string; adapter: RecordingAdapter; now?: () => number; write?: typeof atomicWriteJson; maintenanceBlocked?:()=>boolean}) {
+  constructor(private options: {manifestPath: string; adapter: RecordingAdapter; now?: () => number; write?: typeof atomicWriteJson; maintenanceBlocked?:()=>boolean; realTimeTranscription?:()=>boolean}) {
     mkdirSync(dirname(options.manifestPath),{recursive:true,mode:0o700});
     if (!existsSync(options.manifestPath)) return;
     const manifest = JSON.parse(readFileSync(options.manifestPath,"utf8")) as Manifest;
     if (manifest.version !== 1 || !manifest.snapshot || !["idle","starting","recording","stopping","finalizing","completed","failed"].includes(manifest.snapshot.state)
       || !Array.isArray(manifest.snapshot.segments) || !Number.isSafeInteger(manifest.snapshot.revision)
       || (manifest.snapshot.meetingId !== null && typeof manifest.snapshot.meetingId !== "string")) throw new Error("Invalid recording recovery manifest; preserve it for recovery");
-    this.value = manifest.snapshot; this.receipts = manifest.receipts || {};
+    this.value = {...manifest.snapshot,realTimeTranscription:manifest.snapshot.realTimeTranscription !== false}; this.receipts = manifest.receipts || {};
     // A maintenance guard is tied to a running server; after restart no lease remains.
     if (busy.has(this.value.state)) this.change({state:"failed",error:"Recording interrupted by backend restart. Retry finalization using the retained audio.",maintenance:false});
     else if (this.value.maintenance) this.change({maintenance:false});
@@ -85,7 +85,7 @@ export class RecordingCoordinator {
       if(this.value.state === "failed" && this.value.path && !this.value.session)throw new Error("Recover the interrupted meeting before starting another recording");
       if(this.value.state === "stopping" || this.value.state === "finalizing")throw new Error("Wait for the active meeting to finish");
       if(this.receipts[requestId])return this.snapshot();
-      this.change({...initial(),meetingId:randomUUID(),mode,revision:this.value.revision,startedAt:this.now(),state:"starting"},{id:requestId,signature:`start:${mode}`});
+      this.change({...initial(),meetingId:randomUUID(),mode,realTimeTranscription:this.options.realTimeTranscription?.() ?? true,revision:this.value.revision,startedAt:this.now(),state:"starting"},{id:requestId,signature:`start:${mode}`});
       this.startOperation=(async()=>{
         try {
           const result=await this.options.adapter.start(mode,this.value.meetingId!,path=>this.change({path}));
@@ -183,7 +183,7 @@ export class RecordingCoordinator {
     this.change({speakerNames:{...this.value.speakerNames,...names}});return this.snapshot();
   }
   live(event:string,data:unknown) {
-    if(this.value.state!=="recording" && this.value.state!=="starting")return;
+    if(this.value.realTimeTranscription === false || (this.value.state!=="recording" && this.value.state!=="starting"))return;
     if(!["segment","live","turn"].includes(event))return;
     const segment=data as Segment;if(!segment || typeof segment.text!=="string" || typeof segment.speaker!=="string")return;
     let segments=this.value.segments.slice();

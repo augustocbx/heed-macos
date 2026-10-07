@@ -5,6 +5,7 @@ struct MenuLocalization {
     static func normalize(_ locale: String?) -> String { locales.contains(locale ?? "") ? locale! : "en" }
     private static let translations: [String: [String: String]] = [
         "pt-BR": [
+            "Recording • live text off; transcript after stop": "Gravando • texto ao vivo desativado; transcrição após parar",
             "Recover system audio permission?": "Recuperar a permissão de áudio do sistema?",
             "Heed will clear only its screen and system audio permission, then restart. macOS will ask you to authorize it again. Meetings, settings and other permissions are preserved.": "O Heed redefinirá apenas sua permissão de tela e áudio do sistema e reiniciará. O macOS solicitará uma nova autorização. Reuniões, configurações e outras permissões serão preservadas.",
             "Recover and restart": "Recuperar e reiniciar",
@@ -132,6 +133,7 @@ struct MenuLocalization {
             "A recording command is already pending": "Já há um comando de gravação pendente"
         ],
         "fr": [
+            "Recording • live text off; transcript after stop": "Enregistrement • texte en direct désactivé ; transcription après l’arrêt",
             "Recover system audio permission?": "Rétablir l’autorisation audio système ?",
             "Heed will clear only its screen and system audio permission, then restart. macOS will ask you to authorize it again. Meetings, settings and other permissions are preserved.": "Heed réinitialisera uniquement son autorisation d’écran et d’audio système, puis redémarrera. macOS vous demandera de l’autoriser à nouveau. Les réunions, les réglages et les autres autorisations seront conservés.",
             "Recover and restart": "Rétablir et redémarrer",
@@ -259,6 +261,7 @@ struct MenuLocalization {
             "A recording command is already pending": "Une commande d’enregistrement est déjà en attente"
         ],
         "de": [
+            "Recording • live text off; transcript after stop": "Aufnahme • Live-Text aus; Transkript nach dem Stoppen",
             "Recover system audio permission?": "Systemaudio-Berechtigung wiederherstellen?",
             "Heed will clear only its screen and system audio permission, then restart. macOS will ask you to authorize it again. Meetings, settings and other permissions are preserved.": "Heed setzt nur seine Bildschirm- und Systemaudio-Berechtigung zurück und startet neu. macOS bittet Sie erneut um Erlaubnis. Besprechungen, Einstellungen und andere Berechtigungen bleiben erhalten.",
             "Recover and restart": "Wiederherstellen und neu starten",

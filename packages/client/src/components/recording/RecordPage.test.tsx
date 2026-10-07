@@ -50,3 +50,12 @@ describe("RecordPage", () => {
 		expect(bars.length).toBe(48);
 	});
 });
+
+it('explains final-only capture without offering a live preview', async()=>{
+ const {useRecordingStore}=await import('@/stores/recording');
+ useRecordingStore.setState({recording:true,realTimeTranscription:false,segments:[],transcript:''});
+ render(<RecordPage/>);
+ expect(screen.getByText('Live text is disabled. Audio is being recorded; the transcript and speakers will be prepared after stopping.')).toBeVisible();
+ expect(screen.queryByText(/Live preview starts in English/)).toBeNull();
+ useRecordingStore.getState().reset();
+});

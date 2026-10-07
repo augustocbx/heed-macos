@@ -29,6 +29,7 @@ async function restartApp() { app.kill(); await app.exited; await startApp(); }
 
 beforeAll(async () => {
  directory = mkdtempSync(join(tmpdir(), "heed-recording-http-"));
+ writeFileSync(join(directory,"config.json"),JSON.stringify({user_name:"Synthetic Owner",futureConfig:{keep:true}}));
  sidecar = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
   if (new URL(req.url).pathname === '/api/pull') {
    const body = new ReadableStream<Uint8Array>({async start(controller) {
@@ -58,6 +59,20 @@ test("authoritative lifecycle status is available without a browser owner", asyn
  const compatibility = await request("/api/desktop/control/poll", { client: "synthetic-browser", recording: true, processing: true, seconds: 999 });
  expect(compatibility.body.command).toBeNull();
  expect(compatibility.body.status).toMatchObject({ recording: false, processing: false, seconds: 0 });
+});
+
+test("real-time preference defaults on, rejects malformed changes, and survives restart for browser and menu", async () => {
+ expect((await request("/api/recording/settings")).body.enabled).toBe(true);
+ expect((await request("/api/recording/settings", {enabled:"false"})).status).toBe(400);
+ expect((await request("/api/recording/settings", {enabled:false}, "https://outside.example")).status).toBe(403);
+ const saved = await request("/api/recording/settings", {enabled:false});
+ expect(saved.status).toBe(200);
+ expect(saved.body).toMatchObject({enabled:false,appliesTo:"next-recording"});
+ await restartApp();
+ expect((await request("/api/recording/settings")).body.enabled).toBe(false);
+ expect((await request("/api/desktop/control/status")).body.realTimeTranscriptionPreference).toBe(false);
+ expect(JSON.parse(readFileSync(join(directory,"config.json"),"utf8"))).toMatchObject({real_time_transcription:false,user_name:"Synthetic Owner",futureConfig:{keep:true}});
+ await request("/api/recording/settings", {enabled:true});
 });
 
 test("all lifecycle and legacy capture controls reject nonlocal origins", async () => {
