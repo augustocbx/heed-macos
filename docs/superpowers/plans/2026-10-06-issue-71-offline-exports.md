@@ -10,6 +10,10 @@
 
 **Spec:** [Approved offline export specification](../specs/2026-10-06-issue-71-offline-exports.md).
 
+## Execution update
+
+The controller integrated independently reviewed #7 Tasks 1–2 at `04a9b38` to implement the read-only export foundation in this isolated worktree alongside #7's remaining work and #70. Source/version/provenance contracts are now concrete. Integrate the complete reviewed #7 branch before final client integration, whole-branch validation and merge; no #7 files are implemented or copied here.
+
 ## Global Constraints
 
 - Product execution follows integration of issue #7's finalized source/provenance contract.
