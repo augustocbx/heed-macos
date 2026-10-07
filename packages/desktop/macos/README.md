@@ -9,3 +9,23 @@ The menu lets you start or stop recording and open `http://localhost:48101`. Liv
 Installation stores the checkout path in `Contents/Resources/heed-root.txt`, supporting different users and project directories. Optional AI notes models are selected in the interface.
 
 See [the installation documentation](../../../README-macos.md).
+
+**Updates** displays the installed app version, checks stable releases, opens release notes and
+starts a confirmed update. Checks are automatic when the daily interval is due; installation and
+busy/recovery retries require an explicit action. Download and installation work run outside the
+main thread, and the coordinator survives replacing the menu app. All four interface languages
+include update and permission guidance.
+
+After an upgrade, the new menu reports its version, commit and instance identity with permissions.
+**Permissions need attention** opens the required System Settings destination; **Check permissions
+again** reads a fresh report. A granted report keeps conditional signature-renewal help available.
+No update permission check starts recording or resets privacy permissions. **Recover system audio
+permission** in Settings requires native confirmation, an idle API and the installation lock.
+It renews only Heed's ScreenCapture grant, gracefully restarts the same menu app and requests
+macOS authorization. The API, transcription services, meetings and other grants are retained.
+See [permission recovery QA](../../../docs/qa/system-audio-permission-recovery.md).
+
+Run `bash scripts/release/menu-update-qa.sh` from the repository root for a separate, explicit local
+QA menu. Its isolated bundle and data replace only themselves, use fixture downloads, and simulate
+the installer, maintenance and service readiness. This harness does not prove real capture or the
+production installer; the release simulation covers that separate integration.

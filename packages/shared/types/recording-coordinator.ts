@@ -1,4 +1,4 @@
-import type { Segment } from "./speaker.ts";
+import type { Segment, TranscriptionDiagnostics } from "./speaker.ts";
 import type { Session } from "./session.ts";
 
 export type CaptureMode = "both" | "mic" | "system";
@@ -11,6 +11,7 @@ export interface FinalCapture {
   liveModel?: string;
   turns: Segment[];
   embeddings?: Record<string, number[]>;
+  transcriptionDiagnostics?: TranscriptionDiagnostics;
 }
 export interface RecordingSnapshot {
   meetingId: string | null;
@@ -19,6 +20,8 @@ export interface RecordingSnapshot {
   startedAt: number | null;
   path: string | null;
   liveModel?: string;
+  /** Effective mode at admission; missing legacy manifests mean enabled. */
+  realTimeTranscription?: boolean;
   seconds: number;
   mode: CaptureMode;
   segments: Segment[];
@@ -27,4 +30,11 @@ export interface RecordingSnapshot {
   finalCapture?: FinalCapture;
   error: string | null;
   maintenance: boolean;
+}
+
+export interface RecordingSettings {
+  enabled: boolean;
+  activeEnabled: boolean | null;
+  appliesTo: "next-recording";
+  engineState: "ready" | "unavailable" | "deferred";
 }

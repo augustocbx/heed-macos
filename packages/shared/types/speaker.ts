@@ -11,6 +11,30 @@ export interface Segment {
 	channel?: "mic" | "sys";
 	/** True when this speaker was auto-recognized from a saved voice (cross-session). Shown as a subtle badge so a wrong match is easy to correct. */
 	auto?: boolean;
+	/** Valid ASR speech retained without a reliable diarization identity. */
+	attribution?: "fallback";
+}
+
+/** Content-free measurements from the authoritative full-audio pass. */
+export interface TranscriptionChannelDiagnostics {
+ rawRms: number;
+ rawPeak: number;
+ cleanedRms: number;
+ asrSegments: number;
+ diarizationSegments: number;
+ usableEmbeddings: number;
+ retainedSegments: number;
+ discardedSegments: number;
+ discardReasons: Partial<Record<"echo-text-and-time", number>>;
+ fallbackSegments: number;
+ diarizationFailed: boolean;
+}
+export type TranscriptionWarning = "microphone-all-asr-filtered" | "microphone-attribution-fallback" | "system-attribution-fallback";
+export interface TranscriptionDiagnostics {
+ version: 1;
+ channels: Partial<Record<"mic" | "sys", TranscriptionChannelDiagnostics>>;
+ aecApplied: boolean;
+ warnings: TranscriptionWarning[];
 }
 
 export interface DiarizationResult {

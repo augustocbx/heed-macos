@@ -21,6 +21,8 @@ import subprocess
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from preview_preference import saved_preview_preference, startup_preview_policy
 
 # Threading HTTP server so health/hardware checks don't block while whisper is processing.
 # Without this, the server is single-threaded and ANY request during transcription hangs.
@@ -31,6 +33,50 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 # Different model instances (final vs live) CAN run concurrently.
 whisper_lock = threading.Lock()
 whisper_live_lock = threading.Lock()
+
+# Serialize configuration/startup; independent live jobs hold counted leases.
+# Final inference owns separate locks/resources.
+preview_lock = threading.RLock()
+preview_condition = threading.Condition(preview_lock)
+preview_configuration_lock = threading.Lock()
+preview_users = 0
+preview_enabled, preview_startup_pending = startup_preview_policy()
+
+@contextmanager
+def preview_lease():
+    global preview_users
+    with preview_condition:
+        if not preview_enabled:
+            raise RuntimeError("Real-time transcription is disabled for this recording.")
+        preview_users += 1
+    try:
+        yield
+    finally:
+        with preview_condition:
+            preview_users -= 1
+            preview_condition.notify_all()
+
+def configure_preview(enabled):
+    global preview_enabled, preview_startup_pending, whisper_model_live, live_governor, models_warm
+    if not isinstance(enabled, bool):
+        raise ValueError("Choose a valid real-time transcription setting.")
+    with preview_configuration_lock, preview_condition:
+        preview_enabled = enabled
+        preview_startup_pending = False
+        if not enabled:
+            # Closing admission prevents starvation, without serializing ASR and diarization.
+            preview_condition.wait_for(lambda: preview_users == 0)
+            owned = whisper_model_live
+            whisper_model_live = None
+            live_governor = None
+            if owned is not None and owned is not whisper_model:
+                close = getattr(owned, "close", None)
+                if close: close()
+        elif live_governor is None:
+            _arm_live_governor()
+        # Re-enabling is lazy; no wait for a warm-only flag can deadlock capture.
+        models_warm = True
+        return {"enabled":preview_enabled, "warm":models_warm}
 
 warnings.filterwarnings("ignore")
 # HF_HUB_OFFLINE is set AFTER model loading in load_models() so that
@@ -74,6 +120,7 @@ whisper_model_name = "small"
 whisper_model_live_name = "small"
 # RuntimeGovernor + the bits it needs to hot-swap the live model under contention.
 live_governor = None
+live_governor_ceiling = None
 _devices = None
 _warmup_path = None
 # Per-engine LIVE cadence hint the Node server reads from /health. Parakeet (Apple Neural
@@ -848,15 +895,44 @@ def _load_whisper_with_fallback(model_name, devices, warmup_path, label="whisper
     raise RuntimeError(f"{label}: no whisper model could be loaded")
 
 
+def _load_preview_with_fallback(model_name, devices, warmup_path, label="live"):
+    from preview_worker import PreviewWhisper
+    start = _WHISPER_FALLBACK_ORDER.index(model_name) if model_name in _WHISPER_FALLBACK_ORDER else 2
+    for name in _WHISPER_FALLBACK_ORDER[start:]:
+        preview = None
+        try:
+            preview = PreviewWhisper(name, active_engine, devices)
+            list(preview.transcribe(warmup_path, language="en")[0])
+            return preview, name
+        except Exception as error:
+            if preview is not None: preview.close()
+            print(f"[heed] {label}: '{name}' failed ({str(error)[:80]}); stepping down", flush=True)
+    raise RuntimeError("No live transcription model could be loaded")
+
+
+def _arm_live_governor():
+    global live_governor
+    if active_engine == "parakeet":
+        live_governor = None
+        return
+    from governor import RuntimeGovernor
+    live_governor = RuntimeGovernor(start_model=whisper_model_live_name,
+                                    ceiling=live_governor_ceiling or whisper_model_live_name, floor="tiny")
+
+
 def _swap_live_model(new_model):
     """Hot-swap the live preview model when the governor decides to degrade/recover.
     Loads + warms the new model OUTSIDE the transcribe lock, then swaps the reference under it."""
     global whisper_model_live, whisper_model_live_name
     try:
-        eng, name = _load_whisper_with_fallback(new_model, _devices, _warmup_path, "live-swap")
+        eng, name = _load_preview_with_fallback(new_model, _devices, _warmup_path, "live-swap")
         with whisper_live_lock:
+            previous = whisper_model_live
             whisper_model_live = eng
             whisper_model_live_name = name
+            if previous is not whisper_model:
+                close = getattr(previous, "close", None)
+                if close: close()
         print(f"[heed] Governor: live model -> {name}", flush=True)
         return True
     except Exception as e:
@@ -865,8 +941,12 @@ def _swap_live_model(new_model):
 
 
 def load_models():
+    with preview_configuration_lock, preview_lock:
+        _load_models()
+
+def _load_models():
     global whisper_model, whisper_model_live, diarize_pipeline, whisper_model_name, whisper_model_live_name, whisper_runtime_info, pyannote_runtime_info, diarize_backend
-    global live_governor, _devices, _warmup_path, live_tuning, active_engine, models_warm
+    global live_governor, live_governor_ceiling, _devices, _warmup_path, live_tuning, active_engine, models_warm
 
     try:
         devices = get_device_config()
@@ -881,19 +961,24 @@ def load_models():
     # --- Hardware-aware model selection: CapabilityProbe -> ModelPolicy -> verify-the-pick.
     # If anything in the new path fails, fall back to the legacy conservative picker so heed
     # NEVER hard-fails at startup (first robustness guarantee).
-    try:
-        import capability, policy
-        caps = capability.probe(log=lambda m: print(m, flush=True))
-        plan = policy.decide(caps, measure_final_rtf=capability.measure_model_rtf)
-        whisper_model_name = plan.final_model
-        whisper_model_live_name = plan.live_model
-        pick_reason = plan.reason
-    except Exception as e:
-        print(f"[heed] Capability probe failed ({e}) — using legacy picker", flush=True)
+    if preview_enabled:
+        try:
+            import capability, policy
+            caps = capability.probe(log=lambda m: print(m, flush=True))
+            plan = policy.decide(caps, measure_final_rtf=capability.measure_model_rtf)
+            whisper_model_name = plan.final_model
+            whisper_model_live_name = plan.live_model
+            pick_reason = plan.reason
+        except Exception as error:
+            print(f"[heed] Capability probe failed ({error}) — using legacy picker", flush=True)
+            whisper_pick = pick_whisper_models(devices)
+            whisper_model_name, whisper_model_live_name = whisper_pick["final"], whisper_pick["live"]
+            pick_reason = whisper_pick["reason"]
+    else:
+        # No capability benchmark may load a preview/shared native model just for idle startup.
         whisper_pick = pick_whisper_models(devices)
-        whisper_model_name = whisper_pick["final"]
-        whisper_model_live_name = whisper_pick["live"]
-        pick_reason = whisper_pick["reason"]
+        whisper_model_name, whisper_model_live_name = whisper_pick["final"], whisper_pick["live"]
+        pick_reason = "Final-only mode: conservative selection without startup inference"
     whisper_quality = "very_good"
     whisper_speed = "fast"
     if whisper_model_name == "medium":
@@ -948,30 +1033,25 @@ def load_models():
         print(f"[heed] Whisper final={whisper_model_name} ready in {time.time()-t:.1f}s ({engine_kind})", flush=True)
         # Live preview: a SEPARATE, lighter model for low latency. Reuse the final instance if they
         # ended up the same name (saves memory). Live also degrades gracefully on its own.
-        if whisper_model_live_name and whisper_model_live_name != whisper_model_name:
+        if preview_enabled and whisper_model_live_name and whisper_model_live_name != whisper_model_name:
             t_live = time.time()
             print(f"[heed] Loading live whisper {whisper_model_live_name} ({engine_kind})...", flush=True)
-            whisper_model_live, whisper_model_live_name = _load_whisper_with_fallback(whisper_model_live_name, devices, _warmup_path, "live")
+            whisper_model_live, whisper_model_live_name = _load_preview_with_fallback(whisper_model_live_name, devices, _warmup_path, "live")
             print(f"[heed] Whisper live={whisper_model_live_name} ready in {time.time()-t_live:.1f}s", flush=True)
-        else:
+        elif preview_enabled:
             whisper_model_live = whisper_model
             whisper_model_live_name = whisper_model_name
             print(f"[heed] Whisper live = final (same {whisper_model_live_name} instance, saves RAM)", flush=True)
     else:
         models_ready["whisper"] = True  # parakeet handles transcription; whisper lazy-loads if needed
-        print(f"[heed] Whisper NOT loaded at boot (engine=parakeet) — lazy on file-upload only, frees ~1-3GB RAM", flush=True)
+        print(f"[heed] Whisper NOT loaded at boot (engine=parakeet) — lazy on final/file work", flush=True)
 
     # Arm the RuntimeGovernor for the live preview: it self-corrects the live model under
     # recording-time contention (the 8-15s regression). Ceiling = the policy's live pick so it
     # never upgrades past what the hardware was judged able to run.
-    try:
-        from governor import RuntimeGovernor
-        live_governor = RuntimeGovernor(start_model=whisper_model_live_name,
-                                        ceiling=whisper_model_live_name, floor="tiny")
-        print(f"[heed] Live governor armed (start={whisper_model_live_name}, floor=tiny)", flush=True)
-    except Exception as e:
-        live_governor = None
-        print(f"[heed] Live governor unavailable (non-critical): {e}", flush=True)
+    live_governor_ceiling = whisper_model_live_name
+    if preview_enabled: _arm_live_governor()
+    else: live_governor = None
 
     # Bounded chunk preview avoids repeated whole-recording inference during a meeting.
     if engine_kind == "parakeet":
@@ -984,7 +1064,7 @@ def load_models():
     print(f"[heed] Live: mode={live_tuning['mode']} interval={live_tuning['interval_ms']}ms ({engine_kind})", flush=True)
 
     # Warm only the lightweight live ASR and dedicated diarizer before allowing recording.
-    if engine_kind == "parakeet":
+    if engine_kind == "parakeet" and preview_enabled:
         # A real speech clip exercises inference kernels that silence may skip.
         _voice_clip = os.path.join(os.path.dirname(__file__), "_warmup_voice.wav")
         warm_clip = _voice_clip if os.path.exists(_voice_clip) else _warmup_path
@@ -1028,7 +1108,7 @@ def load_models():
     if engine_kind == "parakeet" and engines.parakeet_available():
         try:
             t = time.time()
-            engines.get_parakeet_diar()  # ensure the dedicated diarization sidecar (GPU) is up
+            if preview_enabled: engines.get_parakeet_diar()  # ensure the dedicated diarization sidecar (GPU) is up
             diarize_backend = "parakeet"
             models_ready["pyannote"] = True
             pyannote_runtime_info = {
@@ -1164,17 +1244,23 @@ def _ensure_whisper():
 def _ensure_whisper_live():
     """Use a small, independent live preview; never reuse a large final model."""
     global whisper_model_live, whisper_model_live_name
-    if whisper_model_live is None:
-        import engines
-        with whisper_live_lock:
-            if whisper_model_live is None:
-                if active_engine == "parakeet":
-                    whisper_model_live = engines.MLXEngine("base")
-                    whisper_model_live_name = "base"
-                else:
-                    whisper_model_live, whisper_model_live_name = _load_whisper_with_fallback(
-                        "base", _devices, _warmup_path, "live-lazy")
-    return whisper_model_live
+    if not preview_enabled:
+        raise RuntimeError("Real-time transcription is disabled for this recording.")
+    with whisper_live_lock:
+        current = whisper_model_live
+        if current is not None and current is not whisper_model and getattr(current, "alive", True) is False:
+            current.close()
+            whisper_model_live = None
+        if whisper_model_live is None:
+            if active_engine == "parakeet":
+                from preview_worker import PreviewWhisper
+                whisper_model_live = PreviewWhisper("base", active_engine, _devices)
+                whisper_model_live_name = "base"
+            else:
+                whisper_model_live, whisper_model_live_name = _load_preview_with_fallback(
+                    whisper_model_live_name or "base", _devices, _warmup_path, "live-lazy")
+                _arm_live_governor()
+        return whisper_model_live
 
 
 def transcribe(wav_path, language="auto", srt_output=None):
@@ -1679,8 +1765,7 @@ def learn_owner_voice(mic_path, sys_path, owner="Junior"):
 # never lose a speaker; the user merges with one click). Tune via eval_diar sweep on real audio.
 AGGLO_THRESHOLD = 0.55       # assign a segment to a cluster only if cosine >= this, else new cluster
 PHANTOM_MERGE_COS = 0.62     # 2nd pass: collapse clusters whose centroids are this close (same voice split)
-SEED_MIN_DUR = 1.0           # only segments >= this may SEED a new cluster (short embeddings are noisy)
-CLUSTER_MIN_DUR = 2.5        # 3rd pass: absorb clusters totalling less than this into their nearest voice
+SEED_MIN_DUR = 1.0           # untagged short embeddings need an overlap anchor
 
 
 def _assign_by_overlap(seg, clusters, segments):
@@ -1701,14 +1786,14 @@ def cluster_segments(segments, threshold=AGGLO_THRESHOLD, merge_cos=PHANTOM_MERG
       labels[i]  -> cluster id for segments[i]
       clusters   -> {cid: {"emb": centroid, "dur": seconds, "idxs": [segment indices]}}
     Robust to noisy per-segment embeddings (same voice ranges 0.14-1.0 cosine): only long segments
-    seed clusters, short ones join their best match, and tiny leftover clusters are absorbed — so we
-    separate the speakers FluidAudio merged WITHOUT exploding into junk singletons.
+    seed clusters; channel-tagged short voices may remain distinct rather than inheriting an unrelated
+    identity. Duration alone never justifies merging speakers.
     """
     labels = [None] * len(segments)
     clusters = {}
     next_id = 0
-    # Phase A — assign; longest segments first (reliable anchors). A short segment may JOIN its best
-    # cluster but never SEED one (its embedding is too noisy to trust as a new voice).
+    # Phase A — assign; longest segments first. Channel-tagged short voices may seed a distinct
+    # identity; forcing them into an unrelated cluster would erase brief local contributions.
     order = sorted((i for i, s in enumerate(segments) if s.get("emb")),
                    key=lambda i: (segments[i]["end"] - segments[i]["start"]), reverse=True)
     for i in order:
@@ -1726,7 +1811,7 @@ def cluster_segments(segments, threshold=AGGLO_THRESHOLD, merge_cos=PHANTOM_MERG
             c["dur"] += dur
             c["idxs"].append(i)
             labels[i] = best_cid
-        elif dur >= SEED_MIN_DUR:
+        elif dur >= SEED_MIN_DUR or s.get("ch") in ("mic", "sys"):
             clusters[next_id] = {"emb": list(emb), "dur": dur, "idxs": [i]}
             labels[i] = next_id
             next_id += 1
@@ -1757,33 +1842,12 @@ def cluster_segments(segments, threshold=AGGLO_THRESHOLD, merge_cos=PHANTOM_MERG
     # Phase B — consolidate near-identical clusters (same voice split by assignment order).
     _consolidate(merge_cos)
 
-    # Phase C — absorb tiny clusters (noise / a couple of bad segments) into their nearest voice by
-    # centroid cosine, UNCONDITIONALLY (they're too small to be a real distinct speaker). Kills singletons.
-    for cid in [c for c in clusters if clusters[c]["dur"] < CLUSTER_MIN_DUR]:
-        if len(clusters) <= 1 or cid not in clusters:
-            continue
-        best_to, best_c = None, -1.0
-        for other in clusters:
-            if other == cid:
-                continue
-            cc = cosine_similarity(clusters[cid]["emb"], clusters[other]["emb"])
-            if cc > best_c:
-                best_c, best_to = cc, other
-        if best_to is not None:
-            A, B = clusters[best_to], clusters[cid]
-            A["emb"] = _emb_avg([A["emb"], B["emb"]], [A["dur"], B["dur"]])
-            A["dur"] += B["dur"]
-            A["idxs"].extend(B["idxs"])
-            for j in B["idxs"]:
-                labels[j] = best_to
-            del clusters[cid]
-
     # Post-hoc — segments not yet assigned (no emb, or short with no good cluster): by time overlap.
     for i, s in enumerate(segments):
         if labels[i] is not None:
             continue
         cid = _assign_by_overlap(s, clusters, segments)
-        labels[i] = cid if cid is not None else (next(iter(clusters)) if clusters else 0)
+        labels[i] = cid
     return labels, clusters
 
 
@@ -1831,6 +1895,8 @@ def _diarize_parakeet(wav_path, srt_path=None, recognize_only=False):
     embeddings, which we match against ~/.heed-app/voices.json (backend-tagged)."""
     import engines
     diar = engines.get_parakeet_diar().diarize(wav_path)  # {"segments":[...], "embeddings":{sid:[...]}}
+    if diar.get("failed"):
+        return {"segments": [], "speakers": [], "embeddings": {}, "auto_named": {}, "failed": True}
     raw_embeddings = diar.get("embeddings", {})       # keyed by RAW FluidAudio speaker id
     # Drop phantom speakers, then map remaining ids -> contiguous "Speaker 1/2/...".
     raw_segments = _filter_spurious_speakers([
@@ -1924,34 +1990,38 @@ def _ffmpeg_channel(wav_path, ch, out_path):
 
 
 def _dominant_diar_speaker(seg, diar_segs):
-    """Speaker whose diarization overlaps `seg` most; if none overlaps, snap to the nearest in time."""
+    """Speaker whose diarization overlaps `seg` most; no overlap leaves attribution uncertain."""
     best, best_ov = None, 0.0
     for d in diar_segs:
         ov = min(seg["end"], d["end"]) - max(seg["start"], d["start"])
         if ov > best_ov:
             best_ov, best = ov, d["speaker"]
-    if best:
-        return best
-    nearest, nd = None, 1e9
-    mid = (seg["start"] + seg["end"]) / 2.0
-    for d in diar_segs:
-        dist = 0.0 if d["start"] <= mid <= d["end"] else min(abs(mid - d["start"]), abs(mid - d["end"]))
-        if dist < nd:
-            nd, nearest = dist, d["speaker"]
-    return nearest
+    return best
 
 
-# A mic voice whose cosine to any SYSTEM voice is >= this is the remote leaking through the speakers
-# (echo), not the owner. The owner's voice never loops back to the system channel, so it stays below.
-OWNER_ECHO_COS = 0.65
+def _valid_final_embedding(embedding):
+    import math
+    try:
+        return bool(embedding) and all(math.isfinite(float(x)) for x in embedding) and any(float(x) != 0 for x in embedding)
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def _final_channel_diagnostics(raw_path, cleaned_path, asr_segments, diarization, usable_embeddings):
+    raw_rms, raw_peak = _wav_rms_peak(raw_path)
+    cleaned_rms, _ = _wav_rms_peak(cleaned_path)
+    return {"rawRms": raw_rms, "rawPeak": raw_peak, "cleanedRms": cleaned_rms,
+            "asrSegments": len(asr_segments), "diarizationSegments": len(diarization.get("segments", [])),
+            "usableEmbeddings": usable_embeddings, "retainedSegments": 0, "discardedSegments": 0,
+            "discardReasons": {}, "fallbackSegments": 0, "diarizationFailed": bool(diarization.get("failed"))}
 
 
 def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
                        final_model="parakeet-v3", manual=False, work_directory=None):
     """Full-audio final pipeline with native Parakeet or an explicitly selected Whisper model.
     Preserve ASR timestamps, diarize the system channel (remote speakers), and for speaker playback
-    acoustically strip the mic's echo by keeping only the mic voice that does NOT match any system
-    voice (the owner). Names known voices. Returns coherent, time-stamped, attributed turns.
+    acoustically reduce echo and remove microphone duplicates only with matching text and timing.
+    Preserve uncertain recognized speech with explicit attribution fallback. Names known voices. Returns coherent, time-stamped, attributed turns.
 
     Single source of truth: the /finalize endpoint and scripts/postmortem.py both call this.
     Returns {"turns":[{start,end,speaker,text}], "speakers":[...], "embeddings":{...}, "auto_named":{...}}.
@@ -1960,6 +2030,7 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
     from managed_work import temporary_audio, validate_processing_wave
     from meeting_language import detect_meeting_language
     from manual_transcription import MODELS, transcribe_complete
+    from final_echo import is_microphone_echo
     if final_model not in ("parakeet-v3", *MODELS):
         raise ValueError("Unsupported final transcription model")
     if language not in ("auto", "en", "pt"):
@@ -1996,12 +2067,27 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
         if not is_dual:
             mono = temporary_audio(wav_path, work_directory); tmp.append(mono)
             _ffmpeg_channel(wav_path, 0, mono)
-            d = _diar(mono)
-            turns = [{**s, "speaker": _dominant_diar_speaker(s, d["segments"]) or "Speaker 1", "channel": "mic"}
-                     for s in segs_for(mono)]
+            try:
+                d = _diar(mono)
+            except Exception:
+                d = {"segments": [], "failed": True}
+            recognized = segs_for(mono)
+            stats = _final_channel_diagnostics(mono, mono, recognized, d,
+                                               sum(_valid_final_embedding(s.get("emb") or d.get("embeddings", {}).get(s.get("speaker"))) for s in d.get("segments", [])))
+            turns = []
+            for s in recognized:
+                speaker = _dominant_diar_speaker(s, d.get("segments", []))
+                if not _valid_final_embedding(d.get("embeddings", {}).get(speaker)):
+                    speaker = None
+                turns.append({**s, "speaker": speaker or "Microphone (unattributed)", "channel": "mic",
+                              **({"attribution": "fallback"} if not speaker else {})})
+                stats["fallbackSegments"] += int(not speaker)
+            stats["retainedSegments"] = len(turns)
+            diagnostics = {"version": 1, "aecApplied": False, "channels": {"mic": stats},
+                           "warnings": ["microphone-attribution-fallback"] if stats["fallbackSegments"] else []}
             turns.sort(key=lambda x: x["start"])
-            return {**metadata, "turns": turns, "speakers": d.get("speakers", []),
-                    "embeddings": d.get("embeddings", {}), "auto_named": d.get("auto_named", {})}
+            return {**metadata, "turns": turns, "speakers": sorted({t["speaker"] for t in turns}),
+                    "embeddings": d.get("embeddings", {}), "auto_named": d.get("auto_named", {}), "diagnostics": diagnostics}
 
         mic = temporary_audio(wav_path, work_directory); tmp.append(mic); _ffmpeg_channel(wav_path, 0, mic)
         sysw = temporary_audio(wav_path, work_directory); tmp.append(sysw); _ffmpeg_channel(wav_path, 1, sysw)
@@ -2014,17 +2100,21 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
         mic_segs = segs_for(mic_clean)
 
         # --- Voice-clustering backbone: diarize BOTH channels per-segment, pool, cluster by cosine. ---
-        # This finds the TRUE distinct voices (FluidAudio merged them per-channel; the %-filter deleted
-        # minorities). Echo folds in for free: the presenter's mic-echo (cos ~0.86 to their sys voice)
-        # clusters WITH their system cluster, so it never becomes a phantom speaker.
-        sys_raw = engines.get_parakeet_diar().diarize(sysw)
-        mic_raw = engines.get_parakeet_diar().diarize(mic_clean)
+        # A shared voice cluster is attribution evidence, not sufficient evidence to delete text.
+        def safe_diar(path):
+            try:
+                return engines.get_parakeet_diar().diarize(path)
+            except Exception:
+                # Valid ASR remains recoverable; do not publish private worker error payloads.
+                return {"segments": [], "failed": True}
+        sys_raw = safe_diar(sysw)
+        mic_raw = safe_diar(mic_clean)
         pool = []
         for s in sys_raw.get("segments", []):
-            if s.get("emb"):
+            if _valid_final_embedding(s.get("emb")):
                 pool.append({"start": float(s["start"]), "end": float(s["end"]), "emb": s["emb"], "ch": "sys"})
         for s in mic_raw.get("segments", []):
-            if s.get("emb"):
+            if _valid_final_embedding(s.get("emb")):
                 pool.append({"start": float(s["start"]), "end": float(s["end"]), "emb": s["emb"], "ch": "mic"})
 
         labels, clusters = cluster_segments(pool)
@@ -2043,13 +2133,11 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
             m, _sc = match_voice(c["emb"], backend)
             matched_name[cid] = m
 
-        # Per-cluster channel presence: a cluster with real SYSTEM duration is a remote/presenter voice
-        # (its mic segments are echo). A mic-only cluster is someone whose voice is only on the mic
-        # (the owner, or a person in the room) — keep their mic text.
+        # Channel presence helps name pure microphone voices. Mixed clusters remain uncertain
+        # for retained local speech and must never act as a cluster-wide discard rule.
         cl_ch = {cid: {"mic": 0.0, "sys": 0.0} for cid in clusters}
         for seg in pool:
             cl_ch[seg["cid"]][seg["ch"]] += seg["end"] - seg["start"]
-        sys_based = {cid for cid in clusters if cl_ch[cid]["sys"] >= 1.0}
 
         # Preserve names recognized live by voice, never by cluster numbering.
         from voice_identity import reconcile_names
@@ -2080,23 +2168,34 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
                 ov = min(seg["end"], d["end"]) - max(seg["start"], d["start"])
                 if ov > bo:
                     bo, best = ov, d["cid"]
-            if best is None and diar_by_ch[ch]:
-                mid = (seg["start"] + seg["end"]) / 2.0
-                best = min(diar_by_ch[ch],
-                           key=lambda d: 0.0 if d["start"] <= mid <= d["end"] else min(abs(mid - d["start"]), abs(mid - d["end"])))["cid"]
             return best
 
+        diagnostics = {"version": 1, "aecApplied": mic_clean != mic, "channels": {}, "warnings": []}
+        for ch, path, cleaned, asr_segments, raw in [("mic", mic, mic_clean, mic_segs, mic_raw),
+                                                    ("sys", sysw, sysw, sys_segs, sys_raw)]:
+            diagnostics["channels"][ch] = _final_channel_diagnostics(path, cleaned, asr_segments, raw,
+                                                                    len(diar_by_ch[ch]))
         turns = []
-        for s in sys_segs:
-            cid = cluster_for(s, "sys")
-            if cid is None:
-                continue
-            turns.append({"start": s["start"], "end": s["end"], "text": s["text"], "speaker": cluster_label[cid], "channel": "sys"})
-        for s in mic_segs:
-            cid = cluster_for(s, "mic")
-            if cid is None or cid in sys_based:   # sys_based mic text = echo of a remote voice -> drop
-                continue
-            turns.append({"start": s["start"], "end": s["end"], "text": s["text"], "speaker": cluster_label[cid], "channel": "mic"})
+        for ch, segments in [("sys", sys_segs), ("mic", mic_segs)]:
+            stats = diagnostics["channels"][ch]
+            for s in segments:
+                if ch == "mic" and is_microphone_echo(s, sys_segs):
+                    stats["discardedSegments"] += 1
+                    stats["discardReasons"]["echo-text-and-time"] = stats["discardReasons"].get("echo-text-and-time", 0) + 1
+                    continue
+                cid = cluster_for(s, ch)
+                uncertain = cid is None or (ch == "mic" and cl_ch[cid]["sys"] > 0)
+                turn = {"start": s["start"], "end": s["end"], "text": s["text"], "channel": ch,
+                        "speaker": ("Microphone (unattributed)" if ch == "mic" else "System (unattributed)") if uncertain else cluster_label[cid]}
+                if uncertain:
+                    turn["attribution"] = "fallback"
+                    stats["fallbackSegments"] += 1
+                turns.append(turn)
+                stats["retainedSegments"] += 1
+            if stats["fallbackSegments"]:
+                diagnostics["warnings"].append("microphone-attribution-fallback" if ch == "mic" else "system-attribution-fallback")
+        if mic_segs and not diagnostics["channels"]["mic"]["retainedSegments"]:
+            diagnostics["warnings"].append("microphone-all-asr-filtered")
         turns.sort(key=lambda x: x["start"])
 
         # Do NOT auto-average recognized voiceprints here: a post-stop cluster can silently contain a
@@ -2108,7 +2207,7 @@ def finalize_recording(wav_path, language="auto", is_dual=True, mic_name=None,
         auto_named = {cluster_label[cid]: {"name": matched_name[cid], "score": 1.0}
                       for cid in clusters if matched_name[cid]}
         return {**metadata, "turns": turns, "speakers": sorted({t["speaker"] for t in turns}),
-                "embeddings": embeddings, "auto_named": auto_named}
+                "embeddings": embeddings, "auto_named": auto_named, "diagnostics": diagnostics}
     finally:
         if asr is not None:
             asr.close()
@@ -2409,6 +2508,8 @@ class Handler(BaseHTTPRequestHandler):
                 "commit": HEED_COMMIT,
                 "ready": all(models_ready.values()),
                 "warm": models_warm,
+                "preview_enabled":preview_enabled,
+                "preview_state":"awaiting-capture" if preview_startup_pending else "disabled" if not preview_enabled else "lazy" if whisper_model_live is None else "failed" if getattr(whisper_model_live,"alive",True) is False else "loaded",
                 **models_ready,
                 "whisper_info": whisper_runtime_info,
                 "pyannote_info": pyannote_runtime_info,
@@ -2424,8 +2525,27 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, 404)
 
     def do_POST(self):
+        preview_paths = ("/transcribe-live", "/stream/start", "/stream/feed", "/stream/finish",
+                         "/diar/start", "/diar/feed", "/diar/finish", "/diar/live", "/mic/filter")
+        if self.path in preview_paths:
+            try:
+                with preview_lease():
+                    return self._post()
+            except RuntimeError as error:
+                self._json({"error":str(error)}, 409)
+                return
+        return self._post()
+
+    def _post(self):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length)) if length else {}
+
+        if self.path == "/preview/configure":
+            try:
+                self._json(configure_preview(body.get("enabled")))
+            except ValueError as error:
+                self._json({"error":str(error)}, 400)
+            return
 
         if self.path == "/transcribe":
             if not models_ready["whisper"]:

@@ -208,6 +208,9 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 
 			{showTranscribe && <RetranscribeDialog session={session} onClose={()=>setShowTranscribe(false)} onBusy={setTranscribing}/>}
    <div className={styles.meta}>{meta}</div>
+   {session.transcriptionDiagnostics?.warnings.includes('microphone-all-asr-filtered') && <p role="status">{tr('All recognized microphone text was filtered as possible echo. Check the saved audio and transcript.')}</p>}
+   {session.transcriptionDiagnostics?.warnings.includes('microphone-attribution-fallback') && <p role="status">{tr('Some microphone speech has uncertain speaker labels. Review the transcript and speaker names.')}</p>}
+   {session.transcriptionDiagnostics?.warnings.includes('system-attribution-fallback') && <p role="status">{tr('Some participant speech has uncertain speaker labels. Review the transcript and speaker names.')}</p>}
    <SessionAudioPlayer archived={session.audioArchived} sessionId={session.id} available={!!session.files?.wav}
     audioRef={audioRef} onTime={seconds=>{setPlaybackTime(seconds);if(seconds===null)cancelSourceSeek();}} onDuration={duration=>{
      setAudioDuration(duration);

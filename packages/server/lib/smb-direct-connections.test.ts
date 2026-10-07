@@ -1,3 +1,4 @@
+import {ProcessingMaintenance} from "./processing-maintenance";
 import { afterEach, expect, test } from "bun:test";
 import {
   mkdtempSync,
@@ -1477,4 +1478,63 @@ test("I1 unrelated calls cannot borrow an owned publication UUID and later cycle
   await f.controls.sync(c.id, c.generation);
   expect(f.contexts).toHaveLength(2);
   expect(f.contexts[1]).not.toBe(f.contexts[0]);
+});
+
+
+test("update lease refuses an admitted direct probe and blocks new direct probes", async () => {
+ const f=fixture();await f.controls.ready();
+ const maintenance=new ProcessingMaintenance({path:join(f.root,"update-maintenance.json"),active:()=> "isBusy" in f.controls && (f.controls as any).isBusy() ? ["synchronization"] : []});
+ f.options.busy=()=>maintenance.blocked();
+ let release!:()=>void;f.probeWait(new Promise<void>(resolve=>{release=resolve;}));
+ const pending=f.controls.test(endpoint,credentials);
+ try {expect(()=>maintenance.acquire("update-owner","12345678-1234-1234-1234-123456789abc")).toThrow();}
+ finally {release();await pending; if(maintenance.blocked())maintenance.release("update-owner");}
+ maintenance.acquire("update-owner","12345678-1234-1234-1234-123456789abc");
+ const before=[...f.events];
+ await expect(f.controls.test(endpoint,credentials)).rejects.toMatchObject({code:"destination-busy"});
+ expect(f.events).toEqual(before);
+ maintenance.release("update-owner");await f.controls.test(endpoint,credentials);
+});
+
+
+test("update exclusion covers connection changes, synchronization, drain and unproved helper stop", async()=>{
+ const f=fixture();await f.controls.ready();
+ const maintenance=new ProcessingMaintenance({path:join(f.root,"update-maintenance.json"),active:()=>f.controls.isBusy()?["synchronization"]:[]});
+ f.options.busy=()=>maintenance.blocked();
+ const review=await f.controls.test(endpoint,credentials);
+ let release!:()=>void;f.pendingWait(new Promise<void>(resolve=>{release=resolve;}));
+ const connecting=f.controls.connect({name:"Protected NAS",receipt:review.receipt,create:false});
+ await Bun.sleep(1);
+ try {expect(()=>maintenance.acquire("update-owner")).toThrow();}
+ finally {release();}
+ const connected=(await connecting).connections[0]!;
+ f.pendingWait();
+ let finish!:()=>void;f.openWait(new Promise<void>(resolve=>{finish=resolve;}));
+ const syncing=f.controls.sync(connected.id,connected.generation);
+ await Bun.sleep(1);
+ expect(()=>maintenance.acquire("update-owner")).toThrow();
+ const draining=f.controls.preempt();
+ expect(()=>maintenance.acquire("update-owner")).toThrow();
+ finish();await syncing;await draining;
+ maintenance.acquire("update-owner");
+ const before=readFileSync(f.path,"utf8");const effects=[...f.events];
+ for(const action of [()=>f.controls.enable(connected.id,connected.generation,false),()=>f.controls.disconnect(connected.id,connected.generation),()=>f.controls.sync(connected.id,connected.generation)])await expect(action()).rejects.toMatchObject({code:"destination-busy"});
+ await f.controls.tick();expect(f.events).toEqual(effects);expect(readFileSync(f.path,"utf8")).toBe(before);
+ maintenance.release("update-owner");
+ const broken=fixture();await broken.controls.ready();broken.native.probe=async()=>{throw Error("unproved helper stop");};
+ await expect(broken.controls.test(endpoint,credentials)).rejects.toMatchObject({code:"recovery-required"});
+ const uncertain=new ProcessingMaintenance({path:join(broken.root,"update-maintenance.json"),active:()=>broken.controls.isBusy()?["synchronization"]:[]});
+ expect(()=>uncertain.acquire("update-owner")).toThrow();
+});
+
+test("maintenance admission refuses connection changes before preempting existing direct work", async()=>{
+ const f=fixture();const c=await connect(f);
+ let finish!:()=>void;f.openWait(new Promise<void>(resolve=>{finish=resolve;}));
+ const syncing=f.controls.sync(c.id,c.generation);await Bun.sleep(1);
+ f.busy(true);const effects=[...f.events];
+ try {
+  await expect(f.controls.enable(c.id,c.generation,false)).rejects.toMatchObject({code:"destination-busy"});
+  expect(f.events).toEqual(effects);
+  expect(f.controls.snapshot().syncing).toBe(true);
+ } finally {f.busy(false);finish();await syncing;}
 });

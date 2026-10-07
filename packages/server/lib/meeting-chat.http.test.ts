@@ -84,8 +84,9 @@ test("real HTTP task and chat queues share one local model slot",async()=>{
   const source=await request("/api/sessions",meeting("first"));await waitFor(async()=>taskCalls===1);
   await request("/api/sessions/first/chat",{action:"send",requestId:"shared-slot",question:"What did Ana agree to do?",model:"synthetic:latest",expectedSourceRevision:source.transcriptRevision});
   await new Promise(resolve=>setTimeout(resolve,1100));expect(chatCalls).toBe(0);expect((await request("/api/sessions/first/chat")).turns[0].status).toBe("waiting");
+  await request("/api/sessions",meeting("second"));
   releaseTask();await waitFor(async()=>chatCalls===1);
-  await request("/api/sessions",meeting("second"));await new Promise(resolve=>setTimeout(resolve,1100));expect(taskCalls).toBe(1);expect((await request("/api/tasks?sessionId=second")).review.status).toBe("queued");
+  expect(taskCalls).toBe(1);await new Promise(resolve=>setTimeout(resolve,1100));expect(taskCalls).toBe(1);expect((await request("/api/tasks?sessionId=second")).review.status).toBe("queued");
   releaseChat();await waitFor(async()=>(await request("/api/sessions/first/chat")).turns[0].status==="completed");await waitFor(async()=>taskCalls===2);expect(peak).toBe(1);
  }finally{releaseTask();releaseChat();server.kill("SIGTERM");await server.exited;await ollama.stop(true);rmSync(state,{recursive:true,force:true});}
 },20000);

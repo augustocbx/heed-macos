@@ -4,12 +4,15 @@ import http.server
 import json
 import os
 import pathlib
+import sys
 import tempfile
 import threading
 import unittest
 from unittest.mock import patch
 
 import heed_release
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "scripts"))
 import service_runtime
 
 environment = None

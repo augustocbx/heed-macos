@@ -1,3 +1,4 @@
+import type { AiWaitingReason } from "@heed/shared";
 import {configuredServicePorts} from './lib/service-ports';
 import {ServiceDiagnostics} from './lib/service-diagnostics';
 import {isTranscriptionHealth} from '../shared/lib/service-identity';
@@ -37,7 +38,7 @@ import {reserveMediaWork} from "./lib/media-budget.ts";
 import { join, resolve, extname } from "node:path";
 import { homedir, cpus } from "node:os";
 import { downloadFromUrl, normalizeAudio } from "./lib/media.ts";
-import { APP_DIR, LIBRARY_DIR, CONFIG_PATH, SESSIONS_DIR, TEMPLATES_DIR, type TrxConfig, ensureAppDirs, loadConfig, saveConfig, micLabel } from "./lib/app-config.ts";
+import { APP_DIR, LIBRARY_DIR, CONFIG_PATH, SESSIONS_DIR, TEMPLATES_DIR, type TrxConfig, ensureAppDirs, loadConfig, saveConfig, micLabel, realTimeTranscription } from "./lib/app-config.ts";
 import { TRANSCRIPTION_SERVER, pyPost as postJSON } from "./lib/transcription-client.ts";
 import { track, gracefulStop, installShutdownHooks } from "./lib/process.ts";
 import { sseResponse } from "./lib/sse.ts";
@@ -45,8 +46,9 @@ import { sessionAudioResponse } from "./lib/session-audio.ts";
 import { SessionTags, TagError, tagResponse } from "./lib/session-tags.ts";
 const sessionTags = new SessionTags(SESSIONS_DIR);
 import { RecordingCoordinator } from "./lib/recording-coordinator.ts";
+import {ProcessingMaintenance, retainProcessingStream} from './lib/processing-maintenance.ts';
 import type { FinalCapture, RecordingSnapshot } from "../shared/types/recording-coordinator.ts";
-import { DesktopPermissions, desktopRequestAllowed as permissionRequestAllowed, permissionAction, permissionReport } from "./lib/desktop-permissions.ts";
+import { DesktopPermissions, permissionRecoverySummary, desktopRequestAllowed as permissionRequestAllowed, permissionAction, permissionReport } from "./lib/desktop-permissions.ts";
 import { removeChannelCopies } from "./lib/audio-retention.ts";
 import {validManagedLimit} from './lib/managed-quota.ts';
 import {createAppQuota} from './lib/app-storage.ts';
@@ -68,6 +70,19 @@ let recordingFinalizationRunning = false;
 let transcriptionRequests = 0;
 let manualNotesController: AbortController | null = null;
 let manualNotesDone: Promise<void> | null = null;
+let localAiReady = false;
+function localAiWaitingReason(includePendingChat = false): AiWaitingReason {
+ if (!localAiReady) return "queued";
+ const state = recordingCoordinator.snapshot().state;
+ if (recordingFinalizationRunning || transcriptionRequests || state === "finalizing") return "transcription";
+ if (recorderProc || recorderStarting || recorderStopping || ["starting", "recording", "stopping"].includes(state)) return "recording";
+ if (manualNotesController || notesService.busy) return "notes";
+ if (tasksService.busy) return "tasks";
+ if (chatService.busy || libraryChatService.busy || (includePendingChat && chatPending())) return "chat";
+ return "queued";
+}
+// These synchronous admission checks cover command-triggered and timer-triggered workers.
+function chatPending() { return chatService.pending || libraryChatService.pending; }
 function audioWorkBusy() {
  return !!(recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning || transcriptionRequests
   || ["starting", "stopping", "finalizing"].includes(recordingCoordinator.lifecycleState().state));
@@ -107,6 +122,22 @@ const FALLBACK_MODEL = process.env.HEED_MODEL || null;
 // App paths + persistent config (loadConfig/saveConfig/micLabel/TrxConfig) now live in
 // ./lib/app-config.ts — single source of truth (the stale lib/config.ts duplicate was deleted).
 ensureAppDirs([UPLOAD_DIR]);
+const processingMaintenance = new ProcessingMaintenance({
+ path:join(APP_DIR,'update-maintenance.json'),
+ active:existingProcessing,
+ setRecording:(acquire,owner)=>{recordingCoordinator.setMaintenance(acquire,owner);},
+});
+function existingProcessing():string[] {
+ const active:string[] = [];
+ if (audioWorkBusy() || recordingCoordinator.lifecycleState().state === 'recording') active.push('audio');
+ if (manualNotesController || notesService.busy) active.push('notes');
+ if (tasksService.busy) active.push('tasks');
+ if (chatService.busy) active.push('chat');
+ if (libraryChatService.busy) active.push('libraryChat');
+ if (directSmbConnections?.isBusy() || portableRuntime?.isBusy() || smbConnections?.snapshot().syncing || icloudConnections?.snapshot().syncing || oneDriveConnections?.snapshot().busy || googleDrive?.snapshot().busy) active.push('synchronization');
+ if (oneDriveConnections?.snapshot().authorizing || googleDrive?.snapshot().authorizing) active.push('authorization');
+ return active;
+}
 let portableRuntime:PortableLibraryRuntime|undefined;
 let smbConnections:SmbConnections|undefined;
 let directSmbConnections:DirectSmbConnections|undefined;
@@ -136,16 +167,16 @@ export function getPortableLibrary(){return portableRuntime!.get();}
 /** Device preference lives outside the portable schema and managed-meeting quota. */
 export const providerRegistry=new ProviderRegistry({path:join(APP_DIR,'provider-preference.json'),getLibrary:getPortableLibrary});
 synchronizationUnavailable=providerRegistry.unavailable();
-try{smbConnections=new SmbConnections({quota:managedQuota,privateRoot:APP_DIR,path:join(LIBRARY_DIR,'catalog','smb-connections.json'),catalogPath:join(LIBRARY_DIR,'catalog','state.json'),sessions:()=>sessionTags.snapshot().sessions,registry:providerRegistry,get library(){return getPortableLibrary();},busy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
+try{smbConnections=new SmbConnections({quota:managedQuota,privateRoot:APP_DIR,path:join(LIBRARY_DIR,'catalog','smb-connections.json'),catalogPath:join(LIBRARY_DIR,'catalog','state.json'),sessions:()=>sessionTags.snapshot().sessions,registry:providerRegistry,get library(){return getPortableLibrary();},busy:()=>processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
 }catch{synchronizationUnavailable=true;console.error('SMB configuration unavailable. Preserve synchronization configuration for recovery.');}
-try{directSmbConnections=new DirectSmbConnections({path:join(APP_DIR,'direct-smb-connections.json'),appDir:APP_DIR,registry:providerRegistry,library:getPortableLibrary,quota:managedQuota,sessions:()=>sessionTags.snapshot().sessions,busy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});await directSmbConnections.ready();
+try{directSmbConnections=new DirectSmbConnections({path:join(APP_DIR,'direct-smb-connections.json'),appDir:APP_DIR,registry:providerRegistry,library:getPortableLibrary,quota:managedQuota,sessions:()=>sessionTags.snapshot().sessions,busy:()=>processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});await directSmbConnections.ready();
 }catch{synchronizationUnavailable=true;console.error('Direct SMB configuration unavailable. Preserve synchronization configuration and pending copies for recovery.');}
-try{icloudConnections=new ICloudConnections({quota:managedQuota,privateRoot:APP_DIR,configPath:join(APP_DIR,'icloud-folder.json'),jobsPath:join(LIBRARY_DIR,'catalog','icloud-jobs.json'),library:getPortableLibrary,sessions:()=>sessionTags.snapshot().sessions,providers:providerRegistry,busy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
+try{icloudConnections=new ICloudConnections({quota:managedQuota,privateRoot:APP_DIR,configPath:join(APP_DIR,'icloud-folder.json'),jobsPath:join(LIBRARY_DIR,'catalog','icloud-jobs.json'),library:getPortableLibrary,sessions:()=>sessionTags.snapshot().sessions,providers:providerRegistry,busy:()=>processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
 }catch{synchronizationUnavailable=true;console.error('iCloud configuration unavailable. Preserve synchronization configuration for recovery.');}
-if(CLOUD_CONNECTIONS_ENABLED.googleDrive)try{googleDriveInitializing=true;googleDrive=createGoogleDriveController({appDir:APP_DIR,libraryDir:LIBRARY_DIR,registry:providerRegistry,listSessions:()=>sessionTags.snapshot().sessions,audioBusy:()=>audioWorkBusy()||!!manualNotesController||notesService.busy||tasksService.busy||chatService.busy||libraryChatService.busy});}catch{googleDriveUnavailable=true;console.error('Google Drive unavailable. Preserve its connection configuration for recovery.');}finally{googleDriveInitializing=false;}
+if(CLOUD_CONNECTIONS_ENABLED.googleDrive)try{googleDriveInitializing=true;googleDrive=createGoogleDriveController({appDir:APP_DIR,libraryDir:LIBRARY_DIR,registry:providerRegistry,listSessions:()=>sessionTags.snapshot().sessions,audioBusy:()=>processingMaintenance.blocked() || audioWorkBusy()||!!manualNotesController||notesService.busy||tasksService.busy||chatService.busy||libraryChatService.busy});}catch{googleDriveUnavailable=true;console.error('Google Drive unavailable. Preserve its connection configuration for recovery.');}finally{googleDriveInitializing=false;}
 
 if(CLOUD_CONNECTIONS_ENABLED.oneDrive)try{const vault=createKeychainVault(),auth=new OneDriveAuth({path:join(APP_DIR,'onedrive-account.json'),vault,openBrowser:async url=>{if(process.platform!=='darwin')throw new Error('Microsoft authorization requires macOS');const browser=track(Bun.spawn(['/usr/bin/open',url],{stdin:'ignore',stdout:'ignore',stderr:'ignore'}));if(await browser.exited!==0)throw new Error('Could not open Microsoft authorization');}});
- oneDriveConnections=new OneDriveConnections({path:join(LIBRARY_DIR,'catalog','onedrive','connections.json'),catalogPath:join(LIBRARY_DIR,'catalog','state.json'),sessions:()=>sessionTags.snapshot().sessions,auth,vault,library:getPortableLibrary,registry:providerRegistry,busy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
+ oneDriveConnections=new OneDriveConnections({path:join(LIBRARY_DIR,'catalog','onedrive','connections.json'),catalogPath:join(LIBRARY_DIR,'catalog','state.json'),sessions:()=>sessionTags.snapshot().sessions,auth,vault,library:getPortableLibrary,registry:providerRegistry,busy:()=>processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy || libraryChatService.busy});
 }catch{synchronizationUnavailable=true;console.error('OneDrive synchronization unavailable. Preserve connection configuration for recovery.');}
 if(!synchronizationUnavailable)try{providerRegistry.restore();await directSmbConnections?.start();smbConnections?.start();oneDriveConnections?.startBackground();}catch{synchronizationUnavailable=true;console.error('Synchronization preference could not be restored. Check destination access and storage.');}
 
@@ -1329,6 +1360,8 @@ async function handleSysRecordStart(req: Request): Promise<Response> {
 function captureMetadataPaths(id:string){return [join(SESSIONS_DIR,`${id}.json`),join(APP_DIR,'recording-manifest.json'),join(APP_DIR,'recording-recovery',`${id}.json`)];}
 
 async function beginSysRecording(mode: CaptureMode, attachPath: (path: string) => void): Promise<Response> {
+ const preview = recordingCoordinator.snapshot().realTimeTranscription !== false;
+ await configurePreview(preview);
  recordingLanguage = "en";
 
 	if (syscapProc) {
@@ -1339,8 +1372,8 @@ async function beginSysRecording(mode: CaptureMode, attachPath: (path: string) =
 	liveTranscribeOffset = 0;
 	liveChunkProcessing = false;
 	// Pick up the engine-adaptive live cadence (parakeet = fast) before the loop starts.
-	recordingLiveModel = undefined;
-	await refreshLiveTuning();
+	recordingLiveModel = undefined; recordingLiveGeneration=undefined;
+	if (preview) await refreshLiveTuning();
 
 	const ts = Date.now();
 	quotaReachedAt = 0; quotaStopResult = null;
@@ -1439,7 +1472,7 @@ async function beginSysRecording(mode: CaptureMode, attachPath: (path: string) =
  if (writer.exitCode !== null || recorderProc !== writer || (helper && helper.exitCode !== null)) {
   throw new Error("Audio capture ended before recording became ready. Retained audio is available for recovery.");
  }
- startLiveTranscribe();
+ if (preview) startLiveTranscribe();
 
 	// Feed the System (green) visualizer. We sample the growing recorder WAV directly instead of
 	// spawning a second ffmpeg on the monitor device — this works whether the system channel comes
@@ -1585,6 +1618,7 @@ let liveTurns: Array<{ id: number; channel: "mic" | "sys"; speaker: string; base
 // Parakeet (Apple Neural Engine) polls fast with short windows for near-instant words;
 // Whisper keeps the safe 3s/2000ms cadence so slow CPUs never starve. Defaults are safe.
 let recordingLiveModel: string | undefined;
+let recordingLiveGeneration:number|undefined;
 let liveTuning = { chunk_s: 3.0, interval_ms: 2000, mode: "chunk" as "chunk" | "full" | "stream" };
 async function refreshLiveTuning() {
 	try {
@@ -1592,13 +1626,29 @@ async function refreshLiveTuning() {
 		if (r.ok) {
 			const h = await r.json() as { live_tuning?: { chunk_s?: number; interval_ms?: number; mode?: "chunk" | "full" | "stream"; model?: string }; whisper_info?: {live_model?: string} };
 			if(!isTranscriptionHealth(h))return;
-			recordingLiveModel = h.live_tuning?.model || h.whisper_info?.live_model;
+			recordingLiveGeneration=Number(h.pid);
+            recordingLiveModel = h.live_tuning?.model || h.whisper_info?.live_model;
 			if (h.live_tuning?.chunk_s && h.live_tuning?.interval_ms) {
 				liveTuning = { chunk_s: h.live_tuning.chunk_s, interval_ms: h.live_tuning.interval_ms, mode: h.live_tuning.mode || "chunk" };
 				console.log(`[heed] live: mode=${liveTuning.mode} interval=${liveTuning.interval_ms}ms`);
 			}
 		}
 	} catch { /* keep safe defaults */ }
+}
+
+/** A Python-only restart must receive the immutable capture mode before the next live job. */
+async function ensureLiveGeneration():Promise<boolean> {
+ const signal=liveAbort.signal;
+ try{
+  const response=await fetch(`${TRANSCRIPTION_SERVER}/health`,{signal:AbortSignal.any([signal,AbortSignal.timeout(2000)])});
+  const health=await response.json();
+  if(!response.ok || !isTranscriptionHealth(health) || !health.whisper)return false;
+  if(recordingLiveGeneration!==health.pid){
+   await configurePreview(recordingCoordinator.snapshot().realTimeTranscription !== false);
+   recordingLiveGeneration=health.pid;
+  }
+  return !signal.aborted;
+ }catch{return false;}
 }
 
 // Live "full" mode (Parakeet/MLX): re-transcribe the whole growing audio each tick and emit a
@@ -1826,7 +1876,7 @@ async function postLiveJSON(path: string, body: unknown): Promise<any> {
  } catch { return null; }
 }
 function startLiveTranscribe() {
- if (!recorderProc || !recorderPath || liveTranscribeInterval || liveFirstTimeout) return;
+ if (recordingCoordinator.snapshot().realTimeTranscription === false || !recorderProc || !recorderPath || liveTranscribeInterval || liveFirstTimeout) return;
  liveAbort = new AbortController();
  const wavPath = recorderPath;
  const isDual = wavPath.includes("dual-capture-");
@@ -1846,6 +1896,7 @@ function startLiveTranscribe() {
 				// Lock: skip if previous chunk is still processing
 				if (liveChunkProcessing) return;
 				liveChunkProcessing = true;
+                if(!await ensureLiveGeneration()){liveChunkProcessing=false;return;}
 
 				// STREAM mode (Parakeet): feed ONLY the new audio to the sidecar's streaming
 				// session; show the model's append-only partial (confirmed prefix never changes).
@@ -2093,6 +2144,7 @@ async function stopCapture(onCaptureStopped: () => void): Promise<FinalCapture> 
     try { await postJSON("/stream/finish",{channel:"sys"}); await postJSON("/diar/finish",{}); } catch {}
    }
   }
+  await applySavedPreview();
   return await finalizeCapture(path);
  } finally { recorderStopping = false; }
 }
@@ -2108,7 +2160,8 @@ async function finalizeCapture(path: string): Promise<FinalCapture> {
   result.duration = measured;
  }
  recordingLanguage = result.metadata.language;
- return {path,duration:result.duration,language:result.metadata.language,model:result.metadata.model,liveModel:recordingLiveModel || recordingCoordinator.snapshot().liveModel,turns:result.segments,embeddings:result.embeddings};
+ return {path,duration:result.duration,language:result.metadata.language,model:result.metadata.model,liveModel:recordingLiveModel || recordingCoordinator.snapshot().liveModel,turns:result.segments,embeddings:result.embeddings,
+  ...(result.transcriptionDiagnostics ? {transcriptionDiagnostics:result.transcriptionDiagnostics} : {})};
 }
 
 // Compatibility stream reports authoritative capabilities; app/process presence is not a call.
@@ -2254,6 +2307,7 @@ async function handleHealth(refresh=false): Promise<Response> {
 function desktopRequestAllowed(req: Request): boolean { return permissionRequestAllowed(req,PORT); }
 /** Completed manifests are recovery checkpoints; the meeting store owns later edits/deletion. */
 function hydratedRecordingSnapshot(snapshot: RecordingSnapshot = recordingCoordinator.snapshot()): RecordingSnapshot {
+ snapshot = {...snapshot,maintenance:processingMaintenance.blocked()};
  if (snapshot.state !== "completed") return snapshot;
  const session = snapshot.session ? notesService.get(snapshot.session.id) : null;
  return {...snapshot,session,segments:session?.segments ?? [],speakerNames:{},path:session?.files?.wav || null,
@@ -2262,18 +2316,63 @@ function hydratedRecordingSnapshot(snapshot: RecordingSnapshot = recordingCoordi
 function lifecycleMetadata(state: Pick<RecordingSnapshot,"state"|"maintenance"> = recordingCoordinator.lifecycleState()) {
  return {...API_IDENTITY, recording:!!recorderProc && recorderProc.exitCode === null,
   processing:["stopping","finalizing"].includes(state.state) || recordingFinalizationRunning,
-  starting:state.state === "starting", pending:false, audioWork:audioWorkBusy(), maintenance:state.maintenance};
+  starting:state.state === "starting", pending:false, audioWork:audioWorkBusy(), maintenance:processingMaintenance.blocked(), maintenanceProtocol:2,
+  processingKinds:processingMaintenance.active(), updateTransactionId:processingMaintenance.transactionId()};
 }
 function desktopRecordingStatus() {
  const state = hydratedRecordingSnapshot();
- return {...state, ...lifecycleMetadata(state), snapshot:state, seconds:Math.floor(state.seconds), clientConnected:true, ready:!state.maintenance,
+ return {...API_IDENTITY, ...state, snapshot:state, seconds:Math.floor(state.seconds), recording:!!recorderProc && recorderProc.exitCode === null,
+  processing:["stopping","finalizing"].includes(state.state) || recordingFinalizationRunning,
+  starting:state.state === "starting", pending:false, audioWork:audioWorkBusy(), clientConnected:true, ready:!processingMaintenance.blocked(), maintenance:processingMaintenance.blocked(), maintenanceProtocol:2, processingKinds:processingMaintenance.active(), updateTransactionId:processingMaintenance.transactionId(),
+  realTimeTranscriptionPreference:realTimeTranscription(),
   smbCommand:smbConnections?.desktopCommand()||null,meetingDetection:meetingDetection.status(),language:recordingLanguage,uiLocale:configuredUiLocale(loadConfig()),storage:{...managedQuota.snapshot(),bytes:managedQuota.snapshot().usedBytes},quotaStopped:!!quotaStopResult};
+}
+/** The coordinator mode remains immutable until capture ends. Settings affect only admission. */
+let previewConfiguration:Promise<void>=Promise.resolve();
+function configurePreview(enabled:boolean):Promise<void> {
+ const operation=previewConfiguration.catch(()=>{}).then(async()=>{
+ // An admitted recording takes precedence over a pending idle-settings request.
+ const snapshot=recordingCoordinator.snapshot();
+ const effective=["starting","recording","stopping"].includes(snapshot.state)?snapshot.realTimeTranscription !== false:enabled;
+ const response = await fetch(`${TRANSCRIPTION_SERVER}/preview/configure`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:effective}),signal:AbortSignal.timeout(30000)});
+ if (!response.ok) throw new Error("Could not prepare real-time transcription. Check the transcription service and retry.");
+ liveWarmLatched = false;
+ });
+ previewConfiguration=operation;
+ return operation;
+}
+async function applySavedPreview() {
+ if(liveWorker)await liveWorker;
+ try{await configurePreview(realTimeTranscription());}catch(error){console.error("Preview preference could not be applied:",error);}
+}
+async function handleRecordingSettings(req:Request):Promise<Response> {
+ if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
+ if (!["GET","POST","PATCH"].includes(req.method)) return new Response(null,{status:405});
+ const state=recordingCoordinator.snapshot();
+ const active=["starting","recording","stopping"].includes(state.state);
+ let engineState:"ready"|"unavailable"|"deferred"=active?"deferred":"ready";
+ if (req.method !== "GET") {
+  let body;try {body=await req.json();} catch {return Response.json({error:"Choose a valid real-time transcription setting."},{status:400});}
+  if (typeof body?.enabled !== "boolean") return Response.json({error:"Choose a valid real-time transcription setting."},{status:400});
+  saveConfig({real_time_transcription:body.enabled});
+  // Recheck after the synchronous durable write: another admitted start may now own preview.
+  const current=recordingCoordinator.snapshot();
+  if (!["starting","recording","stopping"].includes(current.state)) {
+   try {await configurePreview(realTimeTranscription());} catch {engineState="unavailable";}
+  } else engineState="deferred";
+ }
+ const current=recordingCoordinator.snapshot();
+ return Response.json({enabled:realTimeTranscription(),activeEnabled:["starting","recording","stopping"].includes(current.state)?current.realTimeTranscription !== false:null,appliesTo:"next-recording",engineState});
 }
 async function handleRecordingControl(req: Request, pathname: string): Promise<Response> {
  if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
  try {
   if (req.method === "GET" && pathname === "/api/recording/lifecycle") return Response.json(lifecycleMetadata(),{headers:{"Cache-Control":"no-store"}});
-  if (req.method === "GET" && pathname === "/api/recording/status") return Response.json(hydratedRecordingSnapshot());
+  if (req.method === "GET" && pathname === "/api/recording/status") {
+   const snapshot=hydratedRecordingSnapshot();
+   if(new URL(req.url).searchParams.get("inference")==="1")return Response.json({meetingId:snapshot.meetingId,state:snapshot.state,revision:snapshot.revision,realTimeTranscription:snapshot.realTimeTranscription !== false});
+   return Response.json(snapshot);
+  }
   if (req.method !== "POST") return new Response(null,{status:405});
   const body = await req.json();
   if (pathname === "/api/recording/speakers") return Response.json(recordingCoordinator.rename(body.meetingId,body.expectedRevision,body.speakerNames));
@@ -2291,10 +2390,15 @@ async function handleRecordingControl(req: Request, pathname: string): Promise<R
   }
   if (pathname === "/api/recording/maintenance") {
    if (typeof body.acquire !== "boolean" || typeof body.owner !== "string" || !body.owner.trim() || body.owner.length > 128) return Response.json({error:"Choose a valid maintenance owner"},{status:400});
-   // Installers must not replace services while any audio work (including manual transcription) runs.
-   if (body.acquire && audioWorkBusy()) return Response.json({error:"Wait for the current recording or transcription to finish."},{status:409});
-   const state=recordingCoordinator.setMaintenance(body.acquire,body.owner);
-   return Response.json(body.projection === "lifecycle" ? lifecycleMetadata(state) : hydratedRecordingSnapshot(state));
+   if (body.transactionId !== undefined && typeof body.transactionId !== 'string') return Response.json({error:'Choose a valid update transaction'},{status:400});
+   if (body.acquire) processingMaintenance.acquire(body.owner,body.transactionId);
+   else {
+    if (body.transactionId !== undefined && processingMaintenance.transactionId() !== body.transactionId) throw Error('Another update transaction owns maintenance');
+    processingMaintenance.release(body.owner);
+   }
+   if (body.projection === "lifecycle") return Response.json(lifecycleMetadata());
+   if (new URL(req.url).searchParams.get('summary') === '1') return Response.json({maintenance:processingMaintenance.blocked(),maintenanceProtocol:2,updateTransactionId:processingMaintenance.transactionId()});
+   return Response.json({...hydratedRecordingSnapshot(),maintenanceProtocol:2,updateTransactionId:processingMaintenance.transactionId()});
   }
   return Response.json({error:"Unknown recording control endpoint"},{status:404});
  } catch (error) { return recordingControlError(error); }
@@ -2304,6 +2408,7 @@ async function handleDesktopControl(req: Request, pathname: string): Promise<Res
  try {
   if (req.method === "GET" && pathname.endsWith("/status")) {
    const status = desktopRecordingStatus();
+   if (new URL(req.url).searchParams.get('summary') === '1') return Response.json(permissionRecoverySummary({...status,permissionRequest:desktopPermissions.request()}));
    try { const health = await fetch(`${TRANSCRIPTION_SERVER}/health`,{signal:AbortSignal.timeout(1500)}); const data=await health.json(); status.ready = health.ok && isTranscriptionHealth(data) && !status.maintenance && data.whisper === true; } catch {status.ready=false;}
    return Response.json({...status,permissionRequest:desktopPermissions.request()});
   }
@@ -2336,7 +2441,7 @@ async function handleUiLocale(req:Request):Promise<Response> {
 
 async function handleDesktopPermissions(req: Request, pathname: string): Promise<Response> {
  if (!desktopRequestAllowed(req)) return Response.json({error:"Permissions are available only on localhost."}, {status:403});
- if (req.method === "GET" && pathname === "/api/desktop/permissions") return Response.json(desktopPermissions.status());
+ if (req.method === "GET" && pathname === "/api/desktop/permissions") return Response.json({...desktopPermissions.status(),...desktopPermissions.recovery({active:processingMaintenance.active(),maintenance:processingMaintenance.blocked()})});
  if (req.method !== "POST") return Response.json({error:"Method not allowed."}, {status:405});
  let body: unknown;
  try { body = await req.json(); } catch { return Response.json({error:"Invalid JSON body."}, {status:400}); }
@@ -2348,7 +2453,11 @@ async function handleDesktopPermissions(req: Request, pathname: string): Promise
  }
  if (pathname !== "/api/desktop/permissions") return Response.json({error:"Unknown permissions endpoint."}, {status:404});
  const action = permissionAction(body);
- if (!action) return Response.json({error:"Choose microphone, screenCapture, slackLogs, or accessibility."}, {status:400});
+ if (!action) return Response.json({error:"Choose microphone, screenCapture, recoverScreenCapture, slackLogs, or accessibility."}, {status:400});
+ if (action === 'recoverScreenCapture') {
+  const recovery = desktopPermissions.recovery({active:processingMaintenance.active(),maintenance:processingMaintenance.blocked()});
+  if (!recovery.recoveryAvailable) return Response.json({error:recovery.recoveryBlockedReason},{status:409});
+ }
  try { return Response.json({ok:true,id:desktopPermissions.enqueue(action)}); }
  catch (error) { return Response.json({error:(error as Error).message}, {status:409}); }
 }
@@ -2357,7 +2466,7 @@ async function handleDesktopPermissions(req: Request, pathname: string): Promise
 // Prune old audio during capture; never remove the ongoing meeting.
 let retentionBusy=false;
 setInterval(async () => {
- if(retentionBusy)return;retentionBusy=true;
+ if(retentionBusy || processingMaintenance.blocked())return;retentionBusy=true;
  try {
   pruneAudio();
   if(recorderProc && recorderPath && !recorderStopping) {
@@ -2385,7 +2494,8 @@ const notesService: AutomaticNotesService = new AutomaticNotesService({
  sessionStore:sessionTags,
  getSettings:() => automaticNotesSettings(loadConfig()),
  loadTemplate:id => loadTemplate(id) || undefined,
- isBusy:() => audioWorkBusy() || !!manualNotesController || tasksService.busy || chatService.busy || libraryChatService.busy,
+ isBusy:() => processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || tasksService.busy || chatService.busy || libraryChatService.busy || chatPending(),
+ waitingReason:() => localAiWaitingReason(true),
  generate:({session,job,signal,onProgress}) => generateLocalNotes({baseUrl:OLLAMA_HOST,model:job.model,templatePrompt:job.templatePrompt,
   transcript:renderNotesTranscript(session),language:job.language,signal,onProgress,numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))}),
 });
@@ -2393,13 +2503,14 @@ const tasksService: MeetingTasksService = new MeetingTasksService({
  path:join(APP_DIR,"tasks.json"),
  listSessions:() => notesService.list(),
  getSession:id => notesService.get(id),
- isBusy:() => audioWorkBusy() || !!manualNotesController || notesService.busy || chatService.busy || libraryChatService.busy,
+ isBusy:() => processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || chatService.busy || libraryChatService.busy || chatPending(),
  generate:(session,signal) => generateTaskSuggestions(session,signal,{baseUrl:OLLAMA_HOST,model:getCurrentModel() || "",numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))}),
 });
 notesService.recover();
 const chatService: MeetingChatService = new MeetingChatService({
  directory:join(APP_DIR,"chat"), getSession:id=>notesService.get(id),
- isBusy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || libraryChatService.busy,
+ isBusy:()=>processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || libraryChatService.busy,
+ waitingReason:localAiWaitingReason,
  generate:generateChatEvidence,
 });
 function generateChatEvidence(input:ChatGenerationRequest) {
@@ -2409,7 +2520,8 @@ function generateChatEvidence(input:ChatGenerationRequest) {
 }
 const libraryChatService: LibraryChatService = new LibraryChatService({
  directory:join(APP_DIR,"library-chat"),listSessions:()=>notesService.list(),
- isBusy:()=>audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy,
+ isBusy:()=>processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy,
+ waitingReason:localAiWaitingReason,
  generate:generateChatEvidence,
 });
 const tasksTimer = setInterval(() => { void tasksService.tick().catch(error => console.error("Task suggestion queue failed:", error)); },1000);
@@ -2419,6 +2531,8 @@ notesTimer.unref();
 
 const recordingCoordinator = new RecordingCoordinator({
  manifestPath:join(APP_DIR,"recording-manifest.json"),
+ maintenanceBlocked:()=>processingMaintenance.blocked(),
+ realTimeTranscription,
  adapter:{
   async start(mode, _meetingId, attachPath) {
    if (transcriptionRequests || recordingFinalizationRunning) throw new Error("Wait for the current transcription to finish");
@@ -2433,7 +2547,7 @@ const recordingCoordinator = new RecordingCoordinator({
     if (syscapProc) { try { syscapProc.kill(); } catch {} syscapProc = null; }
     if (recorderProc) { await gracefulStop(recorderProc,1500,"SIGINT"); recorderProc = null; }
     stopLiveTranscribe(); stopLevelMeter();
-    if(!recorderPath || !existsSync(recorderPath)){
+     if(!recorderPath || !existsSync(recorderPath)){
      cleanupCaptureWork(_meetingId);
      releaseCapture(managedQuota,_meetingId);
     }
@@ -2457,6 +2571,9 @@ const recordingCoordinator = new RecordingCoordinator({
   },
  },
 });
+recordingCoordinator.subscribe(state=>{if(state.state === "failed")void applySavedPreview();});
+if (processingMaintenance.owner()) recordingCoordinator.setMaintenance(true,processingMaintenance.owner()!);
+localAiReady = true;
 const retained = recordingCoordinator.snapshot();
 if (retained.path && retained.state !== "completed") retainedProcessing.set(retained.path,Infinity);
 
@@ -2487,11 +2604,31 @@ const detectionTimer = setInterval(async () => {
 },1000);
 detectionTimer.unref();
 
+/** Keep asynchronous mutations and streamed preparation admitted until their work finishes. */
+async function withProcessingAdmission(req:Request, run:()=>Promise<Response>):Promise<Response> {
+ const path = new URL(req.url).pathname;
+ const mutation = !['GET','HEAD','OPTIONS'].includes(req.method) || path.startsWith('/api/setup/install-') || path.endsWith('/models/pull');
+ if (!mutation || path === '/api/recording/maintenance' || path.startsWith('/api/desktop/permissions') || !desktopRequestAllowed(req)) return run();
+ let release:()=>void;
+ try {release = processingMaintenance.enter(path.includes('/media') ? 'mediaImport' : path.includes('/library') ? 'migration' : 'synchronization');}
+ catch {return Response.json({error:'Heed is being updated. Try again when the update finishes.',code:'maintenance'},{status:409});}
+ let streaming = false;
+ try {
+  const response = await run();
+  if (response.body && response.headers.get('Content-Type')?.startsWith('text/event-stream')) {
+   const guarded = retainProcessingStream(response,release); streaming = true;
+   return guarded;
+  }
+  return response;
+ } finally {if (!streaming) release();}
+}
+
 const server = Bun.serve({
 	hostname: "127.0.0.1",
 	port: PORT,
 	idleTimeout: 255, // max allowed — pyannote + whisper can take a while
 	async fetch(req, httpServer) {
+  return withProcessingAdmission(req, async () => {
 		const url = new URL(req.url);
 		const method = req.method;
   if(url.pathname === "/.well-known/heed-service")return desktopRequestAllowed(req)?Response.json(API_IDENTITY,{headers:{"Cache-Control":"no-store"}}):new Response(null,{status:403});
@@ -2502,6 +2639,7 @@ const server = Bun.serve({
   if(libraryChatResult)return libraryChatResult;
 
   if (url.pathname === "/api/tasks") return tasksResponse(req,tasksService,PORT);
+  if (url.pathname === "/api/recording/settings") return handleRecordingSettings(req);
   if (url.pathname === "/api/notes/settings") return handleNotesSettings(req);
   if (method === "GET" && url.pathname === "/api/notes/models") return handleNotesModels(req);
   if (method === "POST" && url.pathname === "/api/notes/jobs") return handleNotesJob(req);
@@ -2567,6 +2705,7 @@ const server = Bun.serve({
 		if (method === "DELETE" && url.pathname === "/api/recovery/discard") return handleDiscardOrphaned(url);
 
 		return serveStatic(url.pathname) || new Response("Not Found", { status: 404 });
+  });
 	},
 });
 

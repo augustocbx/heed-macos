@@ -1,3 +1,4 @@
+import { aiWaitingMessage } from "@/lib/ai-waiting";
 import {chatErrorMessages} from "./chat-errors";
 import { useEffect, useRef, useState } from "react";
 import type { ChatCommand, ChatThread, Session, TranscriptEvidence } from "@heed/shared";
@@ -71,7 +72,7 @@ export function MeetingChat({session,onCitation}:Props) {
    {thread?.turns.map(turn=><article key={turn.id} className={styles.turn}>
     <p className={styles.question}>{turn.question}</p><small>{turn.model}</small>
     {(turn.stale||turn.sourceRevision!==session.transcriptRevision)&&<p className={styles.warning}>{tr("This answer uses an older transcript revision. Its evidence is retained below.")}</p>}
-    {(turn.status==="waiting"||turn.status==="running")&&<div><p role="status">{tr(turn.status==="waiting" ? "Waiting for recording, transcription or local AI resources." : "Reviewing transcript evidence…")}</p><button onClick={()=>void mutate({action:"cancel",turnId:turn.id})} disabled={saving}>{tr("Cancel answer")}</button></div>}
+    {(turn.status==="waiting"||turn.status==="running")&&<div><p role="status">{tr(turn.status==="waiting" ? aiWaitingMessage(turn.waitingReason) : "Reviewing transcript evidence…")}</p><button onClick={()=>void mutate({action:"cancel",turnId:turn.id})} disabled={saving}>{tr("Cancel answer")}</button></div>}
     {(turn.status==="failed"||turn.status==="cancelled")&&<div><p role="status">{turn.status==="cancelled"&&!turn.reason ? tr("Answer cancelled.") : errorText(turn.reason||"interrupted")}</p><button onClick={()=>void mutate({action:"retry",turnId:turn.id,...(model ? {model} : {})})} disabled={saving}>{tr("Retry answer")}</button></div>}
     {turn.status==="completed"&&turn.answer&&<div>
      {!turn.answer.claims.length&&<p>{tr(turn.answer.coverage.complete ? "Not found in this meeting." : "No supporting evidence found in the reviewed excerpts.")}</p>}

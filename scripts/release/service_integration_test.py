@@ -9,14 +9,60 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import heed_release
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0,str(ROOT/'scripts'))
 
 
 class ServiceIntegrationTest(unittest.TestCase):
+    @contextlib.contextmanager
+    def status_server(self, state):
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == '/api/recording/lifecycle':
+                    self.send_response(404);self.end_headers();return
+                data = ({'service': 'heed-api', 'protocolVersion': 1,
+                         'checkoutRoot': str(ROOT.resolve()), 'pid': os.getpid()}
+                        if self.path == '/.well-known/heed-service' else state)
+                body = json.dumps(data).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+            def log_message(self, *args):
+                pass
+
+        for port in range(49010, 49110):
+            try:
+                server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
+                break
+            except OSError:
+                continue
+        else:
+            self.fail('No isolated test port is available')
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            # This Python HTTP fixture exercises legacy parsing, not Bun process ownership.
+            import service_runtime
+            with patch.object(service_runtime,'verified_api_identity',return_value={'service':'heed-api','protocolVersion':1,'checkoutRoot':str(ROOT.resolve()),'pid':os.getpid()}):
+                yield SimpleNamespace(api_port=port, root=str(ROOT))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.directory = pathlib.Path(self.temp.name)
@@ -122,7 +168,7 @@ class ServiceIntegrationTest(unittest.TestCase):
                                 env=environment, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, str(stage / 'packages/desktop/guard-lifecycle.py'))
-        rollback = script.split('rollback() {', 1)[1].split("\nstep 'Stopping the running Heed services'", 1)[0]
+        rollback = script.split('rollback() {', 1)[1].split("\nphase restarting", 1)[0]
         result = subprocess.run(['bash', '-eu', '-c', 'rollback() {' + rollback + '\nrollback'],
                                 env=environment, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -161,11 +207,45 @@ class ServiceIntegrationTest(unittest.TestCase):
         cleanup = script.split('cleanup() {', 1)[1].split('\ntrap cleanup EXIT', 1)[0]
         result = subprocess.run(['bash', '-u', '-c', 'cleanup() {' + cleanup + '\n(exit 3)\ncleanup'],
                                 env={**self.env, 'HEED_CURRENT': str(current), 'HEED_TEMP': str(temporary),
-                                     'HEED_GUARD_HELD': '1', 'HEED_COMMITTED': '1', 'RESULT_FILE': str(result_file)},
+                                     'HEED_GUARD_HELD': '1', 'HEED_COMMITTED': '1', 'HEED_API_PORT':'48310', 'RESULT_FILE': str(result_file)},
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(result_file.exists(), 'Permission failure must not strand the install-owned maintenance guard')
         self.assertEqual(result_file.read_text(), 'release')
+
+    def test_pre_switch_transaction_cleanup_keeps_coordinator_owned_lease(self):
+        script=(ROOT/'scripts/release/install.sh').read_text()
+        cleanup=script.split('cleanup() {',1)[1].split('\ntrap cleanup EXIT',1)[0]
+        guard=self.directory/'guard.py';calls=self.directory/'calls'
+        guard.write_text('import os,pathlib,sys\npathlib.Path(os.environ["GUARD_CALLS"]).write_text(" ".join(sys.argv[1:]))\n')
+        temporary=self.directory/'download';temporary.mkdir()
+        environment={**self.env,'HEED_TEMP':str(temporary),'HEED_GUARD_HELD':'1','HEED_COMMITTED':'0','HEED_SWITCHED':'0','HEED_KEEP_STAGE':'1','HEED_STAGE':'',
+                     'HEED_GUARD_SCRIPT':str(guard),'HEED_GUARD_ROOT':str(self.directory/'old'),'HEED_GUARD_URL':'http://127.0.0.1:48210','GUARD_CALLS':str(calls),
+                     'HEED_UPDATE_TRANSACTION_ID':'12345678-1234-1234-1234-123456789abc','HEED_LIFECYCLE_GUARD_TOKEN':'original-owner'}
+        result=subprocess.run(['bash','-u','-c','cleanup() {'+cleanup+'\n(exit 1)\ncleanup'],env=environment,capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr);self.assertFalse(calls.exists())
+
+    def test_locked_installer_wrapper_preserves_the_child_outcome_and_exit_status(self):
+        script=(ROOT/'scripts/release/install.sh').read_text()
+        cleanup=script.split('cleanup() {',1)[1].split('\ntrap cleanup EXIT',1)[0]
+        wrapper=script[script.index('if [ -z "${HEED_INSTALL_LOCK_FD:-}" ]; then'):script.index('/usr/bin/python3 "$HEED_LOCK_HELPER" verify')]
+        payload=self.directory/'payload';payload.mkdir()
+        shutil.copyfile(ROOT/'scripts/release/installation_lock.py',payload/'installation_lock.py')
+        temporary=self.directory/'download';temporary.mkdir()
+        for status in [0,3,1]:
+            with self.subTest(status=status):
+                temporary.mkdir(exist_ok=True)
+                (payload/'install.sh').write_text(f'#!/bin/bash\nprintf "Child outcome: target retained, permissions need attention.\\n"\nexit {status}\n')
+                result=subprocess.run(['bash','-eu','-c','cleanup() {'+cleanup+'\ntrap cleanup EXIT\n'+wrapper],
+                    env={**self.env,'HEED_HOME':str(self.directory/'.heed'),'HEED_TEMP':str(temporary),
+                         'HEED_GUARD_HELD':'0','HEED_COMMITTED':'0','HEED_SWITCHED':'0','HEED_STAGE':'',
+                         'HEED_KEEP_STAGE':'0','HEED_PAYLOAD':str(payload),'HEED_LOCK_HELPER':str(payload/'installation_lock.py'),
+                         'HEED_REQUESTED_VERSION':'','HEED_SKIP_WARMUP':'0','HEED_REQUIRE_PERMISSIONS':'0','HEED_PERMISSION_PROMPT':'0'},
+                    capture_output=True,text=True)
+                self.assertEqual(result.returncode,status,result.stderr)
+                self.assertIn('Child outcome: target retained',result.stdout)
+                self.assertNotIn('existing Heed installation',result.stderr)
+                self.assertFalse(temporary.exists())
 
     def test_rollback_restores_saved_ports_before_restarting_previous_version(self):
         script = (ROOT / 'scripts/release/install.sh').read_text()
@@ -176,12 +256,15 @@ class ServiceIntegrationTest(unittest.TestCase):
         shutil.copyfile(ROOT / 'config/service-ports.json', stage / 'config/service-ports.json')
         guard = stage / 'packages/desktop/guard-lifecycle.py'
         guard.parent.mkdir(parents=True)
-        guard.write_text('pass\n')
+        guard.write_text('import os,sys,json,pathlib\n'
+                         'if "--expected-root" in sys.argv: assert pathlib.Path(os.environ["WAIT_PORTS"]).exists()\n'
+                         'pathlib.Path(os.environ["GUARD_ARGS"]).write_text(json.dumps({"args":sys.argv[1:],"owner":os.environ.get("HEED_LIFECYCLE_GUARD_TOKEN"),"transaction":os.environ.get("HEED_UPDATE_TRANSACTION_ID")}))\n')
         helper = self.directory / 'helper.py'
         helper.write_text('import os,sys,json,pathlib\n'
                           'if sys.argv[1] == "wait-api":\n'
                           ' pathlib.Path(os.environ["WAIT_PORTS"]).write_text(json.dumps({key:os.environ[key] for key in ["HEED_API_PORT","PORT"]}))\n'
-                          'if sys.argv[1] in ["busy","wait-api"]:sys.exit(0)\n'
+                          'if sys.argv[1] in ["busy","wait-api","wait-ready"]:sys.exit(0)\n'
+                          'if sys.argv[1] == "release-field":print("1.2.0");sys.exit(0)\n'
                           f'sys.path.insert(0,{str(ROOT / "scripts/release")!r})\n'
                           'import heed_release\nraise SystemExit(heed_release.main())\n')
         app = pathlib.Path(self.env['HEED_APP_DIR'])
@@ -190,19 +273,21 @@ class ServiceIntegrationTest(unittest.TestCase):
         preferences.write_text(json.dumps({'version': 1, 'api': 48310, 'ui': 48311, 'transcription': 48312}))
         backup = self.directory / 'backup'
         backup.mkdir()
-        rollback = script.split('rollback() {', 1)[1].split("\nstep 'Stopping the running Heed services'", 1)[0]
+        rollback = script.split('rollback() {', 1)[1].split("\nphase restarting", 1)[0]
         environment = {**self.env, 'HEED_STAGE': str(stage), 'HEED_HELPER': str(helper),
                        'HEED_PREVIOUS_PORTS': '48210 48211 48212', 'HEED_PREVIOUS_DIR': str(self.directory / 'old'),
                        'HEED_BACKUP': str(backup), 'HEED_APP': str(self.directory / 'app-bundle'),
                        'HEED_AGENT': str(self.directory / 'agent'), 'HEED_HOME': str(self.directory),
                        'HEED_GUARD_HELD': '1', 'HEED_GUARD_SCRIPT': str(guard), 'HEED_LEGACY_ROOT': '',
-                       'WAIT_PORTS': str(self.directory / 'wait-ports'),
+                       'WAIT_PORTS': str(self.directory / 'wait-ports'), 'GUARD_ARGS':str(self.directory/'guard-args'),
+                       'HEED_UPDATE_TRANSACTION_ID':'12345678-1234-1234-1234-123456789abc', 'HEED_LIFECYCLE_GUARD_TOKEN':'original-owner',
                        'HEED_VERSION': '1.2.0', 'HEED_API_PORT': '48310', 'PORT': '48310',
                        'HEED_UI_PORT': '48311', 'HEED_TRANSCRIPTION_PORT': '48312'}
         result = subprocess.run(['bash', '-eu', '-c', 'stop_heed() { return 0; }\nswitch_current() { return 0; }\nrollback() {' + rollback + '\nrollback'],
                                 env=environment, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(preferences.read_text()), {'version': 1, 'api': 48210, 'ui': 48211, 'transcription': 48212})
+        self.assertEqual(json.loads((self.directory/'guard-args').read_text()),{'args':['acquire','--expected-root',str(self.directory/'old'),'--base-url','http://127.0.0.1:48210'],'owner':'original-owner','transaction':'12345678-1234-1234-1234-123456789abc'})
         # No original file: undo only the installer's exact file and use the original defaults.
         preferences.write_text(json.dumps({'version': 1, 'api': 48310, 'ui': 48311, 'transcription': 48312}))
         environment.update(HEED_PRIOR_PORTS_EXISTED='0', HEED_PREVIOUS_PORTS='48100 48101 48102')
@@ -238,6 +323,27 @@ class ServiceIntegrationTest(unittest.TestCase):
             self.assertEqual(heed_release.command_busy(arguments), 0)
         with patch.object(heed_release, 'listener_pids', return_value=[]), \
              patch.object(service_runtime, 'occupied', return_value=True):
+            self.assertEqual(heed_release.command_busy(arguments), 2)
+
+    def test_idle_upgrade_accepts_a_status_with_a_long_saved_transcript(self):
+        state = {'recording': False, 'processing': False, 'pending': False,
+                 'starting': False, 'audioWork': False,
+                 'session': {'transcript': 'Synthetic meeting transcript. ' * 6000}}
+        with self.status_server(state) as arguments:
+            self.assertEqual(heed_release.command_busy(arguments), 0)
+
+    def test_long_status_still_refuses_active_audio_work(self):
+        state = {'recording': False, 'processing': False, 'pending': False,
+                 'starting': False, 'audioWork': True,
+                 'session': {'transcript': 'Synthetic meeting transcript. ' * 6000}}
+        with self.status_server(state) as arguments:
+            self.assertEqual(heed_release.command_busy(arguments), 1)
+
+    def test_oversized_status_remains_unknown(self):
+        state = {'recording': False, 'processing': False, 'pending': False,
+                 'starting': False, 'audioWork': False,
+                 'session': {'transcript': 'x' * (20 * 1024 * 1024)}}
+        with self.status_server(state) as arguments:
             self.assertEqual(heed_release.command_busy(arguments), 2)
 
     def test_restore_previous_absence_removes_only_the_installers_exact_ports(self):

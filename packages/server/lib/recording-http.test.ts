@@ -10,13 +10,14 @@ let base: string;
 let finalizeCalls = 0;
 let releaseFinalization: (() => void) | undefined;
 let finalizationBody: any;
+let releaseModelPull: (() => void) | undefined;
 const request = async (path: string, body?: unknown, origin?: string, method = body === undefined ? "GET" : "POST") => {
  const response = await fetch(`${base}${path}`, { method, headers: { "Content-Type": "application/json", ...(origin ? { Origin: origin } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
  return { status: response.status, body: response.status === 403 ? null : await response.json() };
 };
 
 async function startApp() {
- app = Bun.spawn([process.execPath, resolve(import.meta.dir, "../server.ts")], { cwd: resolve(import.meta.dir, "../../.."), env: { ...process.env, PORT: base.split(":").at(-1)!, HEED_APP_DIR: directory, HEED_RECORDINGS_DIR: join(directory, "recordings"), HEED_TRANSCRIPTION_URL: `http://127.0.0.1:${sidecar.port}` }, stdout: "ignore", stderr: "pipe" });
+ app = Bun.spawn([process.execPath, resolve(import.meta.dir, "../server.ts")], { cwd: resolve(import.meta.dir, "../../.."), env: { ...process.env, PORT: base.split(":").at(-1)!, HEED_APP_DIR: directory, HEED_RECORDINGS_DIR: join(directory, "recordings"), HEED_TRANSCRIPTION_URL: `http://127.0.0.1:${sidecar.port}`, OLLAMA_HOST: `http://127.0.0.1:${sidecar.port}` }, stdout: "ignore", stderr: "pipe" });
  const deadline = Date.now() + 8000;
  while (Date.now() < deadline) {
   try { if ((await fetch(`${base}/api/desktop/control/status`)).ok) return; } catch {}
@@ -28,7 +29,16 @@ async function restartApp() { app.kill(); await app.exited; await startApp(); }
 
 beforeAll(async () => {
  directory = mkdtempSync(join(tmpdir(), "heed-recording-http-"));
+ writeFileSync(join(directory,"config.json"),JSON.stringify({user_name:"Synthetic Owner",futureConfig:{keep:true}}));
  sidecar = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
+  if (new URL(req.url).pathname === '/api/pull') {
+   const body = new ReadableStream<Uint8Array>({async start(controller) {
+    controller.enqueue(new TextEncoder().encode('{"status":"pulling"}\n'));
+    await new Promise<void>(resolve => {releaseModelPull=resolve;});
+    controller.enqueue(new TextEncoder().encode('{"status":"success"}\n')); controller.close();
+   }});
+   return new Response(body);
+  }
   if (new URL(req.url).pathname === "/finalize") {
    finalizeCalls++; finalizationBody = await req.json();
    await new Promise<void>(resolve => { releaseFinalization = resolve; });
@@ -49,6 +59,35 @@ test("authoritative lifecycle status is available without a browser owner", asyn
  const compatibility = await request("/api/desktop/control/poll", { client: "synthetic-browser", recording: true, processing: true, seconds: 999 });
  expect(compatibility.body.command).toBeNull();
  expect(compatibility.body.status).toMatchObject({ recording: false, processing: false, seconds: 0 });
+});
+
+test("real-time preference defaults on, rejects malformed changes, and survives restart for browser and menu", async () => {
+ expect((await request("/api/recording/settings")).body.enabled).toBe(true);
+ expect((await request("/api/recording/settings", {enabled:"false"})).status).toBe(400);
+ expect((await request("/api/recording/settings", {enabled:false}, "https://outside.example")).status).toBe(403);
+ const saved = await request("/api/recording/settings", {enabled:false});
+ expect(saved.status).toBe(200);
+ expect(saved.body).toMatchObject({enabled:false,appliesTo:"next-recording"});
+ await restartApp();
+ expect((await request("/api/recording/settings")).body.enabled).toBe(false);
+ expect((await request("/api/desktop/control/status")).body.realTimeTranscriptionPreference).toBe(false);
+ expect(JSON.parse(readFileSync(join(directory,"config.json"),"utf8"))).toMatchObject({real_time_transcription:false,user_name:"Synthetic Owner",futureConfig:{keep:true}});
+ await request("/api/recording/settings", {enabled:true});
+});
+
+test("compact lifecycle acknowledges durable update ownership without private snapshots", async()=>{
+ const transaction="12345678-1234-1234-1234-123456789abc";
+ const idle=await request("/api/recording/lifecycle");
+ expect(idle.body).toMatchObject({maintenance:false,maintenanceProtocol:2,updateTransactionId:null,processingKinds:[]});
+ const acquired=await request("/api/recording/maintenance",{acquire:true,owner:"protocol-two",transactionId:transaction,projection:"lifecycle"});
+ expect(acquired.status).toBe(200);expect(acquired.body).toMatchObject({maintenance:true,maintenanceProtocol:2,updateTransactionId:transaction,processingKinds:[]});
+ expect(acquired.body).not.toHaveProperty("session");expect(acquired.body).not.toHaveProperty("segments");
+ expect((await request("/api/recording/maintenance",{acquire:false,owner:"protocol-two",transactionId:"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",projection:"lifecycle"})).status).toBe(409);
+ const summary=await request("/api/recording/maintenance?summary=1",{acquire:true,owner:"protocol-two",transactionId:transaction});
+ expect(summary.body).toEqual({maintenance:true,maintenanceProtocol:2,updateTransactionId:transaction});
+ await restartApp();expect((await request("/api/recording/lifecycle")).body.updateTransactionId).toBe(transaction);
+ const released=await request("/api/recording/maintenance",{acquire:false,owner:"protocol-two",transactionId:transaction,projection:"lifecycle"});
+ expect(released.status).toBe(200);expect(released.body).toMatchObject({maintenance:false,updateTransactionId:null});
 });
 
 test("all lifecycle and legacy capture controls reject nonlocal origins", async () => {
@@ -89,6 +128,60 @@ test("maintenance atomically blocks capture until explicitly released", async ()
   expect(await guard.exited).toBe(0);
   expect((await request("/api/recording/status")).body.maintenance).toBe(action === "acquire");
  }
+});
+
+test('an update lease blocks capture through backend restart until its owner releases it', async () => {
+ const transactionId = '11111111-1111-4111-8111-111111111111';
+ const acquired = await request('/api/recording/maintenance', {acquire:true, owner:'restart-updater', transactionId});
+ expect(acquired.status).toBe(200);
+ await restartApp();
+ const state = await request('/api/desktop/control/status');
+ expect(state.body).toMatchObject({maintenance:true, maintenanceProtocol:2, updateTransactionId:transactionId});
+ expect((await request('/api/desktop/control/commands', {action:'start', requestId:'during-update', mode:'mic'})).status).toBe(409);
+ expect((await request('/api/ui-locale', {locale:'fr'})).status).toBe(409);
+ expect((await request('/api/recording/maintenance', {acquire:false, owner:'other'})).status).toBe(409);
+ expect((await request('/api/recording/maintenance', {acquire:false, owner:'restart-updater'})).status).toBe(200);
+});
+
+test('an admitted asynchronous mutation prevents installation before its JSON body finishes', async () => {
+ let controller:ReadableStreamDefaultController<Uint8Array>;
+ const body = new ReadableStream<Uint8Array>({start(value) {controller=value;value.enqueue(new TextEncoder().encode('{"locale":'));}});
+ const pending = fetch(base + '/api/ui-locale', {method:'POST',headers:{'Content-Type':'application/json'},body,duplex:'half'} as RequestInit);
+ try {
+  const deadline = Date.now()+2000;
+  let kinds:string[]=[];
+  while(Date.now()<deadline) {kinds=(await request('/api/desktop/control/status')).body.processingKinds||[];if(kinds.includes('synchronization'))break;await Bun.sleep(10);}
+  expect(kinds).toContain('synchronization');
+  expect((await request('/api/recording/maintenance',{acquire:true,owner:'pending-json'})).status).toBe(409);
+ } finally {controller!.enqueue(new TextEncoder().encode('"en"}'));controller!.close();await pending;}
+ expect((await request('/api/recording/maintenance',{acquire:true,owner:'pending-json'})).status).toBe(200);
+ expect((await request('/api/recording/maintenance',{acquire:false,owner:'pending-json'})).status).toBe(200);
+});
+
+test('disconnecting a real model-pull stream cannot admit installation before the pull finishes', async () => {
+ const response=await fetch(base+'/api/models/pull?id=synthetic-update-test');
+ const reader=response.body!.getReader();
+ try {
+  expect(new TextDecoder().decode((await reader.read()).value)).toContain('pulling');
+  await reader.cancel(); await Bun.sleep(20);
+  expect((await request('/api/desktop/control/status')).body.processingKinds).toContain('synchronization');
+  expect((await request('/api/recording/maintenance',{acquire:true,owner:'stream-updater'})).status).toBe(409);
+ } finally {releaseModelPull?.();releaseModelPull=undefined;}
+ const deadline=Date.now()+2000;
+ while ((await request('/api/desktop/control/status')).body.processingKinds.length && Date.now()<deadline) await Bun.sleep(10);
+ expect((await request('/api/recording/maintenance',{acquire:true,owner:'stream-updater'})).status).toBe(200);
+ expect((await request('/api/recording/maintenance',{acquire:false,owner:'stream-updater'})).status).toBe(200);
+});
+
+test('the installer guard can adopt the existing durable update transaction', async () => {
+ const transactionId='22222222-2222-4222-8222-222222222222';
+ expect((await request('/api/recording/maintenance',{acquire:true,owner:'installer-adoption',transactionId})).status).toBe(200);
+ try {
+  const guard=Bun.spawn(['python3',resolve(import.meta.dir,'../../desktop/guard-lifecycle.py'),'acquire','--base-url',base,
+   '--owner','installer-adoption','--transaction-id',transactionId],{stdout:'pipe',stderr:'pipe'});
+  expect(await guard.exited).toBe(0);
+  expect((await request('/api/desktop/control/status')).body.updateTransactionId).toBe(transactionId);
+ } finally {await request('/api/recording/maintenance',{acquire:false,owner:'installer-adoption'});}
 });
 
 
@@ -142,7 +235,7 @@ test("completed status hydrates current meeting edits and never resurrects a del
  const compact = await request("/api/recording/lifecycle");
  expect(compact.status).toBe(200);
  expect(compact.body).toMatchObject({service:"heed-api",protocolVersion:1,recording:false,processing:false,pending:false,starting:false,audioWork:false,maintenance:false});
- expect(Object.keys(compact.body).sort()).toEqual(["audioWork","checkoutRoot","maintenance","pending","pid","processing","protocolVersion","recording","service","starting"]);
+ expect(Object.keys(compact.body).sort()).toEqual(["audioWork","checkoutRoot","maintenance","maintenanceProtocol","pending","pid","processing","processingKinds","protocolVersion","recording","service","starting","updateTransactionId"]);
  expect(JSON.stringify(compact.body)).not.toContain("SYNTHETIC_PRIVATE_SENTINEL");
  expect(JSON.stringify(compact.body).length).toBeLessThan(4096);
  expect(readFileSync(manifest,"utf8")).toBe(persisted);

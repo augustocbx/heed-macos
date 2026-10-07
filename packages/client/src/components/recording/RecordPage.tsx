@@ -42,6 +42,7 @@ export function RecordPage() {
 	// Atomic selectors (stores/selectors.ts): subscribe to the narrowest slices instead of the whole
 	// store, so RecordPage doesn't re-render on every unrelated store write (e.g. live segment ticks).
 	const recording = useIsRecording();
+ const realTimeTranscription=useRecordingStore(s=>s.realTimeTranscription);
 	const processing = useIsProcessing();
 	const processStep = useProcessStep();
 	const segments = useSegments();
@@ -49,7 +50,7 @@ export function RecordPage() {
 	const liveQuality = useLiveQuality();
 	const currentSessionId = useCurrentSessionId();
 	// Show result card when recording (live preview) or after stop (final result)
-	const showResult = recording || processing || segments.length > 0 || !!transcript;
+	const showResult = (recording && realTimeTranscription) || processing || segments.length > 0 || !!transcript;
 	// Block recording button while processing (transcribing + diarizing after stop)
 	const canRecord = !recording && !processing;
 	const [rotatingStep, setRotatingStep] = useState("");
@@ -121,7 +122,7 @@ export function RecordPage() {
 				)}
 				{!processing && (
 					<div className={styles.options}>
-						<span>{tr("Live preview starts in English. The final transcript automatically detects English or Portuguese.")}</span>
+						<span role={recording && !realTimeTranscription ? "status" : undefined}>{tr(recording && !realTimeTranscription ? "Live text is disabled. Audio is being recorded; the transcript and speakers will be prepared after stopping." : "Live preview starts in English. The final transcript automatically detects English or Portuguese.")}</span>
 					</div>
 				)}
 			</div>

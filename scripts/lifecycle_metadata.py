@@ -8,12 +8,16 @@ import http.client
 import io
 import json
 import os
+import re
 import time
 from urllib.parse import urlsplit
 
 BUSY_KEYS = ('recording', 'processing', 'pending', 'starting', 'audioWork')
 IDENTITY_KEYS = ('service', 'protocolVersion', 'checkoutRoot', 'pid')
-FIELDS = frozenset((*BUSY_KEYS, *IDENTITY_KEYS, 'maintenance'))
+UPDATE_FIELDS = ('maintenanceProtocol', 'updateTransactionId', 'processingKinds')
+PROCESSING_KINDS = frozenset(('audio', 'notes', 'tasks', 'chat', 'libraryChat', 'synchronization', 'authorization', 'mediaImport', 'migration', 'maintenanceRecovery'))
+TRANSACTION = re.compile(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}')
+FIELDS = frozenset((*BUSY_KEYS, *IDENTITY_KEYS, 'maintenance', *UPDATE_FIELDS))
 ERROR = 'Could not verify bounded Heed lifecycle metadata. No services were changed.'
 
 
@@ -51,11 +55,11 @@ class Projector:
     def whitespace(self):
         while self.peek() in (32, 9, 10, 13): self.take()
 
-    def string(self, retain=False, key=False):
+    def string(self, retain=False, key=False, max_length=None):
         self.expect(34)
         output = bytearray(b'"') if retain else None
         count = 0
-        limit = self.max_key if key else (4096 if retain else self.max_string)
+        limit = max_length if max_length is not None else self.max_key if key else (4096 if retain else self.max_string)
         def byte():
             nonlocal count
             value = self.take(); count += 1
@@ -92,7 +96,22 @@ class Projector:
         first = self.peek()
         if field in (*BUSY_KEYS, 'maintenance') and first not in (116, 102): raise ValueError(ERROR)
         if field in ('service', 'checkoutRoot') and first != 34: raise ValueError(ERROR)
-        if field in ('pid', 'protocolVersion') and first not in b'-0123456789': raise ValueError(ERROR)
+        if field in ('pid', 'protocolVersion', 'maintenanceProtocol') and first not in b'-0123456789': raise ValueError(ERROR)
+        if field == 'updateTransactionId' and first not in (34, 110): raise ValueError(ERROR)
+        if field == 'processingKind' and first != 34: raise ValueError(ERROR)
+        if field == 'processingKinds':
+            if first != 91: raise ValueError(ERROR)
+            self.take(); self.whitespace(); kinds = []
+            if self.peek() != 93:
+                while True:
+                    if len(kinds) >= len(PROCESSING_KINDS): raise ValueError(ERROR)
+                    kind = self.value(depth+1, 'processingKind')
+                    if kind in kinds: raise ValueError(ERROR)
+                    kinds.append(kind); self.whitespace()
+                    if self.peek() != 44: break
+                    self.take()
+            self.expect(93)
+            return kinds
         if first == 123:
             self.take(); self.whitespace(); keys = set()
             if self.peek() != 125:
@@ -117,7 +136,12 @@ class Projector:
                     if self.peek() != 44: break
                     self.take()
             self.expect(93)
-        elif first == 34: return self.string(retain=field is not None)
+        elif first == 34:
+            limit = 115 if field == 'processingKind' else 217 if field == 'updateTransactionId' else None
+            value = self.string(retain=field is not None, max_length=limit)
+            if field == 'processingKind' and value not in PROCESSING_KINDS: raise ValueError(ERROR)
+            if field == 'updateTransactionId' and not TRANSACTION.fullmatch(value): raise ValueError(ERROR)
+            return value
         elif first in (116, 102, 110):
             literal, result = {116:(b'true', True), 102:(b'false', False), 110:(b'null', None)}[first]
             for byte in literal: self.expect(byte)
@@ -157,6 +181,10 @@ class Projector:
         if self.peek() != 123: raise ValueError(ERROR)
         self.value(); self.whitespace()
         if self.peek() != -1: raise ValueError(ERROR)
+        if any(key in self.result for key in UPDATE_FIELDS):
+            if not all(key in self.result for key in (*UPDATE_FIELDS, 'maintenance')) or type(self.result['maintenance']) is not bool or self.result['maintenanceProtocol'] != 2:
+                raise ValueError(ERROR)
+            if self.result['updateTransactionId'] is not None and not self.result['maintenance']: raise ValueError(ERROR)
         return self.result
 
 

@@ -344,6 +344,10 @@ export class DirectSmbConnections {
       remoteDeletion: true,
     };
   }
+  /** Scalar admission state; no private catalog or credential data is projected. */
+  isBusy(): boolean {
+    return this.running || this.changing || this.recovering || this.testing > 0 || this.tasks.size > 0 || !!this.draining || this.unsafeDrain;
+  }
   snapshot() {
     return {
       recoveryRequired:
@@ -637,6 +641,7 @@ export class DirectSmbConnections {
   }
   async test(endpoint: unknown, credentials: unknown, signal?: AbortSignal) {
     this.available();
+    if (this.options.busy()) throw directConnectionError("destination-busy");
     const e = validateDirectEndpoint(endpoint),
       c = validateDirectCredentials(credentials);
     this.prune();
@@ -820,6 +825,7 @@ export class DirectSmbConnections {
     if (!receipt.probe.destinationId && !input.create)
       throw directConnectionError("invalid-input");
     if (this.changing) throw directConnectionError("destination-busy");
+    if (this.options.busy()) throw directConnectionError("destination-busy");
     await this.preempt();
     return this.control(async (signal) => {
       this.forgetReceipt(input.receipt);
@@ -951,6 +957,7 @@ export class DirectSmbConnections {
     if (typeof enabled !== "boolean")
       throw directConnectionError("invalid-input");
     if (this.changing) throw directConnectionError("destination-busy");
+    if (this.options.busy()) throw directConnectionError("destination-busy");
     await this.preempt();
     return this.control(async (signal) => {
       const c = this.reviewed(id, generation);
@@ -979,6 +986,7 @@ export class DirectSmbConnections {
     else this.available();
     this.reviewed(id, generation);
     if (this.changing) throw directConnectionError("destination-busy");
+    if (this.options.busy()) throw directConnectionError("destination-busy");
     await this.preempt();
     return this.control(async (signal) => {
       const c = this.reviewed(id, generation);

@@ -34,7 +34,58 @@ Installing an older version than the one installed is allowed, but meetings save
 
 If any step fails, the installer prints an actionable message, keeps the log in `~/Library/Logs/Heed/install-*.log`, removes the partly prepared version, and restores the previous menu app, login item, browser bridge and service version. The previous version folder is kept after an upgrade for recovery.
 
-## Data during upgrades
+## Update from the menu
+
+Open **Heed → Updates** to see the installed bundle version, check for a newer stable release,
+read its release notes, and choose **Update…**. Checks run at startup when due and at most once
+per day automatically; they never install a release. Offline, rate-limited or incomplete checks
+remain failures, rather than reporting that Heed is up to date.
+
+The confirmation explains that Heed restarts and macOS permissions may need renewal. The updater
+validates the selected release's compatibility, byte sizes, SHA-256 digests and archive entries
+before running its pinned installer. Processing includes recording, saving, transcription, notes,
+tasks, chat, imports, migrations and synchronization. Finish active work, then select **Retry update**;
+Heed does not install later just because processing becomes idle. Downloads themselves do not stop
+an active meeting. Preparation can require network access and model downloads.
+
+Menu updates require an API that supports durable update maintenance. If an older installation
+does not support it, use the release installer once to migrate; the menu explains this requirement.
+Manual installation, menu updates and removal share an advisory lock, stored as a private sibling
+of `HEED_HOME` (normally `~/.heed-installation.lock`). An empty lock file may remain after removal.
+
+The detached coordinator keeps state and private technical logs under `~/.heed/updates/`, with
+the current result in `~/.heed/update.json`. A replacement menu reads the same result. **View update
+log…** opens the transaction log. **Retry recovery** first verifies the retained or restored build
+and releases only its matching maintenance lease. It never starts another installation automatically.
+If recovery still fails, preserve the runtime, `update.json`, `~/.heed-app/update-maintenance.json`
+and any `~/.heed/recovery/` backups, then inspect the log and service status. Do not delete a lease
+or overwrite `runtime/current` to bypass recovery. A surviving installer retains the lock even if
+its coordinator exits.
+
+### Permissions after updating
+
+Installation success and permission status are separate. Heed checks a fresh report from the new
+menu build. Missing permission shows **Permissions need attention**; a restricted microphone
+requires the device administrator, and an absent or stale report shows **Could not verify permissions**.
+Use **Settings and permissions…** or the specific Microphone / Screen & System Audio Recording
+action, then **Check permissions again**. Authorization remains user initiated.
+
+An ad-hoc signature change can invalidate macOS authorization. If system audio remains
+unavailable after authorization, open **Settings and permissions… → Recover system audio
+permission** and confirm in the Heed window. Heed resets only its own ScreenCapture grant,
+restarts its menu app and opens the macOS authorization flow. Meetings, microphone and other
+permissions are preserved. Recovery is unavailable during recording, processing or updates.
+The status stays unavailable until a fresh menu report confirms access; declining macOS access
+never counts as authorization. Upgrades do not reset privacy permissions automatically.
+
+Recovery handles a stale permission without requiring Terminal. Preventing permission identity
+changes between releases still requires a stable Developer ID signature and an installation
+process that preserves the signed bundle. See [permission recovery QA](qa/system-audio-permission-recovery.md).
+
+See [menu update validation](menu-update-validation.md) for automated coverage and remaining
+physical-Mac acceptance.
+
+## Preserved data
 
 Upgrades never move or rewrite user data:
 
@@ -87,7 +138,7 @@ The build refuses to package audio files (except the two bundled synthetic test 
 ## Signing and macOS limitations
 
 - Heed does not have an Apple Developer ID yet. Executables are **ad-hoc signed** and the archive is **not notarized**. The installer verifies the SHA-256 checksum published with the release and then removes the download quarantine from the installed copy only. The checksum proves the download matches the release; it does not prove the publisher the way a Developer ID signature would.
-- Because ad-hoc signatures change with every build, macOS may ask for Microphone and Screen & System Audio Recording again after an upgrade, or show Heed as allowed while blocking it. Turn the permission off and on again in System Settings, then reopen Heed.
+- Because ad-hoc signatures change with every build, macOS may ask for Microphone and Screen & System Audio Recording again after an upgrade, or show Heed as allowed while blocking it. Use **Recover system audio permission** in Settings when system audio remains unavailable after authorization.
 - A signed and notarized `.pkg` can replace the archive once a Developer ID is available. Until then, installation runs from Terminal.
 - Permission prompts need a person at the Mac. Real audio capture is not exercised by the installer; record a short test meeting after installing.
 - Loopback ports 48100 (API), 48101 (interface) and 48102 (transcription), or the validated device-local overrides, must be free or used by the matching Heed services. Readiness and shutdown verify service identity and checkout ownership; an unrelated listener is preserved. See [service ports](service-ports.md).

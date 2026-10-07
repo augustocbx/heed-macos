@@ -19,6 +19,8 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
+      - name: Install real audio fixture prerequisites
+        run: brew install ffmpeg
       - name: Server tests
         env:
           HEED_SMB_PYTHON: ${{ env.pythonLocation }}/bin/python3.12
@@ -31,6 +33,8 @@ jobs:
         run: python3 packages/server/native/smb-filesystem.test.py
       - name: Interface tests
         run: NODE_OPTIONS=--no-experimental-webstorage bun run --cwd packages/client test --run
+      - name: Final transcript preservation and echo evidence tests
+        run: python3 -m unittest discover -s packages/transcription -p 'final_*_test.py'
       - name: Speaker identity preservation tests
         run: python3 -m unittest discover -s packages/transcription -p voice_identity_test.py
       - name: Meeting language and transcription policy tests
@@ -39,16 +43,18 @@ jobs:
         run: python3 -m unittest discover -s packages/transcription -p manual_transcription_test.py
       - name: Native transcription deadline and owned process cleanup tests
         run: python3 -m unittest discover -s packages/transcription -p '*worker_test.py'
+      - name: Real-time transcription preference, warm-up and owned preview tests
+        run: python3 -m unittest discover -s packages/transcription -p preview_preference_test.py
       - name: Managed audio working directory tests
         run: python3 -m unittest discover -s packages/transcription -p managed_work_test.py
       - name: Check Python syntax
-        run: python3 -m py_compile packages/transcription/transcription_server.py packages/transcription/voice_identity.py packages/transcription/meeting_language.py packages/transcription/manual_transcription.py packages/desktop/browser-meet/native-host.py packages/desktop/browser-meet/register-host.py packages/transcription/managed_work.py packages/transcription/native_worker.py packages/transcription/process_ownership.py packages/transcription/worker_lifecycle.py packages/transcription/doctor.py packages/transcription/engines.py
+        run: python3 -m py_compile packages/transcription/transcription_server.py packages/transcription/final_echo.py packages/transcription/voice_identity.py packages/transcription/meeting_language.py packages/transcription/manual_transcription.py packages/desktop/browser-meet/native-host.py packages/desktop/browser-meet/register-host.py packages/transcription/managed_work.py packages/transcription/native_worker.py packages/transcription/process_ownership.py packages/transcription/worker_lifecycle.py packages/transcription/doctor.py packages/transcription/engines.py packages/desktop/permission-recovery.py packages/transcription/preview_preference.py packages/transcription/preview_worker.py scripts/check-real-time-resources.py
       - name: Build interface
         run: bun run build
       - name: Check installers
-        run: bash -n install-macos.sh packages/desktop/install-menubar.sh packages/desktop/macos/start-services.sh packages/desktop/native-keychain/build.sh packages/desktop/icloud-folder/build.sh scripts/release/build-release.sh scripts/release/install.sh scripts/release/uninstall.sh scripts/release/simulate.sh
+        run: bash -n install-macos.sh packages/desktop/install-menubar.sh packages/desktop/macos/start-services.sh packages/desktop/native-keychain/build.sh packages/desktop/icloud-folder/build.sh scripts/release/build-release.sh scripts/release/install.sh scripts/release/uninstall.sh scripts/release/simulate.sh scripts/release/menu-update-qa.sh
       - name: Release installer helper tests
-        run: cd scripts/release && /usr/bin/python3 -m unittest heed_release_test service_integration_test verify_quota_test
+        run: /usr/bin/python3 -m unittest discover -s scripts/release -p '*_test.py'
       - name: Validate native capture without physical devices
         run: |
           swiftc -O -target "$(uname -m)-apple-macos14.0" packages/transcription/native/heed-parakeet/Sources/heed-syscap/*.swift -o "$RUNNER_TEMP/heed-syscap-check"
@@ -60,4 +66,7 @@ jobs:
           HEED_ICLOUD_OUTPUT="$RUNNER_TEMP/heed-icloud-check" bash packages/desktop/icloud-folder/build.sh
           "$RUNNER_TEMP/heed-icloud-check" --self-test
       - name: Build menu app
-        run: bash packages/desktop/install-menubar.sh --build-only
+        run: |
+          bash packages/desktop/install-menubar.sh --build-only
+          swiftc -O -target "$(uname -m)-apple-macos14.0" packages/desktop/macos/*.swift -o "$RUNNER_TEMP/heed-packaged-menu-check" -framework AppKit
+          (cd "$RUNNER_TEMP" && ./heed-packaged-menu-check --self-test)

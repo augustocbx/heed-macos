@@ -117,7 +117,7 @@ def command_configuration_root(args):
     return 0
 
 
-def fetch_json(url, timeout=3.0, method="GET", body=None):
+def fetch_json(url, timeout=3.0, method="GET", body=None, max_bytes=65536):
     """Return (status, parsed JSON or None, raw text). Connection errors return status None."""
     data = None if body is None else json.dumps(body).encode()
     request = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
@@ -128,8 +128,11 @@ def fetch_json(url, timeout=3.0, method="GET", body=None):
                 return None
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
         with opener.open(request, timeout=timeout) as response:
-            raw = response.read(65536).decode("utf-8", "replace")
+            payload = response.read(max_bytes + 1)
             status = response.status
+            if len(payload) > max_bytes:
+                return status, None, ""
+            raw = payload.decode("utf-8", "replace")
     except urllib.error.HTTPError as error:
         raw = error.read(65536).decode("utf-8", "replace")
         status = error.code
@@ -145,6 +148,8 @@ def identity_problem(kind, status, data, version, commit=None):
     """Describe why a response is not the expected Heed service, or None when it is."""
     if status is None:
         return "not responding"
+    if not 200 <= status < 300:
+        return "answers unsuccessful HTTP %s" % status
     if not isinstance(data, dict):
         return "answers HTTP %s without Heed identity (another application may own this port)" % status
     if kind == "transcription":
@@ -229,6 +234,9 @@ def command_wait_api(args):
 
 # audioWork covers manual transcription and every other job that holds audio.
 BUSY_KEYS = ["recording", "processing", "pending", "starting", "audioWork"]
+# The desktop status includes the last saved session and its transcript snapshot.
+# Keep reads bounded while allowing normal meeting history during an upgrade.
+STATUS_RESPONSE_LIMIT = 16 * 1024 * 1024
 
 
 def command_busy(args):
@@ -246,6 +254,11 @@ def command_busy(args):
         print("Heed returned incomplete or unsupported recording status or listener identity. Its services and data were not changed.", file=sys.stderr)
         return 2
     active = [key for key in BUSY_KEYS if data.get(key)]
+    if data.get('maintenanceProtocol') == 2:
+        kinds = data.get('processingKinds')
+        if not isinstance(kinds, list) or not all(isinstance(kind, str) for kind in kinds):
+            return 2
+        active.extend(kinds)
     if active:
         print("Heed is busy (%s)." % ", ".join(active), file=sys.stderr)
         return 1
@@ -369,7 +382,7 @@ def owned_listener(pid, roots, port=None):
                     base = 'http://127.0.0.1:%d' % port
                     identity = verified_api_identity(base, root)
                     state = read_status(base, identity)
-                    if identity['pid'] != pid or any(state[key] for key in BUSY_KEYS): return False
+                    if identity['pid'] != pid or any(state[key] for key in BUSY_KEYS) or state.get('processingKinds'): return False
                 except (ValueError, OSError, RuntimeError, subprocess.TimeoutExpired): return False
             return True
     return False
@@ -493,9 +506,32 @@ def command_remaining(args):
     return 1 if remaining else 0
 
 
+def command_update_event(args):
+    from installation_lock import InstallationLock
+    from update_state import write
+    home = pathlib.Path(os.environ.get('HEED_HOME', str(pathlib.Path.home() / '.heed')))
+    transaction = os.environ.get('HEED_UPDATE_TRANSACTION_ID')
+    if not transaction:
+        return 0
+    with InstallationLock(home, int(os.environ['HEED_INSTALL_LOCK_FD'])):
+        if args.command == 'update-phase':
+            write(home, transaction, 'installer-phase.json', {'phase':args.phase})
+        else:
+            write(home, transaction, 'installer-result.json', {'exitCode':args.exit_code, 'recovery':args.recovery})
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+
+    phase = commands.add_parser('update-phase')
+    phase.add_argument('--phase', required=True)
+    phase.set_defaults(handler=command_update_event)
+    result = commands.add_parser('update-result')
+    result.add_argument('--exit-code', required=True, type=int)
+    result.add_argument('--recovery', required=True, choices=['notReplaced','restored','retainedTarget','recoveryRequired'])
+    result.set_defaults(handler=command_update_event)
 
     def ports(command):
         command.add_argument("--api-port", type=int)

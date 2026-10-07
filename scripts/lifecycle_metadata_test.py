@@ -27,6 +27,17 @@ class ProjectionTest(unittest.TestCase):
         for body, limits in [(b'{"a":"123456"}', {'max_bytes': 8}), (b'{"a":[[[0]]]}', {'max_depth': 2}), (b'{"abcdef":0}', {'max_key': 4}), (b'{"a":"123456"}', {'max_string': 4}), (b'{"a":0,"b":1}', {'max_keys': 1}), (b'{"a":[0,1,2]}', {'max_tokens': 3}), (b'{}', {'deadline': time.monotonic()-1})]:
             with self.subTest(limits=limits), self.assertRaises(ValueError): self.project(body, **limits)
 
+    def test_protocol_two_projection_retains_only_finite_typed_update_metadata(self):
+        expected={'maintenance':True,'maintenanceProtocol':2,'updateTransactionId':'12345678-1234-1234-1234-123456789abc','processingKinds':['notes','synchronization']}
+        self.assertEqual(self.project(json.dumps({**expected,'session':{'private':'SYNTHETIC_PRIVATE_SENTINEL'*5000}}).encode()),expected)
+        for change in [{'maintenanceProtocol':True},{'maintenanceProtocol':2.0},{'maintenanceProtocol':'2'},{'maintenanceProtocol':3},{'updateTransactionId':'private arbitrary text'},{'updateTransactionId':False},{'processingKinds':['unknown']},{'processingKinds':['notes','notes']},{'processingKinds':[{}]},{'processingKinds':['notes']*11},{'processingKinds':None},{'maintenance':False}]:
+            with self.subTest(change=change),self.assertRaises(ValueError): self.project(json.dumps({**expected,**change}).encode())
+        for missing in ['maintenance','updateTransactionId','processingKinds','maintenanceProtocol']:
+            with self.subTest(missing=missing),self.assertRaises(ValueError): self.project(json.dumps({k:v for k,v in expected.items() if k!=missing}).encode())
+        self.assertEqual(self.project(b'{"maintenance":false,"maintenanceProtocol":2,"updateTransactionId":null,"processingKinds":[]}'),{'maintenance':False,'maintenanceProtocol':2,'updateTransactionId':None,'processingKinds':[]})
+        escaped=''.join('\\u%04x'%ord(char) for char in 'maintenanceRecovery')
+        self.assertEqual(self.project(('{"maintenance":true,"maintenanceProtocol":2,"updateTransactionId":null,"processingKinds":["'+escaped+'"]}').encode())['processingKinds'],['maintenanceRecovery'])
+
 
 # Real loopback listener with the exact supported Bun API entrypoint. This tests
 # ownership, HTTP negotiation and guard effects together, without mock authority.
@@ -95,6 +106,48 @@ console.log(JSON.stringify({pid:process.pid,port:server.port}));
     def guard(self, action='acquire', root=None, **env):
         return subprocess.run([sys.executable,str(ROOT/'packages/desktop/guard-lifecycle.py'),action,'--base-url',self.base,'--expected-root',str(root or self.root),'--owner','synthetic-owner'],env={**os.environ,**env},capture_output=True,text=True,timeout=10)
 
+
+    def test_protocol_two_guard_forwards_transaction_and_refuses_other_acknowledgements(self):
+        transaction='12345678-1234-1234-1234-123456789abc'
+        status={**self.identity,**self.idle,'maintenance':False,'maintenanceProtocol':2,'updateTransactionId':None,'processingKinds':[]}
+        for action in ['acquire','release']:
+            ack={**status,'maintenance':action=='acquire','updateTransactionId':transaction if action=='acquire' else None}
+            self.configure(**{'/api/recording/lifecycle':{'body':status},'/api/recording/maintenance':{'body':ack}})
+            result=self.guard(action,HEED_UPDATE_TRANSACTION_ID=transaction)
+            self.assertEqual(result.returncode,0,result.stderr)
+            posts=[c for c in json.loads(self.log.read_text()) if c['method']=='POST']
+            self.assertEqual(posts[0]['body'].get('transactionId'),transaction)
+            for wrong in [{**ack,'updateTransactionId':'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'},{k:v for k,v in ack.items() if k!='maintenanceProtocol'}]:
+                self.configure(**{'/api/recording/lifecycle':{'body':status},'/api/recording/maintenance':{'body':wrong}})
+                self.assertNotEqual(self.guard(action,HEED_UPDATE_TRANSACTION_ID=transaction).returncode,0)
+        self.configure(**{'/api/recording/lifecycle':{'body':{**status,'processingKinds':['notes']}}})
+        self.assertNotEqual(self.guard(HEED_UPDATE_TRANSACTION_ID=transaction).returncode,0)
+        self.assertFalse(any(c['method']=='POST' for c in json.loads(self.log.read_text())))
+
+    def test_protocol_two_non_audio_work_prevents_busy_and_restart_effects(self):
+        sys.path.insert(0,str(ROOT/'scripts/release'))
+        import heed_release
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        status={**self.identity,**self.idle,'maintenance':False,'maintenanceProtocol':2,'updateTransactionId':None,'processingKinds':['synchronization']}
+        self.configure(**{'/api/recording/lifecycle':{'body':status}})
+        self.assertEqual(heed_release.command_busy(SimpleNamespace(api_port=self.port,root=str(self.root))),1)
+        records=service_runtime.process_records(self.port)
+        with patch.object(service_runtime,'saved_service_ports',return_value=None),patch.object(service_runtime,'process_records',side_effect=lambda port,**kw:records if port==self.port else []),patch.object(service_runtime.os,'kill') as signal:
+            with self.assertRaises((ValueError,RuntimeError)):service_runtime.restart(str(self.root),{'api':self.port})
+            signal.assert_not_called()
+
+    def test_installer_inherits_update_owner_while_targeting_previous_root_and_port(self):
+        script=(ROOT/'scripts/release/install.sh').read_text()
+        fragment=script[script.index('# The guard imports'):script.index('HEED_GUARD_HELD=1',script.index('# The guard imports'))]
+        transaction='12345678-1234-1234-1234-123456789abc'
+        status={**self.identity,**self.idle,'maintenance':True,'maintenanceProtocol':2,'updateTransactionId':transaction,'processingKinds':[]}
+        self.configure(**{'/api/recording/lifecycle':{'body':status},'/api/recording/maintenance':{'body':status}})
+        env={**os.environ,'HEED_STAGE':str(ROOT),'HEED_PREVIOUS_DIR':str(self.root),'HEED_LEGACY_ROOT':'','HEED_API_PORT':'48140','HEED_PREVIOUS_PORTS':f'{self.port} 48141 48142','HEED_LIFECYCLE_GUARD_TOKEN':'original-owner','HEED_UPDATE_TRANSACTION_ID':transaction}
+        result=subprocess.run(['bash','-eu','-c','fail(){ exit 1; };\n'+fragment],env=env,capture_output=True,text=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stderr)
+        posts=[c['body'] for c in json.loads(self.log.read_text()) if c['method']=='POST']
+        self.assertEqual(posts,[{'acquire':True,'owner':'original-owner','projection':'lifecycle','transactionId':transaction}])
     def test_legacy_large_status_and_guard_acknowledgement_keep_private_values_opaque(self):
         self.configure()
         self.assertEqual(service_runtime.status(self.port,str(self.root)), self.idle)
@@ -255,7 +308,7 @@ console.log(JSON.stringify({pid:process.pid,port:server.port}));
         from types import SimpleNamespace
         from unittest.mock import patch
         args=SimpleNamespace(root=[str(self.root)],ports=[self.port],timeout=0)
-        for status in [{**self.idle,'audioWork':True},{'recording':False}]:
+        for status in [{**self.idle,'audioWork':True},{'recording':False},{**self.idle,'maintenance':False,'maintenanceProtocol':2,'updateTransactionId':None,'processingKinds':['synchronization']}]:
             self.configure(**{'/api/desktop/control/status':{'body':status}})
             with patch.object(heed_release.os,'kill') as signal:
                 self.assertEqual(heed_release.command_stop_services(args),2)

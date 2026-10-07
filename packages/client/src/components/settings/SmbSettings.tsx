@@ -14,12 +14,16 @@ export function SmbSettings({onProviderChanged}:{onProviderChanged?:()=>void}={}
   <p>{tr('Imported transcripts stay available offline. Audio downloads only when requested. Disconnecting never deletes remote meetings.')}</p>
   {!snapshot&&!recovery&&<p role="status">{tr('Checking synchronization destinations…')}</p>}
   {(error||snapshot?.desktopError)&&<p role="alert">{tr(recovery?recoveryNotice:error||genericNotice)}</p>}
-  <label htmlFor="smb-name">{tr('Destination name')}</label><input id="smb-name" value={name} maxLength={80} disabled={blocked} onChange={e=>setName(e.target.value)}/>
-  <label htmlFor="smb-address">{tr('SMB server/share address')}</label><input id="smb-address" value={address} maxLength={2048} placeholder="smb://server/share" disabled={blocked} onChange={e=>setAddress(e.target.value)}/>
+  <div className={styles.storageField}><label htmlFor="smb-name">{tr('Destination name')}</label><input id="smb-name" value={name} maxLength={80} disabled={blocked} onChange={e=>setName(e.target.value)}/></div>
+  <div className={styles.storageField}><label htmlFor="smb-address">{tr('SMB server/share address')}</label><input id="smb-address" value={address} maxLength={2048} placeholder="smb://server/share" disabled={blocked} onChange={e=>setAddress(e.target.value)}/></div>
+  <div className={styles.storageActions}>
   <button disabled={blocked||!!snapshot?.desktopPending||!address} onClick={()=>void run(()=>smbApi.mount(address))}>{tr('Open macOS connection flow')}</button>
-  <label htmlFor="smb-folder">{tr('Mounted share folder')}</label><input id="smb-folder" value={folder} maxLength={4096} disabled={blocked} onChange={e=>{setFolder(e.target.value);setTest(null);setCreate(false);setConnectionId(undefined);}}/>
+  </div>
+  <div className={styles.storageField}><label htmlFor="smb-folder">{tr('Mounted share folder')}</label><input id="smb-folder" value={folder} maxLength={4096} disabled={blocked} onChange={e=>{setFolder(e.target.value);setTest(null);setCreate(false);setConnectionId(undefined);}}/></div>
+  <div className={styles.storageActions}>
   <button disabled={blocked||!!snapshot?.desktopPending} onClick={()=>void run(()=>smbApi.folder())}>{tr('Select mounted share folder')}</button>
   <button disabled={blocked||!folder} onClick={()=>void check()}>{tr('Test access')}</button>
+  </div>
   {snapshot?.desktopPending&&<p role="status">{tr('Complete the connection or folder selection in the Heed macOS window.')}</p>}
   {test&&<div role="status"><p>{tr(test.readOnly?'Read-only — imports available':'Read/write — publication available')}</p><p>{tr(test.security==='encrypted'?'SMB encryption required':'SMB signing active')} · {test.dialect}</p><p>{tr('Destination identity')}: {test.destinationId||tr('New library')}</p>
    {test.needsCreation&&<label><input type="checkbox" checked={create} disabled={blocked} onChange={e=>setCreate(e.target.checked)}/>{tr('Create a dedicated Heed Library subfolder')}</label>}
@@ -32,12 +36,14 @@ export function SmbSettings({onProviderChanged}:{onProviderChanged?:()=>void}={}
    <p>{tr(c.enabled?'Enabled':'Disabled')} · {tr(c.readOnly?'Read-only — imports available':'Read/write — publication available')} · {tr(c.security==='encrypted'?'SMB encryption required':c.security==='signed'?'SMB signing active':'Transport security not verified')}</p>
    <p>{tr('Imported: {imported}; skipped: {skipped}; queued: {pending}; discovered text bytes: {bytes}.',{imported:c.imported,skipped:c.skipped,pending:c.pending,bytes:c.bytes})}</p>
    {c.error&&<p role="alert">{tr([unsupportedNotice,originalNotice].includes(c.error)?c.error:'Some revisions remain pending. Test the mount and check available local storage before retrying.')}</p>}
-   <label htmlFor={`smb-rename-${c.id}`}>{tr('Rename destination')}</label><input id={`smb-rename-${c.id}`} value={edits[c.id]??c.name} disabled={blocked} maxLength={80} onChange={e=>setEdits(prev=>({...prev,[c.id]:e.target.value}))}/>
+   <div className={styles.storageField}><label htmlFor={`smb-rename-${c.id}`}>{tr('Rename destination')}</label><input id={`smb-rename-${c.id}`} value={edits[c.id]??c.name} disabled={blocked} maxLength={80} onChange={e=>setEdits(prev=>({...prev,[c.id]:e.target.value}))}/></div>
+   <div className={styles.storageActions}>
    <button disabled={blocked||!(edits[c.id]??c.name).trim()} onClick={()=>void run(()=>smbApi.rename(c.id,edits[c.id]??c.name))}>{tr('Save name')}</button>
    <button disabled={blocked} onClick={()=>void run(()=>smbApi.enable(c.id,!c.enabled))}>{tr(c.enabled?'Disable':'Enable')}</button>
    <button disabled={blocked||snapshot.syncing} onClick={()=>{const parent=c.root.replace(/\/Heed Library$/,'');setName(c.name);setFolder(parent);void check(parent,c.id);}}>{tr('Test connection')}</button>
    <button disabled={blocked||!c.enabled||snapshot.syncing} onClick={()=>void run(()=>smbApi.sync(c.id))}>{tr('Synchronize now')}</button>
    <button disabled={blocked} onClick={()=>void run(()=>smbApi.disconnect(c.id))}>{tr('Disconnect destination')}</button>
+   </div>
   </section>)}
  </article>;
 }

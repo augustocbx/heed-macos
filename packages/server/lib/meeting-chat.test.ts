@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { Session } from "@heed/shared";
+import type { AiWaitingReason, Session } from "@heed/shared";
 import { sourceRevision } from "./automatic-notes";
 import { MeetingChatService, transcriptEvidence, answerMeetingQuestion } from "./meeting-chat";
 const dirs: string[] = [];
@@ -129,4 +129,23 @@ test('captured installed-model shape without mandatory notFound remains rejected
 test('decoder compatibility never removes strict postdecode claim and citation limits',async()=>{
  const session=meeting(),id=transcriptEvidence(session)[0]!.id;
  for(const [claims,reason] of [[[{text:'',evidenceIds:[id]}],'invalid-evidence'],[[{text:'x'.repeat(2001),evidenceIds:[id]}],'invalid-evidence'],[Array.from({length:13},()=>({text:'Supported',evidenceIds:[id]})),'invalid-answer'],[[{text:'Supported',evidenceIds:Array(21).fill(id)}],'invalid-evidence']] as const){await expect(answerMeetingQuestion({sessions:[session],question:'Budget?',history:[],model:'local',generate:async()=>JSON.stringify({claims,notFound:false})})).rejects.toThrow(reason);}
+});
+
+
+test("waiting chat reports the live blocker without rewriting durable history", async () => {
+ const s=meeting(); let blocker:AiWaitingReason="tasks";
+ const service=new MeetingChatService({directory:directory(),getSession:()=>s,isBusy:()=>true,waitingReason:()=>blocker,generate:async()=>result(transcriptEvidence(s)[0]!.id)});
+ service.command(s.id,{action:"send",requestId:"waiting-reason",question:"Budget?",model:"local",expectedSourceRevision:s.transcriptRevision!});
+ const first=service.get(s.id); expect(first.turns[0]).toMatchObject({status:"waiting",waitingReason:"tasks"});
+ blocker="recording";const next=service.get(s.id);expect(next.turns[0]).toMatchObject({status:"waiting",waitingReason:"recording"});expect(next.revision).toBe(first.revision);
+ expect(service.pending).toBe(true);
+ service.command(s.id,{action:"cancel",turnId:first.turns[0]!.id});expect(service.pending).toBe(false);expect(service.get(s.id).turns[0]!.waitingReason).toBeUndefined();
+});
+
+test('stale pending chat fails and releases admission for background work',async()=>{
+ let s=meeting(),busy=true;
+ const service=new MeetingChatService({directory:directory(),getSession:()=>s,isBusy:()=>busy,generate:async()=>{throw new Error('Stale source must not generate');}});
+ service.command(s.id,{action:'send',requestId:'stale-pending',question:'Budget?',model:'local',expectedSourceRevision:s.transcriptRevision!});
+ expect(service.pending).toBe(true);s={...s,transcript:'Changed source'};busy=false;
+ await service.tick();expect(service.get(s.id).turns[0]).toMatchObject({status:'failed',reason:'source-changed'});expect(service.pending).toBe(false);
 });

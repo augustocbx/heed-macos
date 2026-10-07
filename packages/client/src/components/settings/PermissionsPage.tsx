@@ -1,17 +1,14 @@
-import {OneDriveSettings} from "./OneDriveSettings";
-import {ICloudFolderSettings} from "./ICloudFolderSettings";
 import { useLocale } from "@/lib/i18n.ts";
 import { UI_LOCALES, type Locale } from "@/lib/locale.ts";
 import { useLocaleStore } from "@/stores/locale.ts";
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { permissionsApi, type PermissionAction, type PermissionSnapshot } from '@/api/permissions.ts';
 import styles from './PermissionsPage.module.css';
 import {StorageLibrarySettings} from "./StorageLibrarySettings";
 import { AutomaticNotesSettings } from '@/components/ai-notes/AutomaticNotesSettings';
+import {RealTimeTranscriptionSettings} from "./RealTimeTranscriptionSettings";
 import {StorageSettings} from './StorageSettings';
-import {GoogleDriveSettings} from './GoogleDriveSettings';
-import { SmbSettings } from './SmbSettings';
-import { DirectSmbSettings } from './DirectSmbSettings';
+import {RemoteStorageSettings} from './RemoteStorageSettings';
 
 import { MeetingDetectionSettings } from "./MeetingDetectionSettings";
 
@@ -27,8 +24,26 @@ export function PermissionsPage() {
  const [actionError, setActionError] = useState<string | null>(null);
  const [action, setAction] = useState<PermissionAction | null>(null);
  const [notice, setNotice] = useState<string | null>(null);
+ const recovery = useRef({ requested: false, observedPending: false, restarting: false });
  const refresh = useCallback(async () => {
-  try { setSnapshot(await permissionsApi.status()); setLoadError(false); }
+  try {
+   const next = await permissionsApi.status();
+   setSnapshot(next); setLoadError(false);
+   if (recovery.current.requested) {
+    if (next.error || (next.controllerConnected && next.permissions?.screenCapture === true)) {
+     recovery.current = { requested: false, observedPending: false, restarting: false };
+     setNotice(null);
+    } else if (!next.controllerConnected) {
+     recovery.current.restarting = true;
+     setNotice('Restarting Heed to renew system audio access…');
+    } else if (recovery.current.restarting || (recovery.current.observedPending && !next.pending)) {
+     recovery.current = { requested: false, observedPending: false, restarting: false };
+     setNotice(null);
+    } else if (next.pending) {
+     recovery.current.observedPending = true;
+    }
+   }
+  }
   catch { setLoadError(true); }
  }, []);
  useEffect(() => {
@@ -40,8 +55,18 @@ export function PermissionsPage() {
  }, [refresh]);
  const authorize = async (target: PermissionAction) => {
   setAction(target); setActionError(null); setNotice(null);
-  try { await permissionsApi.authorize(target); setNotice('Complete authorization in the macOS window. This page checks permissions automatically.'); await refresh(); }
-  catch { setActionError('Could not open authorization. Make sure the Heed app is running and try again.'); }
+  try {
+   await permissionsApi.authorize(target);
+   if (target === 'recoverScreenCapture') {
+    recovery.current = { requested: true, observedPending: false, restarting: false };
+    setNotice('Confirm recovery in the Heed window. Heed will restart, then macOS will ask for authorization.');
+   } else {
+    recovery.current = { requested: false, observedPending: false, restarting: false };
+    setNotice('Complete authorization in the macOS window. This page checks permissions automatically.');
+   }
+   await refresh();
+  }
+  catch { setActionError(target === 'recoverScreenCapture' ? 'Could not start permission recovery. Make sure Heed is running and try again.' : 'Could not open authorization. Make sure the Heed app is running and try again.'); }
   finally { setAction(null); }
  };
  const connected = !loadError && snapshot?.controllerConnected === true;
@@ -71,15 +96,12 @@ export function PermissionsPage() {
    {savingLocale && <p role="status">{tr("Saving…")}</p>}
    {localeError && <p role="alert">{tr("Could not save interface language. Check that Heed is running and try again.")}</p>}
   </article>
+  <RealTimeTranscriptionSettings />
   <AutomaticNotesSettings />
-  <SmbSettings onProviderChanged={()=>setLibrarySelection(value=>value+1)}/>
-  <DirectSmbSettings onProviderChanged={()=>setLibrarySelection(value=>value+1)}/>
-  <GoogleDriveSettings onProviderChanged={()=>setLibrarySelection(value=>value+1)}/>
+  <RemoteStorageSettings onProviderChanged={()=>setLibrarySelection(value=>value+1)}/>
   <MeetingDetectionSettings />
   <StorageSettings />
   <StorageLibrarySettings key={librarySelection}/>
-  <OneDriveSettings onProviderChanged={()=>setLibrarySelection(value=>value+1)}/>
-  <ICloudFolderSettings onProviderChanged={()=>setLibrarySelection(value=>value+1)}/>
   <div className={`${styles.summary} ${ready ? styles.ready : styles.attention}`} role="status"><strong>{tr(title)}</strong><p>{tr(!connected ? 'Open the Heed app from the menu bar icon to check and authorize access.' : ready ? 'The required permissions are authorized.' : 'Complete the authorizations below before starting a meeting.')}</p><button onClick={() => void refresh()}>{tr('Check again')}</button></div>
   {(actionError || snapshot?.error) && <p className={styles.error} role="alert">{tr(actionError || snapshot?.error || "")}</p>}
   {notice && <p className={styles.notice} role="status">{tr(notice)}</p>}
@@ -87,7 +109,12 @@ export function PermissionsPage() {
    <div className={styles.cardHeading}><h2 id={`permission-${row.id}`}>{tr(row.title)}</h2><span className={row.allowed ? styles.authorized : styles.pending}>{tr(row.status)}</span></div>
    <p>{tr(row.description)}</p>
    {(!row.allowed || row.id !== 'slackLogs') && <><p className={styles.help}>{tr(row.help)}</p><button disabled={disabled} onClick={() => void authorize(row.id)}>{tr(action === row.id ? 'Opening authorization…' : row.button)}</button></>}
+   {row.id === 'screenCapture' && connected && system === false && <>
+    <p className={styles.help}>{tr('Recover access if system audio stays unavailable after authorization. Heed will ask for confirmation before restarting. Your meetings and other permissions are preserved.')}</p>
+    <button disabled={disabled || snapshot?.recoveryAvailable !== true} onClick={() => void authorize('recoverScreenCapture')}>{tr(action === 'recoverScreenCapture' ? 'Opening recovery…' : 'Recover system audio permission')}</button>
+    {snapshot?.recoveryAvailable !== true && <p className={styles.help}>{tr(snapshot?.recoveryBlockedReason || 'Open the updated Heed menu app to recover system audio access.')}</p>}
+   </>}
   </article>)}</div>
-  <aside className={styles.tip}><strong>{tr('Already authorized, but recording still fails?')}</strong><p>{tr('After an update, macOS may require renewed authorization. In Settings, turn Heed off and on for the indicated permission. If macOS asks, choose “Quit & Reopen”. Return to this page and check the status before testing.')}</p><p>{tr('Recording continues with browser tabs closed. Keep the Heed app and local services running.')}</p></aside>
+  <aside className={styles.tip}><strong>{tr('Already authorized, but recording still fails?')}</strong><p>{tr('If system audio stays unavailable after authorization, use Recover system audio permission. Your meetings and other permissions are preserved.')}</p><p>{tr('Recording continues with browser tabs closed. Keep the Heed app and local services running.')}</p></aside>
  </section>;
 }

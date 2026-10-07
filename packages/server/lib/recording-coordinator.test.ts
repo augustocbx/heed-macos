@@ -7,6 +7,10 @@ import { atomicWriteJson } from "./atomic-json";
 import { RecordingCoordinator, type RecordingAdapter } from "./recording-coordinator";
 
 const directories: string[] = [];
+const finalDiagnostics = () => {
+ const channel={rawRms:0.04,rawPeak:0.8,cleanedRms:0.03,asrSegments:3,diarizationSegments:1,usableEmbeddings:1,retainedSegments:2,discardedSegments:1,discardReasons:{"echo-text-and-time":1},fallbackSegments:1,diarizationFailed:false};
+ return {version:1 as const,channels:{mic:{...channel},sys:{...channel}},aecApplied:true,warnings:["microphone-attribution-fallback" as const]};
+};
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 function setup(overrides: Partial<RecordingAdapter> = {}) {
   const directory = mkdtempSync(join(tmpdir(), "heed-coordinator-")); directories.push(directory);
@@ -40,6 +44,36 @@ describe("backend recording lifecycle", () => {
       coordinator.setMaintenance(false,"metadata-owner");check("completed",false);
     } finally {fullSnapshot.mockRestore();}
   });
+  test("diagnostics and fallback attribution survive checkpoint recovery without losing manual names",async()=>{
+    let fail=true;let finalizations=0;
+    const base=setup({save:s=>{if(fail)throw new Error("disk full");return {...s,id:s.id!} as Session;},finalize:async()=>{finalizations++;return base.capture;}});
+    const diagnostics=finalDiagnostics();
+    Object.assign(base.capture,{transcriptionDiagnostics:diagnostics});
+    Object.assign(base.capture.turns[0],{attribution:"fallback"});
+    const active=await base.coordinator.start("diagnostic-start");
+    base.coordinator.live("turn",{id:1,speaker:"Speaker 1",text:"Preview",start:2,end:6,channel:"sys"});
+    base.coordinator.rename(active.meetingId!,base.coordinator.snapshot().revision,{"Speaker 1":"Ana"});
+    await expect(base.coordinator.stop("diagnostic-stop",active.meetingId!)).rejects.toThrow("disk full");
+    expect(JSON.parse(readFileSync(base.manifestPath,"utf8")).snapshot.finalCapture.transcriptionDiagnostics).toEqual(diagnostics);
+    fail=false;const recovered=new RecordingCoordinator({manifestPath:base.manifestPath,adapter:base.adapter});
+    const completed=await recovered.retry("diagnostic-retry",active.meetingId!);
+    expect(finalizations).toBe(0);expect(completed.session!.transcriptionDiagnostics).toEqual(diagnostics);
+    expect(completed.session!.segments[0]).toMatchObject({speaker:"Ana",auto:false,attribution:"fallback"});
+    expect(JSON.parse(readFileSync(base.manifestPath,"utf8")).snapshot.session.transcriptionDiagnostics).toEqual(diagnostics);
+  });
+  test("recording checkpoint excludes unrecognized diagnostic contents",async()=>{
+    const base=setup();const diagnostics=finalDiagnostics();
+    Object.assign(base.capture,{transcriptionDiagnostics:{...diagnostics,workerError:"private error",channels:{...diagnostics.channels,mic:{...diagnostics.channels.mic,transcript:"private transcript"}}}});
+    const active=await base.coordinator.start("safe-start");const completed=await base.coordinator.stop("safe-stop",active.meetingId!);
+    expect(completed.session!.transcriptionDiagnostics).toEqual(diagnostics);
+    expect(JSON.stringify(JSON.parse(readFileSync(base.manifestPath,"utf8")).snapshot.finalCapture.transcriptionDiagnostics)).not.toContain("private");
+  });
+  test("invalid diagnostics are omitted from the recording checkpoint and saved meeting",async()=>{
+    const base=setup();Object.assign(base.capture,{transcriptionDiagnostics:{version:2,workerError:"private error"}});
+    const active=await base.coordinator.start("invalid-start");const completed=await base.coordinator.stop("invalid-stop",active.meetingId!);
+    expect(completed.session).not.toHaveProperty("transcriptionDiagnostics");
+    expect(JSON.parse(readFileSync(base.manifestPath,"utf8")).snapshot.finalCapture).not.toHaveProperty("transcriptionDiagnostics");
+  });
   test("preview model provenance survives restart and recovery",async()=>{
     const base=setup({start:async (_m,_id,attach)=>{attach(base.capture.path);return {path:base.capture.path,liveModel:"preview-v3"};}});
     const active=await base.coordinator.start("start","both");
@@ -64,6 +98,7 @@ describe("backend recording lifecycle", () => {
     expect(completed.state).toBe("completed");expect(completed.seconds).toBe(17);
     expect(saved).toHaveLength(1);expect(saved[0].transcriptFinalized).toBe(true);
     expect(saved[0].transcript).toBe("Vamos entregar sexta.");
+    expect(saved[0]).not.toHaveProperty("transcriptionDiagnostics");
     expect(JSON.parse(readFileSync(manifestPath,"utf8")).snapshot.session.id).toBe(completed.session!.id);
   });
   test("concurrent starts cannot create duplicate capture and duplicate stops save once", async () => {
@@ -184,4 +219,21 @@ test("abandon manifest failure retains archived final checkpoint and rolls back 
  f.failManifest();await expect(f.coordinator.abandon("uncommitted-abandon",active.meetingId!)).rejects.toThrow("disk full");expect(f.coordinator.snapshot()).toEqual(failed);
  const archive=JSON.parse(readFileSync(join(f.directory,"recording-recovery",`${active.meetingId}.json`),"utf8"));expect(archive.snapshot).toEqual(failed);expect(readFileSync(f.capture.path,"utf8")).toBe("retained audio");
  f.restore();await f.coordinator.abandon("committed-abandon",active.meetingId!);const durable=JSON.parse(readFileSync(f.manifestPath,"utf8"));expect(durable.receipts["uncommitted-abandon"]).toBeUndefined();expect(durable.receipts["committed-abandon"]).toBeDefined();
+});
+
+test("snapshots the device preference at admission and preserves it through recovery and finalization", async () => {
+  let enabled = false;
+  const base = setup();
+  const coordinator = new RecordingCoordinator({manifestPath:base.manifestPath,adapter:base.adapter,realTimeTranscription:()=>enabled});
+  const active = await coordinator.start("final-only", "both");
+  expect(active.realTimeTranscription).toBe(false);
+  enabled = true;
+  coordinator.live("segment", {speaker:"Preview",text:"Must not be admitted",start:0,end:1});
+  expect(coordinator.snapshot().segments).toEqual([]);
+  const recovered = new RecordingCoordinator({manifestPath:base.manifestPath,adapter:base.adapter,realTimeTranscription:()=>enabled});
+  expect(recovered.snapshot().realTimeTranscription).toBe(false);
+  const done = await recovered.retry("recover", active.meetingId!);
+  expect(done.session).toMatchObject({transcript:"Vamos entregar sexta.",speakers:["Speaker 1"],transcriptFinalized:true});
+  expect(done.realTimeTranscription).toBe(false);
+  expect((await recovered.start("next", "mic")).realTimeTranscription).toBe(true);
 });

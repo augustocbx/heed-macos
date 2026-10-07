@@ -133,7 +133,7 @@ def restart_plan(root,ports,records,get_status,previous=None):
  for port in set(api_ports):
   state=get_status(port)
   if not all(type(state.get(key)) is bool for key in BUSY_KEYS):raise RuntimeError('Could not verify checkout-owned Heed recording status. No services were stopped.')
-  if any(state[key] for key in BUSY_KEYS):raise RuntimeError('An active meeting prevents restarting Heed services.')
+  if any(state[key] for key in BUSY_KEYS) or state.get('processingKinds'):raise RuntimeError('An active meeting prevents restarting Heed services.')
  return list(set(plan))
 def restart(root,ports):
  previous=saved_service_ports()

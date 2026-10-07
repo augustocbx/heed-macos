@@ -62,3 +62,7 @@ For each Mac, also run the following installed-app acceptance scenarios with syn
 See [macOS compatibility](macos-compatibility.md) for the declared macOS 14 minimum and separate physical OS validation requirements.
 
 The [October 5 follow-up validation](automatic-notes-validation-2026-10-05.md) records the bounded M1 live-model experiment, observed source-excerpt limitations, and remaining acceptance.
+
+## Waiting for shared local AI
+
+Pending explicit chat questions receive the next free generation slot before automatic notes and task suggestions. Active generation is allowed to finish. A waiting notes job identifies the current blocker (recording, transcription, notes generation, task suggestions or chat); it does not imply that a saved final transcript is missing. Waiting reasons are read-time status, not changes to meeting content or the source revision.

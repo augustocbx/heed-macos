@@ -1,4 +1,4 @@
-import type { Segment } from "./speaker.ts";
+import type { Segment, TranscriptionDiagnostics } from "./speaker.ts";
 import type { NotesJob, NotesMetadata } from "./notes.ts";
 
 export interface SessionFiles {
@@ -30,6 +30,7 @@ export interface Session {
 	pinned: boolean;
 	files?: SessionFiles;
  transcriptFinalized?: boolean;
+ transcriptionDiagnostics?: TranscriptionDiagnostics;
  transcriptRevision?: string;
  notesMetadata?: NotesMetadata;
  notesJobs?: Record<string, NotesJob>;

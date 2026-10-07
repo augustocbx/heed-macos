@@ -60,6 +60,7 @@ rm -f packages/transcription/assets/bench_sample.wav.srt
 find scripts -mindepth 1 -maxdepth 1 ! -name init-managed-quota.ts ! -name release \
     ! -name lifecycle_metadata.py ! -name service_config.py ! -name service_runtime.py ! -name service_diagnostics.py -exec rm -rf {} +
 find scripts/release -name '*_test.py' -delete
+rm -f scripts/release/menu_update_qa.py scripts/release/menu-update-qa.sh
 
 # Validate the full offline payload using a distinct Python 3.12 environment.
 # No generated virtual environment enters the release archive.

@@ -202,7 +202,7 @@ class ParakeetEngine:
         (no gated token). Apple Silicon only. Returns {"segments": [...], "embeddings": {sid: [...]}}."""
         r = self._request({"cmd": "diarize", "wav": wav_path})
         if not r.get("ok"):
-            return {"segments": [], "embeddings": {}}
+            return {"segments": [], "embeddings": {}, "failed": True}
         return {"segments": r.get("segments", []), "embeddings": r.get("embeddings", {})}
 
     # --- Live streaming (Nemotron multilingual): real-time commit/partial, per channel ---

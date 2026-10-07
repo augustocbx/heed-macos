@@ -23,6 +23,10 @@ const SPEED: Record<string, string> = { fast: "fast", medium: "medium", slower: 
 
 export function Nav() {
 	const { tr } = useLocale();
+	const buildVersion = import.meta.env.VITE_HEED_VERSION;
+	const version = typeof buildVersion === "string" && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(buildVersion) ? buildVersion : null;
+	const developmentLabel = import.meta.env.DEV ? ` · ${tr("Development build")}` : "";
+	const versionLabel = version ? `v${version}${developmentLabel}` : tr("Version unavailable");
 	const currentPage = useUIStore((s) => s.currentPage);
 	const setPage = useUIStore((s) => s.setPage);
 	const showToast = useUIStore((s) => s.showToast);
@@ -113,7 +117,10 @@ export function Nav() {
 		<>
 			<header className={styles.nav}>
 				<div className={styles.inner}>
-					<a href="/" className={styles.brand}>{tr("heed")}</a>
+					<div className={styles.brandGroup}>
+						<a href="/" className={styles.brand}>{tr("heed")}</a>
+						<span role="note" className={styles.version} aria-label={version ? `${tr("Installed version: {version}", { version })}${developmentLabel}` : undefined}>{versionLabel}</span>
+					</div>
 					<nav className={styles.navigation} aria-label={tr("Main navigation")} ref={pagesRegion}
 						onKeyDown={(event) => { if (event.key === "Escape" && pagesOpen) { event.preventDefault(); closePages(); } }}>
 						<button ref={pagesButton} className={styles.pagesButton} aria-expanded={pagesOpen} aria-controls="heed-pages"

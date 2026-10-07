@@ -1,3 +1,4 @@
+import {aiWaitingMessage} from '@/lib/ai-waiting';
 import {useEffect,useRef,useState} from 'react';
 import {tagKey,type LibraryChatScope,type LibraryChatContext,type ChatCommand,type LibraryChatTurn,type TranscriptEvidence} from '@heed/shared';
 import {libraryChatApi} from '@/api/library-chat';
@@ -55,7 +56,7 @@ export function LibraryChat(){
   <div className={styles.history} aria-live="polite">{context?.thread.turns.map(turn=><article className={styles.turn} key={turn.id}><p className={styles.question}>{turn.question}</p><small>{turn.model} · {turn.snapshot.sources.length} {tr('Meetings')}</small>
    {turn.stale&&<p className={styles.warning}>{tr('Historical answer: labels, meetings or transcripts changed.')}</p>}
    <details><summary>{tr('Sources when this question was asked')}</summary><ul>{turn.snapshot.sources.map(source=><li key={source.sessionId}>{source.title} · {source.tags.join(' · ')}</li>)}</ul></details>
-   {(turn.status==='running'||turn.status==='waiting')&&<div><p role="status">{tr(turn.status==='waiting'?'Waiting for recording, transcription or local AI resources.':'Reviewing transcript evidence…')}</p><button disabled={saving} onClick={()=>void mutate({action:'cancel',turnId:turn.id})}>{tr('Cancel answer')}</button></div>}
+   {(turn.status==='running'||turn.status==='waiting')&&<div><p role="status">{tr(turn.status==='waiting'?aiWaitingMessage(turn.waitingReason):'Reviewing transcript evidence…')}</p><button disabled={saving} onClick={()=>void mutate({action:'cancel',turnId:turn.id})}>{tr('Cancel answer')}</button></div>}
    {(turn.status==='failed'||turn.status==='cancelled')&&<div><p role="status">{errorText(turn.reason||'interrupted')}</p><button disabled={saving||turn.stale} onClick={()=>void mutate({action:'retry',turnId:turn.id,...(model?{model}:{})})}>{tr('Retry answer')}</button></div>}
    {turn.status==='completed'&&turn.answer&&<div>{!turn.answer.claims.length&&<p>{tr(turn.answer.coverage.complete?'Not found in the selected meetings.':'No supporting evidence found in the reviewed excerpts.')}</p>}
     {turn.answer.claims.map((claim,index)=><div className={styles.claim} key={index}><p>{claim.text}</p><div className={styles.citations}>{claim.citations.map(citation=><details key={citation.id}><summary>{turn.snapshot.sources.find(source=>source.sessionId===citation.sessionId)?.title} · {citation.speaker||tr('Transcript')}</summary><blockquote>{citation.quote}</blockquote><button disabled={saving||turn.stale} onClick={()=>void openCitation(turn,citation)}>{turn.snapshot.sources.find(source=>source.sessionId===citation.sessionId)?.title} · {citation.start===null?tr('Open source text'):fmtDuration(Math.floor(citation.start))}</button></details>)}</div></div>)}
