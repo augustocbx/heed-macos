@@ -42,6 +42,7 @@ import { track, gracefulStop, installShutdownHooks } from "./lib/process.ts";
 import { sseResponse } from "./lib/sse.ts";
 import { sessionAudioResponse } from "./lib/session-audio.ts";
 import { SessionTags, TagError, tagResponse } from "./lib/session-tags.ts";
+import { TranscriptEditingError } from "./lib/transcript-editing.ts";
 const sessionTags = new SessionTags(SESSIONS_DIR);
 import { RecordingCoordinator } from "./lib/recording-coordinator.ts";
 import {ProcessingMaintenance, retainProcessingStream} from './lib/processing-maintenance.ts';
@@ -1144,7 +1145,7 @@ async function handleDesktopFloat(): Promise<Response> {
 // --- Sessions CRUD ---
 function sessionError(error: unknown): Response {
  const message = error instanceof Error ? error.message : "Could not save the meeting.";
- const status = error instanceof TagError ? error.status : (error as { code?: string })?.code || error instanceof SyntaxError ? 500 : /not found/i.test(message) ? 404 : /changed|replacement|already running/i.test(message) ? 409 : 400;
+ const status = error instanceof TagError || error instanceof TranscriptEditingError ? error.status : (error as { code?: string })?.code || error instanceof SyntaxError ? 500 : /not found/i.test(message) ? 404 : /changed|replacement|already running/i.test(message) ? 409 : 400;
  return Response.json({error:message},{status});
 }
 function handleListSessions(): Response { try { return Response.json(notesService.list()); } catch (error) { return sessionError(error); } }

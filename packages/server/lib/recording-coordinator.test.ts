@@ -5,6 +5,8 @@ import { join } from "node:path";
 import type { Session } from "@heed/shared";
 import { atomicWriteJson } from "./atomic-json";
 import { RecordingCoordinator, type RecordingAdapter } from "./recording-coordinator";
+import { AutomaticNotesService } from "./automatic-notes";
+import { transcriptGuard } from "./session-tags";
 
 const directories: string[] = [];
 const finalDiagnostics = () => {
@@ -27,6 +29,22 @@ function setup(overrides: Partial<RecordingAdapter> = {}) {
   return {coordinator:new RecordingCoordinator({manifestPath,adapter}),adapter,manifestPath,capture,saved};
 }
 describe("backend recording lifecycle", () => {
+  test("recovery after a completed-manifest fault returns an already corrected atomic session", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "heed-coordinator-source-")); directories.push(directory);
+    const notes = new AutomaticNotesService({ sessionsDir: join(directory, "sessions"), getSettings: () => ({ enabled: false, templateId: "meeting", model: null, language: "meeting" }), loadTemplate: () => undefined, generate: async () => "", isBusy: () => false });
+    const base = setup({ save: session => notes.create(session) }); let failed = false;
+    const coordinator = new RecordingCoordinator({ manifestPath: base.manifestPath, adapter: base.adapter, write(path, value) {
+      if ((value as any).snapshot.state === "completed" && !failed) { failed = true; throw Error("Synthetic completed-manifest fault"); }
+      atomicWriteJson(path, value);
+    } });
+    const active = await coordinator.start("source-start", "both");
+    await expect(coordinator.stop("source-stop", active.meetingId!)).rejects.toThrow("Synthetic completed-manifest fault");
+    const saved = notes.get(active.meetingId!)!; expect(saved.transcriptVersion).toBe(1);
+    const corrected = notes.commitTranscript(saved.id, { ...transcriptGuard(saved), requestId: "correction", action: "edit", target: { kind: "segment", index: 0 }, text: "Vamos entregar na sexta-feira." });
+    const recovered = new RecordingCoordinator({ manifestPath: base.manifestPath, adapter: base.adapter });
+    const completed = await recovered.retry("recover-source", active.meetingId!);
+    expect(completed.session).toEqual(corrected); expect(completed.session?.transcriptVersion).toBe(2); expect(notes.list()).toHaveLength(1);
+  });
   test("diagnostics and fallback attribution survive checkpoint recovery without losing manual names",async()=>{
     let fail=true;let finalizations=0;
     const base=setup({save:s=>{if(fail)throw new Error("disk full");return {...s,id:s.id!} as Session;},finalize:async()=>{finalizations++;return base.capture;}});
