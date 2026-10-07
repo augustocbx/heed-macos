@@ -3,7 +3,7 @@ import type { Session } from "../../shared/types/session";
 import { sourceRevision } from "../../shared/lib/transcript-source";
 import { applyTextCommand } from "./transcript-editing";
 import { portableMeeting, validateMeeting, encode, sha256 } from "./portable-schema";
-import { preparePortableTranscript, sessionFromPortable } from "./portable-transcript";
+import { preparePortableTranscript, sessionFromPortable, validatePortableTranscript } from "./portable-transcript";
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -94,4 +94,18 @@ test('manual and automatic notes capture the actual identity even when no text a
  const middle=notes.patch(initial.id,{...transcriptGuard(initial),speakers:['Intermediate name'],segments:initial.segments.map(segment=>({...segment,speaker:'Intermediate name'}))});const manual=notes.patch(initial.id,{...transcriptGuard(middle),aiNotes:'Manual at intermediate identity'});expect(manual.notesMetadata!.sourceIdentity!.speakers).toEqual(['Intermediate name']);const latest=notes.patch(initial.id,{...transcriptGuard(manual),speakers:['Latest name'],segments:manual.segments.map(segment=>({...segment,speaker:'Latest name'}))});const imported=sessionFromPortable(portableMeeting(latest,meetingId,undefined,2),'other');expect(imported.notesMetadata!.sourceRevision).toBe(manual.transcriptRevision!);expect(imported.notesMetadata!.sourceRevision).not.toBe(latest.transcriptRevision!);expect(imported.notesMetadata!.stale).toBe(true);
  settings.enabled=true;notes.retry(initial.id,{...transcriptGuard(latest),replaceExisting:true,expectedNotesHash:notesHash(latest.aiNotes)});await notes.tick();const generated=notes.get(initial.id)!;expect(generated.notesMetadata!.sourceIdentity!.speakers).toEqual(['Latest name']);expect(generated.notesMetadata!.sourceRevision).toBe(generated.transcriptRevision!);
  }finally{rmSync(dir,{recursive:true,force:true});}
+});
+test('repeated accepted edit/revert identities keep replay work linear without pruning actions',()=>{
+ const a={transcript:'A',language:'en',speakers:[],segments:[]},b={...a,transcript:'B'},before=sourceRevision(a),after=sourceRevision(b),count=2000;
+ let replayReads=0;
+ const history={schemaVersion:1,activeGenerationId:'original',generations:[{...a,id:'original',createdAt:now,origin:'legacy-preserved',duration:1}],edits:Array.from({length:count},(_,i)=>{
+  const change={target:{kind:'document'},before:i%2?'B':'A',get after(){replayReads++;return i%2?'A':'B';}};
+  return {id:`edit-${i}`,generationId:'original',kind:i%2?'revert':'edit',createdAt:now,beforeRevision:i%2?after:before,afterRevision:i%2?before:after,changes:[change]};
+ })};
+ const verified=validatePortableTranscript(a,history,undefined);
+ expect([...verified].sort()).toEqual([before,after].sort());
+ // Count real text accesses instead of imposing a hardware-dependent time limit.
+ expect(replayReads).toBeLessThan(count*20);
+ expect(history.edits).toHaveLength(count);
+ expect(history.edits.at(-1)?.kind).toBe('revert');
 });

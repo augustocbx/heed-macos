@@ -92,7 +92,9 @@ export function validatePortableTranscript(source: SourceState, history: unknown
    // Old unwitnessed identities may be mathematically irrecoverable after a
    // rename. Keep their journal, but never treat the declared hashes as proof.
    if(!verified){for(const node of candidates){const state=materialize(node);if(edit.changes.every((c:any)=>(c.target.kind==='document'?state.transcript:state.segments[c.target.index]?.text)===c.before)){const afterNode={base:node.base,parent:node,changes:edit.changes,sourceIdentity:node.sourceIdentity};additions.push({hash:sourceRevision(materialize(afterNode)),node:afterNode});}}}
-   for(const {hash,node} of additions){branches.set(hash,node);states.push(node);}
+   // A full source hash already identifies the same replayable text and identity.
+   // Retain its first node: edit/revert ABA must not deepen an identical state.
+   for(const {hash,node} of additions)if(!branches.has(hash)){branches.set(hash,node);states.push(node);}
   }
  }
  if(metadata!==undefined){
