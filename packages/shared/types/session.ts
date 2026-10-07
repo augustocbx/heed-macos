@@ -1,5 +1,6 @@
 import type { Segment, TranscriptionDiagnostics } from "./speaker.ts";
 import type { NotesJob, NotesMetadata } from "./notes.ts";
+import type { TranscriptEditingState } from "./transcript-editing.ts";
 
 export interface SessionFiles {
 	wav?: string;
@@ -32,12 +33,16 @@ export interface Session {
  transcriptFinalized?: boolean;
  transcriptionDiagnostics?: TranscriptionDiagnostics;
  transcriptRevision?: string;
+ /** Device-local monotonic concurrency token; absent legacy records normalize to zero. */
+ transcriptVersion?: number;
+ transcriptEditing?: TranscriptEditingState;
  notesMetadata?: NotesMetadata;
  notesJobs?: Record<string, NotesJob>;
 }
 
 export type SessionPatch = Partial<Omit<Session, "id" | "createdAt">> & {
  expectedTranscriptRevision?: string;
+ expectedTranscriptVersion?: number;
  expectedNotes?: string;
 };
 

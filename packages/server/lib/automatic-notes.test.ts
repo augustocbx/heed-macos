@@ -6,7 +6,7 @@ import { AutomaticNotesService, notesHash } from "./automatic-notes";
 import type { AutomaticNotesSettings } from "../../shared/types/notes";
 import type { Session } from "../../shared/types/session";
 import type { TranscriptionDiagnostics } from "../../shared/types/speaker";
-import { SessionTags } from "./session-tags";
+import { SessionTags, transcriptGuard } from "./session-tags";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -45,12 +45,12 @@ for (const useTagStore of [false,true]) {
  test(`guarded retranscription diagnostics persist through ${storage} and unrelated edits preserve them`,()=>{
   const {service,sessionsDir}=fixture({},useTagStore);
   const initial=service.create(meeting({tags:["Work"],aiNotes:"Manual notes"}));
-  const revised=service.patch(initial.id,{transcript:"Updated full-audio transcript",transcriptionDiagnostics:privateDiagnostics(),expectedTranscriptRevision:initial.transcriptRevision});
+  const revised=service.replaceAccepted(initial.id,transcriptGuard(initial),current=>({...current,transcript:"Updated full-audio transcript",segments:current.segments.map(segment=>({...segment,text:"Updated full-audio transcript"})),transcriptionDiagnostics:privateDiagnostics()}));
   const diagnostic=transcriptionDiagnostics();
   expect(revised.transcriptionDiagnostics).toEqual(diagnostic);
   expect(revised.transcriptRevision).not.toBe(initial.transcriptRevision);
   const before=readFileSync(join(sessionsDir,`${initial.id}.json`),"utf8");
-  expect(() => service.patch(initial.id,{transcript:"Stale result",transcriptionDiagnostics:privateDiagnostics(),expectedTranscriptRevision:initial.transcriptRevision})).toThrow("Transcript changed");
+  expect(() => service.replaceAccepted(initial.id,transcriptGuard(initial),current=>({...current,transcript:"Stale result",transcriptionDiagnostics:privateDiagnostics()}))).toThrow("Transcript changed");
   expect(readFileSync(join(sessionsDir,`${initial.id}.json`),"utf8")).toBe(before);
   const renamed=service.patch(initial.id,{title:"Renamed meeting"});
   expect(renamed.transcriptionDiagnostics).toEqual(diagnostic);
@@ -67,7 +67,7 @@ for (const useTagStore of [false,true]) {
   const invalid=JSON.parse('{"version":2,"workerError":"private path"}');
   const created=service.create(meeting({files:{wav:"invalid.wav"},transcriptionDiagnostics:invalid}));
   expect(service.get(created.id)).not.toHaveProperty("transcriptionDiagnostics");
-  const patched=service.patch(initial.id,{transcriptionDiagnostics:invalid,expectedTranscriptRevision:initial.transcriptRevision});
+  const patched=service.patch(initial.id,{transcriptionDiagnostics:invalid,...transcriptGuard(initial)});
   expect(patched).not.toHaveProperty("transcriptionDiagnostics");
   expect(service.get(initial.id)).not.toHaveProperty("transcriptionDiagnostics");
  });
@@ -80,7 +80,7 @@ test("enqueues only enabled saved final transcripts and never backfills legacy r
  settings.enabled = true;
  const live = service.create(meeting({ files: { wav: "live.wav" }, transcriptFinalized: false }));
  expect(live.notesJobs).toBeUndefined();
- const final = service.patch(live.id, { transcriptFinalized: true });
+ const final = service.patch(live.id, { transcriptFinalized: true, ...transcriptGuard(live) });
  expect(job(final)).toMatchObject({ status: "queued", language: "pt", templateName: "Meeting", attempts: 0 });
  writeFileSync(join(sessionsDir, "legacy.json"), JSON.stringify({ ...meeting(), id: "legacy", transcriptFinalized: undefined }));
  service.recover();
@@ -90,7 +90,7 @@ test("enqueues only enabled saved final transcripts and never backfills legacy r
 test("recording identity survives duplicate POSTs and protects newer notes and transcript", async () => {
  const { service } = fixture();
  const first = service.create(meeting({ transcriptFinalized: false }));
- const final = service.patch(first.id, { transcriptFinalized: true });
+ const final = service.patch(first.id, { transcriptFinalized: true, ...transcriptGuard(first) });
  await service.tick();
  const saved = service.get(final.id)!;
  expect(service.create(meeting({ transcript: "old", aiNotes: "", transcriptFinalized: false }))).toEqual(saved);
@@ -110,15 +110,15 @@ test("completion saves provenance and metadata cannot be injected by ordinary up
 test("manual edits and speaker revisions reject late generated results", async () => {
  const pending = deferred(); const { service } = fixture({ generate: () => pending.promise });
  const session = service.create(meeting()); const run = service.tick();
- service.patch(session.id, { aiNotes: "Manually written", expectedTranscriptRevision: session.transcriptRevision, expectedNotes: "" });
+ service.patch(session.id, { aiNotes: "Manually written", ...transcriptGuard(session), expectedNotes: "" });
  pending.resolve("Late automatic notes"); await run;
  const manual = service.get(session.id)!;
  expect(manual.aiNotes).toBe("Manually written"); expect(manual.notesMetadata!.origin).toBe("manual");
- const revised = service.patch(session.id, { speakers: ["Beatriz"], segments: [{ speaker: "Beatriz", start: 0, end: 2, text: session.transcript }] });
+ const revised = service.patch(session.id, { speakers: ["Beatriz"], segments: [{ speaker: "Beatriz", start: 0, end: 2, text: session.transcript }], ...transcriptGuard(session) });
  expect(revised.notesMetadata!.stale).toBe(true);
  expect(Object.values(revised.notesJobs!)).toHaveLength(2);
  expect(Object.values(revised.notesJobs!).every(j => j.status !== "running")).toBe(true);
- expect(() => service.patch(session.id, { aiNotes: "Wrong source", expectedTranscriptRevision: session.transcriptRevision })).toThrow("Transcript changed");
+ expect(() => service.patch(session.id, { aiNotes: "Wrong source", ...transcriptGuard(session) })).toThrow("Transcript changed");
  expect(() => service.patch(session.id, { aiNotes: "Wrong notes", expectedNotes: "other" })).toThrow("Notes changed");
 });
 test("existing notes require explicit replacement with matching notes hash", async () => {
@@ -170,7 +170,7 @@ test("incomplete source and unsupported language persist retryable failures inde
 });
 test("speaker channel changes supersede notes and minimal legacy sessions can be renamed safely", async () => {
  const { service, sessionsDir } = fixture(); const first = service.create(meeting()); await service.tick();
- const changed = service.patch(first.id, { segments: first.segments.map(segment => ({ ...segment, channel: "mic" })) });
+ const changed = service.replaceAccepted(first.id, transcriptGuard(first), current=>({...current,segments:first.segments.map(segment=>({...segment,channel:"mic"}))}));
  expect(changed.transcriptRevision).not.toBe(first.transcriptRevision); expect(changed.notesMetadata!.stale).toBe(true);
  writeFileSync(join(sessionsDir, "minimal.json"), JSON.stringify({ id: "minimal", transcript: "Legacy", aiNotes: "", language: "en" }));
  expect(service.patch("minimal", { title: "Minimal legacy" }).title).toBe("Minimal legacy");
@@ -179,7 +179,7 @@ test("session reads reject symlinks outside the session directory", () => {
  const { service, sessionsDir } = fixture(); const outside = mkdtempSync(join(tmpdir(), "heed-outside-test-")); dirs.push(outside);
  const target = join(outside, "private.json"); writeFileSync(target, JSON.stringify(meeting()));
  require("node:fs").symlinkSync(target, join(sessionsDir, "linked.json"));
- expect(() => service.get("linked")).toThrow("Invalid session file"); expect(service.list()).toHaveLength(0);
+ expect(() => service.get("linked")).toThrow("Invalid meeting file"); expect(() => service.list()).toThrow("Invalid meeting file");
 });
 test("transport failures are persisted with stable reasons and retry reuses the logical job", async () => {
  let unavailable = true; const { service } = fixture({ generate: async () => { if (unavailable) throw new Error("Synthetic transport private detail"); return "Successful retry"; } });
@@ -199,11 +199,11 @@ test("legacy notes receive revision guards without backfill and become stale aft
  writeFileSync(join(sessionsDir, "legacy-notes.json"), JSON.stringify(legacy));
  const loaded = service.get("legacy-notes")!;
  expect(loaded.transcriptRevision).toBeString();
- expect(loaded.notesMetadata).toMatchObject({ origin: "manual", sourceRevision: loaded.transcriptRevision, stale: false });
+ expect(loaded.notesMetadata).toMatchObject({ origin: "manual", sourceRevision: null, stale: true });
  expect(loaded.notesJobs).toBeUndefined();
- const changed = service.patch(loaded.id, { transcript: "Updated authoritative transcript" });
+ const changed = service.patch(loaded.id, { transcript: "Updated authoritative transcript", segments: [], ...transcriptGuard(loaded) });
  expect(changed.notesMetadata!.stale).toBe(true); expect(changed.notesJobs).toBeUndefined();
- expect(() => service.patch(loaded.id, { aiNotes: "Late manual result", expectedTranscriptRevision: loaded.transcriptRevision, expectedNotes: loaded.aiNotes })).toThrow("Transcript changed");
+ expect(() => service.patch(loaded.id, { aiNotes: "Late manual result", ...transcriptGuard(loaded), expectedNotes: loaded.aiNotes })).toThrow("Transcript changed");
  expect(service.get(loaded.id)!.aiNotes).toBe("Saved legacy notes");
 });
 test("restart completes the recovered job and rejects the previous worker result", async () => {
@@ -228,19 +228,20 @@ test("queued custom prompts remain immutable while output language respects ever
 });
 test("undoing a speaker revision requeues the same superseded job identity", async () => {
  const { service } = fixture(); const initial = service.create(meeting());
- service.patch(initial.id, { speakers: ["Beatriz"], segments: initial.segments.map(segment => ({ ...segment, speaker: "Beatriz" })) });
- const undo = service.patch(initial.id, { speakers: initial.speakers, segments: initial.segments });
+ const renamed=service.patch(initial.id, { speakers: ["Beatriz"], segments: initial.segments.map(segment => ({ ...segment, speaker: "Beatriz" })), ...transcriptGuard(initial) });
+ const undo = service.patch(initial.id, { speakers: initial.speakers, segments: initial.segments, ...transcriptGuard(renamed) });
  expect(undo.transcriptRevision).toBe(initial.transcriptRevision);
  expect(undo.notesJobs![job(initial).id]!.status).toBe("queued");
  await service.tick(); expect(service.get(initial.id)!.aiNotes).toContain("Decisions");
  expect(service.get(initial.id)!.notesJobs![job(initial).id]!.status).toBe("completed");
 });
-test("undoing source edits restores freshness when saved notes match their source revision", async () => {
+test("undoing source edits preserves earlier notes and their stale status until regeneration", async () => {
  const { service } = fixture(); const initial = service.create(meeting()); await service.tick();
  const before = service.get(initial.id)!;
- expect(service.patch(initial.id, { transcript: "New source" }).notesMetadata!.stale).toBe(true);
- const undone = service.patch(initial.id, { transcript: initial.transcript });
- expect(undone.notesMetadata!.stale).toBe(false); expect(undone.aiNotes).toBe(before.aiNotes);
+ const corrected=service.commitTranscript(initial.id,{...transcriptGuard(initial),requestId:"edit",action:"edit",target:{kind:"segment",index:0},text:"New source"});
+ expect(corrected.notesMetadata!.stale).toBe(true);
+ const undone = service.commitTranscript(initial.id,{...transcriptGuard(corrected),requestId:"undo",action:"revert",editId:corrected.transcriptEditing!.edits[0]!.id});
+ expect(undone.notesMetadata!.stale).toBe(true); expect(undone.aiNotes).toBe(before.aiNotes);
  expect(undone.notesJobs![job(initial).id]!.status).toBe("completed");
 });
 

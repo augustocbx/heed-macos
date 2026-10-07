@@ -22,6 +22,7 @@ export const TEMPLATES_DIR = join(APP_DIR, "templates");
  * unknown keys on write so the old CLI tool keeps working.
  */
 export interface TrxConfig {
+ real_time_transcription?: boolean;
 	storage_limit_bytes?: number;
 	ui_locale?: "en" | "pt-BR" | "fr" | "de";
 	ollama_model?: string;
@@ -56,4 +57,9 @@ export function saveConfig(patch: Partial<TrxConfig>): void {
 export function micLabel(): string {
 	const n = (loadConfig().user_name || "").trim();
 	return n || "Me";
+}
+
+/** Only an explicit device-local false disables preview; legacy/invalid values default on. */
+export function realTimeTranscription(config: TrxConfig = loadConfig()): boolean {
+ return config.real_time_transcription !== false;
 }
