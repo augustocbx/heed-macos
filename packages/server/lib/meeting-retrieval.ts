@@ -22,6 +22,7 @@ export class MeetingRetriever {
  private unsubscribe:()=>void;
  constructor(private options:Options){this.unsubscribe=options.store.subscribeCommitted(change=>{if(change.kind==='invalidate')this.clear();},()=>this.clear());}
  private clear(){this.cache.clear();this.cacheBytes=0;}
+ invalidateCache(){this.clear();}
  private check(snapshot:RetrievalSnapshot,signal?:AbortSignal){signal?.throwIfAborted();if(this.closed)throw new RetrievalUnavailableError();this.options.catalog.validate(snapshot);}
  private guard(stamp:RetrievalSourceStamp):Session {
   const session=this.options.store.read(stamp.sessionId,this.options.policy.sourceRecordBytes);if(!stampMatches(session,stamp))throw new RetrievalUnavailableError();return session;

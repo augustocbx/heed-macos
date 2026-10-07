@@ -1,5 +1,5 @@
 import {afterAll,beforeAll,expect,test} from 'bun:test';
-import {mkdtempSync,mkdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,readFileSync,rmSync,writeFileSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 
@@ -29,14 +29,25 @@ test('settings persist the decimal default, preserve changes after restart, and 
 test('reductions review eligible local media and protect transcripts; changed previews fail closed',async()=>{
  writeFileSync(join(root,'media','old.wav'),'x'.repeat(1_100_000));
  const created=await fetch(`${base}/api/sessions`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'quota-text',transcript:'x'.repeat(1_100_000),transcriptFinalized:true,files:{wav:join(root,'media','old.wav')}})});expect(created.status).toBe(200);
+ // A completed disposable index must not permanently protect derived bytes.
+ const pointer=join(root,'library/indexes/retrieval/active.json');
+ const indexed=async()=>{const deadline=Date.now()+8000;while(Date.now()<deadline){const storage=(await request('')).body;if(existsSync(pointer)&&storage.reservedBytes===0&&storage.categories.indexes>1_000_000)return;await Bun.sleep(20);}throw Error('Real retrieval index did not finish');};await indexed();
+ expect(existsSync(pointer)).toBe(true);expect((await request('')).body.reservedBytes).toBe(0);
+ const sourcePath=join(root,'sessions/quota-text.json'),sourceBytes=readFileSync(sourcePath),beforeCache=(await request('')).body,cacheOnlyLimit=beforeCache.usedBytes-1;
+ const cacheOnly=await request('/preview',{limitBytes:cacheOnlyLimit});expect(cacheOnly.status).toBe(200);expect(cacheOnly.body.removals).toEqual([]);expect(cacheOnly.body.derivedCache.bytes).toBe(beforeCache.categories.indexes);expect(cacheOnly.body.derivedCache.files).toBe(2);
+ expect((await request('/settings',{limitBytes:cacheOnlyLimit,token:cacheOnly.body.token})).status).toBe(200);expect(existsSync(pointer)).toBe(false);expect((await request('')).body.categories.indexes).toBe(0);expect(readFileSync(join(root,'media','old.wav')).length).toBe(1_100_000);expect(readFileSync(sourcePath)).toEqual(sourceBytes);
+ const expanded=await request('/preview',{limitBytes:3_000_000_000});expect((await request('/settings',{limitBytes:3_000_000_000,token:expanded.body.token})).status).toBe(200);await indexed();
+ const unrelated=join(root,'library/indexes/provider-catalog.json');writeFileSync(unrelated,'unrelated provider index');
  expect((await request('/preview',{limitBytes:1_048_576})).status).toBe(409);
- const preview=await request('/preview',{limitBytes:1_500_000});expect(preview.body.removals).toHaveLength(1);
+ const preview=await request('/preview',{limitBytes:1_500_000});expect(preview.status).toBe(200);expect(preview.body.removals).toHaveLength(1);expect(preview.body.removals[0].path).toBe(join(root,'media','old.wav'));expect(preview.body.derivedCache.bytes).toBeGreaterThan(1_000_000);expect(preview.body.derivedCache.files).toBeGreaterThan(0);expect(existsSync(pointer)).toBe(true);
  writeFileSync(join(root,'media','later.wav'),'x');expect((await request('/settings',{limitBytes:1_500_000,token:preview.body.token})).status).toBe(409);
+ expect(existsSync(pointer)).toBe(true);expect(readFileSync(unrelated,'utf8')).toBe('unrelated provider index');
  expect((await request('')).body.limitBytes).toBe(3_000_000_000);
  const reviewed=await request('/preview',{limitBytes:1_500_000});expect((await request('/settings',{limitBytes:1_500_000,token:reviewed.body.token})).status).toBe(200);
  const sessions=await (await fetch(`${base}/api/sessions`)).json();expect(sessions.find((s:any)=>s.id==='quota-text')).toMatchObject({transcript:'x'.repeat(1_100_000),audioExpired:true,files:{wav:''}});
-
-});
+ expect(existsSync(pointer)).toBe(false);expect(readFileSync(unrelated,'utf8')).toBe('unrelated provider index');expect((await request('')).body.reservedBytes).toBe(0);
+ app.kill();await app.exited;await start();await Bun.sleep(1100);expect(existsSync(pointer)).toBe(false);expect((await request('')).body.limitBytes).toBe(1_500_000);expect((await request('')).body.reservedBytes).toBe(0);expect(readFileSync(unrelated,'utf8')).toBe('unrelated provider index');
+},15000);
 
 test('quota-blocked uploads reject before disk staging and hostile origins cannot prepare local media',async()=>{const form=new FormData();form.set('file',new File([Buffer.alloc(16000)],'synthetic.wav'));const response=await fetch(`${base}/api/transcribe`,{method:'POST',body:form});expect(response.status).toBe(409);expect((await response.json()).error).toContain('quota');expect((await request('')).body.reservedBytes).toBe(0);const external=await fetch(`${base}/api/transcribe`,{method:'POST',headers:{Origin:'https://outside.example','Content-Type':'application/json'},body:JSON.stringify({input:'synthetic.wav'})});expect(external.status).toBe(403);});
 

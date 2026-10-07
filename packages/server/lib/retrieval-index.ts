@@ -1,6 +1,6 @@
 import {Database} from 'bun:sqlite';
 import {randomUUID} from 'node:crypto';
-import {chmodSync,closeSync,constants,fstatSync,fsyncSync,lstatSync,mkdirSync,openSync,readdirSync,readSync,rmSync,existsSync} from 'node:fs';
+import {chmodSync,closeSync,constants,fstatSync,fsyncSync,lstatSync,mkdirSync,openSync,readdirSync,readSync,rmSync,rmdirSync,existsSync} from 'node:fs';
 import {join} from 'node:path';
 import type {RetrievalSnapshot,RetrievalSourceStamp,RetrievalPartialReason,RetrievalResult,RetrievalHit} from '../../shared/types/retrieval';
 import {sourceRevision} from '../../shared/lib/transcript-source';
@@ -354,6 +354,29 @@ export class RetrievalIndex {
  }
  private retire(g:Generation){g.retired=true;this.retired.add(g);if(!g.readers)this.dispose(g);}
  private dispose(g:Generation){g.reader.close();g.writer.close();this.retired.delete(g);rmSync(g.path,{recursive:true,force:true});}
+ /** Exact single-link local cache files, only after every reader/writer has left. */
+ disposableFiles():string[]{
+  if(this.closed||this.running||this.querying||this.claims.size||this.stage||this.retired.size||this.uncertainPublication||!this.active||this.active.readers||this.active.writer.inTransaction)return [];
+  try{
+   if(this.selectedGeneration()!==this.active.id)return [];
+   const files=[this.pointer(),...readdirSync(this.active.path).map(name=>join(this.active!.path,name))];
+   this.ownedBytes();
+   if(files.some(path=>{const stat=lstatSync(path);return !stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1;}))return [];
+   return files.sort();
+  }catch{return [];}
+ }
+ /** Synchronous quota token validation precedes this whole-generation retirement. */
+ reclaim(files:string[]):void {
+  const eligible=this.disposableFiles();if(!files.length||JSON.stringify([...files].sort())!==JSON.stringify(eligible))throw new Error('Wait for active retrieval before reclaiming its cache');
+  const g=this.active!;
+  // Remove the pointer first: interruption may leave an unreferenced derived
+  // directory, never a pointer to a partly deleted generation.
+  rmSync(this.pointer());this.rebuildNeeded=true;this.syncDirectory(this.options.directory);
+  g.reader.close();g.writer.close();this.active=undefined;this.indexed.clear();this.partial.clear();this.pending.clear();this.failures.clear();
+  for(const path of eligible)if(path!==this.pointer())rmSync(path);
+  // Never recursively remove an unreviewed file injected into the directory.
+  rmdirSync(g.path);this.syncDirectory(this.options.directory);
+ }
  close(){
   if(this.closed)return;this.closed=true;this.unsubscribe();
   if(this.stage){try{this.stage.writer.exec('ROLLBACK');}catch{}this.stage.reader.close();this.stage.writer.close();rmSync(this.stage.path,{recursive:true,force:true});this.stage=undefined;}

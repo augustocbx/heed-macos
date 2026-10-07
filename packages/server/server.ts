@@ -109,7 +109,7 @@ function pruneAudio() {
  for (const [path, until] of retainedProcessing) if (until < Date.now()) retainedProcessing.delete(path);
  const usage=managedQuota.snapshot();
  if(usage.usedBytes+usage.reservedBytes>usage.limitBytes){
-  try{const preview=managedQuota.preview(usage.limitBytes);if(preview.removals.length)managedQuota.apply(usage.limitBytes,preview.token);}catch(error){console.error('Managed storage cleanup paused:',(error as Error).message);}
+  try{const preview=managedQuota.preview(usage.limitBytes);if(preview.removals.length||preview.derivedCache?.files)managedQuota.apply(usage.limitBytes,preview.token);}catch(error){console.error('Managed storage cleanup paused:',(error as Error).message);}
  }
  const current=managedQuota.snapshot();return {...current,bytes:current.usedBytes,removed:[],overLimit:current.usedBytes+current.reservedBytes>current.limitBytes};
 }
@@ -161,8 +161,11 @@ let icloudConnections:ICloudConnections|undefined;
 let synchronizationUnavailable=false;
 const synchronizationProtectedPaths=()=>{if(synchronizationUnavailable)return [UPLOAD_DIR,join(LIBRARY_DIR,'media')];try{return [...disabledCloudProtectedPaths(APP_DIR,LIBRARY_DIR,[UPLOAD_DIR,join(LIBRARY_DIR,'media')]),...googleProtectedPaths(),...(icloudConnections?.protectedLocalPaths()||[]),...(smbConnections?.protectedLocalPaths()||[]),...(oneDriveConnections?.protectedLocalPaths()||[]),...(portableRuntime?.protectedPaths([...(icloudConnections?.protectedRevisionIds()||[]),...(smbConnections?.protectedRevisionIds()||[]),...(oneDriveConnections?.protectedRevisionIds()||[])])||[])];}catch{synchronizationUnavailable=true;return [UPLOAD_DIR,join(LIBRARY_DIR,'media')];}};
 const captureProtectedPaths=()=>[...retainedProcessing.keys(),...((recorderPath && (recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning))?[recorderPath]:[])];
+let quotaRetrievalOwner:RetrievalIndex|undefined;
 const managedQuota=createAppQuota({
  recordingsDir:UPLOAD_DIR,
+ disposableFiles:()=>quotaRetrievalOwner?.disposableFiles()??[],
+ disposeFiles:paths=>{if(!quotaRetrievalOwner)throw Error('Retrieval cache is unavailable');quotaRetrievalOwner.reclaim(paths);meetingRetriever.invalidateCache();},
  protectedPaths:()=>[...captureProtectedPaths(),...synchronizationProtectedPaths()],
  onEvicted:paths=>{
   sessionTags.recover();
@@ -202,7 +205,10 @@ async function handleStorage(req:Request):Promise<Response>{
   if(req.method==='GET' && path==='/api/storage')return Response.json(managedQuota.snapshot());
   if(req.method!=='POST')return new Response(null,{status:405});
   const body=await req.json();if(!validManagedLimit(body.limitBytes))return Response.json({error:'Choose a storage limit between 0.001048576 and 8000 GB using whole bytes.'},{status:400});
-  if(path==='/api/storage/preview')return Response.json(managedQuota.preview(body.limitBytes));
+  if(path==='/api/storage/preview'){
+   if(body.limitBytes<managedQuota.snapshot().limitBytes)await preemptRetrieval();
+   return Response.json(managedQuota.preview(body.limitBytes));
+  }
   if(path==='/api/storage/settings'){
    if(body.limitBytes<managedQuota.snapshot().limitBytes && audioWorkBusy())return Response.json({error:'Wait for active recording and finalization before lowering the storage limit.'},{status:409});
    return Response.json(managedQuota.apply(body.limitBytes,body.token));
@@ -2555,7 +2561,7 @@ notesService.recover();
 function retrievalMandatoryBusy(){return processingMaintenance.blocked()||audioWorkBusy()||recordingCoordinator.snapshot().state==='recording'||!!manualNotesController||notesService.busy||tasksService.busy;}
 function retrievalMaintenanceBusy(){return retrievalMandatoryBusy()||chatService.busy||libraryChatService.busy||chatPending();}
 const retrievalCatalog=new RetrievalCatalog({store:sessionTags,policy:defaultRetrievalPolicy,now:()=>performance.now(),isBusy:()=>retrievalMandatoryBusy()||chatService.busy||libraryChatService.busy});
-const retrievalIndex=new RetrievalIndex({directory:join(LIBRARY_DIR,'indexes','retrieval'),catalog:retrievalCatalog,store:sessionTags,quota:managedQuota,policy:defaultRetrievalPolicy,now:()=>performance.now(),isBusy:retrievalMaintenanceBusy,isQueryBusy:retrievalMandatoryBusy});
+const retrievalIndex=quotaRetrievalOwner=new RetrievalIndex({directory:join(LIBRARY_DIR,'indexes','retrieval'),catalog:retrievalCatalog,store:sessionTags,quota:managedQuota,policy:defaultRetrievalPolicy,now:()=>performance.now(),isBusy:retrievalMaintenanceBusy,isQueryBusy:retrievalMandatoryBusy});
 const meetingRetriever=new MeetingRetriever({catalog:retrievalCatalog,index:retrievalIndex,store:sessionTags,policy:defaultRetrievalPolicy,now:()=>performance.now()});
 async function preemptRetrieval(){retrievalMaintenanceController?.abort();await retrievalMaintenanceDone?.catch(()=>{});}
 function maintainRetrieval(discoveryOnly=false):Promise<void>{

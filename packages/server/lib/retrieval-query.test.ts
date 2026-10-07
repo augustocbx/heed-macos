@@ -1,9 +1,10 @@
 import {afterEach,expect,test} from 'bun:test';
 import {Database} from 'bun:sqlite';
-import {existsSync} from 'node:fs';
+import {existsSync,readFileSync,writeFileSync,linkSync,unlinkSync,renameSync,symlinkSync} from 'node:fs';
 import {join} from 'node:path';
 import {closeRetrievalFixtures,retrievalFixture} from './retrieval-test-utils';
 import {RetrievalUnavailableError} from './retrieval-tokenizer';
+import {transcriptGuard} from './session-tags';
 afterEach(closeRetrievalFixtures);
 test('every posting lookup uses exact eligible stamps and the compound primary-key access path',async()=>{
  const f=await retrievalFixture();f.add('selected','alpha beta',['Work']);f.add('excluded','alpha beta',['Other']);await f.index.tick();
@@ -28,6 +29,27 @@ test('abort and close release a held reader without deleting the active generati
  const f=await retrievalFixture();f.add('meeting-a',Array.from({length:200},()=> 'alpha').join('\n\n'));await f.index.tick();const snapshot=f.snapshot(),generation=f.index.describe(snapshot).generationId!,controller=new AbortController(),original=Bun.sleep;
  let release!:()=>void,entered!:()=>void;const ready=new Promise<void>(resolve=>entered=resolve),barrier=new Promise<void>(resolve=>release=resolve);Bun.sleep=(()=>{entered();return barrier;}) as typeof Bun.sleep;
  let query:Promise<any>|undefined;try{query=f.index.search(snapshot,['alpha'],controller.signal);await ready;f.index.close();controller.abort();release();await expect(query).rejects.toThrow();expect(existsSync(join(f.directory,generation))).toBe(true);expect((f.index as any).querying).toBe(false);}finally{release();Bun.sleep=original;await query?.catch(()=>{});}
+});
+test('quota retirement rejects a held reader before unlink, clears cache and permits a later rebuild',async()=>{
+ const f=await retrievalFixture();f.add('meeting-a',Array.from({length:200},()=> 'alpha').join('\n\n'));await f.index.tick();const snapshot=f.snapshot(),generation=f.index.describe(snapshot).generationId!,paths=f.index.disposableFiles(),source=readFileSync(join(f.root,'sessions/meeting-a.json'));
+ await f.retriever.retrieve(snapshot,'alpha');expect((f.retriever as any).cache.size).toBe(1);
+ const original=Bun.sleep;let entered!:()=>void,release!:()=>void;const ready=new Promise<void>(resolve=>entered=resolve),barrier=new Promise<void>(resolve=>release=resolve);Bun.sleep=(()=>{entered();return barrier;}) as typeof Bun.sleep;
+ let query:Promise<any>|undefined;try{query=f.index.search(snapshot,['alpha']);await ready;expect(f.index.disposableFiles()).toEqual([]);expect(()=>f.index.reclaim(paths)).toThrow('active retrieval');expect(existsSync(join(f.directory,generation))).toBe(true);release();await query;}finally{release();Bun.sleep=original;await query?.catch(()=>{});}
+ f.index.reclaim(paths);f.retriever.invalidateCache();expect((f.retriever as any).cache.size).toBe(0);expect(existsSync(join(f.directory,'active.json'))).toBe(false);expect(existsSync(join(f.directory,generation))).toBe(false);expect(readFileSync(join(f.root,'sessions/meeting-a.json'))).toEqual(source);
+ expect((await f.retriever.retrieve(snapshot,'alpha')).coverage.strategy).toBe('fallback');await f.index.tick();expect(f.index.describe(snapshot).generationId).toBeString();expect(f.index.describe(snapshot).generationId).not.toBe(generation);
+});
+test('quota eligibility excludes unexpected generation data and hard-linked cache files',async()=>{
+ const f=await retrievalFixture();f.add('meeting-a','alpha');await f.index.tick();const generation=f.index.describe(f.snapshot()).generationId!,database=join(f.directory,generation,'index.sqlite'),foreign=join(f.directory,generation,'provider.json');
+ writeFileSync(foreign,'foreign');expect(f.index.disposableFiles()).toEqual([]);expect(()=>f.index.reclaim([database])).toThrow();expect(readFileSync(foreign,'utf8')).toBe('foreign');unlinkSync(foreign);
+ const linked=join(f.root,'provider-index.sqlite');linkSync(database,linked);expect(f.index.disposableFiles()).toEqual([]);expect(()=>f.index.reclaim([database])).toThrow();expect(existsSync(linked)).toBe(true);unlinkSync(linked);expect(f.index.disposableFiles()).toContain(database);
+ const backup=join(f.root,'owned-database.sqlite');renameSync(database,backup);writeFileSync(linked,'foreign target');symlinkSync(linked,database);try{expect(f.index.disposableFiles()).toEqual([]);expect(()=>f.index.reclaim([database])).toThrow();expect(readFileSync(linked,'utf8')).toBe('foreign target');}finally{unlinkSync(database);renameSync(backup,database);}
+});
+test('quota retirement rejects an active update transaction without consuming its claim or accepted text',async()=>{
+ const f=await retrievalFixture();f.add('meeting-a','alpha');await f.index.tick();const paths=f.index.disposableFiles(),generation=f.index.describe(f.snapshot()).generationId!;
+ const current=f.store.read('meeting-a')!;f.store.commitSource(current.id,transcriptGuard(current),()=>({...current,transcript:Array.from({length:200},()=> 'alpha updated').join('\n\n')}));
+ const source=readFileSync(join(f.root,'sessions/meeting-a.json')),original=Bun.sleep,controller=new AbortController();let entered!:()=>void,release!:()=>void;const ready=new Promise<void>(resolve=>entered=resolve),barrier=new Promise<void>(resolve=>release=resolve);Bun.sleep=(()=>{entered();return barrier;}) as typeof Bun.sleep;
+ let update:Promise<void>|undefined;try{update=f.index.tick(controller.signal);await ready;expect(f.quota.snapshot().reservedBytes).toBeGreaterThan(0);expect(f.index.disposableFiles()).toEqual([]);expect(()=>f.index.reclaim(paths)).toThrow();expect(existsSync(join(f.directory,generation))).toBe(true);expect(readFileSync(join(f.root,'sessions/meeting-a.json'))).toEqual(source);controller.abort();release();await expect(update).rejects.toThrow();}finally{release();Bun.sleep=original;await update?.catch(()=>{});}
+ expect(f.quota.snapshot().reservedBytes).toBe(0);expect(f.index.disposableFiles()).toContain(join(f.directory,generation,'index.sqlite'));
 });
 test('a third generation cannot grow while a retired generation has an active reader',async()=>{
  const f=await retrievalFixture();f.add('meeting-a',Array.from({length:200},()=> 'alpha').join('\n\n'));await f.index.tick();const snapshot=f.snapshot(),original=Bun.sleep;let held=false,release!:()=>void,entered!:()=>void;const ready=new Promise<void>(r=>entered=r),barrier=new Promise<void>(r=>release=r);
