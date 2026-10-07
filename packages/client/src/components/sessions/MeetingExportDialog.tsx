@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { MeetingExportFormat, MeetingExportPreview, MeetingExportSelection, Session, TaskView, TranscriptGuard } from '@heed/shared';
 import { useSessionsStore } from '@/stores/sessions';
+import { guardForSession } from '@/lib/acceptedSession';
 import { meetingExportApi } from '@/api/meeting-export';
 import { tasksApi } from '@/api/tasks';
 import { Dialog } from '@/components/layout/Dialog';
@@ -10,10 +11,10 @@ import { startMeetingExport, type MeetingExportArtifact } from '@/lib/export/wor
 import { downloadMeetingExport } from '@/lib/export/download';
 import styles from './MeetingExportDialog.module.css';
 
-// Replaced by #7's shared client guard after its full reviewed branch is integrated.
+// Keep export feedback localized while the shared guard validates displayed tokens.
 function exportGuard(session: Session): TranscriptGuard {
- if (!session.transcriptRevision) throw Error('Refresh the meeting before exporting.');
- return { expectedTranscriptRevision: session.transcriptRevision, expectedTranscriptVersion: session.transcriptVersion ?? 0 };
+ try { return guardForSession(session); }
+ catch { throw Error('Refresh the meeting before exporting.'); }
 }
 type Stage = 'choosing' | 'previewing' | 'review-ready' | 'validating' | 'generating' | 'completed';
 function errorText(error: unknown): string {

@@ -83,3 +83,13 @@ test.each([['pt-BR', 'Exportar PDF ou legendas', 'Visualizar conteúdo seleciona
  useLocaleStore.setState({ locale }); render(<MeetingExportDialog sessionId="meeting" onClose={vi.fn()} />);
  expect(screen.getByRole('dialog', { name: title })).toBeVisible(); await waitFor(() => expect(screen.getByRole('button', { name: action })).toBeEnabled());
 });
+
+test('rejects an invalid displayed source version before requesting an export and gives localized refresh feedback', async () => {
+ useLocaleStore.setState({ locale: 'pt-BR' });
+ useSessionsStore.setState({ sessions: [{ ...session(), transcriptVersion: -1 }] });
+ render(<MeetingExportDialog sessionId="meeting" onClose={vi.fn()} />);
+ await waitFor(() => expect(screen.getByRole('button', { name: 'Visualizar conteúdo selecionado' })).toBeEnabled());
+ fireEvent.click(screen.getByRole('button', { name: 'Visualizar conteúdo selecionado' }));
+ expect(await screen.findByRole('alert')).toHaveTextContent('Atualize a reunião antes de exportar.');
+ expect(mocks.preview).not.toHaveBeenCalled(); expect(mocks.start).not.toHaveBeenCalled();
+});
