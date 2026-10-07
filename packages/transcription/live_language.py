@@ -26,7 +26,7 @@ def model_supports_language(engine_kind, model_name, language):
 
 def path_capability(engine_kind, model_name, mode, loaded, model_revision=None, enabled=True):
     identity = registered_identity(engine_kind, model_name)
-    valid = identity is not None and mode in ("chunk", "full", "stream")
+    valid = identity is not None and mode in ("chunk", "full", "stream") and (mode != "stream" or engine_kind == "parakeet")
     # Native streaming is only represented when selected explicitly; native final has an external detector.
     languages = [language for language in ("en", "pt") if valid and model_supports_language(engine_kind, model_name, language)]
     auto = valid and engine_kind in ("mlx", "ctranslate2") and model_name in MULTILINGUAL
@@ -45,3 +45,26 @@ def language_capabilities(live, final):
     descriptor = {"schemaVersion": 1, "live": live, "final": final}
     key = hashlib.sha256(json.dumps(descriptor, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return {**descriptor, "capabilityKey": key}
+
+
+def validate_live_options(value, enabled):
+    if not isinstance(value, dict) or value.get("realTimeTranscription") is not enabled or value.get("requestedLanguage") not in ("en", "pt"):
+        raise ValueError("Invalid admitted live options")
+    if not enabled:
+        if any(value.get(key) is not None for key in ("effectiveLanguage", "engine", "mode", "initialModel", "initialModelIdentity")) or value.get("compatibleModels") != []:
+            raise ValueError("Disabled preview cannot carry inference options")
+        return dict(value)
+    kind, model, language = value.get("engine"), value.get("initialModel"), value.get("effectiveLanguage")
+    identity = registered_identity(kind, model)
+    if language != value["requestedLanguage"] or not model_supports_language(kind, model, language) or identity != value.get("initialModelIdentity") or value.get("mode") not in ("chunk", "full", "stream") or ((kind == "parakeet") != (value.get("mode") == "stream")):
+        raise ValueError("Unsupported admitted preview identity or language")
+    key = value.get("capabilityKey")
+    if not isinstance(key, str) or len(key) != 64 or any(char not in "0123456789abcdef" for char in key):
+        raise ValueError("Invalid admitted capability key")
+    models = value.get("compatibleModels")
+    if not isinstance(models, list) or not models or len(models) > 20 or identity not in models:
+        raise ValueError("Invalid compatible preview models")
+    allowed = {registered_identity(kind, name) for name in (*MULTILINGUAL, *ENGLISH_ONLY, "parakeet-v3") if model_supports_language(kind, name, language)}
+    if any(not isinstance(item, str) or item not in allowed for item in models):
+        raise ValueError("Incompatible preview model family or language")
+    return {**value, "compatibleModels": list(models)}

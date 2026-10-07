@@ -66,6 +66,10 @@ class LiveLanguageTests(unittest.TestCase):
         unknown = self.capability("unknown", "base", "chunk", True)
         self.assertEqual(unknown["supportedLanguages"], [])
         self.assertEqual(unknown["state"], "unavailable")
+        for kind in ("mlx", "ctranslate2"):
+            streaming=self.capability(kind,"base","stream",True)
+            self.assertEqual(streaming["state"],"unavailable")
+            self.assertEqual(streaming["supportedLanguages"],[])
 
     def test_unknown_mlx_is_rejected_before_importing_or_using_small(self):
         with patch.dict(sys.modules, {"mlx_whisper": SimpleNamespace()}):
@@ -107,3 +111,78 @@ class LiveLanguageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AdmittedPreviewTests(unittest.TestCase):
+    def options(self):
+        return {"realTimeTranscription":True,"requestedLanguage":"pt","effectiveLanguage":"pt","engine":"mlx","mode":"chunk","initialModel":"base","initialModelIdentity":"mlx:mlx-community/whisper-base-mlx","capabilityKey":"a"*64,"compatibleModels":["mlx:mlx-community/whisper-base-mlx","mlx:mlx-community/whisper-tiny-mlx"]}
+
+    def test_configure_keeps_admitted_language_and_rejects_unknown_or_cross_family_models(self):
+        import transcription_server as server
+        with patch.object(server,"whisper_model_live",None), patch.object(server,"live_governor",None):
+            server.configure_preview(True, self.options())
+            self.addCleanup(server.configure_preview, True)
+            self.assertEqual(server._preview_language({"language":"pt","task":"transcribe"}), "pt")
+            for body in ({"language":"en"},{"language":"auto"},{"language":"pt","task":"translate"}):
+                with self.assertRaises(ValueError):server._preview_language(body)
+            for changes in ({"effectiveLanguage":"en"},{"compatibleModels":["ctranslate2:Systran/faster-whisper-base"]},{"initialModel":"base.en"}):
+                with self.assertRaises(ValueError):server.configure_preview(True,{**self.options(),**changes})
+            self.assertEqual(server.preview_live_options["effectiveLanguage"],"pt")
+
+    def test_adaptation_stays_same_family_and_uses_pt_for_warmup(self):
+        import transcription_server as server
+        calls=[]
+        class Model:
+            kind="mlx"
+            alive=True
+            def __init__(self,model,*args):self.model_name=model
+            def transcribe(self,path,**options):calls.append((self.model_name, options));return iter([]),SimpleNamespace(language="pt")
+            def close(self):pass
+        with patch.object(server,"preview_live_options",self.options(),create=True),patch.object(server,"active_engine","parakeet"),patch.object(server,"whisper_model_live",Model("base")),patch.object(server,"whisper_model_live_name","base"),patch("preview_worker.PreviewWhisper",Model):
+            self.assertFalse(server._swap_live_model("base.en"))
+            self.assertFalse(server._swap_live_model("custom"))
+            self.assertTrue(server._swap_live_model("tiny"))
+            self.assertEqual(calls,[("tiny",{"language":"pt","task":"transcribe"})])
+            server._arm_live_governor()
+            self.assertIsNotNone(server.live_governor, "Native final must not disable the MLX live governor")
+            governor=server.live_governor
+            for _ in range(3):decision=governor.observe(2,3)
+            self.assertEqual(decision.live_model,"tiny")
+            for _ in range(3):decision=governor.observe(2,.1)
+            self.assertEqual(decision.interval_ms,2000)
+            for _ in range(3):decision=governor.observe(2,.1)
+            self.assertEqual(decision.live_model,"base")
+
+    def test_stream_override_rejects_before_native_inference(self):
+        import io
+        import transcription_server as server
+        result=[]
+        handler=object.__new__(server.Handler)
+        body=json.dumps({"language":"en","task":"translate","channel":"mic"}).encode()
+        handler.path="/stream/start";handler.headers={"Content-Length":str(len(body))};handler.rfile=io.BytesIO(body)
+        handler._json=lambda value,status=200:result.append((value,status))
+        with patch.object(server,"preview_live_options",self.options()),patch("engines.get_parakeet",side_effect=AssertionError("Invalid request admitted native inference")):
+            handler._post()
+        self.assertEqual(result[0][1],400)
+
+    def test_chunk_reports_model_used_before_compatible_governor_swap(self):
+        import io
+        import transcription_server as server
+        result=[]
+        class Model:
+            kind="mlx";model_name="base";alive=True
+            def transcribe(self,path,**options):
+                self.options=options
+                return iter([SimpleNamespace(start=.25,end=1.25,text="Palavras originais")]),SimpleNamespace(language="pt")
+        model=Model()
+        handler=object.__new__(server.Handler)
+        body=json.dumps({"language":"pt","task":"transcribe","wav_path":"synthetic-absent.wav","audio_s":2}).encode()
+        handler.path="/transcribe-live";handler.headers={"Content-Length":str(len(body))};handler.rfile=io.BytesIO(body)
+        handler._json=lambda value,status=200:result.append((value,status))
+        governor=SimpleNamespace(observe=lambda *args:SimpleNamespace(changed=True,live_model="tiny",interval_ms=3000,reason="Controlled slow window"))
+        with patch.object(server,"preview_live_options",self.options()),patch.object(server,"whisper_model_live",model),patch.object(server,"whisper_model_live_name","base"),patch.object(server,"live_governor",governor),patch.object(server,"_swap_live_model",side_effect=lambda name:setattr(server,"whisper_model_live_name",name)):
+            handler._post()
+        self.assertEqual(model.options["language"],"pt");self.assertEqual(model.options["task"],"transcribe")
+        self.assertEqual(result[0][0]["model"],"base")
+        self.assertEqual(result[0][0]["modelIdentity"],"mlx:mlx-community/whisper-base-mlx")
+        self.assertEqual(result[0][0]["gov"]["live_model"],"tiny")

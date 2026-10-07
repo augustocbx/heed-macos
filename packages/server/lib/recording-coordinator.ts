@@ -208,4 +208,8 @@ export class RecordingCoordinator {
     if(this.now()-this.livePersistedAt>=1000){this.persist();this.livePersistedAt=this.now();}
     this.publish();
   }
+  updateLiveModel(model:string) {
+    if(!["starting","recording"].includes(this.value.state)||this.value.liveModel===model)return;
+    this.value={...this.value,liveModel:model,revision:this.value.revision+1};this.publish();
+  }
 }

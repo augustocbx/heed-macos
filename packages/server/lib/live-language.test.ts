@@ -24,6 +24,12 @@ test("admission filters PT adaptation and refuses unavailable paths without warm
  expect(language.resolveLiveCaptureOptions(false,"pt",null)).toMatchObject({realTimeTranscription:false,requestedLanguage:"pt",effectiveLanguage:null,engine:null,initialModel:null,compatibleModels:[]});
  for(const input of [{schemaVersion:1}, {...capabilities(),live:{...path,modelIdentity:"/private/custom"}},{...capabilities(),live:{...path,automatic:{offered:true}}}])expect(()=>language.resolveLiveCaptureOptions(true,"pt",input as any)).toThrow();
 });
+test("runtime words require exact admitted model identity and transcribe language, not the next governor model",()=>{
+ const options=language.resolveLiveCaptureOptions(true,"pt",capabilities());
+ const result={engine:"mlx",model:"base",modelIdentity:"mlx:mlx-community/whisper-base-mlx",language:"pt",task:"transcribe",gov:{live_model:"tiny"}};
+ expect(language.previewResultMatches(options,result)).toBe(true);
+ for(const change of [{model:"/private/custom"},{engine:"ctranslate2"},{language:"en"},{task:"translate"},{model:"base.en",modelIdentity:"mlx:mlx-community/whisper-base.en-mlx"}])expect(language.previewResultMatches(options,{...result,...change})).toBe(false);
+});
 test("pending admission owns capture priority; latest preference resolves once and later settings do not replace it",async()=>{
  const directory=mkdtempSync(join(tmpdir(),"heed-language-admission-"));let release!:()=>void;let preference:"en"|"pt"="en";let starts=0;let received:any;
  const coordinator=new RecordingCoordinator({manifestPath:join(directory,"manifest.json"),resolveLiveOptions:async()=>{await new Promise<void>(resolve=>release=resolve);return language.resolveLiveCaptureOptions(true,preference,capabilities());},adapter:{start:async(_mode,_id,_path,options)=>{starts++;received=options;return {path:join(directory,"synthetic.wav")};},stop:async()=>{throw Error("unused");},finalize:async()=>{throw Error("unused");},save:()=>{throw Error("unused");}}});

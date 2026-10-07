@@ -31,10 +31,13 @@ export function resolveLiveCaptureOptions(enabled:boolean,requestedLanguage:Live
  const empty:LiveCaptureOptions={realTimeTranscription:enabled,requestedLanguage,effectiveLanguage:null,engine:null,mode:null,initialModel:null,initialModelIdentity:null,capabilityKey:null,compatibleModels:[]};
  if(!enabled)return empty;
  const descriptor=validatedLanguageCapabilities(input),path=descriptor?.live;
- if(!descriptor||!path||path.state==="unavailable")throw new LiveLanguageError("Live speech capabilities are unavailable. Check the service or choose Record final-only.","live-capabilities-unavailable");
+ if(!descriptor||!path||path.state==="unavailable"||((path.engine==="parakeet")!==(path.mode==="stream")))throw new LiveLanguageError("Live speech capabilities are unavailable. Check the service or choose Record final-only.","live-capabilities-unavailable");
  if(!path.supportedLanguages.includes(requestedLanguage))throw new LiveLanguageError("Requested live speech language is not supported by "+path.engine+" "+path.model+". Choose a supported language or Record final-only.","live-language-unsupported");
  return {...empty,effectiveLanguage:requestedLanguage,engine:path.engine,mode:path.mode,initialModel:path.model,initialModelIdentity:path.modelIdentity,capabilityKey:descriptor.capabilityKey,compatibleModels:[...new Set([path.modelIdentity!,...path.adaptiveModels.filter(value=>value.languages.includes(requestedLanguage)).map(value=>value.modelIdentity)])]};
 }
 export function rejectRecordingOverrides(body:Record<string,unknown>):void {
  if(!body || typeof body!=="object" || Array.isArray(body) || ["language","liveLanguage","liveSpeechLanguage","realTimeTranscription","enabled"].some(key=>Object.hasOwn(body,key)))throw Object.assign(Error("Save live language and real-time preferences in recording settings before starting."),{status:400});
+}
+export function previewResultMatches(options:LiveCaptureOptions,value:any):boolean {
+ return !!(options.realTimeTranscription&&options.engine&&value?.engine===options.engine&&value?.language===options.effectiveLanguage&&value?.task==="transcribe"&&typeof value?.model==="string"&&value.modelIdentity===identity(options.engine,value.model)&&options.compatibleModels.includes(value.modelIdentity));
 }
