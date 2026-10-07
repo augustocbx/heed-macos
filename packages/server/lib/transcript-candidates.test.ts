@@ -21,16 +21,36 @@ function result(): TranscribeResult {
  return { success: true, finalized: true, duration: 2, text: "Novo\nSistema novo", metadata: { language: "pt", model: "small" }, wordCount: 3,
   segments: [{ speaker: "Speaker 1", text: "Novo", start: 0, end: 1, channel: "mic", auto: true }, { speaker: "Speaker 2", text: "Sistema novo", start: 1, end: 2, channel: "sys", attribution: "fallback" }], speakers: ["Speaker 1", "Speaker 2"], embeddings: { "Speaker 1": [3, 4] }, files: { wav: "/forbidden/new.wav", txt: "/forbidden/new.txt", srt: "/forbidden/new.srt" } };
 }
-function fixture(generate: any = async () => "Generated") {
+function fixture(generate: any = async () => "Generated", initial: Session = meeting()) {
  const dir = mkdtempSync(join(tmpdir(), "heed-candidates-")); directories.push(dir); let failed = false;
  const store = new SessionTags(dir, { writeAtomic(path, data) { if (failed) throw new Error("Synthetic disk full"); atomicWrite(path, data); } });
  const settings = { enabled: false, templateId: "meeting", model: "local", language: "meeting" as const };
  const options = { sessionsDir: dir, sessionStore: store, getSettings: () => settings, loadTemplate: () => ({ id: "meeting", name: "Meeting", description: "", prompt: "Use evidence" }), generate, isBusy: () => false };
  const notes = new AutomaticNotesService(options); const service = new TranscriptService({ notes, store, now: () => now });
  writeFileSync(join(dir, "original.wav"), Buffer.from([82, 73, 70, 70, 1, 2, 3, 4]));
- const saved = notes.create({ ...meeting(), files: { ...meeting().files!, wav: join(dir, "original.wav") } });
+ const saved = notes.create({ ...initial, files: { ...initial.files!, wav: join(dir, "original.wav") } });
  return { dir, store, notes, service, settings, saved, options, fail: (value = true) => { failed = value; }, bytes: () => readFileSync(join(dir, "meeting.json"), "utf8"), stage: (requestId = "stage") => service.stage("meeting", { requestId, base: transcriptGuard(saved), result: result() }) };
 }
+test("ordinary reserved speaker strings survive candidate acceptance without inherited mappings", () => {
+ for (const speaker of ["toString", "constructor", "__proto__"]) {
+  const initial = { ...meeting(), transcript: "Original", speakers: ["Speaker 1"], segments: [{ speaker: "Speaker 1", text: "Original", start: 0, end: 2, channel: "sys" as const, auto: true }], embeddings: {} };
+  const f = fixture(undefined, initial), final = result(); final.text = "Novo"; final.speakers = [speaker]; final.segments = [{ speaker, text: "Novo", start: 0, end: 2, channel: "sys" }]; final.embeddings = Object.fromEntries([[speaker, [3, 4]]]);
+  const staged = f.service.stage("meeting", { requestId: "stage", base: transcriptGuard(f.saved), result: final });
+  const accepted = f.service.command("meeting", { ...transcriptGuard(staged), requestId: "accept", action: "accept-candidate", candidateId: staged.transcriptEditing!.candidates[0]!.id });
+  expect(accepted.speakers).toEqual([speaker]); expect(accepted.segments[0]!.speaker).toBe(speaker); expect(accepted.embeddings).toEqual(Object.fromEntries([[speaker, [3, 4]]]));
+  const persisted = JSON.parse(f.bytes()); expect(persisted.speakers).toEqual([speaker]); expect(persisted.segments[0].speaker).toBe(speaker); expect(persisted.transcriptVersion).toBe(2);
+ }
+});
+test("reserved manual source and candidate identities reconcile with own-property mappings", () => {
+ for (const source of ["toString", "constructor", "__proto__"]) for (const target of ["toString", "constructor", "__proto__"]) {
+  const initial = { ...meeting(), transcript: "Original", speakers: [source], segments: [{ speaker: source, text: "Original", start: 0, end: 2, channel: "mic" as const, auto: false }], embeddings: Object.fromEntries([[source, [1, 2]]]) };
+  const f = fixture(undefined, initial), final = result(); final.text = "Novo"; final.speakers = [target]; final.segments = [{ speaker: target, text: "Novo", start: 0, end: 2, channel: "mic" }]; final.embeddings = Object.fromEntries([[target, [3, 4]]]);
+  const manual = f.service.stage("meeting", { requestId: "manual", base: transcriptGuard(f.saved), result: final });
+  const accepted = f.service.command("meeting", { ...transcriptGuard(manual), requestId: "accept", action: "accept-candidate", candidateId: manual.transcriptEditing!.candidates[0]!.id });
+  expect(accepted.speakers).toEqual([source]); expect(accepted.segments[0]).toMatchObject({ speaker: source, auto: false }); expect(accepted.embeddings).toEqual(Object.fromEntries([[source, [3, 4]]]));
+  expect(JSON.parse(f.bytes()).segments[0].speaker).toBe(source); expect(manual.transcriptVersion).toBe(1);
+ }
+});
 
 test("staging is durable local state without replacing accepted source or notes jobs", () => {
  const f = fixture(); const staged = f.stage();
