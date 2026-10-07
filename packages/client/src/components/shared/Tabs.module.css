@@ -1,5 +1,6 @@
 .tabs {
 	display: flex;
+	flex-wrap: wrap;
 	gap: 0;
 	border-bottom: 2px solid var(--border-light);
 	margin-bottom: var(--space-4);
