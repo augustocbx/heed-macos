@@ -1,4 +1,6 @@
 import type { AiWaitingReason } from "@heed/shared";
+import type { LanguageCapabilities, LiveCaptureOptions } from "@heed/shared";
+import {configuredLiveSpeechLanguage, recordingSettingsPatch, resolveLiveCaptureOptions, validatedLanguageCapabilities, rejectRecordingOverrides, LiveLanguageError} from "./lib/live-language";
 import {configuredServicePorts} from './lib/service-ports';
 import {ServiceDiagnostics} from './lib/service-diagnostics';
 import {isTranscriptionHealth} from '../shared/lib/service-identity';
@@ -74,7 +76,7 @@ function localAiWaitingReason(includePendingChat = false): AiWaitingReason {
  if (!localAiReady) return "queued";
  const state = recordingCoordinator.snapshot().state;
  if (recordingFinalizationRunning || transcriptionRequests || state === "finalizing") return "transcription";
- if (recorderProc || recorderStarting || recorderStopping || ["starting", "recording", "stopping"].includes(state)) return "recording";
+ if (recorderProc || recorderStarting || recorderStopping || recordingCoordinator.admissionPending || ["starting", "recording", "stopping"].includes(state)) return "recording";
  if (manualNotesController || notesService.busy) return "notes";
  if (tasksService.busy) return "tasks";
  if (chatService.busy || libraryChatService.busy || (includePendingChat && chatPending())) return "chat";
@@ -83,7 +85,7 @@ function localAiWaitingReason(includePendingChat = false): AiWaitingReason {
 // These synchronous admission checks cover command-triggered and timer-triggered workers.
 function chatPending() { return chatService.pending || libraryChatService.pending; }
 function audioWorkBusy() {
- return !!(recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning || transcriptionRequests
+ return !!(recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning || transcriptionRequests || recordingCoordinator.admissionPending
   || ["starting", "stopping", "finalizing"].includes(recordingCoordinator.snapshot().state));
 }
 async function preemptNotes() {
@@ -1347,9 +1349,10 @@ async function handleSysRecordStart(req: Request): Promise<Response> {
  if (!desktopRequestAllowed(req)) return new Response(null, {status:403});
  try {
   const body = await req.json();
+  rejectRecordingOverrides(body);
   const state = hydratedRecordingSnapshot(await recordingCoordinator.start(controlRequestId(body), body.mode ?? "both"));
   if (state.state === "recording") meetingDetection.manualOverride();
-  return Response.json({...state, snapshot:state, recording:state.state === "recording", path:state.path, language:"en"});
+  return Response.json({...state, snapshot:state, recording:state.state === "recording", path:state.path, language:state.liveOptions?.effectiveLanguage ?? null});
  } catch (error) { return recordingControlError(error); }
 }
 
@@ -2106,7 +2109,7 @@ function controlRequestId(body: any): string {
  return body.requestId;
 }
 function recordingControlError(error: unknown): Response {
- return Response.json({error:error instanceof Error ? error.message : String(error)}, {status:409});
+ return Response.json({error:error instanceof Error ? error.message : String(error),...(error instanceof LiveLanguageError?{code:error.code}:{})}, {status:(error as {status?:number})?.status === 400?400:409});
 }
 async function handleSysRecordStop(req: Request): Promise<Response> {
  if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
@@ -2336,31 +2339,41 @@ async function applySavedPreview() {
  if(liveWorker)await liveWorker;
  try{await configurePreview(realTimeTranscription());}catch(error){console.error("Preview preference could not be applied:",error);}
 }
+async function fetchLanguageCapabilities():Promise<LanguageCapabilities|null>{
+ try{
+  const response=await fetch(`${TRANSCRIPTION_SERVER}/health`,{signal:AbortSignal.timeout(2000)});
+  const health=await response.json();
+  return response.ok&&isTranscriptionHealth(health)?validatedLanguageCapabilities(health.languageCapabilities):null;
+ }catch{return null;}
+}
 async function handleRecordingSettings(req:Request):Promise<Response> {
  if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
  if (!["GET","POST","PATCH"].includes(req.method)) return new Response(null,{status:405});
  const state=recordingCoordinator.snapshot();
- const active=["starting","recording","stopping"].includes(state.state);
+ const active=["starting","recording","stopping"].includes(state.state)||recordingCoordinator.admissionPending;
  let engineState:"ready"|"unavailable"|"deferred"=active?"deferred":"ready";
  if (req.method !== "GET") {
   let body;try {body=await req.json();} catch {return Response.json({error:"Choose a valid real-time transcription setting."},{status:400});}
-  if (typeof body?.enabled !== "boolean") return Response.json({error:"Choose a valid real-time transcription setting."},{status:400});
-  saveConfig({real_time_transcription:body.enabled});
+  let patch;try{patch=recordingSettingsPatch(body);}catch(error){return Response.json({error:(error as Error).message},{status:400});}
+  saveConfig(patch);
   // Recheck after the synchronous durable write: another admitted start may now own preview.
   const current=recordingCoordinator.snapshot();
-  if (!["starting","recording","stopping"].includes(current.state)) {
+  if (!["starting","recording","stopping"].includes(current.state)&&!recordingCoordinator.admissionPending) {
    try {await configurePreview(realTimeTranscription());} catch {engineState="unavailable";}
   } else engineState="deferred";
  }
  const current=recordingCoordinator.snapshot();
- return Response.json({enabled:realTimeTranscription(),activeEnabled:["starting","recording","stopping"].includes(current.state)?current.realTimeTranscription !== false:null,appliesTo:"next-recording",engineState});
+ const languageCapabilities=await fetchLanguageCapabilities(),liveLanguage=configuredLiveSpeechLanguage(loadConfig());
+ const latest=recordingCoordinator.snapshot(),isActive=["starting","recording","stopping"].includes(latest.state);
+ const liveLanguageState=!languageCapabilities||languageCapabilities.live.state==="unavailable"?"unavailable":languageCapabilities.live.supportedLanguages.includes(liveLanguage)?"supported":"unsupported";
+ return Response.json({enabled:realTimeTranscription(),activeEnabled:isActive?latest.realTimeTranscription !== false:null,liveLanguage,activeLiveLanguage:isActive?latest.liveOptions?.effectiveLanguage ?? null:null,languageCapabilities,liveLanguageState,appliesTo:"next-recording",engineState});
 }
 async function handleRecordingControl(req: Request, pathname: string): Promise<Response> {
  if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
  try {
   if (req.method === "GET" && pathname === "/api/recording/status") {
    const snapshot=hydratedRecordingSnapshot();
-   if(new URL(req.url).searchParams.get("inference")==="1")return Response.json({meetingId:snapshot.meetingId,state:snapshot.state,revision:snapshot.revision,realTimeTranscription:snapshot.realTimeTranscription !== false});
+   if(new URL(req.url).searchParams.get("inference")==="1")return Response.json({meetingId:snapshot.meetingId,state:snapshot.state,revision:snapshot.revision,realTimeTranscription:snapshot.realTimeTranscription !== false,liveSpeechLanguage:snapshot.liveSpeechLanguage,liveOptions:snapshot.liveOptions});
    return Response.json(snapshot);
   }
   if (req.method !== "POST") return new Response(null,{status:405});
@@ -2404,6 +2417,7 @@ async function handleDesktopControl(req: Request, pathname: string): Promise<Res
   const body = await req.json();
   if (pathname.endsWith("/commands")) {
    if (!["start","stop"].includes(body.action)) return Response.json({error:"Choose start or stop"},{status:400});
+   if(body.action==="start")rejectRecordingOverrides(body);
    const id = controlRequestId(body);
    const previous = recordingCoordinator.snapshot();
    const manualStop = body.action === "stop" && previous.meetingId === body.meetingId && ["starting","recording"].includes(previous.state);
@@ -2522,8 +2536,13 @@ const recordingCoordinator = new RecordingCoordinator({
  manifestPath:join(APP_DIR,"recording-manifest.json"),
  maintenanceBlocked:()=>processingMaintenance.blocked(),
  realTimeTranscription,
+ async resolveLiveOptions(){
+  const capabilities=await fetchLanguageCapabilities();
+  const config=loadConfig();
+  return resolveLiveCaptureOptions(realTimeTranscription(config),configuredLiveSpeechLanguage(config),capabilities);
+ },
  adapter:{
-  async start(mode, _meetingId, attachPath) {
+  async start(mode, _meetingId, attachPath, _liveOptions) {
    if (transcriptionRequests || recordingFinalizationRunning) throw new Error("Wait for the current transcription to finish");
    recorderStarting = true;
    try {
@@ -2686,7 +2705,7 @@ const server = Bun.serve({
 		if (method === "POST" && url.pathname === "/api/sysrecord/start") return handleSysRecordStart(req);
 		if (method === "POST" && url.pathname === "/api/sysrecord/stop") { httpServer.timeout(req, 0); return handleSysRecordStop(req); }
 		if (method === "GET" && url.pathname === "/api/sysrecord/levels") return desktopRequestAllowed(req) ? handleSysLevelsSSE() : new Response(null,{status:403});
-		if (method === "GET" && url.pathname === "/api/sysrecord/live") return desktopRequestAllowed(req) ? handleLiveTranscribe() : new Response(null,{status:403});
+		if (method === "GET" && url.pathname === "/api/sysrecord/live") return !desktopRequestAllowed(req)?new Response(null,{status:403}):url.searchParams.has("lang")?Response.json({error:"Live speech language comes from recording settings."},{status:400}):handleLiveTranscribe();
 		if (method === "GET" && url.pathname === "/api/health") return handleHealth(url.searchParams.get('refresh')==='1');
 		if (method === "GET" && url.pathname === "/api/version") return Response.json(RELEASE_INFO);
 		if (method === "GET" && url.pathname === "/api/recovery/list") return handleListOrphaned();

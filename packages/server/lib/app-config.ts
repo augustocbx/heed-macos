@@ -22,6 +22,7 @@ export const TEMPLATES_DIR = join(APP_DIR, "templates");
  * unknown keys on write so the old CLI tool keeps working.
  */
 export interface TrxConfig {
+ live_speech_language?: "en" | "pt";
  real_time_transcription?: boolean;
 	storage_limit_bytes?: number;
 	ui_locale?: "en" | "pt-BR" | "fr" | "de";
