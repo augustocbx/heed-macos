@@ -1,7 +1,9 @@
-import type {AiPlanRequest, AiPreview, AiAuthorizationDecision, AiAuthorizationReceipt, AiConnectionInput, AiConnectionSnapshot, AiFeature, AiSelection, AiSettingsSnapshot} from '@heed/shared';
+import type {AiBudgetPolicy, AiUsageSnapshot, AiPlanRequest, AiPreview, AiAuthorizationDecision, AiAuthorizationReceipt, AiConnectionInput, AiConnectionSnapshot, AiFeature, AiSelection, AiSettingsSnapshot} from '@heed/shared';
 import {apiClient} from './client';
 /** Keys are submitted once and never retained by this API or browser storage. */
 export const aiApi={
+ usage:()=>apiClient.get<AiUsageSnapshot>('/api/ai/usage'),
+ saveBudget:(policy:AiBudgetPolicy)=>apiClient.post<AiUsageSnapshot>('/api/ai/budget',policy),
  plan:(command:AiPlanRequest)=>apiClient.post<AiPreview>('/api/ai/plans',command),
  authorize:(planId:string,decision:AiAuthorizationDecision)=>apiClient.post<AiAuthorizationReceipt>('/api/ai/authorize',{planId,decision}),
  settings:()=>apiClient.get<AiSettingsSnapshot>('/api/ai/settings'),

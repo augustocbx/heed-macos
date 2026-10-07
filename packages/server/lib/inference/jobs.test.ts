@@ -1,3 +1,5 @@
+import {AiBudget} from './budget';
+const ledgers:AiBudget[]=[];
 import {afterEach,expect,test} from 'bun:test';
 import {join} from 'node:path';
 import {AutomaticNotesService} from '../automatic-notes';
@@ -6,13 +8,14 @@ import {fixture,cleanupFixtures} from './connection-fixtures';
 import {AiPlanner} from './planning';
 import {AiAuthorizations} from './authorization';
 import {AiRuntime} from './runtime';
-afterEach(cleanupFixtures);
-async function setup(){
+afterEach(()=>{for(const budget of ledgers.splice(0))budget.close();cleanupFixtures();});
+async function setup(maxRemoteAttempts?:number){
  const f=fixture(),c=await f.manager.register({provider:'openai',model:'gpt-6-luna',key:'SECRET_KEY'});await f.manager.validate(c.id);
  for(const feature of ['notes','tasks'] as const)f.manager.saveSelection(feature,{provider:'openai',connectionId:c.id,model:c.model});
- const planner=new AiPlanner(f.manager),authorizations=new AiAuthorizations(planner);let uploads=0,resources=0;
+ const budget=maxRemoteAttempts?new AiBudget({appDir:f.root}):undefined;if(budget){ledgers.push(budget);budget.configure({...budget.snapshot().policy,jobLimitMicroUsd:100000000,periodLimitMicroUsd:1000000000,maxRemoteAttempts:maxRemoteAttempts!,unknownCost:'explicit'});}
+ const planner=new AiPlanner(f.manager,Date.now,budget),authorizations=new AiAuthorizations(planner);let uploads=0,resources=0;
  let generation=(input:import('./contracts').AiAdapterRequest)=>Promise.resolve(input.call.id==='tasks'?'{"suggestions":[]}':'Reviewed notes');
- const runtime=new AiRuntime({planner,authorizations,connections:f.manager,hooks:{reserve:async()=>({dispatch:async()=>{},outcome:async()=>{},finish:async()=>{}}),acquire:async()=>{resources++;return {release:()=>{}};}},generate:async input=>{uploads++;return {text:await generation(input),finish:'completed',usage:{supported:false},provenance:{provider:input.selection.provider,model:input.selection.model!}};}});
+ const runtime=new AiRuntime({planner,authorizations,connections:f.manager,budget,hooks:{reserve:async()=>({dispatch:async()=>{},outcome:async()=>{},finish:async()=>{}}),acquire:async()=>{resources++;return {release:()=>{}};}},generate:async input=>{uploads++;return {text:await generation(input),finish:'completed',usage:{supported:false},provenance:{provider:input.selection.provider,model:input.selection.model!}};}});
  const inference={planner,authorizations,runtime};let template='Use only transcript';
  const notesOptions:ConstructorParameters<typeof AutomaticNotesService>[0]={sessionsDir:join(f.root,'sessions'),getSettings:()=>({enabled:true,model:'local',templateId:'t',language:'meeting'}),loadTemplate:()=>({id:'t',name:'T',description:'',prompt:template}),isBusy:()=>false,generate:async()=>{throw Error('legacy local callback must not receive remote');},inference};
  const notes=new AutomaticNotesService(notesOptions);
@@ -20,7 +23,7 @@ async function setup(){
  const tasks=new MeetingTasksService(tasksOptions);
  planner.register('notes',command=>notes.prepareAi(command.sessionId!,command.jobId));planner.register('tasks',command=>tasks.prepareAi(command.sessionId!));
  const session=notes.create({id:'meeting',title:'Selected',language:'en',transcript:'I will send the report.',segments:[],transcriptFinalized:true,embeddings:{excluded:'EMBEDDING_MARKER'} as any,summary:'CALENDAR_MARKER',files:{wav:'AUDIO_MARKER'}});
- return {...f,notes,tasks,notesOptions,tasksOptions,setGenerate:(next:typeof generation)=>generation=next,planner,authorizations,runtime,session,uploads:()=>uploads,resources:()=>resources,template:()=>template='Changed template'};
+ return {...f,budget,notes,tasks,notesOptions,tasksOptions,setGenerate:(next:typeof generation)=>generation=next,planner,authorizations,runtime,session,uploads:()=>uploads,resources:()=>resources,template:()=>template='Changed template'};
 }
 test('automatic remote notes and historical tasks wait for source-specific consent',async()=>{
  const f=await setup();await f.notes.tick();await f.tasks.tick();expect(f.uploads()).toBe(0);
@@ -51,7 +54,7 @@ test('duplicate pending retry requests preserve notes and task reviewed identity
 function delayed(){let resolve!:(value:string)=>void;const promise=new Promise<string>(r=>resolve=r);return {promise,resolve};}
 async function until(test:()=>boolean){for(let i=0;i<200&&!test();i++)await Bun.sleep(1);expect(test()).toBe(true);}
 async function consent(f:Awaited<ReturnType<typeof setup>>,feature:'notes'|'tasks'){
- const plan=await f.planner.prepare({feature,sessionId:'meeting'});f.authorizations.authorize(plan.id,{allowRemote:true,expectedPayloadHash:plan.payloadHash});return plan;
+ const plan=await f.planner.prepare({feature,sessionId:'meeting'});f.authorizations.authorize(plan.id,{allowRemote:true,expectedPayloadHash:plan.payloadHash,...(f.budget?{allowUnknownCost:true as const}:{})});return plan;
 }
 test('remote notes capture preemption never timer-replays, and explicit retry requires a fresh review',async()=>{
  const f=await setup(),pending=delayed();f.setGenerate(()=>pending.promise);const plan=await consent(f,'notes');const running=f.notes.tick();await until(()=>f.uploads()===1);
@@ -159,4 +162,21 @@ for(const feature of ['notes','tasks'] as const)test(`${feature}: HTTP consent r
  const http=(path:string,body:unknown)=>aiPlansResponse(new Request(`http://localhost:48100/api/ai/${path}`,{method:'POST',body:JSON.stringify(body)}),f.notesOptions.inference,true);
  const preview=await (await http('plans',{feature,sessionId:'meeting'}))!.json();expect(preview.feature).toBe(feature);expect(requests).toHaveLength(0);expect((await http('authorize',{planId:preview.id,decision:{allowRemote:true,expectedPayloadHash:preview.payloadHash}}))?.status).toBe(200);await service.tick();expect(requests).toHaveLength(1);expect(requests[0].input).toBe(JSON.stringify(preview.calls[0].data));for(const value of ['AUDIO_MARKER','EMBEDDING_MARKER','CALENDAR_MARKER','SECRET_KEY'])expect(JSON.stringify(requests)).not.toContain(value);
  if(feature==='notes')expect(f.notes.get('meeting')!.notesMetadata?.provenance).toEqual({provider:'openai',model:'gpt-6-luna'});else{expect(f.tasks.snapshot('meeting').review?.status).toBe('ready');expect(f.tasks.snapshot('meeting').tasks).toEqual([]);}
+});
+
+for(const feature of ['notes','tasks'] as const)for(const max of [1,2,3])test(`${feature}: explicit retries retain real ledger root and ${max} cumulative remote rounds`,async()=>{
+ const f=await setup(max);if(feature==='tasks')await f.tasks.tick();const service=feature==='notes'?f.notes:f.tasks;const {AiInferenceError}=await import('./contracts');f.setGenerate(async()=>{throw new AiInferenceError('rate-limited');});let root='';
+ for(let round=1;round<=max;round++){
+  const plan=await consent(f,feature);if(root)expect(plan.jobId).toBe(root);root=plan.jobId;await service.tick();expect(f.uploads()).toBe(round);await service.tick();expect(f.uploads()).toBe(round);
+  const entries=f.budget!.snapshot().entries.filter(e=>e.jobId===root);expect(entries).toHaveLength(round);expect(entries.every(e=>e.unknownLiability)).toBe(true);service.retry('meeting');
+ }
+ await consent(f,feature);await service.tick();expect(f.uploads()).toBe(max);expect(feature==='notes'?Object.values(f.notes.get('meeting')!.notesJobs!)[0]?.reason:f.tasks.snapshot('meeting').review?.error).toBe('remote-attempt-limit');
+});
+for(const feature of ['notes','tasks'] as const)test(`${feature}: crash-held reservation stays held until explicit retry replaces its command`,async()=>{
+ const f=await setup(2);if(feature==='tasks')await f.tasks.tick();const plan=await consent(f,feature),{aiBudgetMetadata}=await import('./planning');
+ const old=f.budget!.reserve(aiBudgetMetadata(plan),plan.costReview!,{planId:plan.id,expectedPayloadHash:plan.payloadHash,reviewIdentity:plan.costReview!.identity,allowUnknownCost:true});
+ const {readFileSync,writeFileSync}=await import('node:fs');const path=feature==='notes'?join(f.root,'sessions','meeting.json'):f.tasksOptions.path,store=JSON.parse(readFileSync(path,'utf8'));const record=feature==='notes'?Object.values(store.notesJobs)[0] as any:store.reviews.meeting;record.status='running';writeFileSync(path,JSON.stringify(store));
+ const service=feature==='notes'?new AutomaticNotesService(f.notesOptions):new MeetingTasksService(f.tasksOptions);if(feature==='notes')(service as AutomaticNotesService).recover();else await service.tick();
+ expect(f.budget!.snapshot().entries[0]?.state).toBe('held');service.retry('meeting');f.planner.register(feature,command=>feature==='notes'?(service as AutomaticNotesService).prepareAi(command.sessionId!,command.jobId):(service as MeetingTasksService).prepareAi(command.sessionId!));
+ const next=await consent(f,feature);expect(next.jobId).toBe(plan.jobId);expect(f.budget!.snapshot().entries[0]?.state).toBe('released');expect(()=>f.budget!.dispatch(old.id,old.attempts[0]!.callId,old.attempts[0]!.id)).toThrow('reservation-finished');await service.tick();expect(f.uploads()).toBe(1);
 });

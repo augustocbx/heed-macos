@@ -1,3 +1,4 @@
+import {parseXaiCharge} from '../usage';
 import { complete, prepareRemote, record, responseText, tokenCount, usage, type AiAdapter } from '../contracts';
 import { requestJson, validateRemoteEndpoint } from '../transport';
 /** xAI Responses limits visible output only; billable reasoning bound may be unknown. */
@@ -13,5 +14,10 @@ export const xaiAdapter: AiAdapter = { async generate(input) {
   if (reasoning !== undefined && incoming + visible + reasoning === total) outgoing = visible + reasoning;
   else if (incoming + visible === total && (reasoning === undefined || reasoning <= visible)) outgoing = visible;
  }
- return complete(input, responseText(body), usage(input, { inputTokens: incoming, cachedInputTokens: counts.input_tokens_details?.cached_tokens, outputTokens: outgoing, reasoningTokens: reasoning }));
+ const normalized=usage(input, { inputTokens: incoming, cachedInputTokens: counts.input_tokens_details?.cached_tokens, outputTokens: outgoing, reasoningTokens: reasoning });
+ const result=complete(input,responseText(body),normalized);
+ // Malformed optional categories must not disappear into a seemingly authoritative charge.
+ const validCounts=[counts.input_tokens,counts.output_tokens,counts.total_tokens,counts.input_tokens_details?.cached_tokens,counts.output_tokens_details?.reasoning_tokens].every(value=>value===undefined||tokenCount(value)!==undefined);
+ const charge=normalized.supported&&validCounts?parseXaiCharge(counts.cost_in_usd_ticks):null;
+ return charge?{...result,reportedCharge:charge}:result;
 } };

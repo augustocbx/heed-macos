@@ -277,7 +277,7 @@ export class MeetingChatService {
     if(turn.status!=="failed"&&turn.status!=="cancelled")throw new ChatError("turn-not-retryable",409);
     if(!session.transcriptFinalized)throw new ChatError("transcript-not-final",409);
     if(command.model!==undefined){if(typeof command.model!=="string"||!command.model.trim()||command.model.length>200)throw new ChatError("invalid-question");turn.initialModel??=turn.model;turn.model=command.model;}
-    Object.assign(turn,this.binding(turn.model));delete turn.provenance;turn.status="waiting";turn.sourceRevision=revisionOf(session);(turn as LocalChatTurn).metadataKey=meetingMetadataRevision(session);if(this.ready())(turn as LocalChatTurn).retrievalKey=this.captured(id).key;else delete (turn as LocalChatTurn).retrievalKey;delete turn.reason;delete turn.answer;
+    const supersededPlanId=turn.ai?.planId??turn.ai?.supersededPlanId;Object.assign(turn,this.binding(turn.model));if(turn.ai&&supersededPlanId)turn.ai.supersededPlanId=supersededPlanId;delete turn.provenance;turn.status="waiting";turn.sourceRevision=revisionOf(session);(turn as LocalChatTurn).metadataKey=meetingMetadataRevision(session);if(this.ready())(turn as LocalChatTurn).retrievalKey=this.captured(id).key;else delete (turn as LocalChatTurn).retrievalKey;delete turn.reason;delete turn.answer;
    }
    turn.updatedAt=new Date().toISOString();
   } else throw new ChatError("invalid-command");
@@ -315,8 +315,8 @@ export class MeetingChatService {
   validate();const result=await this.options.retriever.retrieve(retrieval,turn.question),evidence=await this.options.retriever.materialize(result);validate();
   const {metadata,coverage:metadataCoverage}=selectedMeetingMetadata(descriptors);
   const prepared=prepareMeetingQuestion({evidence,metadata,metadataCoverage,coverage:result.coverage,question:turn.question,history,model:turn.model});
-  return {jobId:`chat:${id}:${turnId}`,feature:'chat',selection:turn.ai!.selection,calls:chatPlanCalls(prepared),sources:retrieval.sources.map(source=>({sessionId:source.sessionId,sourceRevision:source.sourceRevision,sourceVersion:source.transcriptVersion})),validate,
-   attach:plan=>{validate();const {live,value}=current();value.ai={...value.ai!,planId:plan.id,dispatched:false};attached=plan.id;(value as LocalChatTurn).retrievalKey=retrieval.key;delete value.reason;this.save(live);this.prepared.set(plan,{prepared,retrieval,result});},
+  return {jobId:`chat:${id}:${turnId}`,feature:'chat',supersededPlanId:turn.ai?.supersededPlanId,selection:turn.ai!.selection,calls:chatPlanCalls(prepared),sources:retrieval.sources.map(source=>({sessionId:source.sessionId,sourceRevision:source.sourceRevision,sourceVersion:source.transcriptVersion})),validate,
+   attach:plan=>{validate();const {live,value}=current();value.ai={...value.ai!,planId:plan.id,dispatched:false};delete value.ai.supersededPlanId;attached=plan.id;(value as LocalChatTurn).retrievalKey=retrieval.key;delete value.reason;this.save(live);this.prepared.set(plan,{prepared,retrieval,result});},
    dispatched:()=>{validate();const {live,value}=current();value.ai!.dispatched=true;this.save(live);}};
  }
  async tick():Promise<void> {

@@ -1,8 +1,8 @@
 import type {AiProviderId, AiResult} from '../../packages/shared/types/ai';
 import {AiConnections} from '../../packages/server/lib/inference/connections';
-import {AiPlanner, AiPlanError, aiErrorCode, aiFingerprint} from '../../packages/server/lib/inference/planning';
-import {AiAuthorizations} from '../../packages/server/lib/inference/authorization';
-import {AiRuntime} from '../../packages/server/lib/inference/runtime';
+import {AiPlanError, aiErrorCode, aiFingerprint} from '../../packages/server/lib/inference/planning';
+import {createAiInference} from '../../packages/server/lib/inference/production';
+import type {AiBudgetReview} from '../../packages/shared/types/ai-budget';
 import {getAiAdapter} from '../../packages/server/lib/inference/adapters';
 import type {AiCall} from '../../packages/server/lib/inference/contracts';
 import {NotesGenerationError} from '../../packages/server/lib/ollama-notes';
@@ -15,7 +15,7 @@ export interface CheckerOptions {
 interface CheckerPreview {
  provider:AiProviderId;model:string;feature:'notes';fixture:string;payloadHash:string;
  calls:AiCall[];excluded:string[];
- costPolicy:'production-default-deny'|'local-no-api-charge';costStatus:'unknown'|'not-applicable';
+ costPolicy:'device-local-budget-resource-staged'|'local-no-api-charge';costStatus:'unknown'|'not-applicable';costReview?:AiBudgetReview;
 }
 export interface CheckerReport {
  exitCode:0|1;transport:'not-started'|'completed'|'cancelled'|'truncated'|'rate-limited'|'failed';
@@ -70,29 +70,27 @@ export function checkerOutcome(language:Language,outcome:unknown):CheckerReport 
  report.transport=code==='cancelled'?'cancelled':code==='incomplete-output'?'truncated':code==='rate-limited'?'rate-limited':['provider-timeout','provider-unavailable','authentication-failed','request-rejected','invalid-output','response-too-large'].includes(code)?'failed':'not-started';
  return report;
 }
-/** Shares production immutable planning, consent, checkpoints and default denial.
- * #66/#67 must wire their actual policies into BOTH this runtime and the server.
- * The checker deliberately has no hook override or policy bypass surface.
- */
+/** Shares production exact review and private spending policy. No resource or budget bypass. */
 export async function runSyntheticCheck(options:CheckerOptions,connections:AiConnections,transport:{fetch?:typeof fetch;signal?:AbortSignal}={}):Promise<CheckerReport> {
- let preview:CheckerPreview|undefined;
+ let preview:CheckerPreview|undefined,inference:ReturnType<typeof createAiInference>|undefined;
  const signal=transport.signal??new AbortController().signal;
  try{
   validOptions(options);const reviewed=structuredClone(options);
   const initial=connections.snapshot(),source=fixtures[reviewed.language],selection={provider:reviewed.provider,model:reviewed.model,connectionId:reviewed.connectionId};
-  const planner=new AiPlanner(connections),authorizations=new AiAuthorizations(planner);
+  inference=createAiInference(connections,transport.fetch?input=>getAiAdapter(input.selection.provider).generate({...input,fetch:transport.fetch}):undefined);
+  const {planner,authorizations,runtime}=inference;
   planner.register('notes',async()=>({feature:'notes',jobId:`qa-${source.id}`,selection,calls:[syntheticCall(reviewed.language)],sources:[{sessionId:source.id,sourceRevision:aiFingerprint(source),sourceVersion:1}],validate:()=>{if(connections.snapshot().version!==initial.version)throw new AiPlanError('settings-changed');},attach:()=>{},dispatched:()=>{}}));
   const plan=await planner.prepare({feature:'notes'}),scope=authorizations.preview(plan);
-  preview={provider:reviewed.provider,model:reviewed.model,feature:'notes',fixture:source.id,payloadHash:scope.payloadHash,calls:scope.calls,excluded:scope.excluded,costPolicy:reviewed.provider==='ollama'?'local-no-api-charge':'production-default-deny',costStatus:reviewed.provider==='ollama'?'not-applicable':'unknown'};
+  preview={provider:reviewed.provider,model:reviewed.model,feature:'notes',fixture:source.id,payloadHash:scope.payloadHash,calls:scope.calls,excluded:scope.excluded,costPolicy:reviewed.provider==='ollama'?'local-no-api-charge':'device-local-budget-resource-staged',...(scope.costReview?{costReview:scope.costReview}:{}),costStatus:reviewed.provider==='ollama'?'not-applicable':'unknown'};
   if(reviewed.provider!=='ollama'&&!reviewed.allowSyntheticRemote)throw new AiPlanError('synthetic-remote-opt-in-required');
   if(!reviewed.acceptedPayloadHash)throw new AiPlanError('scope-review-required');
   if(reviewed.acceptedPayloadHash!==plan.payloadHash)throw new AiPlanError('payload-changed');
   if(reviewed.provider!=='ollama')authorizations.authorize(plan.id,{allowRemote:true,expectedPayloadHash:reviewed.acceptedPayloadHash,...(reviewed.allowUnknownCost?{allowUnknownCost:true}:{})});
-  const runtime=new AiRuntime({planner,authorizations,connections,...(transport.fetch?{generate:input=>getAiAdapter(input.selection.provider).generate({...input,fetch:transport.fetch})}:{})});
   const results=await runtime.execute(plan,signal);
   if(results.length!==1)throw new AiPlanError('check-failed');
   return {...checkerOutcome(reviewed.language,results[0]),preview};
  }catch(error){return {...checkerOutcome(options?.language??'en',signal.aborted?new AiPlanError('cancelled'):error),...(preview?{preview}:{})};}
+ finally{inference?.budget?.close();}
 }
 if(import.meta.main){
  let report:CheckerReport;

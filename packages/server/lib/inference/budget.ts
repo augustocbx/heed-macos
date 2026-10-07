@@ -2,7 +2,7 @@ import {Database} from 'bun:sqlite';
 import {constants,lstatSync,mkdirSync,openSync,closeSync} from 'node:fs';
 import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
-import type {AiProviderId,AiCapabilities} from '../../../shared/types/ai';
+import type {AiProviderId,AiCapabilities,AiFeature} from '../../../shared/types/ai';
 import type {AiPriceSnapshot} from '../../../shared/types/ai-cost';
 import type {AiBudgetPlan,AiBudgetReview,AiBudgetPolicy,AiBudgetDecision,AiBudgetReservation,AiAttemptOutcome,AiAttemptAccounting,AiUsageEntry,AiUsageSnapshot} from '../../../shared/types/ai-budget';
 import {priceSnapshot} from './catalog';
@@ -153,6 +153,16 @@ export class AiBudget {
   });
  }
  cancelUnsubmitted(reservationId:string):void {this.atomic(()=>{this.reservation(reservationId);this.db.query("UPDATE attempts SET state='released',liability='0',unknown_liability=0 WHERE reservation_id=? AND state='held'").run(reservationId);this.db.query('UPDATE reservations SET finished=1 WHERE id=?').run(reservationId);});}
+ /** Explicit domain retry revokes only its previous exact plan, preserving dispatched liability. */
+ cancelSupersededPlan(planId:string,feature:AiFeature,jobId:string):void {
+  this.atomic(()=>{
+   const reservation=this.db.query('SELECT * FROM reservations WHERE plan_id=?').get(planId) as StoredReservation|null;
+   if(!reservation)return;
+   if(reservation.job_key!==`${feature}:${jobId}`)fail('budget-review-changed');
+   this.db.query("UPDATE attempts SET state='released',liability='0',unknown_liability=0 WHERE reservation_id=? AND state='held'").run(reservation.id);
+   this.db.query('UPDATE reservations SET finished=1 WHERE id=?').run(reservation.id);
+  });
+ }
  /** Never refunds another process's live allocations; recovery does not authorize any replay. */
  recover():void {this.atomic(()=>{this.db.query("UPDATE attempts SET state='uncertain' WHERE state='dispatched'").run();});}
  snapshot():AiUsageSnapshot {

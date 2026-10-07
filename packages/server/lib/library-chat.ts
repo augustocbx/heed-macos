@@ -79,7 +79,7 @@ export class LibraryChatService {
     if(!preview.ready)throw new ChatError('scope-empty',409);
     if(turn.snapshot.key!==preview.snapshot.key)throw new ChatError('scope-changed',409);
     if(command.model!==undefined){if(typeof command.model!=='string'||!command.model.trim()||command.model.length>200)throw new ChatError('invalid-question');turn.initialModel??=turn.model;turn.model=command.model;}
-    Object.assign(turn,this.binding(turn.model));delete turn.provenance;(turn as LocalLibraryTurn).retrievalKey=this.capture(scope).key;turn.status='waiting';delete turn.reason;delete turn.answer;
+    const supersededPlanId=turn.ai?.planId??turn.ai?.supersededPlanId;Object.assign(turn,this.binding(turn.model));if(turn.ai&&supersededPlanId)turn.ai.supersededPlanId=supersededPlanId;delete turn.provenance;(turn as LocalLibraryTurn).retrievalKey=this.capture(scope).key;turn.status='waiting';delete turn.reason;delete turn.answer;
    }turn.updatedAt=new Date().toISOString();
   }else throw new ChatError('invalid-command');
   const saved=this.save(thread);if(command.action==='cancel'&&this.active?.id===thread.id&&this.active.turnId===command.turnId)this.active.controller.abort();void this.tick().catch(()=>{});return saved;
@@ -122,8 +122,8 @@ export class LibraryChatService {
   const {metadata,coverage:metadataCoverage}=selectedMeetingMetadata(descriptors);
   const prepared=prepareMeetingQuestion({evidence,metadata,metadataCoverage,coverage:result.coverage,question:turn.question,history,model:turn.model});
   validate();
-  return {jobId:`library-chat:${thread.id}:${turnId}`,feature:'library-chat',selection:turn.ai!.selection,calls:chatPlanCalls(prepared),sources:retrieval.sources.map(source=>({sessionId:source.sessionId,sourceRevision:source.sourceRevision,sourceVersion:source.transcriptVersion})),validate,
-   attach:plan=>{validate();const {live,value}=current();value.ai={...value.ai!,planId:plan.id,dispatched:false};attached=plan.id;(value as LocalLibraryTurn).retrievalKey=retrieval.key;delete value.reason;this.save(live);this.prepared.set(plan,{prepared,retrieval,result});},
+  return {jobId:`library-chat:${thread.id}:${turnId}`,feature:'library-chat',supersededPlanId:turn.ai?.supersededPlanId,selection:turn.ai!.selection,calls:chatPlanCalls(prepared),sources:retrieval.sources.map(source=>({sessionId:source.sessionId,sourceRevision:source.sourceRevision,sourceVersion:source.transcriptVersion})),validate,
+   attach:plan=>{validate();const {live,value}=current();value.ai={...value.ai!,planId:plan.id,dispatched:false};delete value.ai.supersededPlanId;attached=plan.id;(value as LocalLibraryTurn).retrievalKey=retrieval.key;delete value.reason;this.save(live);this.prepared.set(plan,{prepared,retrieval,result});},
    dispatched:()=>{validate();const {live,value}=current();value.ai!.dispatched=true;this.save(live);}};
  }
  async tick():Promise<void>{

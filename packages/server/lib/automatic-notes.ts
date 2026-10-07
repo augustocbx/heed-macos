@@ -204,7 +204,9 @@ export class AutomaticNotesService {
    if (!options.replaceExisting) throw new Error("Existing notes require explicit replacement");
    if (options.expectedNotesHash !== notesHash(session.aiNotes)) throw new Error("Notes changed; reload before replacing notes");
   }
-  session.notesJobs![old.id] = this.snapshot(session, old, options);
+  const next=this.snapshot(session,old,options),supersededPlanId=old.ai?.planId??old.ai?.supersededPlanId;
+  if(next.ai&&supersededPlanId)next.ai.supersededPlanId=supersededPlanId;
+  session.notesJobs![old.id]=next;
   return this.save(session);
  }
  /** Resolve the existing durable command; preparing a preview never enqueues or retries it. */
@@ -221,7 +223,7 @@ export class AutomaticNotesService {
    if(aiFingerprint(comparable)!==identity)throw new AiPlanError('review-invalidated');
   };
   const selection=job.ai!.selection;
-  return {jobId:`notes:${sessionId}:${job.id}`,feature:'notes',selection,calls:[{id:'notes',...notesPrompt({language:job.language,templatePrompt:job.templatePrompt,transcript:renderNotesTranscript(session)}),contextTokens:8192,maxOutputTokens:1800}],sources:[{sessionId,sourceRevision:job.sourceRevision,sourceVersion:job.sourceVersion,expectedNotesHash:job.expectedNotesHash}],validate,
+  return {jobId:`notes:${sessionId}:${job.id}`,feature:'notes',supersededPlanId:job.ai?.supersededPlanId,selection,calls:[{id:'notes',...notesPrompt({language:job.language,templatePrompt:job.templatePrompt,transcript:renderNotesTranscript(session)}),contextTokens:8192,maxOutputTokens:1800}],sources:[{sessionId,sourceRevision:job.sourceRevision,sourceVersion:job.sourceVersion,expectedNotesHash:job.expectedNotesHash}],validate,
    attach:plan=>{validate();const current=this.require(sessionId),live=this.findJob(current,job.id);live.ai={selection,commandRevision:job.ai!.commandRevision,planId:plan.id};this.save(current);},
    dispatched:()=>{const current=this.require(sessionId),live=this.findJob(current,job.id);live.ai!.dispatched=true;this.save(current);}};
  }
