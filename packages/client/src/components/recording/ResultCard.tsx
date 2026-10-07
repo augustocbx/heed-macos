@@ -17,6 +17,7 @@ import { NotesHardwareHint } from "@/components/ai-notes/NotesHardwareHint.tsx";
 import { Spinner } from "@/components/shared/Spinner.tsx";
 import { cpuFallbackWarning, estimateNotesSeconds } from "@/lib/format.ts";
 import { applySpeakerNames } from "@/lib/speakerNames.ts";
+import { RetranscribeDialog } from '@/components/sessions/RetranscribeDialog';
 import styles from "./ResultCard.module.css";
 
 type Tab = "speakers" | "notes";
@@ -28,6 +29,7 @@ export function ResultCard() {
 	} = useRecordingStore();
 	const savedSession = useSessionsStore(state => state.sessions.find(session => session.id === currentSessionId));
  const notesBusy = automaticNotesBusy(savedSession);
+ const usableText = !!savedSession && (savedSession.segments.length ? savedSession.segments.some(segment => !!segment.text.trim()) : !!savedSession.transcript.trim());
  const recordingBusy = useRecordingStore(state => state.recording || state.processing);
  const finalSavePending = useRecordingStore(state => state.finalSavePending);
  const updateSession = useSessionsStore(state => state.update);
@@ -39,6 +41,7 @@ export function ResultCard() {
 	const loadModels = useModelsStore((s) => s.load);
 	const openPicker = useModelsStore((s) => s.openPicker);
 
+	const [showCandidates, setShowCandidates] = useState(false);
 	const [activeTab, setActiveTab] = useState<Tab>("speakers");
 	const [generating, setGenerating] = useState(false);
 	const [streamingNotes, setStreamingNotes] = useState("");
@@ -73,7 +76,7 @@ export function ResultCard() {
 	};
 
 	const handleGenerate = async (forceCpu = false) => {
-		if (!savedSession?.transcript || generating || notesBusy || recordingBusy) return;
+		if (!savedSession || !usableText || generating || notesBusy || recordingBusy) return;
   if (savedSession.aiNotes && !window.confirm(tr(replacementPrompt))) return;
 		setGenerating(true);
 		setStreamingNotes("");
@@ -82,7 +85,7 @@ export function ResultCard() {
 			const guard = guardForSession(savedSession);
 			let acc = "";
 			await generateNotes(
-				savedSession.segments?.length ? savedSession.segments.map(segment => `${segment.speaker}: ${segment.text}`).join("\n") : savedSession.transcript,
+				savedSession.segments?.length ? savedSession.segments.filter(segment => !!segment.text.trim()).map(segment => `${segment.speaker}: ${segment.text}`).join("\n") : savedSession.transcript,
 				savedSession.language || useRecordingStore.getState().resultLanguage || "en",
 				templateId,
 				{
@@ -200,6 +203,9 @@ export function ResultCard() {
 				</div>
 			)}
 
+			{activeTab === "notes" && savedSession && !usableText && <p role="status">{tr("This transcript has no usable text. Add a correction before generating notes.")}</p>}
+   {savedSession?.transcriptEditing?.candidates.length ? <button type="button" onClick={()=>setShowCandidates(true)}>{tr("Review new transcript")}</button> : null}
+   {showCandidates && savedSession && <RetranscribeDialog session={savedSession} onClose={()=>setShowCandidates(false)} onBusy={()=>{}}/>}
 			<div className={styles.actions}>
 				<button className={styles.btn} onClick={handleCopy}>{tr("Copy")}</button>
 				{activeTab === "speakers" && (
@@ -217,11 +223,11 @@ export function ResultCard() {
 							))}
 						</select>
 						{fitsGpu ? (
-							<button className={styles.btn} onClick={() => handleGenerate(false)} disabled={generating || notesBusy || recordingBusy || !savedSession}>
+							<button className={styles.btn} onClick={() => handleGenerate(false)} disabled={generating || notesBusy || recordingBusy || !usableText}>
 								{generating ? <><Spinner />{tr("Generating…")}</> : tr("Generate AI notes · ~{seconds}s", undefined, {seconds: estimateNotesSeconds(currentModel?.vram_mb, true)})}
 							</button>
 						) : (
-							<button className={styles.btnCpu} onClick={() => handleGenerate(true)} disabled={generating || notesBusy || recordingBusy || !savedSession}>
+							<button className={styles.btnCpu} onClick={() => handleGenerate(true)} disabled={generating || notesBusy || recordingBusy || !usableText}>
 								{generating ? <><Spinner />{tr("Generating on CPU…")}</> : tr("Generate on CPU · ~{seconds}s", undefined, {seconds:estimateNotesSeconds(currentModel?.vram_mb, false)})}
 							</button>
 						)}
