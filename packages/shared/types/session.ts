@@ -8,7 +8,14 @@ export interface SessionFiles {
 	txt?: string;
 }
 
+export type MeetingMode = "audio-transcript" | "transcript-only";
+export interface AudioCleanup { status:"pending"|"completed"; requestedAt:string; completedAt?:string; }
+
 export interface Session {
+ /** Archival intent is frozen per meeting; absent legacy metadata retains audio behavior. */
+ meetingMode?:MeetingMode;
+ audioCleanup?:AudioCleanup;
+ audioUnavailableReason?:"transcript-only";
  /** Device-local archival availability; never part of portable meeting records. */
  audioArchived?:boolean;
 	id: string;
@@ -40,7 +47,7 @@ export interface Session {
  notesJobs?: Record<string, NotesJob>;
 }
 
-export type SessionPatch = Partial<Omit<Session, "id" | "createdAt">> & {
+export type SessionPatch = Partial<Omit<Session, "id" | "createdAt" | "meetingMode" | "audioCleanup" | "audioUnavailableReason">> & {
  expectedTranscriptRevision?: string;
  expectedTranscriptVersion?: number;
  expectedNotes?: string;

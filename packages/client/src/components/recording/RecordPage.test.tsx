@@ -44,7 +44,7 @@ describe("RecordPage", () => {
 	it("explains configured preview and automatic final language", () => {
 		render(<RecordPage />);
 		expect(screen.getByText(/Live speech language is configured in Settings/)).toBeInTheDocument();
-		expect(document.querySelector("select")).toBeNull();
+		expect(screen.queryByRole("combobox",{name:"Live speech language"})).toBeNull();
 	});
 
 	it("renders exactly 48 visualizer bars total (24 mic + 24 system)", () => {

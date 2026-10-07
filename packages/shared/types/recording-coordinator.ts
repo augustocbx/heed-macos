@@ -1,5 +1,5 @@
 import type { Segment, TranscriptionDiagnostics } from "./speaker.ts";
-import type { Session } from "./session.ts";
+import type { Session, MeetingMode, AudioCleanup } from "./session.ts";
 import type { LanguageCapabilities, LiveCaptureOptions, LiveSpeechLanguage } from "./live-language.ts";
 
 export type CaptureMode = "both" | "mic" | "system";
@@ -15,6 +15,9 @@ export interface FinalCapture {
   transcriptionDiagnostics?: TranscriptionDiagnostics;
 }
 export interface RecordingSnapshot {
+  meetingMode?:MeetingMode;
+  audioCleanup?:AudioCleanup;
+  audioDiscardRequested?:boolean;
   meetingId: string | null;
   state: CoordinatorState;
   revision: number;
@@ -36,6 +39,8 @@ export interface RecordingSnapshot {
 }
 
 export interface RecordingSettings {
+  meetingMode?:MeetingMode;
+  activeMeetingMode?:MeetingMode|null;
   liveLanguage?: LiveSpeechLanguage;
   activeLiveLanguage?: LiveSpeechLanguage | null;
   languageCapabilities?: LanguageCapabilities | null;

@@ -6,6 +6,7 @@ export async function sessionAudioResponse(req:Request,id:string,sessionsDir:str
  if(!/^[a-zA-Z0-9_-]+$/.test(id))return new Response(null,{status:403});
  let session:any;
  try{const root=realpathSync(sessionsDir);const file=realpathSync(join(root,`${id}.json`));if(relative(root,file)!==`${id}.json`)return new Response(null,{status:403});session=JSON.parse(readFileSync(file,'utf8'));}catch{return new Response(null,{status:404});}
+ if(session?.meetingMode === "transcript-only")return new Response(null,{status:410,headers:{"Cache-Control":"no-store","X-Heed-Audio-Unavailable-Reason":"transcript-only"}});
  const path=session?.files?.wav;
  if(typeof path!=='string'||!path)return new Response(null,{status:404});
  if(!isAbsolute(path))return new Response(null,{status:403});

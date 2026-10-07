@@ -8,8 +8,9 @@ export function configuredLiveSpeechLanguage(config:TrxConfig = {}):LiveSpeechLa
 export function recordingSettingsPatch(input:unknown):Partial<TrxConfig> {
  if(!input || typeof input!=="object" || Array.isArray(input))throw Error("Choose valid recording settings.");
  const value=input as Record<string,unknown>,keys=Object.keys(value);
- if(!keys.length || keys.some(key=>!["enabled","liveLanguage"].includes(key)) || ("enabled" in value && typeof value.enabled!=="boolean") || ("liveLanguage" in value && !["en","pt"].includes(value.liveLanguage as string)))throw Error("Choose English or Brazilian Portuguese and a valid real-time setting.");
- return {...("enabled" in value?{real_time_transcription:value.enabled as boolean}:{}),...("liveLanguage" in value?{live_speech_language:value.liveLanguage as LiveSpeechLanguage}:{})};
+ if(!keys.length || keys.some(key=>!["enabled","liveLanguage","meetingMode","acknowledgeTemporaryAudio"].includes(key)) || ("enabled" in value && typeof value.enabled!=="boolean") || ("liveLanguage" in value && !["en","pt"].includes(value.liveLanguage as string)))throw Error("Choose English or Brazilian Portuguese and a valid real-time setting.");
+ if(("meetingMode" in value && !["audio-transcript","transcript-only"].includes(value.meetingMode as string)) || (value.meetingMode === "transcript-only" && value.acknowledgeTemporaryAudio !== true) || ("acknowledgeTemporaryAudio" in value && (value.acknowledgeTemporaryAudio !== true || value.meetingMode !== "transcript-only")))throw Error("Acknowledge temporary local audio processing and loss of playback/retranscription before enabling transcript-only.");
+ return {...("meetingMode" in value?{meeting_mode:value.meetingMode as TrxConfig["meeting_mode"]}:{}),...("enabled" in value?{real_time_transcription:value.enabled as boolean}:{}),...("liveLanguage" in value?{live_speech_language:value.liveLanguage as LiveSpeechLanguage}:{})};
 }
 const models=["tiny","base","small","medium","large-v3","tiny.en","base.en","small.en","medium.en"];
 function identity(engine:PreviewEngine,model:string):string|null {
@@ -36,7 +37,7 @@ export function resolveLiveCaptureOptions(enabled:boolean,requestedLanguage:Live
  return {...empty,effectiveLanguage:requestedLanguage,engine:path.engine,mode:path.mode,initialModel:path.model,initialModelIdentity:path.modelIdentity,capabilityKey:descriptor.capabilityKey,compatibleModels:[...new Set([path.modelIdentity!,...path.adaptiveModels.filter(value=>value.languages.includes(requestedLanguage)).map(value=>value.modelIdentity)])]};
 }
 export function rejectRecordingOverrides(body:Record<string,unknown>):void {
- if(!body || typeof body!=="object" || Array.isArray(body) || ["language","liveLanguage","liveSpeechLanguage","realTimeTranscription","enabled"].some(key=>Object.hasOwn(body,key)))throw Object.assign(Error("Save live language and real-time preferences in recording settings before starting."),{status:400});
+ if(!body || typeof body!=="object" || Array.isArray(body) || ["language","liveLanguage","liveSpeechLanguage","realTimeTranscription","enabled","meetingMode"].some(key=>Object.hasOwn(body,key)))throw Object.assign(Error("Save live language and real-time preferences in recording settings before starting."),{status:400});
 }
 export function previewResultMatches(options:LiveCaptureOptions,value:any):boolean {
  return !!(options.realTimeTranscription&&options.engine&&value?.engine===options.engine&&value?.language===options.effectiveLanguage&&value?.task==="transcribe"&&typeof value?.model==="string"&&value.modelIdentity===identity(options.engine,value.model)&&options.compatibleModels.includes(value.modelIdentity));

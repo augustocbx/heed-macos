@@ -1,3 +1,4 @@
+import type {MeetingMode} from "./session";
 import type {Segment} from './speaker';
 import type {DeletionCapabilities} from './remote-deletion';
 import type {RecognitionGeneration,TranscriptEdit} from './transcript-editing';
@@ -9,7 +10,7 @@ interface PortableMeetingFields {
  transcriptFinalized:true;transcriptionModel?:string;liveModel?:string;audio?:PortableAudio;
 }
 export interface PortableTranscriptHistory {schemaVersion:1;activeGenerationId:string;generations:Array<Omit<RecognitionGeneration,'transcriptionDiagnostics'>>;edits:Array<Omit<TranscriptEdit,'requestId'|'requestSignature'>>}
-export type PortableMeeting = (PortableMeetingFields & {schemaVersion:1}) | (PortableMeetingFields & {schemaVersion:2;transcriptHistory?:PortableTranscriptHistory;notesMetadata?:NotesMetadata});
+export type PortableMeeting = (PortableMeetingFields & {schemaVersion:1}) | (PortableMeetingFields & {schemaVersion:2;meetingMode?:MeetingMode;audioUnavailableReason?:'transcript-only';transcriptHistory?:PortableTranscriptHistory;notesMetadata?:NotesMetadata});
 export interface PortableManifest {
  schemaVersion:1;libraryId:string;meetingId:string;revisionId:string;parents:string[];
  artifacts:Array<{path:'meeting.json';bytes:number;sha256:string}>;

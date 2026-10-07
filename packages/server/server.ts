@@ -43,7 +43,7 @@ import {reserveMediaWork} from "./lib/media-budget.ts";
 import { join, resolve, extname } from "node:path";
 import { homedir, cpus } from "node:os";
 import { downloadFromUrl, normalizeAudio } from "./lib/media.ts";
-import { APP_DIR, LIBRARY_DIR, CONFIG_PATH, SESSIONS_DIR, TEMPLATES_DIR, type TrxConfig, ensureAppDirs, loadConfig, saveConfig, micLabel, realTimeTranscription } from "./lib/app-config.ts";
+import { APP_DIR, LIBRARY_DIR, CONFIG_PATH, SESSIONS_DIR, TEMPLATES_DIR, type TrxConfig, ensureAppDirs, loadConfig, saveConfig, micLabel, realTimeTranscription, configuredMeetingMode } from "./lib/app-config.ts";
 import { TRANSCRIPTION_SERVER, pyPost as postJSON } from "./lib/transcription-client.ts";
 import { track, gracefulStop, installShutdownHooks } from "./lib/process.ts";
 import { sseResponse } from "./lib/sse.ts";
@@ -51,6 +51,7 @@ import { sessionAudioResponse } from "./lib/session-audio.ts";
 import { SessionTags, TagError, tagResponse } from "./lib/session-tags.ts";
 import { TranscriptEditingError } from "./lib/transcript-editing.ts";
 const sessionTags = new SessionTags(SESSIONS_DIR);
+import {cleanupMeetingAudio,discardOwnedMeetingAudio} from "./lib/meeting-audio-cleanup";
 import { RecordingCoordinator } from "./lib/recording-coordinator.ts";
 import {ProcessingMaintenance, retainProcessingStream} from './lib/processing-maintenance.ts';
 import type { FinalCapture, RecordingSnapshot } from "../shared/types/recording-coordinator.ts";
@@ -470,6 +471,7 @@ async function handleTranscribe(req: Request): Promise<Response> {
   try { recordingFinalizationOptions(language, finalModelOverride); } catch (error) { return Response.json({error:(error as Error).message}, {status:400}); }
   if (recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning) return Response.json({error:"Wait for the current recording or final transcription to finish"}, {status:409});
  }
+ if (!uploadFile && !/^https?:\/\//i.test(input) && notesService.list().some(session=>session.meetingMode === "transcript-only" && session.files?.wav && resolve(session.files.wav) === resolve(input)))return Response.json({error:"Transcript-only meetings do not support playback or retranscription.",code:"transcript-only"},{status:410});
  if (!uploadFile && retainedProcessing.get(resolve(input)) === Infinity) {
   return Response.json({error:"This audio is still recording or processing. Wait until it finishes before recovery."}, {status:409});
  }
@@ -1171,7 +1173,7 @@ function handleListSessions(): Response { try { return Response.json(notesServic
 async function handleCreateSession(req: Request): Promise<Response> {
  try {
   const data = notesService.create(await req.json());
-  if (data.files?.wav) { retainedProcessing.delete(data.files.wav); removeChannelCopies(data.files.wav); }
+  if (data.meetingMode !== "transcript-only" && data.files?.wav) { retainedProcessing.delete(data.files.wav); removeChannelCopies(data.files.wav); }
   pruneAudio();
   return Response.json(notesService.get(data.id));
  } catch (error) { return sessionError(error); }
@@ -1188,6 +1190,8 @@ function handleDeleteSession(url: URL): Response {
  try {
   const id = url.searchParams.get("id");
   if (!id) return Response.json({error:"No id"},{status:400});
+  const session=notesService.get(id);
+  if(session?.meetingMode === "transcript-only" && session.audioCleanup?.status === "pending")return Response.json({error:"Temporary audio cleanup is pending. Retry cleanup or discard temporary audio before deleting this meeting.",code:"audio-cleanup-pending"},{status:409});
   portableRuntime?.markDeleted(id);
   notesService.delete(id);
   chatService.remove(id);
@@ -2360,7 +2364,7 @@ function desktopRecordingStatus() {
  return {...API_IDENTITY, ...state, snapshot:state, seconds:Math.floor(state.seconds), recording:!!recorderProc && recorderProc.exitCode === null,
   processing:["stopping","finalizing"].includes(state.state) || recordingFinalizationRunning,
   starting:state.state === "starting", pending:false, audioWork:audioWorkBusy(), clientConnected:true, ready:!processingMaintenance.blocked(), maintenance:processingMaintenance.blocked(), maintenanceProtocol:2, processingKinds:processingMaintenance.active(), updateTransactionId:processingMaintenance.transactionId(),
-  realTimeTranscriptionPreference:realTimeTranscription(),
+  realTimeTranscriptionPreference:realTimeTranscription(),meetingModePreference:configuredMeetingMode(),
   smbCommand:smbConnections?.desktopCommand()||null,meetingDetection:meetingDetection.status(),language:recordingLanguage,uiLocale:configuredUiLocale(loadConfig()),storage:{...managedQuota.snapshot(),bytes:managedQuota.snapshot().usedBytes},quotaStopped:!!quotaStopResult};
 }
 /** The coordinator mode remains immutable until capture ends. Settings affect only admission. */
@@ -2406,14 +2410,14 @@ async function handleRecordingSettings(req:Request):Promise<Response> {
   // Recheck after the synchronous durable write: another admitted start may now own preview.
   const current=recordingCoordinator.snapshot();
   if (!["starting","recording","stopping"].includes(current.state)&&!recordingCoordinator.admissionPending) {
-   try {await configurePreview(realTimeTranscription());} catch {engineState="unavailable";}
+   if(Object.hasOwn(patch,"real_time_transcription") || Object.hasOwn(patch,"live_speech_language"))try {await configurePreview(realTimeTranscription());} catch {engineState="unavailable";}
   } else engineState="deferred";
  }
  const current=recordingCoordinator.snapshot();
  const languageCapabilities=await fetchLanguageCapabilities(),liveLanguage=configuredLiveSpeechLanguage(loadConfig());
  const latest=recordingCoordinator.snapshot(),isActive=["starting","recording","stopping"].includes(latest.state);
  const liveLanguageState=!languageCapabilities||languageCapabilities.live.state==="unavailable"?"unavailable":languageCapabilities.live.supportedLanguages.includes(liveLanguage)?"supported":"unsupported";
- return Response.json({enabled:realTimeTranscription(),activeEnabled:isActive?latest.realTimeTranscription !== false:null,liveLanguage,activeLiveLanguage:isActive?latest.liveOptions?.effectiveLanguage ?? null:null,languageCapabilities,liveLanguageState,appliesTo:"next-recording",engineState});
+ return Response.json({meetingMode:configuredMeetingMode(),activeMeetingMode:["starting","recording","stopping","finalizing","failed"].includes(latest.state)?latest.meetingMode:null,enabled:realTimeTranscription(),activeEnabled:isActive?latest.realTimeTranscription !== false:null,liveLanguage,activeLiveLanguage:isActive?latest.liveOptions?.effectiveLanguage ?? null:null,languageCapabilities,liveLanguageState,appliesTo:"next-recording",engineState});
 }
 async function handleRecordingControl(req: Request, pathname: string): Promise<Response> {
  if (!desktopRequestAllowed(req)) return new Response(null,{status:403});
@@ -2427,6 +2431,10 @@ async function handleRecordingControl(req: Request, pathname: string): Promise<R
   const body = await req.json();
   if (pathname === "/api/recording/speakers") return Response.json(recordingCoordinator.rename(body.meetingId,body.expectedRevision,body.speakerNames));
   if (pathname === "/api/recording/retry") return Response.json(hydratedRecordingSnapshot(await recordingCoordinator.retry(controlRequestId(body),body.meetingId)));
+  if (pathname === "/api/recording/discard") {
+   if(body.confirm !== true)return Response.json({error:"Confirm discarding unsaved temporary audio. Saved transcripts are preserved."},{status:400});
+   return Response.json(hydratedRecordingSnapshot(await recordingCoordinator.discard(controlRequestId(body),body.meetingId)));
+  }
   if (pathname === "/api/recording/abandon") {
    const previous=recordingCoordinator.snapshot();
    const state=await recordingCoordinator.abandon(controlRequestId(body),body.meetingId);
@@ -2596,6 +2604,7 @@ const recordingCoordinator = new RecordingCoordinator({
  manifestPath:join(APP_DIR,"recording-manifest.json"),
  maintenanceBlocked:()=>processingMaintenance.blocked(),
  realTimeTranscription,
+ meetingMode:configuredMeetingMode,
  async resolveLiveOptions(){
   const capabilities=await fetchLanguageCapabilities();
   const config=loadConfig();
@@ -2634,11 +2643,23 @@ const recordingCoordinator = new RecordingCoordinator({
   },
   save(session) {
    const saved = notesService.create(session);
-   if (saved.files?.wav) { retainedProcessing.delete(saved.files.wav); removeChannelCopies(saved.files.wav); cleanupCaptureWork(saved.id); releaseCapture(managedQuota,saved.id); }
+   if (saved.meetingMode !== "transcript-only" && saved.files?.wav) { retainedProcessing.delete(saved.files.wav); removeChannelCopies(saved.files.wav); cleanupCaptureWork(saved.id); releaseCapture(managedQuota,saved.id); }
    return saved;
+  },
+  read:id=>notesService.get(id),
+  cleanup(session) {
+   const original=recordingCoordinator.snapshot().path || session.files?.wav;
+   if(!original)throw Error("Temporary audio cleanup requires its durable owned path");
+   const saved=cleanupMeetingAudio({sessionId:session.id,readSession:id=>notesService.get(id),saveSession:session=>sessionTags.save(session),audioPath:original,workDirectory:join(APP_DIR,'library','staging',`capture-${session.id}`),recordingsRoots:[UPLOAD_DIR,join(LIBRARY_DIR,'media')],stagingRoot:join(LIBRARY_DIR,'staging')});
+   retainedProcessing.delete(original);releaseCapture(managedQuota,session.id);if(recorderPath === original)recorderPath=null;return saved;
+  },
+  discard(path,meetingId) {
+   discardOwnedMeetingAudio({audioPath:path,workDirectory:join(LIBRARY_DIR,'staging',`capture-${meetingId}`),recordingsRoots:[UPLOAD_DIR,join(LIBRARY_DIR,'media')],stagingRoot:join(LIBRARY_DIR,'staging')});
+   retainedProcessing.delete(path);releaseCapture(managedQuota,meetingId);if(recorderPath === path)recorderPath=null;
   },
  },
 });
+void recordingCoordinator.resumeCleanup();
 recordingCoordinator.subscribe(state=>{if(state.state === "failed")void applySavedPreview();});
 if (processingMaintenance.owner()) recordingCoordinator.setMaintenance(true,processingMaintenance.owner()!);
 localAiReady = true;

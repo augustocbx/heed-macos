@@ -152,6 +152,7 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 	const [generating, setGenerating] = useState(false);
 	const [streamingNotes, setStreamingNotes] = useState("");
 	const [speakerNames, setSpeakerNames] = useState<Record<string, string>>({});
+ const audioAvailable=session.meetingMode !== "transcript-only" && !!session.files?.wav;
  const audioRef = useRef<HTMLAudioElement>(null);
  const [focusedSource,setFocusedSource]=useState<{segmentIndex:number|null;paragraphIndex:number|null}|null>(null);
  const cancelSourceSeek=()=>{if(useUIStore.getState().taskSourceSeek?.sessionId===session.id)useUIStore.setState({taskSourceSeek:null});};
@@ -159,10 +160,10 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
  useEffect(()=>{
   const generation=++sourceSeekGeneration.current,pending=useUIStore.getState().taskSourceSeek;
   if(pending&&(pending.sessionId!==session.id||(pending.sourceRevision&&pending.sourceRevision!==session.transcriptRevision)))useUIStore.setState({taskSourceSeek:null});
-  if(!session.files?.wav)cancelSourceSeek();
+  if(!audioAvailable)cancelSourceSeek();
   // StrictMode replays setup after cleanup; only a real departure cancels the pending request.
   return ()=>{const pending=useUIStore.getState().taskSourceSeek;queueMicrotask(()=>{if(sourceSeekGeneration.current===generation&&useUIStore.getState().taskSourceSeek===pending)cancelSourceSeek();});};
- },[session.id,session.transcriptRevision,session.files?.wav]);
+ },[session.id,session.transcriptRevision,session.files?.wav,audioAvailable]);
  const textRef=useRef<HTMLDivElement>(null);
  useEffect(()=>{setFocusedSource(null);},[session.id,session.transcriptRevision]);
  useEffect(()=>{if(activeTab==="speakers")textRef.current?.querySelector<HTMLElement>('[aria-current="true"]')?.scrollIntoView?.({block:"center"});},[activeTab,focusedSource]);
@@ -190,7 +191,7 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 	const openCitation=(citation:TranscriptEvidence)=>{
   if(citation.sessionId!==session.id||citation.sourceRevision!==session.transcriptRevision){showToast(tr("The transcript changed. Refresh before asking or retrying."));return;}
   setFocusedSource({segmentIndex:citation.segmentIndex,paragraphIndex:citation.paragraphIndex});setActiveTab("speakers");
-  if(session.files?.wav&&citation.start!==null)seekAudio(citation.start);
+  if(audioAvailable&&citation.start!==null)seekAudio(citation.start);
  };
 
  const meta = [
@@ -293,7 +294,7 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
   useUIStore.setState({chatSourceFocus:null});
   if(citation.sourceRevision!==session.transcriptRevision){showToast(tr("The transcript changed. Refresh before asking or retrying."));return;}
   setFocusedSource({segmentIndex:citation.segmentIndex,paragraphIndex:citation.paragraphIndex});setActiveTab("speakers");
-  if(session.files?.wav&&citation.start!==null){
+  if(audioAvailable&&citation.start!==null){
    if((audioRef.current?.readyState||0)>=1){cancelSourceSeek();seekAudio(citation.start);}
    else useUIStore.setState({taskSourceSeek:{sessionId:session.id,seconds:citation.start,sourceRevision:citation.sourceRevision}});
   }
@@ -306,7 +307,7 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 			<div className={styles.header}>
 				<TitleInput sessionId={session.id} value={session.title || ""} tags={session.tags || []} />
 				<div className={styles.actions}>
-					<button className={styles.btn} onClick={()=>setShowTranscribe(true)} disabled={!session.files?.wav || recordingBusy || generating}>{tr("Transcribe")}</button>
+					<button className={styles.btn} onClick={()=>setShowTranscribe(true)} title={session.meetingMode === "transcript-only"?tr("Transcript-only meeting. Playback and retranscription are unavailable."):undefined} disabled={!audioAvailable || recordingBusy || generating}>{tr("Transcribe")}</button>
      {!!session.transcriptEditing?.candidates.length&&<button type="button" className={styles.btn} onClick={()=>setShowTranscribe(true)}>{tr('Review new transcript')}</button>}
      <button className={styles.btn} disabled={transcribing} onClick={onBack}>{tr("← Back")}</button>
 				</div>
@@ -320,7 +321,7 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
    {session.transcriptionDiagnostics?.warnings.includes('microphone-all-asr-filtered') && <p role="status">{tr('All recognized microphone text was filtered as possible echo. Check the saved audio and transcript.')}</p>}
    {session.transcriptionDiagnostics?.warnings.includes('microphone-attribution-fallback') && <p role="status">{tr('Some microphone speech has uncertain speaker labels. Review the transcript and speaker names.')}</p>}
    {session.transcriptionDiagnostics?.warnings.includes('system-attribution-fallback') && <p role="status">{tr('Some participant speech has uncertain speaker labels. Review the transcript and speaker names.')}</p>}
-   <SessionAudioPlayer archived={session.audioArchived} sessionId={session.id} available={!!session.files?.wav}
+   <SessionAudioPlayer archived={session.audioArchived} sessionId={session.id} available={audioAvailable} unavailableReason={session.meetingMode === "transcript-only"?"transcript-only":undefined} cleanupPending={session.audioCleanup?.status === "pending"}
     audioRef={audioRef} onTime={seconds=>{setPlaybackTime(seconds);if(seconds===null)cancelSourceSeek();}} onDuration={duration=>{
      setAudioDuration(duration);
      const source=useUIStore.getState().taskSourceSeek;
@@ -332,7 +333,7 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 			<NotesJobStatus session={session} />
    <Tabs tabs={tabs} active={activeTab} onChange={(id) => setActiveTab(id as TabId)} />
 
-			{activeTab === "tasks" && <TasksPanel session={session} onSeek={session.files?.wav?seekAudio:undefined} onShowTranscript={source=>{setFocusedSource(source&&session.segments?.length?{segmentIndex:source.segmentIndex,paragraphIndex:null}:null);setActiveTab("speakers");}}/>}
+			{activeTab === "tasks" && <TasksPanel session={session} onSeek={audioAvailable?seekAudio:undefined} onShowTranscript={source=>{setFocusedSource(source&&session.segments?.length?{segmentIndex:source.segmentIndex,paragraphIndex:null}:null);setActiveTab("speakers");}}/>}
 			{activeTab === "speakers" && (session.segments?.length ?
 				<SpeakerView
 					segments={session.segments || []}
@@ -345,7 +346,7 @@ export function SessionDetail({ session, onBack, onTagClick }: Props) {
 					animateEmpty={false}
      playbackTime={playbackTime}
      focusedSegmentIndex={focusedSource?.segmentIndex ?? undefined}
-     onSeek={session.files?.wav ? seekAudio : undefined}
+     onSeek={audioAvailable ? seekAudio : undefined}
      onEditText={session.transcriptFinalized?index=>openTextEditor(index):undefined}
      editingDisabled={transcribing}
 				/> : <div ref={textRef} className={styles.textTranscript}>{session.transcript ? session.transcript.split(/\n\s*\n/).map((paragraph,index)=><p key={index} aria-current={focusedSource?.paragraphIndex===index ? "true" : undefined}>{paragraph}</p>) : <p>{tr(session.transcriptFinalized?'Empty transcript text':"No speaker segments in this meeting yet.")}</p>}{session.transcriptFinalized&&<button className={styles.btn} disabled={transcribing} onClick={()=>openTextEditor()}>{tr('Edit transcript')}</button>}</div>
