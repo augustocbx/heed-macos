@@ -126,3 +126,19 @@ test('unreadable AI settings preserve new recordings and fail jobs without silen
  const saved=f.notes.create({id:'recovery',transcript:'Preserved recording.',language:'en',transcriptFinalized:true});expect(saved.transcript).toBe('Preserved recording.');expect(Object.values(saved.notesJobs!)[0]?.reason).toBe('settings-recovery');
  await f.tasks.tick();expect(f.tasks.snapshot('recovery').review?.error).toBe('settings-recovery');expect(f.uploads()).toBe(0);
 });
+
+test('legacy task admission and generation share one captured model across a held resource lease',async()=>{
+ for(const configured of [true,false]){
+  const f=await setup();await f.tasks.tick();const {readFileSync,writeFileSync}=await import('node:fs');
+  const store=JSON.parse(readFileSync(f.tasksOptions.path,'utf8'));delete store.reviews.meeting.ai;writeFileSync(f.tasksOptions.path,JSON.stringify(store));
+  let model='small-local',modelReads=0,admitted:string|null|undefined,generated:string|undefined,generationCalls=0,acquiring=false,release!:()=>void;
+  const hold=new Promise<void>(resolve=>release=resolve);
+  f.tasksOptions.inference.runtime=new AiRuntime({planner:f.planner,authorizations:f.authorizations,connections:f.manager,hooks:{acquire:async summary=>{admitted=summary.selection.model;acquiring=true;await hold;return {release:()=>{}};}}});
+  const service=new MeetingTasksService({...f.tasksOptions,getModel:configured?()=>{modelReads++;return model;}:undefined,generate:async(_session,_signal,actualModel)=>{generated=actualModel;generationCalls++;return '{"suggestions":[]}';}});
+  const running=service.tick();
+  try{await until(()=>acquiring);expect(generationCalls).toBe(0);model='large-local';}
+  finally{release();await running;}
+  expect(admitted).toBe(configured?'small-local':'');expect(generated).toBe(configured?'small-local':undefined);expect(modelReads).toBe(configured?1:0);
+  expect(generationCalls).toBe(1);expect(service.snapshot('meeting').review?.status).toBe('ready');expect(f.uploads()).toBe(0);
+ }
+});

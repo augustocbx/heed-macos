@@ -178,9 +178,10 @@ export class MeetingTasksService {
   try{
    const review=this.read().reviews[session.id]!,inference=this.options.inference;
    const plan=remoteBinding(review)?inference!.planner.get(review.ai!.planId!):undefined;
-   const generate=()=>this.options.generate(session,active.controller.signal,review.ai?.selection.model??this.options.getModel?.());
+   const actualModel=review.ai?.selection.model??this.options.getModel?.();
+   const generate=()=>this.options.generate(session,active.controller.signal,actualModel);
    const results=plan?await inference!.runtime.execute(plan,active.controller.signal):undefined;
-   const output=results?results[0]!.text:inference?await inference.runtime.local('tasks',review.ai?.selection.model??this.options.getModel?.()??'',active.controller.signal,generate):await generate();
+   const output=results?results[0]!.text:inference?await inference.runtime.local('tasks',actualModel??'',active.controller.signal,generate):await generate();
    if(plan)inference!.planner.assertCurrent(plan);provenance=results?.[0]?.provenance;
    suggestions=validateTaskSuggestions(session,output);
   }catch(failure){error=(failure as Error).message;safeError=aiErrorCode(failure);}
