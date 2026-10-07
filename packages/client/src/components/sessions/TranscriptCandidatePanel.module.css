@@ -1,0 +1,56 @@
+.comparison {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+.comparison section {
+  min-width: 0;
+}
+.comparison h3 {
+  font-size: 14px;
+}
+.comparison pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  max-height: 300px;
+  overflow: auto;
+}
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+}
+.actions button {
+  padding: 8px 14px;
+  font: inherit;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--white);
+  color: var(--text);
+  cursor: pointer;
+}
+.actions button:last-child {
+  background: var(--blue);
+  color: white;
+  border-color: var(--blue);
+}
+.actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+@media (max-width: 640px) {
+  .comparison {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .actions button {
+    flex: 1;
+  }
+}

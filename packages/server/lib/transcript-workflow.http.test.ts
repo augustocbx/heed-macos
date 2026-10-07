@@ -68,7 +68,7 @@ test('two HTTP clients preserve recovery, seek identity and media across correct
     ],
   });
   let service = new TranscriptService({ notes, store, now: () => now });
-  let server: Bun.Server<undefined>;
+  let server!: Bun.Server<undefined>;
   function start() {
     server = Bun.serve({
       hostname: '127.0.0.1',
@@ -313,10 +313,10 @@ test('failed HTTP commit leaves accepted bytes and held notes alive; successful 
     aiNotes: '',
   });
   const service = new TranscriptService({ notes, store });
-  const server = Bun.serve({
+  const server: Bun.Server<undefined> = Bun.serve({
     hostname: '127.0.0.1',
     port: 0,
-    async fetch(req) {
+    async fetch(req): Promise<Response> {
       return (
         (await transcriptEditingResponse(req, service, desktopRequestAllowed(req, server.port!))) ??
         new Response(null, { status: 404 })
