@@ -1,6 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto';
 import type {PortableCommit,PortableManifest,PortableMeeting,Session} from '@heed/shared';
-import {portableHistory,portableSegment,portableText,validatePortableTranscript} from './portable-transcript';
+import {portableHistory,portableNotesMetadata,portableSegment,portableText,validatePortableTranscript} from './portable-transcript';
 export const MAX_ARTIFACT_BYTES=16_000_000;
 export const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const HASH=/^[a-f0-9]{64}$/;
@@ -32,7 +32,7 @@ export function portableMeeting(session:Session,meetingId:string,audio?:Portable
   transcriptFinalized:session.transcriptFinalized,transcriptionModel:session.transcriptionModel,liveModel:session.liveModel,audio};
  const selected=version??(session.transcriptEditing||session.notesMetadata?2:1);
  if(selected===1)return validateMeeting(JSON.parse(JSON.stringify(payload)));
- return validateMeeting(JSON.parse(JSON.stringify({...payload,schemaVersion:2,segments:session.segments.map(portableSegment),transcriptHistory:portableHistory(session.transcriptEditing),notesMetadata:session.aiNotes?.trim()?(session.notesMetadata??{origin:'manual',sourceRevision:null,stale:true}):undefined})));
+ return validateMeeting(JSON.parse(JSON.stringify({...payload,schemaVersion:2,segments:session.segments.map(portableSegment),transcriptHistory:portableHistory(session.transcriptEditing),notesMetadata:session.aiNotes?.trim()?portableNotesMetadata(session,portableHistory(session.transcriptEditing),session.notesMetadata??{origin:'manual',sourceRevision:null,stale:true}):undefined})));
 }
 export function acceptedPortableHash(session:Session,payload:PortableMeeting):string{return sha256(encode(portableMeeting(session,payload.meetingId,payload.audio,payload.schemaVersion)));}
 export function validateManifest(value:unknown):PortableManifest {
@@ -48,7 +48,7 @@ export function validateCommit(value:unknown):PortableCommit {
 }
 export function validateBundle(markerInput:unknown,manifestInput:unknown,bytes:Uint8Array):PortableMeeting {
  const marker=validateCommit(markerInput),manifest=validateManifest(manifestInput);assert(['libraryId','meetingId','revisionId'].every(key=>marker[key as keyof PortableCommit]===manifest[key as keyof PortableManifest]));
- assert(marker.manifestHash===sha256(encode(manifest)),'Manifest hash mismatch');const artifact=manifest.artifacts[0]!;assert(bytes.length===artifact.bytes&&sha256(bytes)===artifact.sha256,'Meeting integrity verification failed');const payload=validateMeeting(JSON.parse(Buffer.from(bytes).toString('utf8')));assert(payload.meetingId===manifest.meetingId);return payload;
+ assert(marker.manifestHash===sha256(encode(manifest)),'Manifest hash mismatch');const artifact=manifest.artifacts[0]!;assert(bytes.length===artifact.bytes&&sha256(bytes)===artifact.sha256,'Meeting integrity verification failed');const payload=validateMeeting(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)));assert(payload.meetingId===manifest.meetingId);return payload;
 }
 export function makeBundle(libraryId:string,deviceId:string,payload:PortableMeeting,parents:string[],revisionId=randomUUID()) {
  const manifest=validateManifest({schemaVersion:1,libraryId,meetingId:payload.meetingId,revisionId,parents,artifacts:[{path:'meeting.json',bytes:encode(payload).length,sha256:sha256(encode(payload))}]});

@@ -42,8 +42,13 @@ export class PortableLibrary {
  private edit(change:(state:Catalog)=>void){const next=structuredClone(this.state);change(next);this.persist(next);}
  private canonical(entry:Entry){return join(this.options.root,'catalog','revisions',entry.manifest.libraryId,entry.manifest.meetingId,entry.manifest.revisionId);}
  private payload(entry:Entry):PortableMeeting{return validateBundle(entry.marker,entry.manifest,readFileSync(join(this.canonical(entry),'meeting.json')));}
- private saveArtifacts(entry:Entry,payload:PortableMeeting){const directory=this.canonical(entry);mkdirSync(directory,{recursive:true,mode:0o700});
-  for(const [name,value] of [['meeting.json',payload],['manifest.json',entry.manifest]] as const){const path=join(directory,name);if(existsSync(path)){if(sha256(encode(JSON.parse(readFileSync(path,'utf8'))))!==sha256(encode(value)))throw new Error('Immutable local revision collision');}else atomicWrite(path,encode(value).toString('utf8'));}
+ private saveArtifacts(entry:Entry,payload:PortableMeeting,received:Uint8Array=encode(payload)){
+  const directory=this.canonical(entry);mkdirSync(directory,{recursive:true,mode:0o700});
+  for(const [name,bytes] of [['meeting.json',received],['manifest.json',encode(entry.manifest)]] as const){
+   const path=join(directory,name);
+   if(existsSync(path)){if(sha256(readFileSync(path))!==sha256(bytes))throw new Error('Immutable local revision collision');}
+   else atomicWrite(path,Buffer.from(bytes).toString('utf8'));
+  }
   const commits=join(this.options.root,'catalog','commits',entry.marker.deviceId);mkdirSync(commits,{recursive:true,mode:0o700});(this.options.write||atomicWriteJson)(join(commits,`${entry.marker.revisionId}.json`),entry.marker);
  }
  private safeAudioSource(path:string):string {
@@ -168,7 +173,7 @@ export class PortableLibrary {
    const next=preparePortableTranscript(current,incoming,now),changed=!current||acceptedTranscriptChanged(current,next);
    next.transcriptVersion=(current?.transcriptVersion??0)+(changed?1:0);next.transcriptRevision=sourceRevision(next);
    if(current&&changed){next.updatedAt=now;if(next.notesMetadata)next.notesMetadata={...next.notesMetadata,stale:true};}
-   this.edit(state=>{const item=state.entries[entryKey(entry.manifest)]!;item.sessionId=next.id;item.payloadHash=sha256(encode(payload));item.acceptedPayloadHash=acceptedPortableHash(next,payload);item.acceptedProjectionVersion=payload.schemaVersion;item.acceptedTranscriptVersion=next.transcriptVersion;item.commitIntent=true;state.aliases[meetingKey(entry.manifest)]=next.id;});
+   this.edit(state=>{const item=state.entries[entryKey(entry.manifest)]!;item.sessionId=next.id;item.payloadHash=entry.manifest.artifacts[0]!.sha256;item.acceptedPayloadHash=acceptedPortableHash(next,payload);item.acceptedProjectionVersion=payload.schemaVersion;item.acceptedTranscriptVersion=next.transcriptVersion;item.commitIntent=true;state.aliases[meetingKey(entry.manifest)]=next.id;});
    return next;
   };
   if(guard!==null&&this.options.replaceAccepted)return this.options.replaceAccepted(incoming.id,guard,build);
@@ -185,7 +190,7 @@ export class PortableLibrary {
   for(const entry of entries){signal?.throwIfAborted();const deletedKey=meetingKey(entry.manifest);if(entry.sessionId&&!entry.commitIntent&&!this.options.sessions.read(entry.sessionId))this.markDeleted(entry.sessionId);if(this.state.tombstones?.[deletedKey]&&!revisionIds){skipped++;continue;}if(entry.sessionId&&this.options.sessions.read(entry.sessionId))continue;let job:ReturnType<PortableLibrary['quotaJob']>|undefined;
    const key=meetingKey(entry.manifest),head=this.state.heads[key],previous=head?this.state.entries[`${key}/${head}`]:undefined,alias=this.state.aliases[key]||entry.manifest.meetingId;const admitted=this.options.sessions.read(previous?.sessionId||alias),guard=admitted?transcriptGuard(admitted):null;
    try {job=this.quotaJob(entry,admitted||{id:alias} as Session);
-    const bytes=await provider.read(providerPath(`${revisionPath(entry.manifest.meetingId,entry.manifest.revisionId)}/meeting.json`),entry.manifest.artifacts[0]!.bytes,signal);signal?.throwIfAborted();const payload=validateBundle(entry.marker,entry.manifest,bytes);atomicWrite(join(job.path,'meeting.json'),Buffer.from(bytes).toString('utf8'));this.saveArtifacts(entry,payload);
+    const bytes=await provider.read(providerPath(`${revisionPath(entry.manifest.meetingId,entry.manifest.revisionId)}/meeting.json`),entry.manifest.artifacts[0]!.bytes,signal);signal?.throwIfAborted();const payload=validateBundle(entry.marker,entry.manifest,bytes);atomicWrite(join(job.path,'meeting.json'),Buffer.from(bytes).toString('utf8'));this.saveArtifacts(entry,payload,bytes);
     const current=this.options.sessions.read(previous?.sessionId||alias);if(this.state.heads[key]!==head||!!current!==!!admitted)throw new Error('Transcript changed during import');if(current)checkTranscriptGuard(current,guard);
     const changed=!!current&&!!previous&&!this.acceptedMatches(previous,current);
     if(previous&&current&&!changed&&this.descends(previous,entry.manifest.revisionId)){this.edit(next=>{const item=next.entries[entryKey(entry.manifest)]!;item.preview.state='verified';item.sessionId=current.id;item.payloadHash=sha256(bytes);});continue;}
@@ -236,7 +241,7 @@ export class PortableLibrary {
    // V2 exclusive canonical admission fences stale publishers before any payload or media writes.
    if(tx){await provider.writeImmutable(entry.marker.manifestPath,encode(entry.manifest),signal);await tx.writePending(intent,signal);}
    if(payload.audio){const path=this.safeAudioSource(entry.audioSource||join(this.options.root,'media',`${payload.audio.sha256}.wav`));if(!existsSync(path)||lstatSync(path).size!==payload.audio.bytes)throw new Error('Archived audio unavailable locally');await provider.writeObjectImmutable(providerPath(payload.audio.objectPath),payload.audio.bytes,payload.audio.sha256,createReadStream(path),signal);}
-   await provider.writeImmutable(providerPath(`${prefix}/meeting.json`),encode(payload),signal);if(!tx)await provider.writeImmutable(entry.marker.manifestPath,encode(entry.manifest),signal);signal.throwIfAborted();this.requireLocal(entry);await provider.writeImmutable(providerPath(`commits/${entry.marker.deviceId}/${entry.marker.revisionId}.json`),encode(entry.marker),signal);
+   await provider.writeImmutable(providerPath(`${prefix}/meeting.json`),readFileSync(join(this.canonical(entry),'meeting.json')),signal);if(!tx)await provider.writeImmutable(entry.marker.manifestPath,encode(entry.manifest),signal);signal.throwIfAborted();this.requireLocal(entry);await provider.writeImmutable(providerPath(`commits/${entry.marker.deviceId}/${entry.marker.revisionId}.json`),encode(entry.marker),signal);
    const confirmation=await provider.confirm(entry.marker,signal);signal.throwIfAborted();this.edit(next=>{next.entries[entryKey(entry.manifest)]!.preview.state=confirmation==='remote-confirmed'?'provider-confirmed':'pending';});
    if(confirmation==='remote-confirmed'||tx&&confirmation==='local-only'){await verifyPublished();this.edit(next=>{const saved=next.entries[entryKey(entry.manifest)]!;saved.preview.state=confirmation==='remote-confirmed'?'verified':'pending';saved.localPublications||={};saved.localPublications[publication]=true;delete saved.preview.error;});if(tx&&confirmation==='remote-confirmed')await tx.retirePending(intent,signal);}
   }catch(error){this.edit(next=>{next.entries[entryKey(entry.manifest)]!.preview.state='unavailable';next.entries[entryKey(entry.manifest)]!.preview.error=error instanceof Error?error.message:'Publication unavailable';});if(tx&&error instanceof Error&&(error as Error&{code?:string}).code==='canonical-collision-noeffect')await tx.checkpoint();if(tx||signal.aborted)throw error;}

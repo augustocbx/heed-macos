@@ -1,8 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
 import {createHash} from 'node:crypto';
 import type { Session, PortableMeeting, PortableTranscriptHistory, NotesMetadata, Segment } from "@heed/shared";
-import type { RecognitionGeneration, TranscriptEdit } from "../../shared/types/transcript-editing";
-import { sourceRevision } from "../../shared/lib/transcript-source";
+import type { RecognitionGeneration, TranscriptEdit, TranscriptSourceIdentity } from "../../shared/types/transcript-editing";
+import { sourceRevision, transcriptSourceIdentity } from "../../shared/lib/transcript-source";
 import { renderAcceptedTranscript, transcriptRecoveryState } from "./transcript-editing";
 import {acceptedSourceChanged,speakerOnly} from './session-tags';
 
@@ -27,27 +27,92 @@ export function portableHistory(state: Session['transcriptEditing']): PortableTr
  if (!state) return;
  return {schemaVersion:1,activeGenerationId:state.activeGenerationId,generations:state.generations.map(({transcriptionDiagnostics,...g})=>({...g,segments:g.segments.map(portableSegment)})),edits:state.edits.map(({requestId,requestSignature,...edit})=>edit)};
 }
-/** Recorded historical action hashes are evidence identities, not proof of current source. */
-export function validatePortableTranscript(source: Pick<Session,'transcript'|'segments'|'speakers'|'language'>, history: unknown, metadata: unknown): void {
+type SourceState = Pick<Session,'transcript'|'segments'|'speakers'|'language'>;
+interface ReplayNode {base:SourceState;parent?:ReplayNode;changes?:TranscriptEdit['changes'];sourceIdentity?:TranscriptSourceIdentity}
+/** History holds compact parent/change references; materialize only the state being checked. */
+function materialize(node:ReplayNode):SourceState {
+ const chain:ReplayNode[]=[];for(let cursor:ReplayNode|undefined=node;cursor;cursor=cursor.parent)chain.push(cursor);
+ const state:SourceState={transcript:node.base.transcript,language:node.base.language,speakers:[...node.base.speakers],segments:node.base.segments.map(segment=>({...segment}))};
+ for(const step of chain.reverse())if(step.changes){for(const c of step.changes){if(c.target.kind==='document')state.transcript=c.after;else state.segments[c.target.index]!.text=c.after;}if(state.segments.length)state.transcript=renderAcceptedTranscript(state.segments);}
+ return node.sourceIdentity?withIdentity(state,node.sourceIdentity):state;
+}
+function identity(value: unknown): asserts value is TranscriptSourceIdentity {
+ fields(value,['language','speakers','segments']);
+ if(!portableText(value.language,100)||!strings(value.speakers)||!Array.isArray(value.segments)||value.segments.length>100000)fail('Invalid portable source identity');
+ for(const segment of value.segments){fields(segment,['speaker','start','end','channel']);if(!portableText(segment.speaker,10000)||!value.speakers.includes(segment.speaker)||!Number.isFinite(segment.start)||!Number.isFinite(segment.end)||segment.start<0||segment.end<segment.start||(segment.channel!==undefined&&!['mic','sys'].includes(segment.channel)))fail('Invalid portable source identity');}
+}
+const topology=(a:TranscriptSourceIdentity,b:TranscriptSourceIdentity)=>a.language===b.language&&a.segments.length===b.segments.length&&a.segments.every((s,i)=>s.start===b.segments[i]!.start&&s.end===b.segments[i]!.end&&s.channel===b.segments[i]!.channel);
+function withIdentity(text:SourceState,witness:TranscriptSourceIdentity):SourceState {
+ return {transcript:text.transcript,language:witness.language,speakers:witness.speakers,segments:witness.segments.map((segment,i)=>({...segment,text:text.segments[i]!.text}))};
+}
+/** Only reconstructed states prove known provenance. Raw journal hashes remain recorded data. */
+export function validatePortableTranscript(source: SourceState, history: unknown, metadata: unknown): Set<string> {
  if(!portableText(source.transcript)||!portableText(source.language,100))fail();
- segments(source.segments); if (!strings(source.speakers)) fail();
- const revisions = new Set([sourceRevision(source)]);
- if (history!==undefined) {
-  fields(history,["schemaVersion","activeGenerationId","generations","edits"]);
+ segments(source.segments);if(!strings(source.speakers))fail();
+ const revisions=new Set([sourceRevision(source)]),states:ReplayNode[]=[{base:source}];
+ if(history!==undefined){
+  fields(history,['schemaVersion','activeGenerationId','generations','edits']);
   if(history.schemaVersion!==1||!id(history.activeGenerationId)||!Array.isArray(history.generations)||!history.generations.length||!Array.isArray(history.edits))fail();
-  const generations=new Map<string,RecognitionGeneration>();
-  for(const g of history.generations){fields(g,["id","createdAt","origin","transcript","segments","speakers","language","transcriptionModel","duration"]);if(!id(g.id)||generations.has(g.id)||!date(g.createdAt)||!['recognition','legacy-preserved'].includes(g.origin)||!portableText(g.transcript)||!strings(g.speakers)||!portableText(g.language,100)||!Number.isFinite(g.duration)||g.duration<0||(g.transcriptionModel!==undefined&&!portableText(g.transcriptionModel,10000)))fail();segments(g.segments);generations.set(g.id,g as RecognitionGeneration);revisions.add(sourceRevision(g as RecognitionGeneration));}
+  const generations=new Map<string,RecognitionGeneration>(),replay=new Map<string,Map<string,ReplayNode>>();
+  for(const g of history.generations){
+   fields(g,['id','createdAt','origin','transcript','segments','speakers','language','transcriptionModel','duration']);
+   if(!id(g.id)||generations.has(g.id)||!date(g.createdAt)||!['recognition','legacy-preserved'].includes(g.origin)||!portableText(g.transcript)||!strings(g.speakers)||!portableText(g.language,100)||!Number.isFinite(g.duration)||g.duration<0||(g.transcriptionModel!==undefined&&!portableText(g.transcriptionModel,10000)))fail();
+   segments(g.segments);generations.set(g.id,g as RecognitionGeneration);const revision=sourceRevision(g as RecognitionGeneration);revisions.add(revision);const node={base:g as RecognitionGeneration};states.push(node);replay.set(g.id,new Map([[revision,node]]));
+  }
   if(!generations.has(history.activeGenerationId))fail();
-  const seen=new Set<string>(), replay=new Map([...generations].map(([key,g])=>[key,structuredClone(g)]));
-  for(const edit of history.edits){fields(edit,["id","generationId","kind","changes","createdAt","beforeRevision","afterRevision"]);const g=generations.get(edit.generationId);if(!id(edit.id)||seen.has(edit.id)||!g||!['edit','replace','revert'].includes(edit.kind)||!date(edit.createdAt)||!hash.test(edit.beforeRevision)||!hash.test(edit.afterRevision)||!Array.isArray(edit.changes)||!edit.changes.length||edit.changes.length>1000)fail();seen.add(edit.id);const targets=new Set<string>();
-   for(const change of edit.changes){fields(change,["target","before","after"]);fields(change.target,["kind","index"]);const t=change.target;if(!portableText(change.before)||!portableText(change.after)||!(t.kind==='document'&&!g.segments.length&&t.index===undefined||t.kind==='segment'&&Number.isSafeInteger(t.index)&&t.index>=0&&t.index<g.segments.length))fail();const key=JSON.stringify(t);if(targets.has(key))fail();targets.add(key);}
-   revisions.add(edit.beforeRevision);revisions.add(edit.afterRevision);
-   const state=replay.get(edit.generationId)!;
-   if(edit.changes.every((c:any)=>(c.target.kind==='document'?state.transcript:state.segments[c.target.index]?.text)===c.before)){revisions.add(sourceRevision(state));for(const c of edit.changes){if(c.target.kind==='document')state.transcript=c.after;else state.segments[c.target.index].text=c.after;}if(state.segments.length)state.transcript=renderAcceptedTranscript(state.segments);revisions.add(sourceRevision(state));}
+  const seen=new Set<string>();
+  for(const edit of history.edits){
+   fields(edit,['id','generationId','kind','changes','createdAt','beforeRevision','afterRevision','sourceIdentity']);const g=generations.get(edit.generationId);
+   if(!id(edit.id)||seen.has(edit.id)||!g||!['edit','replace','revert'].includes(edit.kind)||!date(edit.createdAt)||typeof edit.beforeRevision!=='string'||!hash.test(edit.beforeRevision)||typeof edit.afterRevision!=='string'||!hash.test(edit.afterRevision)||!Array.isArray(edit.changes)||!edit.changes.length||edit.changes.length>1000)fail();
+   seen.add(edit.id);const targets=new Set<string>();
+   for(const change of edit.changes){
+    fields(change,['target','before','after']);fields(change.target,['kind','index']);const t=change.target;
+    if(!portableText(change.before)||!portableText(change.after)||!(t.kind==='document'&&!g.segments.length&&t.index===undefined||t.kind==='segment'&&Number.isSafeInteger(t.index)&&t.index>=0&&t.index<g.segments.length))fail();
+    const key=t.kind==='document'?'document':`segment:${t.index}`;if(targets.has(key))fail();targets.add(key);
+   }
+   const original=transcriptSourceIdentity(g),current=transcriptSourceIdentity(source),witnesses=[original,...(topology(original,current)?[current]:[])];
+   if(edit.sourceIdentity!==undefined){identity(edit.sourceIdentity);if(!topology(original,edit.sourceIdentity))fail('Invalid portable edit source identity');witnesses.splice(0,witnesses.length,edit.sourceIdentity);}
+   const branches=replay.get(g.id)!;let verified=false,matchedText=false;const additions:Array<{hash:string;node:ReplayNode}>=[];
+   const exact=branches.get(edit.beforeRevision),candidates=exact?[exact]:[...branches.values()];
+   for(const node of candidates){
+    const state=materialize(node);
+    if(!edit.changes.every((c:any)=>(c.target.kind==='document'?state.transcript:state.segments[c.target.index]?.text)===c.before))continue;
+    matchedText=true;
+    for(const witness of !edit.sourceIdentity&&node.sourceIdentity?[node.sourceIdentity,...witnesses]:witnesses){
+     const before=withIdentity(state,witness),beforeHash=sourceRevision(before);
+     if(beforeHash!==edit.beforeRevision)continue;
+     const after=structuredClone(before);for(const c of edit.changes){if(c.target.kind==='document')after.transcript=c.after;else after.segments[c.target.index].text=c.after;}
+     if(after.segments.length)after.transcript=renderAcceptedTranscript(after.segments);
+     const afterHash=sourceRevision(after);if(afterHash!==edit.afterRevision)fail('Invalid reconstructable portable edit hash');
+     const beforeNode={base:node.base,parent:node,sourceIdentity:witness};revisions.add(beforeHash);revisions.add(afterHash);additions.push({hash:beforeHash,node:beforeNode},{hash:afterHash,node:{base:node.base,parent:beforeNode,changes:edit.changes,sourceIdentity:witness}});verified=true;
+    }
+   }
+   if(edit.sourceIdentity!==undefined&&!verified)fail('Invalid portable edit source witness');
+   if(!matchedText)fail('Invalid portable edit before text');
+   // Old unwitnessed identities may be mathematically irrecoverable after a
+   // rename. Keep their journal, but never treat the declared hashes as proof.
+   if(!verified){for(const node of candidates){const state=materialize(node);if(edit.changes.every((c:any)=>(c.target.kind==='document'?state.transcript:state.segments[c.target.index]?.text)===c.before)){const afterNode={base:node.base,parent:node,changes:edit.changes,sourceIdentity:node.sourceIdentity};additions.push({hash:sourceRevision(materialize(afterNode)),node:afterNode});}}}
+   for(const {hash,node} of additions){branches.set(hash,node);states.push(node);}
   }
  }
- if(metadata!==undefined){fields(metadata,["origin","sourceRevision","stale","templateId","templateName","templateHash","model","language","generatedAt"]);if(!['manual','automatic'].includes(metadata.origin)||typeof metadata.stale!=="boolean"||!(metadata.sourceRevision===null||typeof metadata.sourceRevision==='string'&&hash.test(metadata.sourceRevision)&&revisions.has(metadata.sourceRevision)))fail("Invalid portable notes provenance");for(const key of ['templateId','templateName','templateHash','model','language'])if(metadata[key]!==undefined&&!portableText(metadata[key],10000))fail();if(metadata.generatedAt!==undefined&&!date(metadata.generatedAt))fail();if((metadata.sourceRevision===null||metadata.sourceRevision!==sourceRevision(source))&&!metadata.stale)fail("Historical or unknown notes cannot be labeled current");}
- if(Buffer.byteLength(JSON.stringify({source:{transcript:source.transcript,segments:source.segments,speakers:source.speakers,language:source.language},history,metadata}))>maxBytes)fail("Portable transcript exceeds supported artifact size");
+ if(metadata!==undefined){
+  fields(metadata,['origin','sourceRevision','stale','unverifiedSourceRevision','sourceIdentity','templateId','templateName','templateHash','model','language','generatedAt']);
+  if(!['manual','automatic'].includes(metadata.origin)||typeof metadata.stale!=='boolean')fail('Invalid portable notes provenance');
+  if(metadata.sourceIdentity!==undefined){identity(metadata.sourceIdentity);if(metadata.sourceRevision===null)fail('Invalid portable notes source witness');const witnessed=states.some(node=>{const state=materialize(node);return topology(transcriptSourceIdentity(state),metadata.sourceIdentity)&&sourceRevision(withIdentity(state,metadata.sourceIdentity))===metadata.sourceRevision;});if(!witnessed)fail('Invalid portable notes source witness');revisions.add(metadata.sourceRevision);}
+  if(!(metadata.sourceRevision===null||typeof metadata.sourceRevision==='string'&&hash.test(metadata.sourceRevision)&&revisions.has(metadata.sourceRevision)))fail('Invalid portable notes provenance');
+  if(metadata.unverifiedSourceRevision!==undefined&&(metadata.sourceRevision!==null||metadata.stale!==true||metadata.sourceIdentity!==undefined||typeof metadata.unverifiedSourceRevision!=='string'||!hash.test(metadata.unverifiedSourceRevision)))fail('Invalid unverified portable notes provenance');
+  for(const key of ['templateId','templateName','templateHash','model','language'])if(metadata[key]!==undefined&&!portableText(metadata[key],10000))fail();
+  if(metadata.generatedAt!==undefined&&!date(metadata.generatedAt))fail();
+  if((metadata.sourceRevision===null||metadata.sourceRevision!==sourceRevision(source))&&!metadata.stale)fail('Historical or unknown notes cannot be labeled current');
+ }
+ if(Buffer.byteLength(JSON.stringify({source:{transcript:source.transcript,segments:source.segments,speakers:source.speakers,language:source.language},history,metadata}))>maxBytes)fail('Portable transcript exceeds supported artifact size');
+ return revisions;
+}
+/** Explicitly preserve an irrecoverable old recorded hash as unverified/unknown. */
+export function portableNotesMetadata(source:SourceState,history:unknown,metadata:NotesMetadata):NotesMetadata {
+ const verified=validatePortableTranscript(source,history,undefined);
+ if(metadata.sourceRevision!==null&&!metadata.sourceIdentity&&!verified.has(metadata.sourceRevision)){const {sourceRevision,...rest}=metadata;return {...rest,sourceRevision:null,unverifiedSourceRevision:sourceRevision,stale:true};}
+ return metadata;
 }
 export function sessionFromPortable(payload: PortableMeeting, localId: string): Session {
  const {schemaVersion,meetingId,audio,...raw}=payload;

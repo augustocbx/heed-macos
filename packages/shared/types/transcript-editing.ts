@@ -29,6 +29,12 @@ export interface RecognitionGeneration {
  duration: number;
  transcriptionDiagnostics?: TranscriptionDiagnostics;
 }
+/** Hash identity at an accepted action, without duplicating its replayable text. */
+export interface TranscriptSourceIdentity {
+ language: string;
+ speakers: string[];
+ segments: Array<Pick<Segment, "speaker" | "start" | "end" | "channel">>;
+}
 export interface TranscriptEdit {
  id: string;
  /** Present together on local actions; omitted when importing portable history. */
@@ -38,6 +44,7 @@ export interface TranscriptEdit {
  kind: "edit" | "replace" | "revert";
  changes: TextChange[];
  createdAt: string;
+ sourceIdentity?: TranscriptSourceIdentity;
  beforeRevision: string;
  afterRevision: string;
 }

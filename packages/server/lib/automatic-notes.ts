@@ -10,7 +10,7 @@ import { applyCandidateAcceptance, transcriptOperationReceipt, validateTranscrip
 import type { TranscriptCommand, TranscriptGuard } from "../../shared/types/transcript-editing";
 import { applyTextCommand, normalizeTranscriptSession, renderAcceptedTranscript, transcriptCommandSignature } from "./transcript-editing";
 import { sanitizeTranscriptionDiagnostics } from "./final-recording";
-import { sourceRevision } from "../../shared/lib/transcript-source";
+import { sourceRevision, transcriptSourceIdentity } from "../../shared/lib/transcript-source";
 export { sourceRevision } from "../../shared/lib/transcript-source";
 
 export interface NotesGenerationInput {
@@ -86,7 +86,7 @@ export class AutomaticNotesService {
   if (session.segments.length) session.transcript = renderAcceptedTranscript(session.segments);
   session.transcriptRevision = sourceRevision(session);
   session.transcriptVersion = 1;
-  if (session.aiNotes) session.notesMetadata = { origin: "manual", stale: false, sourceRevision: session.transcriptRevision };
+  if (session.aiNotes) session.notesMetadata = { origin: "manual", stale: false, sourceRevision: session.transcriptRevision, sourceIdentity: transcriptSourceIdentity(session) };
   if (session.transcriptFinalized && this.options.getSettings().enabled) this.enqueue(session);
   session.updatedAt = this.timestamp(); return this.normalize(this.store.create(session));
  }
@@ -109,7 +109,7 @@ export class AutomaticNotesService {
   if (manual) {
    for (const job of Object.values(session.notesJobs || {})) if (activeStatuses.has(job.status)) { job.status = "superseded"; job.reason = "notes-changed"; job.updatedAt = this.timestamp(); }
    const known = patch.expectedTranscriptRevision !== undefined && patch.expectedTranscriptVersion !== undefined;
-   session.notesMetadata = { origin: "manual", sourceRevision: known ? session.transcriptRevision! : null, stale: !known };
+   session.notesMetadata = { origin: "manual", sourceRevision: known ? session.transcriptRevision! : null, ...(known ? {sourceIdentity:transcriptSourceIdentity(session)} : {}), stale: !known };
   }
   const saved = this.save(session);
   if (manual && this.active?.sessionId === id) this.active.controller.abort();
@@ -229,7 +229,7 @@ export class AutomaticNotesService {
    if (!session || !job || job.status !== "running" || job.attempts !== expected.attempts || controller.signal.aborted) return;
    if (session.transcriptRevision !== expected.sourceRevision || session.transcriptVersion !== expected.sourceVersion || !session.transcriptFinalized || notesHash(session.aiNotes) !== expected.expectedNotesHash || (session.aiNotes.trim() && !expected.replaceExisting)) { job.status = "superseded"; job.reason = "transcript-changed"; this.save(session); return; }
    if (!text.trim()) throw new Error("incomplete-output");
-   session.aiNotes = text; session.notesMetadata = { origin: "automatic", sourceRevision: expected.sourceRevision, templateId: expected.templateId, templateName: expected.templateName, templateHash: expected.templateHash, model: expected.model, language: expected.language, generatedAt: this.timestamp(), stale: false };
+   session.aiNotes = text; session.notesMetadata = { origin: "automatic", sourceRevision: expected.sourceRevision, sourceIdentity: transcriptSourceIdentity(session), templateId: expected.templateId, templateName: expected.templateName, templateHash: expected.templateHash, model: expected.model, language: expected.language, generatedAt: this.timestamp(), stale: false };
    job.status = "completed"; job.retryable = false; job.generatedCharacters = text.length; job.updatedAt = this.timestamp(); delete job.reason; this.save(session);
   } catch (error) {
    const session = this.get(snapshot.id); const job = session?.notesJobs?.[expected.id];
