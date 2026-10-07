@@ -71,6 +71,15 @@ test.each(["before-click", "failed-retry"] as const)("history inverse stays on i
   expect(calls.at(-1)![1]).toMatchObject({ expectedTranscriptRevision: a.transcriptRevision, expectedTranscriptVersion: a.transcriptVersion, editId: "edit", action: "revert" });
   if (mode === "failed-retry") expect(calls[1]).toEqual(calls[0]);
 });
+test("history inverse uses the newest accepted source for its opening meeting", async () => {
+  const opening = meeting(), newest = { ...opening, transcriptVersion: 3 };
+  useSessionsStore.setState({ sessions: [opening], viewing: newest });
+  vi.mocked(transcriptEditingApi.command).mockRejectedValue(new Error("Disk unavailable"));
+  render(<TranscriptHistoryDialog session={opening} onClose={vi.fn()} onSaved={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: "Revert this edit" }));
+  await screen.findByRole("alert");
+  expect(transcriptEditingApi.command).toHaveBeenCalledWith(opening.id, expect.objectContaining({ expectedTranscriptVersion: 3 }));
+});
 test("legacy source is labeled honestly; compatible inverse is guarded and failed save keeps recovery text", async () => {
   vi.mocked(transcriptEditingApi.command).mockRejectedValue(
     Object.assign(new Error("Changed"), { status: 409 }),
