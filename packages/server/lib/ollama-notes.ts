@@ -40,13 +40,13 @@ function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", aborted));
  });
 }
-async function withTransport<T>(baseUrl: string, options: TransportOptions, work: (request: (path: string, init?: RequestInit) => Promise<Response>, signal: AbortSignal, activity: () => void) => Promise<T>): Promise<T> {
+async function withTransport<T>(baseUrl: string, options: TransportOptions, work: (request: (path: string, init?: RequestInit) => Promise<Response>, signal: AbortSignal, activity: () => void) => Promise<T>, timeoutReason: "ollama-unavailable" | "generation-timeout" = "ollama-unavailable"): Promise<T> {
  const base = localBaseUrl(baseUrl);
  const controller = new AbortController();
  let timedOut = false;
  const timeoutMs = options.timeoutMs ?? 300_000;
  const maxDurationMs = options.maxDurationMs ?? 1_800_000;
- if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isFinite(maxDurationMs) || maxDurationMs <= 0) return fail("generation-timeout");
+ if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isFinite(maxDurationMs) || maxDurationMs <= 0) return fail(timeoutReason);
  const expire = () => { timedOut = true; controller.abort(); };
  let timer = setTimeout(expire, timeoutMs);
  const totalTimer = setTimeout(expire, maxDurationMs);
@@ -62,7 +62,7 @@ async function withTransport<T>(baseUrl: string, options: TransportOptions, work
   return response;
  };
  try { return await work(request, controller.signal, activity); }
- catch (error) { if (options.signal?.aborted) throw options.signal.reason || error; if (timedOut) return fail("generation-timeout"); if (error instanceof NotesGenerationError) throw error; return fail("ollama-unavailable"); }
+ catch (error) { if (options.signal?.aborted) throw options.signal.reason || error; if (timedOut) return fail(timeoutReason); if (error instanceof NotesGenerationError) throw error; return fail("ollama-unavailable"); }
  finally { clearTimeout(timer); clearTimeout(totalTimer); options.signal?.removeEventListener("abort", forwardAbort); }
 }
 async function json(response: Response, signal: AbortSignal): Promise<any> {
@@ -213,5 +213,5 @@ async function generateLocalOutput(input: LocalGenerationInput): Promise<string>
   } finally {
    if (signal.aborted) await unloadLocalNotesModel(input.baseUrl, input.model, { fetch: input.fetch }).catch(() => {});
   }
- });
+ }, "generation-timeout");
 }

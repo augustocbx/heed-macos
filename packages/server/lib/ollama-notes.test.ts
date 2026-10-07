@@ -96,6 +96,12 @@ test("installed model listing excludes cloud stubs and fails on unavailable Olla
  expect(await listLocalNotesModels(input.baseUrl, { fetch: fake.fetcher })).toEqual(["local:latest"]);
  const unavailable = transport({ failed: "/api/tags" }); await expect(listLocalNotesModels(input.baseUrl, { fetch: unavailable.fetcher })).rejects.toThrow("ollama-unavailable");
 });
+test("model discovery timeout reports Ollama availability rather than generation", async () => {
+ const fetcher = ((_url: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => init!.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }))) as typeof fetch;
+ await expect(listLocalNotesModels(input.baseUrl, { fetch: fetcher, timeoutMs: 5 })).rejects.toThrow("ollama-unavailable");
+ const { listLocalChatModels } = await import("./ollama-notes");
+ await expect(listLocalChatModels(input.baseUrl, { fetch: fetcher, timeoutMs: 5 })).rejects.toThrow("ollama-unavailable");
+});
 test("stream cancellation unloads the local model before returning and emits complete response tokens", async () => {
  const fake = transport(); const controller = new AbortController(); const tokens: string[] = []; let unloaded = false;
  const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
