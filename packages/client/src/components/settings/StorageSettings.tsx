@@ -45,7 +45,7 @@ export function StorageSettings(){
   {preview && <section aria-labelledby="storage-review-title"><h3 id="storage-review-title">{tr('Review storage change')}</h3>
    <p>{tr('New maximum: {size} GB',{size:gb(preview.requestedLimit)})}</p>
    <p>{tr('{count} local media files will be removed. Remote copies and transcripts remain unchanged.',{count:preview.removals.length})}</p>
-   {preview.derivedCache && preview.derivedCache.bytes>0 && <p>{tr('Local search data ({count} files, {size} GB) will be cleared and can be rebuilt when space is available. This cleanup keeps transcripts and audio.',{count:preview.derivedCache.files,size:gb(preview.derivedCache.bytes)})}</p>}
+   {preview.derivedCache && preview.derivedCache.bytes>0 && <p>{tr('Local search data ({count} files, {size} GB) will be cleared and can be rebuilt when space is available. Clearing search data preserves transcripts and audio.',{count:preview.derivedCache.files,size:gb(preview.derivedCache.bytes)})}</p>}
    {preview.removals.length>0 && <ul>{preview.removals.map(file=><li key={file.path}>{file.path.split('/').at(-1)} — {gb(file.bytes)} GB</li>)}</ul>}
    <p>{tr('Additional imports pause when protected data consumes the available budget.')}</p>
    <button disabled={busy} onClick={()=>void apply()}>{tr('Confirm storage change')}</button>{' '}<button disabled={busy} onClick={()=>setPreview(null)}>{tr('Cancel')}</button>

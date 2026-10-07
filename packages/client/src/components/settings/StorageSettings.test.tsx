@@ -31,7 +31,7 @@ it('reset previews the decimal default and allows cancellation without saving',a
 it.each(['en','pt-BR','fr','de'] as const)('supports accessible units and localized quota explanations in %s',async(locale)=>{useLocaleStore.getState().sync(locale);api.status.mockResolvedValue(fixture);api.preview.mockRejectedValue(new Error('Requested quota is below protected meeting data and reservations'));render(<StorageSettings/>);const input=await screen.findByLabelText(tr('Maximum local meeting data (GB)'));fireEvent.change(input,{target:{value:'1'}});fireEvent.click(screen.getByRole('button',{name:tr('Review change')}));await waitFor(()=>expect(screen.getByRole('alert')).toHaveTextContent(tr('Requested quota is below protected meeting data and reservations')));expect(screen.getAllByText(/ GB$/).length).toBeGreaterThan(0);expect(screen.getByRole('button',{name:tr('Reset to 2 GB')})).toBeEnabled();});
 
 const cacheSummary =
-  "Local search data ({count} files, {size} GB) will be cleared and can be rebuilt when space is available. This cleanup keeps transcripts and audio.";
+  "Local search data ({count} files, {size} GB) will be cleared and can be rebuilt when space is available. Clearing search data preserves transcripts and audio.";
 const cacheUsage = {
   ...fixture,
   reclaimableBytes: 1_800_000_000,
