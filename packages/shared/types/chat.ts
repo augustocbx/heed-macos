@@ -1,3 +1,5 @@
+export type AiWaitingReason = "recording" | "transcription" | "notes" | "tasks" | "chat" | "queued";
+
 /** References are qualified by source revision, never by a live speaker-turn ID. */
 export interface TranscriptEvidence {
  id: string;
@@ -17,7 +19,7 @@ export interface ChatTurn {
  id: string; requestId: string; question: string; model: string; initialModel?: string; sourceRevision: string;
  status: "waiting" | "running" | "completed" | "failed" | "cancelled";
  createdAt: string; updatedAt: string; attempts: number; reason?: string;
- answer?: ChatAnswer; stale?: boolean;
+ answer?: ChatAnswer; stale?: boolean; waitingReason?: AiWaitingReason;
 }
 export interface ChatThread { sessionId: string; revision: string; turns: ChatTurn[]; }
 export type ChatCommand =

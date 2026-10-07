@@ -1,3 +1,4 @@
+import type { AiWaitingReason } from "@heed/shared";
 import {configuredServicePorts} from './lib/service-ports';
 import {ServiceDiagnostics} from './lib/service-diagnostics';
 import {isTranscriptionHealth} from '../shared/lib/service-identity';
@@ -67,6 +68,19 @@ let recordingFinalizationRunning = false;
 let transcriptionRequests = 0;
 let manualNotesController: AbortController | null = null;
 let manualNotesDone: Promise<void> | null = null;
+let localAiReady = false;
+function localAiWaitingReason(includePendingChat = false): AiWaitingReason {
+ if (!localAiReady) return "queued";
+ const state = recordingCoordinator.snapshot().state;
+ if (recordingFinalizationRunning || transcriptionRequests || state === "finalizing") return "transcription";
+ if (recorderProc || recorderStarting || recorderStopping || ["starting", "recording", "stopping"].includes(state)) return "recording";
+ if (manualNotesController || notesService.busy) return "notes";
+ if (tasksService.busy) return "tasks";
+ if (chatService.busy || libraryChatService.busy || (includePendingChat && chatPending())) return "chat";
+ return "queued";
+}
+// These synchronous admission checks cover command-triggered and timer-triggered workers.
+function chatPending() { return chatService.pending || libraryChatService.pending; }
 function audioWorkBusy() {
  return !!(recorderProc || recorderStarting || recorderStopping || recordingFinalizationRunning || transcriptionRequests
   || ["starting", "stopping", "finalizing"].includes(recordingCoordinator.snapshot().state));
@@ -2403,7 +2417,8 @@ const notesService: AutomaticNotesService = new AutomaticNotesService({
  sessionStore:sessionTags,
  getSettings:() => automaticNotesSettings(loadConfig()),
  loadTemplate:id => loadTemplate(id) || undefined,
- isBusy:() => processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || tasksService.busy || chatService.busy || libraryChatService.busy,
+ isBusy:() => processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || tasksService.busy || chatService.busy || libraryChatService.busy || chatPending(),
+ waitingReason:() => localAiWaitingReason(true),
  generate:({session,job,signal,onProgress}) => generateLocalNotes({baseUrl:OLLAMA_HOST,model:job.model,templatePrompt:job.templatePrompt,
   transcript:renderNotesTranscript(session),language:job.language,signal,onProgress,numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))}),
 });
@@ -2411,13 +2426,14 @@ const tasksService: MeetingTasksService = new MeetingTasksService({
  path:join(APP_DIR,"tasks.json"),
  listSessions:() => notesService.list(),
  getSession:id => notesService.get(id),
- isBusy:() => processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || chatService.busy || libraryChatService.busy,
+ isBusy:() => processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || chatService.busy || libraryChatService.busy || chatPending(),
  generate:(session,signal) => generateTaskSuggestions(session,signal,{baseUrl:OLLAMA_HOST,model:getCurrentModel() || "",numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))}),
 });
 notesService.recover();
 const chatService: MeetingChatService = new MeetingChatService({
  directory:join(APP_DIR,"chat"), getSession:id=>notesService.get(id),
  isBusy:()=>processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || libraryChatService.busy,
+ waitingReason:localAiWaitingReason,
  generate:generateChatEvidence,
 });
 function generateChatEvidence(input:ChatGenerationRequest) {
@@ -2428,6 +2444,7 @@ function generateChatEvidence(input:ChatGenerationRequest) {
 const libraryChatService: LibraryChatService = new LibraryChatService({
  directory:join(APP_DIR,"library-chat"),listSessions:()=>notesService.list(),
  isBusy:()=>processingMaintenance.blocked() || audioWorkBusy() || !!manualNotesController || notesService.busy || tasksService.busy || chatService.busy,
+ waitingReason:localAiWaitingReason,
  generate:generateChatEvidence,
 });
 const tasksTimer = setInterval(() => { void tasksService.tick().catch(error => console.error("Task suggestion queue failed:", error)); },1000);
@@ -2477,6 +2494,7 @@ const recordingCoordinator = new RecordingCoordinator({
  },
 });
 if (processingMaintenance.owner()) recordingCoordinator.setMaintenance(true,processingMaintenance.owner()!);
+localAiReady = true;
 const retained = recordingCoordinator.snapshot();
 if (retained.path && retained.state !== "completed") retainedProcessing.set(retained.path,Infinity);
 

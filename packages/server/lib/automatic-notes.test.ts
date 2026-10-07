@@ -190,3 +190,9 @@ test("undoing source edits restores freshness when saved notes match their sourc
  expect(undone.notesMetadata!.stale).toBe(false); expect(undone.aiNotes).toBe(before.aiNotes);
  expect(undone.notesJobs![job(initial).id]!.status).toBe("completed");
 });
+
+test('notes waiting status reflects resource changes without changing durable source or job data',()=>{
+ let blocker:'tasks'|'recording'='tasks';const {service,sessionsDir}=fixture({isBusy:()=>true,waitingReason:()=>blocker});const source=service.create(meeting());
+ const file=join(sessionsDir,`${source.id}.json`),bytes=readFileSync(file,'utf8');expect(job(service.get(source.id)!)).toMatchObject({waitingReason:'tasks'});
+ blocker='recording';const next=service.get(source.id)!;expect(job(next)).toMatchObject({waitingReason:'recording'});expect(next.transcriptRevision).toBe(source.transcriptRevision);expect(readFileSync(file,'utf8')).toBe(bytes);
+});

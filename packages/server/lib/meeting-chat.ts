@@ -1,3 +1,4 @@
+import type { AiWaitingReason } from "@heed/shared";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
@@ -104,6 +105,7 @@ export async function answerMeetingQuestion(input: {
 
 interface ChatOptions {
  directory: string; getSession: (id: string) => Session | null; isBusy: () => boolean;
+ waitingReason?: () => AiWaitingReason;
  generate: ChatGenerator; write?: typeof atomicWriteJson;
 }
 
@@ -134,8 +136,9 @@ export class MeetingChatService {
   for(const turn of thread.turns)if(turn.status==="running"&&!(this.active?.sessionId===thread.sessionId&&this.active.turnId===turn.id)){turn.status="failed";turn.reason="interrupted";turn.updatedAt=new Date().toISOString();changed=true;}
   if(changed)this.save(thread);return thread;
  }
- get(id:string):ChatThread { const session=this.session(id);const thread=this.recoverThread(this.read(id));const revision=revisionOf(session);return {...thread,turns:thread.turns.map(turn=>({...turn,stale:turn.sourceRevision !== revision}))}; }
+ get(id:string):ChatThread { const session=this.session(id);const thread=this.recoverThread(this.read(id));const revision=revisionOf(session);return {...thread,turns:thread.turns.map(turn=>({...turn,stale:turn.sourceRevision !== revision,waitingReason:turn.status === "waiting" ? this.options.waitingReason?.() : undefined}))}; }
  get busy() { return !!this.active; }
+ get pending(): boolean { return readdirSync(this.options.directory).filter(file=>file.endsWith(".json")).some(file=>this.read(file.slice(0,-5)).turns.some(turn=>turn.status === "waiting")); }
  command(id:string, command:ChatCommand):ChatThread {
   const session=this.session(id); const thread=this.read(id);
   if(!command || typeof command !== "object")throw new ChatError("invalid-command");

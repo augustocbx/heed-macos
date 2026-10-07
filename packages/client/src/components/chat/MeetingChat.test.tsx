@@ -56,3 +56,24 @@ test("existing failure messages follow interface locale changes without altering
  expect(await screen.findByRole("alert")).toHaveTextContent("Local chat unavailable.");
  act(()=>useLocaleStore.setState({locale:"fr"}));expect(screen.getByRole("alert")).toHaveTextContent("Discussion locale indisponible.");expect(screen.getByText("Review was suggested.")).toBeInTheDocument();
 });
+
+
+test("polling updates the active AI blocker without replacing saved history",async()=>{
+ const {act}=await import("@testing-library/react");vi.useFakeTimers();
+ try{
+ const waiting = { ...saved.turns[0]!, id: "waiting-turn", question: "What changed?", status: "waiting" as const, answer: undefined, waitingReason: "tasks" as const };
+ vi.mocked(chatApi.get).mockResolvedValue({...saved,turns:[saved.turns[0]!,waiting]});
+ render(<MeetingChat session={session} onCitation={vi.fn()}/>);
+ await act(async()=>{});
+ expect(screen.getByText("Waiting for task suggestions to finish.")).toBeInTheDocument();
+ expect(screen.queryByText("Chat becomes available after the final transcript is saved.")).not.toBeInTheDocument();
+ vi.mocked(chatApi.get).mockResolvedValue({...saved,turns:[saved.turns[0]!,{...waiting,waitingReason:"recording" as const}]});
+ await act(async()=>{await vi.advanceTimersByTimeAsync(2000);});
+ expect(screen.getByText("Waiting for recording to finish.")).toBeInTheDocument();
+ expect(screen.queryByText("Waiting for task suggestions to finish.")).not.toBeInTheDocument();
+ expect(screen.getByText("Review was suggested.")).toBeInTheDocument();
+ fireEvent.click(screen.getByRole("button",{name:"Cancel answer"}));
+ await act(async()=>{});
+ expect(chatApi.command).toHaveBeenCalledWith(session.id,{action:"cancel",turnId:"waiting-turn"});
+ }finally{vi.useRealTimers();}
+});

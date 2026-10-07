@@ -36,3 +36,21 @@ test('identifies the source transcript revision for manual notes without implyin
  expect(screen.getByText('Transcript revision: revision')).toHaveAttribute('title', 'revision-source-456');
  expect(screen.queryByText('Manually generated notes')).not.toBeInTheDocument();
 });
+
+
+test('waiting notes identify changing AI blockers with a truthful legacy fallback', () => {
+ const waiting={...job,status:'waiting' as const,reason:'resources-busy' as const,waitingReason:'tasks' as const};
+ const view=render(<NotesJobStatus session={{...session,transcriptFinalized:true,notesJobs:{'notes-r1':waiting}}}/>);
+ expect(screen.getByText('Waiting for task suggestions to finish.')).toBeInTheDocument();
+ view.rerender(<NotesJobStatus session={{...session,notesJobs:{'notes-r1':{...waiting,waitingReason:'transcription' as const}}}}/>);
+ expect(screen.getByText('Waiting for transcription to finish.')).toBeInTheDocument();
+ expect(screen.queryByText('Waiting for task suggestions to finish.')).not.toBeInTheDocument();
+ view.rerender(<NotesJobStatus session={{...session,notesJobs:{'notes-r1':{...waiting,waitingReason:undefined}}}}/>);
+ expect(screen.getByText('Waiting for recording, transcription or local AI resources.')).toBeInTheDocument();
+ expect(screen.getByRole('button',{name:'Cancel automatic notes'})).toBeEnabled();
+});
+
+test('queued notes show the queue reason before another job starts', () => {
+ render(<NotesJobStatus session={{...session,notesJobs:{'notes-r1':{...job,status:'queued',waitingReason:'queued'}}}}/>);
+ expect(screen.getByText('Waiting for local AI resources.')).toBeInTheDocument();
+});
