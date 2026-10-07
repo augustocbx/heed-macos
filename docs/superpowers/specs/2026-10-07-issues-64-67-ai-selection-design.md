@@ -1,6 +1,6 @@
 # Local and provider AI selection — issues #64–#67
 
-Date: 2026-10-07. Status: architecture approved by the user; implementation plan pending review. Product implementation has not started.
+Date: 2026-10-07. Status: architecture approved by the user; implementation plan approved by the user. Product implementation is in progress.
 
 ## Intended outcome
 
