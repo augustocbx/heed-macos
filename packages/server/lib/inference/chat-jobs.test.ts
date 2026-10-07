@@ -2,7 +2,7 @@ import {afterEach,expect,test} from 'bun:test';
 import {readFileSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import type {Session,ChatTurn} from '@heed/shared';
-import {MeetingChatService} from '../meeting-chat';
+import {MeetingChatService,meetingMetadataEvidence} from '../meeting-chat';
 import {LibraryChatService} from '../library-chat';
 import {controlledChatRetrieval} from '../chat-retrieval-test-utils';
 import {sourceRevision} from '../automatic-notes';
@@ -91,7 +91,7 @@ async function libraryHistoryFixture(){
  const catalog=f.options.catalog,frozen=catalog.resolve({kind:'library',scope}),preview=catalog.preview(scope);catalog.resolve=()=>frozen;catalog.preview=()=>preview;catalog.validate=()=>{};
  return {...f,historical,plan,reviewed,uploads,holdAdmission:()=>held=true,admissionEntered:()=>entered,releaseAdmission:release};
 }
-for(const change of ['version','revision','finalization'] as const)for(const timing of ['before-consent','during-admission'] as const)test(`library history-only ${change} changes invalidate reviewed content ${timing}`,async()=>{
+for(const change of ['version','revision','finalization','createdAt','duration'] as const)for(const timing of ['before-consent','during-admission'] as const)test(`library history-only ${change} changes invalidate reviewed content ${timing}`,async()=>{
  const f=await libraryHistoryFixture();let running:Promise<void>|undefined;
  try{
   if(timing==='during-admission'){
@@ -100,9 +100,65 @@ for(const change of ['version','revision','finalization'] as const)for(const tim
   }
   if(change==='version')f.historical.transcriptVersion!++;
   else if(change==='revision'){f.historical.segments[0]!.text='Changed source B';f.historical.transcriptRevision=sourceRevision(f.historical);}
+  else if(change==='createdAt')f.historical.createdAt='2026-10-08T15:00:00.000Z';
+  else if(change==='duration')f.historical.duration++;
   else f.historical.transcriptFinalized=false;
   expect(()=>f.authorizations.authorize(f.plan.id,{allowRemote:true,expectedPayloadHash:f.plan.payloadHash})).toThrow('scope-changed');
   expect(()=>f.authorizations.assert(f.plan)).toThrow('scope-changed');
  }finally{f.releaseAdmission();await running;}
  await f.service.tick();expect(f.uploads).toHaveLength(1);expect(f.get().turns[1]?.answer).toBeUndefined();expect(JSON.stringify(f.plan.calls)).toBe(f.reviewed);expect(JSON.stringify(f.get().turns[0]?.answer)).toContain('HISTORY_B_MARKER');
+});
+
+for(const kind of ['chat','library-chat'] as const)for(const metadataOnly of [false,true])test(`${kind}: reviewed metadata and speaker grounding survive exact hosted dispatch (${metadataOnly?'metadata-only':'with-speech'})`,async()=>{
+ const f=await setup(kind);f.session.createdAt='2026-10-07T15:00:00.000Z';f.session.duration=360;
+ f.session.segments=[{speaker:'Ana Silva',start:0,end:1,text:'Approved the release.'}];f.session.transcriptRevision=sourceRevision(f.session);
+ if(metadataOnly){const retrieve=f.options.retriever.retrieve;f.options.retriever.retrieve=async(...args)=>({...await retrieve(...args),hits:[]});}
+ const uploads:any[]=[];
+ f.inference.runtime=new AiRuntime({planner:f.planner,authorizations:f.authorizations,connections:f.manager,hooks:{reserve:async()=>({dispatch:async()=>{},outcome:async()=>{},finish:async()=>{}}),acquire:async()=>({release:()=>{}})},generate:input=>getAiAdapter(input.selection.provider).generate({...input,fetch:(async(_url,init)=>{
+  const body=JSON.parse(String(init?.body)),data=JSON.parse(body.input);uploads.push(body);
+  return Response.json({status:'completed',output:[{type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:JSON.stringify({claims:[{text:'Meeting was on 2026-10-07.',evidenceIds:[data.metadata[0].id,...data.evidence.map((item:any)=>item.id)]}],notFound:false})}]}]});
+ }) as typeof fetch})});
+ f.send();const plan=await f.consent(),reviewed=JSON.stringify(plan.calls),metadata=meetingMetadataEvidence(f.session)!;
+ expect(plan.calls).toHaveLength(1);const call=plan.calls[0]!,data=call.data as any;
+ expect(data.metadata).toEqual([metadata]);expect(data.metadataCoverage).toEqual({selectedMeetings:1,suppliedMeetings:1,complete:true});
+ expect((call.schema as any).properties.claims.items.properties.evidenceIds.items.enum).toEqual([...data.evidence.map((item:any)=>item.id),metadata.id]);
+ if(!metadataOnly)expect(data.evidence[0].speaker).toBe('Ana Silva');
+ f.release();await f.service.tick();expect(uploads).toHaveLength(1);expect(uploads[0].input).toBe(JSON.stringify(call.data));expect(JSON.stringify(plan.calls)).toBe(reviewed);
+ const turn=f.get().turns[0]!;expect(turn.status).toBe('completed');expect(turn.answer?.claims[0]?.citations).toContainEqual(metadata);
+ expect(turn.answer?.coverage.metadata).toEqual(data.metadataCoverage);expect(turn.answer?.coverage.retrieval).toMatchObject({suppliedEvidence:metadataOnly?0:1,suppliedMeetings:metadataOnly?0:1,citedEvidence:metadataOnly?0:1,citedMeetings:metadataOnly?0:1});
+ if(kind==='library-chat')expect((f.service as LibraryChatService).source(scope,(f.service as LibraryChatService).preview(scope).snapshot.key,metadata.id).id).toBe(f.session.id);
+});
+for(const kind of ['chat','library-chat'] as const)for(const field of ['createdAt','duration'] as const)for(const timing of ['before-consent','during-admission'] as const)test(`${kind}: current ${field} invalidates frozen metadata ${timing}`,async()=>{
+ const f=await setup(kind);f.session.createdAt='2026-10-07T15:00:00.000Z';f.send();const plan=await f.prepare(),reviewed=JSON.stringify(plan.calls);
+ const catalog=f.options.catalog,frozen=catalog.resolve(kind==='chat'?{kind:'meeting',sessionId:f.session.id}:{kind:'library',scope}),preview=catalog.preview(scope);
+ catalog.resolve=()=>frozen;catalog.preview=()=>preview;catalog.describe=()=>frozen.descriptors;catalog.validate=()=>{};
+ let entered=false,release!:()=>void,running:Promise<void>|undefined;const held=new Promise<void>(resolve=>release=resolve);
+ f.inference.runtime=new AiRuntime({planner:f.planner,authorizations:f.authorizations,connections:f.manager,hooks:{reserve:async()=>({dispatch:async()=>{},outcome:async()=>{},finish:async()=>{}}),acquire:async()=>{entered=true;await held;return {release:()=>{}};}},generate:async()=>{throw new Error('Unexpected hosted dispatch');}});
+ try{
+  if(timing==='during-admission'){f.authorizations.authorize(plan.id,{allowRemote:true,expectedPayloadHash:plan.payloadHash});f.release();running=f.service.tick();for(let i=0;i<100&&!entered;i++)await Bun.sleep(1);expect(entered).toBe(true);}
+  if(field==='createdAt')f.session.createdAt='2026-10-08T15:00:00.000Z';else f.session.duration++;
+  expect(()=>f.authorizations.authorize(plan.id,{allowRemote:true,expectedPayloadHash:plan.payloadHash})).toThrow(kind==='chat'?'source-changed':'scope-changed');
+  expect(()=>f.authorizations.assert(plan)).toThrow();
+ }finally{release();await running;}
+ expect(f.requests).toHaveLength(0);expect(f.get().turns[0]?.answer).toBeUndefined();expect(JSON.stringify(plan.calls)).toBe(reviewed);
+});
+
+for(const kind of ['chat','library-chat'] as const)test(`${kind}: metadata changes during held hosted response cannot persist stale answers`,async()=>{
+ const f=await setup(kind);f.session.createdAt='2026-10-07T15:00:00.000Z';f.send();const plan=await f.consent(),reviewed=JSON.stringify(plan.calls);
+ const catalog=f.options.catalog,frozen=catalog.resolve(kind==='chat'?{kind:'meeting',sessionId:f.session.id}:{kind:'library',scope}),preview=catalog.preview(scope);
+ catalog.resolve=()=>frozen;catalog.preview=()=>preview;catalog.describe=()=>frozen.descriptors;catalog.validate=()=>{};
+ let release!:()=>void;f.hold(new Promise<void>(resolve=>release=resolve));f.release();const running=f.service.tick();
+ try{for(let i=0;i<100&&!f.requests.length;i++)await Bun.sleep(1);expect(f.requests).toHaveLength(1);f.session.duration++;}
+ finally{release();await running;}
+ expect(f.get().turns[0]?.status).toBe('failed');expect(f.get().turns[0]?.answer).toBeUndefined();expect(JSON.stringify(plan.calls)).toBe(reviewed);expect(f.requests).toHaveLength(1);
+});
+for(const kind of ['chat','library-chat'] as const)test(`${kind}: metadata changes during held synthetic credential lookup prevent upload`,async()=>{
+ const f=await setup(kind);f.session.createdAt='2026-10-07T15:00:00.000Z';f.send();const plan=await f.consent(),reviewed=JSON.stringify(plan.calls);
+ const catalog=f.options.catalog,frozen=catalog.resolve(kind==='chat'?{kind:'meeting',sessionId:f.session.id}:{kind:'library',scope}),preview=catalog.preview(scope);
+ catalog.resolve=()=>frozen;catalog.preview=()=>preview;catalog.describe=()=>frozen.descriptors;catalog.validate=()=>{};
+ let release!:()=>void,entered=false;const held=new Promise<void>(resolve=>release=resolve),get=f.vault.get.bind(f.vault);
+ f.vault.get=async<T>(reference:string)=>{entered=true;await held;return get<T>(reference);};f.release();const running=f.service.tick();
+ try{for(let i=0;i<100&&!entered;i++)await Bun.sleep(1);expect(entered).toBe(true);f.session.createdAt='2026-10-08T15:00:00.000Z';}
+ finally{release();await running;}
+ expect(f.requests).toHaveLength(0);expect(f.get().turns[0]?.answer).toBeUndefined();expect(JSON.stringify(plan.calls)).toBe(reviewed);
 });

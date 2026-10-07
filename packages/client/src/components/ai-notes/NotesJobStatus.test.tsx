@@ -16,6 +16,11 @@ test('shows actual character progress and cancels the current job', async () => 
  fireEvent.click(screen.getByRole('button', { name: 'Cancel automatic notes' }));
  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/notes/jobs', expect.objectContaining({ body: JSON.stringify({ sessionId: 's', jobId: 'job', action: 'cancel' }) })));
 });
+test('a timed-out notes job explains the timeout without claiming Ollama is stopped',()=>{
+ render(<NotesJobStatus session={{...session,notesJobs:{'notes-r1':{...job,status:'failed',reason:'generation-timeout'}}}}/>);
+ expect(screen.getByText('Notes generation timed out. Please retry.')).toBeInTheDocument();
+ expect(screen.queryByText('Local notes model unavailable. Start Ollama and retry.')).not.toBeInTheDocument();
+});
 test('replacement requires confirmation and sends the exact current notes', async () => {
  const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValue(true);
  render(<NotesJobStatus session={{ ...session, aiNotes: 'My edits', notesJobs: { 'notes-r1': { ...job, status: 'failed' } } }} />);

@@ -4,6 +4,7 @@ import {join} from "node:path";
 import {tmpdir} from "node:os";
 import type {Session} from "@heed/shared";
 import {LibraryChatService} from "./library-chat";
+import {meetingMetadataEvidence} from './meeting-chat';
 import {controlledChatRetrieval} from './chat-retrieval-test-utils';
 const directories:string[]=[];afterEach(()=>{for(const directory of directories.splice(0))rmSync(directory,{recursive:true,force:true});});
 const labels=(...names:string[])=>({mode:"labels" as const,labels:names,match:"any" as const});
@@ -68,6 +69,27 @@ test("citation source reads reject excluded evidence and stale membership",async
  expect(f.service.source(scope,turn.snapshot.key,citation.id).id).toBe(citation.sessionId);
  const broad=f.service.preview(all);expect(()=>f.service.source(scope,turn.snapshot.key,`plan:${broad.snapshot.sources.find(source=>source.sessionId==='plan')!.sourceRevision}:0:0`)).toThrow('invalid-evidence');
  f.meetings[1].tags=[];expect(()=>f.service.source(scope,turn.snapshot.key,citation.id)).toThrow('scope-changed');
+});
+
+test('scoped generation supplies only dated eligible meetings and validates metadata navigation',async()=>{
+ const f=fixture(async input=>JSON.stringify({claims:[{text:'The meeting was recorded on October 5, 2026.',evidenceIds:[input.metadata[0]!.id]}],notFound:false}));
+ f.meetings[0]!.createdAt='2026-10-05T12:00:00Z';f.meetings[1]!.createdAt='2026-10-06T12:00:00Z';f.meetings[2]!.createdAt='2026-10-07T12:00:00Z';
+ const scope=labels('Entrevistas');send(f,scope);const thread=await completed(f,scope),turn=thread.turns[0]!,citation=turn.answer!.claims[0]!.citations[0]!;
+ expect(citation).toMatchObject({kind:'meeting-metadata',sessionId:'both',recordedAt:'2026-10-06T12:00:00.000Z'});
+ expect(f.service.source(scope,turn.snapshot.key,citation.id).id).toBe('both');
+ expect(()=>f.service.source(scope,turn.snapshot.key,meetingMetadataEvidence(f.meetings[2]!)!.id)).toThrow('invalid-evidence');
+ expect(()=>f.service.source(scope,turn.snapshot.key,`${citation.id}x`)).toThrow('invalid-evidence');
+ f.meetings[1]!.createdAt='2026-10-08T12:00:00Z';
+ expect(f.service.get(scope).thread.turns[0]).toMatchObject({stale:true});
+ expect(()=>f.service.source(scope,turn.snapshot.key,citation.id)).toThrow('scope-changed');
+});
+
+test('recorded-time changes cancel queued and in-flight scoped answers',async()=>{
+ const f=fixture(async input=>{await Bun.sleep(20);return JSON.stringify({claims:[{text:'October 5, 2026.',evidenceIds:[input.metadata[0]!.id]}],notFound:false});});
+ f.meetings[0]!.createdAt='2026-10-05T12:00:00Z';const scope=labels('Entrevistas');f.hold();send(f,scope);f.meetings[0]!.createdAt='2026-10-06T12:00:00Z';f.release();await f.service.tick();
+ expect(f.service.get(scope).thread.turns[0]).toMatchObject({status:'failed',reason:'scope-changed'});
+ send(f,scope,'next');await Bun.sleep(0);f.meetings[0]!.createdAt='2026-10-07T12:00:00Z';for(let i=0;i<100&&f.service.busy;i++)await Bun.sleep(2);
+ expect(f.service.get(scope).thread.turns[1]).toMatchObject({status:'failed',reason:'scope-changed'});
 });
 
 test('cancel and model retry preserve one durable question without late answer overwrite',async()=>{

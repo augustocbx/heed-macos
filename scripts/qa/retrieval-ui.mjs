@@ -597,7 +597,12 @@ try {
   assert.equal(zero.answer.coverage.retrieval.matchedEvidence, 0);
   assert.equal(zero.answer.coverage.retrieval.indexComplete, true);
   assert.equal(zero.answer.coverage.retrieval.lookupComplete, true);
-  assert.equal(prompts.length, beforeZero);
+  assert.equal(prompts.length, beforeZero + 1);
+  assert.deepEqual(prompts.at(-1).input.evidence, []);
+  assert.deepEqual(
+    prompts.at(-1).input.metadata.map((source) => source.sessionId),
+    ["qa-en"],
+  );
   await page
     .getByText(
       label(
@@ -607,7 +612,7 @@ try {
     )
     .waitFor();
   record(
-    "Full lexical zero makes no generator call and explicitly avoids whole-transcript absence.",
+    "Full lexical zero supplies only scoped meeting metadata and explicitly avoids whole-transcript absence.",
   );
   await meeting("qa-pt");
   await send("Entrega confirmada?");
@@ -692,7 +697,7 @@ try {
   await meeting("qa-pt");
   await page
     .getByText(
-      "This answer uses an older transcript revision. Its evidence is retained below.",
+      "This answer uses an older transcript or meeting record. Its evidence is retained below.",
       { exact: true },
     )
     .waitFor();

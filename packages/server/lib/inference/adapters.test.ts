@@ -149,7 +149,7 @@ test('frozen vendor destinations cannot be redirected by changing exported confi
 });
 test('local metadata validation and generation cannot exceed their declared deadlines', async () => {
  const fake = fixture({ models: [] }); await expect(listLocalNotesModels('http://127.0.0.1:11434', { fetch: fake.fetch, timeoutMs: 15_001 })).rejects.toThrow('ollama-unavailable'); expect(fake.requests).toHaveLength(0);
- await expect(getAiAdapter('ollama').generate(input('ollama', fake.fetch, { endpoint: 'http://127.0.0.1:11434', key: undefined, timeoutMs: 300_001 }))).rejects.toThrow('ollama-unavailable'); expect(fake.requests).toHaveLength(0);
+ await expect(getAiAdapter('ollama').generate(input('ollama', fake.fetch, { endpoint: 'http://127.0.0.1:11434', key: undefined, timeoutMs: 300_001 }))).rejects.toThrow('generation-timeout'); expect(fake.requests).toHaveLength(0);
 });
 test('local metadata JSON is bounded before a generation request is eligible', async () => {
  const fetcher = (async () => new Response(JSON.stringify({ models: [], padding: 'é'.repeat(1_000_001) }))) as unknown as typeof fetch;

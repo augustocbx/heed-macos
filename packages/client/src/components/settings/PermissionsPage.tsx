@@ -62,6 +62,9 @@ export function PermissionsPage() {
    if (target === 'recoverScreenCapture') {
     recovery.current = { requested: true, observedPending: false, restarting: false };
     setNotice('Confirm recovery in the Heed window. Heed will restart, then macOS will ask for authorization.');
+   } else if (target === 'screenCapture' && snapshot?.permissions?.screenCapture !== true) {
+    recovery.current = { requested: false, observedPending: false, restarting: false };
+    setNotice('Follow the Heed guide beside System Settings, then check permission again in that window.');
    } else {
     recovery.current = { requested: false, observedPending: false, restarting: false };
     setNotice('Complete authorization in the macOS window. This page checks permissions automatically.');

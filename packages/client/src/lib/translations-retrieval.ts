@@ -36,10 +36,10 @@ export const RETRIEVAL_TRANSLATIONS: Record<
       "Suchstrategie: lexikalische Suche.",
     ],
     [
-      "Answers use only supplied excerpts. Lexical coverage does not establish whole-transcript absence.",
-      "As respostas usam somente os trechos fornecidos. A cobertura lexical não comprova a ausência de um assunto na transcrição inteira.",
-      "Les réponses utilisent uniquement les extraits fournis. La couverture lexicale ne prouve pas l’absence d’un sujet dans toute la transcription.",
-      "Antworten verwenden nur bereitgestellte Auszüge. Lexikalische Abdeckung beweist nicht, dass ein Thema im gesamten Transkript fehlt.",
+      "Answers use only supplied excerpts and meeting details. Lexical coverage does not establish whole-transcript absence.",
+      "As respostas usam somente os trechos e dados das reuniões fornecidos. A cobertura lexical não comprova a ausência de um assunto na transcrição inteira.",
+      "Les réponses utilisent uniquement les extraits et informations de réunion fournis. La couverture lexicale ne prouve pas l’absence d’un sujet dans toute la transcription.",
+      "Antworten verwenden nur bereitgestellte Auszüge und Besprechungsdaten. Lexikalische Abdeckung beweist nicht, dass ein Thema im gesamten Transkript fehlt.",
     ],
     [
       "Some selected transcripts are not indexed yet.",

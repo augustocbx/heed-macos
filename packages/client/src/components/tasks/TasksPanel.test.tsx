@@ -16,6 +16,18 @@ beforeEach(()=>{useSessionsStore.setState({sessions:[],viewing:null});setLocale(
  return Response.json(snapshot);
 }));});
 afterEach(()=>vi.unstubAllGlobals());
+test('active generation is distinct from queue waiting and a timed-out model is retryable',async()=>{
+ snapshot={tasks:[],review:{...review!,status:'running',suggestions:[]}};
+ const view=render(<TasksPanel session={meeting}/>);
+ expect(await screen.findByText('Generating local task suggestions…')).toBeInTheDocument();
+ expect(screen.queryByText('Waiting for local task suggestions…')).not.toBeInTheDocument();
+ snapshot={tasks:[],review:{...review!,status:'failed',error:'generation-timeout',suggestions:[]}};
+ fireEvent(window,new Event('focus'));
+ expect(await screen.findByText('Task suggestion generation timed out. Retry to review the final transcript.')).toBeInTheDocument();
+ expect(screen.queryByText('Start Ollama and retry task suggestions.')).not.toBeInTheDocument();
+ expect(screen.getByRole('button',{name:'Retry task suggestions'})).toBeEnabled();
+ view.unmount();
+});
 test('selects and edits only two of five while leaving absent dates unset',async()=>{
  render(<TasksPanel session={meeting}/>);await screen.findByDisplayValue('Task 1');
  const boxes=screen.getAllByRole('checkbox',{name:/Select suggestion/});fireEvent.click(boxes[0]);fireEvent.click(boxes[3]);

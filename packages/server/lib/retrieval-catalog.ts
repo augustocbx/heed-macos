@@ -2,11 +2,11 @@ import { createHash } from "node:crypto";
 import { tagKey,uniqueTags,type LibraryChatPreview, type LibraryChatScope, type Session } from "@heed/shared";
 import type { RetrievalSnapshot, RetrievalSourceStamp } from "../../shared/types/retrieval";
 import { normalizeChatScope } from "./library-chat";
-import { iterateTranscriptEvidence } from "./meeting-chat";
+import { iterateTranscriptEvidence, meetingMetadataEvidence, meetingMetadataRevision } from "./meeting-chat";
 import { SessionTags, type CommittedSessionChange } from "./session-tags";
 import type { RetrievalPolicy } from "./retrieval-policy";
 
-export interface RetrievalDescriptor extends RetrievalSourceStamp { title: string; tags: string[]; displayTags:string[]; finalized: boolean; nonempty: boolean; evidenceCount: number; }
+export interface RetrievalDescriptor extends RetrievalSourceStamp { title: string; tags: string[]; displayTags:string[]; finalized: boolean; nonempty: boolean; evidenceCount: number; metadataRevision:string; recordedAt:string|null; durationSeconds?:number; }
 export type RetrievalScope = { kind: "meeting"; sessionId: string } | { kind: "library"; scope: LibraryChatScope };
 export class RetrievalCatalogError extends Error {
  readonly status = 409;
@@ -43,8 +43,9 @@ export class RetrievalCatalog {
   const sameSource = prior?.sourceRevision === session.transcriptRevision && prior.transcriptVersion === session.transcriptVersion;
   let evidenceCount = sameSource ? prior!.evidenceCount : 0;
   if (!sameSource) for (const _evidence of iterateTranscriptEvidence(session)) evidenceCount++;
+  const metadata=meetingMetadataEvidence(session);
   return { sessionId: session.id, sourceRevision: session.transcriptRevision, transcriptVersion: session.transcriptVersion!, title: session.title,
-   tags: [...new Set(session.tags.map(tagKey).filter(Boolean))].sort(binary), displayTags:uniqueTags(session.tags).sort(), finalized: session.transcriptFinalized === true, nonempty: evidenceCount > 0, evidenceCount };
+   tags: [...new Set(session.tags.map(tagKey).filter(Boolean))].sort(binary), displayTags:uniqueTags(session.tags).sort(), finalized: session.transcriptFinalized === true, nonempty: evidenceCount > 0, evidenceCount, metadataRevision:meetingMetadataRevision(session),recordedAt:metadata?.recordedAt??null,...(metadata?.durationSeconds===undefined?{}:{durationSeconds:metadata.durationSeconds}) };
  }
  private bytes(value: RetrievalDescriptor | undefined | null): number {
   if (!value) return 0;
@@ -108,7 +109,7 @@ export class RetrievalCatalog {
   if(this.status!=="ready")throw new RetrievalCatalogError(this.status==="capacity"?"retrieval-capacity":"retrieval-not-ready");
   const scope=normalizeChatScope(value),all=[...this.descriptors.values()],matching=all.filter(source=>scope.mode==='all'||scope.labels.length>0&&(scope.match==='all'?scope.labels.every(label=>source.tags.includes(label)):scope.labels.some(label=>source.tags.includes(label))));
   const sources=matching.filter(source=>source.finalized&&source.nonempty).map(source=>({sessionId:source.sessionId,title:source.title,tags:[...source.displayTags],sourceRevision:source.sourceRevision})).sort((a,b)=>a.sessionId.localeCompare(b.sessionId));
-  const key=createHash('sha256').update(JSON.stringify({scope,sources})).digest('hex');
+  const key=createHash('sha256').update(JSON.stringify({scope,sources,metadata:matching.filter(source=>source.finalized&&source.nonempty).sort((a,b)=>a.sessionId.localeCompare(b.sessionId)).map(source=>source.metadataRevision)})).digest('hex');
   return {snapshot:{key,scope,sources},ready:sources.length>0,matchingCount:matching.length,unavailableCount:matching.length-sources.length,availableLabels:uniqueTags(all.flatMap(source=>source.displayTags)).sort()};
  }
  describe(snapshot: RetrievalSnapshot): RetrievalDescriptor[] {

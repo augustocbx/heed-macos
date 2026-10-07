@@ -1,4 +1,4 @@
-import { detectLocale, tr } from "./i18n.ts";
+import { detectLocale, tr, type Locale } from "./i18n.ts";
 export function fmtTime(seconds: number): string {
 	const m = Math.floor(seconds / 60);
 	const s = seconds % 60;
@@ -19,6 +19,11 @@ export function fmtDate(iso: string): string {
 		" " +
 		d.toLocaleTimeString(detectLocale(), { hour: "2-digit", minute: "2-digit" })
 	);
+}
+
+/** Recorded instants use the viewer's local time zone, with the zone visible. */
+export function fmtMeetingDateTime(iso: string, locale: Locale): string {
+	return new Intl.DateTimeFormat(locale, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" }).format(new Date(iso));
 }
 
 export function escapeHtml(s: string): string {

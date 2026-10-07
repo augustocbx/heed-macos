@@ -2631,7 +2631,7 @@ const chatService: MeetingChatService = new MeetingChatService({
  generate:generateChatEvidence,
 });
 function generateChatEvidence(input:ChatGenerationRequest) {
- return generateLocalStructured({baseUrl:OLLAMA_HOST,model:input.model,system:CHAT_SYSTEM,outputSchema:chatResponseSchema(input.evidence),requireCompletion:true,contextTokens:8192,maxInputBytes:5500,
+ return generateLocalStructured({baseUrl:OLLAMA_HOST,model:input.model,system:CHAT_SYSTEM,outputSchema:chatResponseSchema([...input.evidence,...input.metadata]),requireCompletion:true,contextTokens:8192,maxInputBytes:5500,
   data:input.data,signal:input.signal,
   numGpu:getCurrentNumGpu(),numThread:Math.max(2,Math.floor(cpus().length / 2))});
 }

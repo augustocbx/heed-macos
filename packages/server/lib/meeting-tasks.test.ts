@@ -11,10 +11,10 @@ function fixture() {
  const directory = mkdtempSync(join(tmpdir(), 'heed-tasks-')); dirs.push(directory);
  let meeting: Session | null = { id:'m', title:'Fixture meeting', createdAt:'2026-10-05T12:00:00Z',duration:10,language:'en',transcript:'I will send the report on 2026-10-09. Maybe update the checklist next Friday.',speakers:['Ana','Ben'],segments:[{speaker:'Ana',start:0,end:3,text:'I will send the report on 2026-10-09.'},{speaker:'Ben',start:4,end:7,text:'Maybe update the checklist next Friday.'}],aiNotes:'',summary:'',tags:[],pinned:false,transcriptFinalized:true };
  const raw = [ { title:'Send report',description:'Send the report',kind:'explicit',assignee:'Ana',dueDate:'2026-10-09',dateQuote:'2026-10-09',evidence:[{segmentIndex:0,quote:'I will send the report on 2026-10-09.'}]}, {title:'Update checklist',description:'Review checklist',kind:'inferred',assignee:null,dueDate:'2026-10-09',dateQuote:'next Friday',evidence:[{segmentIndex:1,quote:'Maybe update the checklist next Friday.'}]} ];
- let generation = async () => JSON.stringify({suggestions:raw});
- const options = { path:join(directory,'tasks.json'),listSessions:()=>meeting ? [meeting] : [],getSession:()=>meeting,generate:(session:Session,signal:AbortSignal)=>generation(),isBusy:()=>false,now:()=>new Date('2026-10-05T12:30:00Z') };
+ let generation = async (_session:Session,_signal:AbortSignal) => JSON.stringify({suggestions:raw});
+ const options = { path:join(directory,'tasks.json'),listSessions:()=>meeting ? [meeting] : [],getSession:()=>meeting,generate:(session:Session,signal:AbortSignal)=>generation(session,signal),isBusy:()=>false,now:()=>new Date('2026-10-05T12:30:00Z') };
  const service = new MeetingTasksService(options);
- return { service, options, raw, get meeting(){return meeting!;},change:(patch:Partial<Session>)=>{meeting={...meeting!,...patch};},remove:()=>{meeting=null;},setGenerate:(callback:()=>Promise<string>)=>{generation=callback;} };
+ return { service, options, raw, get meeting(){return meeting!;},change:(patch:Partial<Session>)=>{meeting={...meeting!,...patch};},remove:()=>{meeting=null;},setGenerate:(callback:(session:Session,signal:AbortSignal)=>Promise<string>)=>{generation=callback;} };
 }
 test('validates exact evidence, distinguishes inference and refuses relative invented dates', () => {
  const f=fixture();const suggestions=validateTaskSuggestions(f.meeting,JSON.stringify({suggestions:f.raw}));
@@ -58,11 +58,35 @@ test('generation failures are durable and retryable; zero tasks is a completed r
  const f=fixture();f.setGenerate(async()=>{throw new Error('model-missing');});await f.service.tick();expect(f.service.snapshot('m').review).toMatchObject({status:'failed',error:'model-missing'});
  f.setGenerate(async()=>JSON.stringify({suggestions:[]}));f.service.retry('m');await f.service.tick();expect(f.service.snapshot('m').review).toMatchObject({status:'ready',suggestions:[]});
 });
+test('an active-model deadline is stored as a timeout rather than Ollama unavailability',async()=>{
+ const f=fixture();f.setGenerate(async()=>{throw new Error('generation-timeout');});
+ await f.service.tick();
+ expect(f.service.snapshot('m').review).toMatchObject({status:'failed',error:'generation-timeout'});
+});
 test('stale generation and two concurrent ticks cannot publish outdated suggestions',async()=>{
  const f=fixture();let finish!:(value:string)=>void;let calls=0;
  f.setGenerate(()=>{calls++;return new Promise(resolve=>{finish=resolve;});});const running=f.service.tick();await Promise.resolve();await f.service.tick();expect(calls).toBe(1);
  f.change({transcript:'Changed',segments:[{speaker:'Ana',start:0,end:3,text:'Changed'}]});finish(JSON.stringify({suggestions:f.raw}));await running;
  expect(f.service.snapshot('m').review?.sourceRevision).not.toBe(sourceRevision(f.meeting));expect(f.service.snapshot('m').review?.status).toBe('superseded');
+});
+test('a speaker rename aborts an obsolete task request before starting the current revision',async()=>{
+ const f=fixture();let oldSignal:AbortSignal|undefined;let releaseOld:(value:string)=>void=()=>{};let calls=0;
+ f.setGenerate((_session,signal)=>{
+  calls++;
+  if(calls>1)return Promise.resolve(JSON.stringify({suggestions:[]}));
+  oldSignal=signal;
+  return new Promise<string>((resolve,reject)=>{
+   releaseOld=resolve;
+   signal.addEventListener('abort',()=>reject(new DOMException('Aborted','AbortError')),{once:true});
+  });
+ });
+ const oldRun=f.service.tick();await Promise.resolve();
+ f.change({speakers:['Alice','Ben'],segments:f.meeting.segments.map(segment=>segment.speaker==='Ana'?{...segment,speaker:'Alice'}:segment)});
+ try{await f.service.tick();expect(oldSignal?.aborted).toBe(true);}
+ finally{releaseOld(JSON.stringify({suggestions:[]}));await oldRun;}
+ await f.service.tick();
+ expect(calls).toBe(2);
+ expect(f.service.snapshot('m').review).toMatchObject({status:'ready',sourceRevision:sourceRevision(f.meeting),suggestions:[]});
 });
 test('persistence failure leaves acceptance atomic and retriable',async()=>{
  const f=fixture();await f.service.tick();const review=f.service.snapshot('m').review!;const initial=readFileSync(f.options.path,'utf8');
@@ -103,4 +127,12 @@ test('a recovered task attempt fences an older completion for the same source re
  const recovered=new MeetingTasksService(f.options);f.setGenerate(()=>new Promise(resolve=>releaseNew=resolve));const newer=recovered.tick();
  releaseOld('{"suggestions":[]}');await old;expect(recovered.snapshot('m').review?.status).toBe('running');
  releaseNew(JSON.stringify({suggestions:f.raw}));await newer;expect(recovered.snapshot('m').review?.suggestions).toHaveLength(2);
+});
+
+test('an active task source-version-only edit aborts without publishing obsolete suggestions',async()=>{
+ const f=fixture();let signal:AbortSignal|undefined,finish!:(value:string)=>void;
+ f.setGenerate((_session,current)=>{signal=current;return new Promise(resolve=>finish=resolve);});const running=f.service.tick();await Promise.resolve();
+ try{f.change({transcriptVersion:1});await f.service.tick();expect(signal?.aborted).toBe(true);}
+ finally{finish(JSON.stringify({suggestions:f.raw}));await running;}
+ expect(f.service.snapshot('m').review).toMatchObject({status:'superseded',suggestions:[]});
 });

@@ -9,7 +9,7 @@ import {RetrievalCatalogError,type RetrievalCatalog} from './retrieval-catalog';
 import type {MeetingRetriever} from './meeting-retrieval';
 import type {RetrievalSnapshot} from '../../shared/types/retrieval';
 import {notesHash,sourceRevision} from './automatic-notes';
-import {answerMeetingQuestion,prepareMeetingQuestion,chatPlanCalls,completeMeetingQuestion,type PreparedMeetingQuestion,type ChatHistory,iterateTranscriptEvidence,ChatError,chatFailure,validateChatQuestion,readChatCommand,type ChatGenerator} from './meeting-chat';
+import {answerMeetingQuestion,prepareMeetingQuestion,chatPlanCalls,completeMeetingQuestion,type PreparedMeetingQuestion,type ChatHistory,iterateTranscriptEvidence,meetingMetadataEvidence,meetingMetadataRevision,selectedMeetingMetadata,ChatError,chatFailure,validateChatQuestion,readChatCommand,type ChatGenerator} from './meeting-chat';
 
 export function normalizeChatScope(value:unknown):LibraryChatScope {
  const scope=value as LibraryChatScope;
@@ -20,7 +20,7 @@ export function normalizeChatScope(value:unknown):LibraryChatScope {
 }
 const scopeId=(scope:LibraryChatScope)=>notesHash(JSON.stringify(scope));
 type LocalLibraryTurn=LibraryChatTurn&{retrievalKey?:string};
-interface Options {inference?:AiDomainInference;directory:string;getSession:(id:string)=>Session|null;catalog:Pick<RetrievalCatalog,'state'|'resolve'|'validate'|'preview'>;retriever:Pick<MeetingRetriever,'retrieve'|'materialize'>;isBusy:()=>boolean;waitingReason?:()=>AiWaitingReason;generate:ChatGenerator;write?:typeof atomicWriteJson;}
+interface Options {inference?:AiDomainInference;directory:string;getSession:(id:string)=>Session|null;catalog:Pick<RetrievalCatalog,'state'|'resolve'|'validate'|'preview'|'describe'>;retriever:Pick<MeetingRetriever,'retrieve'|'materialize'>;isBusy:()=>boolean;waitingReason?:()=>AiWaitingReason;generate:ChatGenerator;write?:typeof atomicWriteJson;}
 
 /** Selection filtering precedes evidence extraction, history selection and generation. */
 export class LibraryChatService {
@@ -91,6 +91,7 @@ export class LibraryChatService {
   const id=evidenceId.split(':')[0]!,stamp=this.capture(scope).sources.find(source=>source.sessionId===id);
   if(!stamp)throw new ChatError('invalid-evidence',409);const session=this.options.getSession(id);
   if(!session||!session.transcriptFinalized||sourceRevision(session)!==stamp.sourceRevision||(session.transcriptVersion??0)!==stamp.transcriptVersion)throw new ChatError('scope-changed',409);
+  if(meetingMetadataEvidence(session)?.id===evidenceId)return {...session,transcriptRevision:stamp.sourceRevision};
   for(const evidence of iterateTranscriptEvidence(session))if(evidence.id===evidenceId)return {...session,transcriptRevision:stamp.sourceRevision};
   throw new ChatError('invalid-evidence',409);
  }
@@ -111,14 +112,15 @@ export class LibraryChatService {
  async prepareAi(value:LibraryChatScope,turnId:string):Promise<AiJobDraft> {
   const scope=normalizeChatScope(value),inference=this.options.inference,{thread}=this.get(scope),turn=thread.turns.find(item=>item.id===turnId);
   if(!inference||!turn||turn.status!=='waiting'||!remoteBinding(turn))throw new AiPlanError('invalid-command');
-  const retrieval=this.capture(scope),history=this.history(thread,turn,retrieval),historyHash=aiFingerprint(history),identity=aiFingerprint([turn.question,turn.model,turn.snapshot,turn.ai?.commandRevision]);
+  const retrieval=this.capture(scope),descriptors=this.options.catalog.describe(retrieval),metadataRevisions=new Map(descriptors.map(source=>[source.sessionId,source.metadataRevision])),history=this.history(thread,turn,retrieval),historyHash=aiFingerprint(history),identity=aiFingerprint([turn.question,turn.model,turn.snapshot,turn.ai?.commandRevision]);
   let attached:string|undefined;
   // Validate every recorded scope guard, including sources contributing only to reviewed history.
   // Reads retain the configured source-record limit and do not rebuild retrieval or the payload.
   const current=()=>{const live=this.read(thread.id),value=live.turns.find(item=>item.id===turnId);if(!value||!['waiting','running'].includes(value.status)||aiFingerprint([value.question,value.model,value.snapshot,value.ai?.commandRevision])!==identity||attached&&value.ai?.planId!==attached)throw new AiPlanError('command-changed');return {live,value};};
-  const validate=()=>{const {live,value}=current();this.options.catalog.validate(retrieval);for(const source of retrieval.sources){const session=this.options.getSession(source.sessionId);if(!session?.transcriptFinalized||sourceRevision(session)!==source.sourceRevision||(session.transcriptVersion??0)!==source.transcriptVersion)throw new AiPlanError('scope-changed');}if(this.preview(scope).snapshot.key!==turn.snapshot.key||this.capture(scope).key!==retrieval.key)throw new AiPlanError('scope-changed');if(aiFingerprint(this.history(live,turn,retrieval))!==historyHash)throw new AiPlanError('history-changed');if(value.status==='running'&&this.options.isBusy())throw new AiPlanError('resources-busy');};
+  const validate=()=>{const {live,value}=current();this.options.catalog.validate(retrieval);for(const source of retrieval.sources){const session=this.options.getSession(source.sessionId);if(!session?.transcriptFinalized||meetingMetadataRevision(session)!==metadataRevisions.get(source.sessionId)||sourceRevision(session)!==source.sourceRevision||(session.transcriptVersion??0)!==source.transcriptVersion)throw new AiPlanError('scope-changed');}if(this.preview(scope).snapshot.key!==turn.snapshot.key||this.capture(scope).key!==retrieval.key)throw new AiPlanError('scope-changed');if(aiFingerprint(this.history(live,turn,retrieval))!==historyHash)throw new AiPlanError('history-changed');if(value.status==='running'&&this.options.isBusy())throw new AiPlanError('resources-busy');};
   validate();const result=await this.options.retriever.retrieve(retrieval,turn.question),evidence=await this.options.retriever.materialize(result);validate();
-  const prepared=prepareMeetingQuestion({evidence,coverage:result.coverage,question:turn.question,history,model:turn.model});
+  const {metadata,coverage:metadataCoverage}=selectedMeetingMetadata(descriptors);
+  const prepared=prepareMeetingQuestion({evidence,metadata,metadataCoverage,coverage:result.coverage,question:turn.question,history,model:turn.model});
   validate();
   return {jobId:`library-chat:${thread.id}:${turnId}`,feature:'library-chat',selection:turn.ai!.selection,calls:chatPlanCalls(prepared),sources:retrieval.sources.map(source=>({sessionId:source.sessionId,sourceRevision:source.sourceRevision,sourceVersion:source.transcriptVersion})),validate,
    attach:plan=>{validate();const {live,value}=current();value.ai={...value.ai!,planId:plan.id,dispatched:false};attached=plan.id;(value as LocalLibraryTurn).retrievalKey=retrieval.key;delete value.reason;this.save(live);this.prepared.set(plan,{prepared,retrieval,result});},
@@ -150,7 +152,8 @@ export class LibraryChatService {
    const check=()=>{this.options.catalog.validate(retrieval);if(this.options.isBusy())throw new ChatError('resources-busy',409);if(controller.signal.aborted)throw new ChatError('cancelled',409);};check();
    if(plan){const outputs=await this.options.inference!.runtime.execute(plan,controller.signal);answer=completeMeetingQuestion(frozen!.prepared,outputs.map(output=>output.text));snapshot.provenance={provider:plan.selection.provider,model:plan.selection.model!};}
    else{
-    const history=this.history(thread,snapshot,retrieval),evidence=await this.options.retriever.materialize(result,controller.signal),generate=()=>answerMeetingQuestion({evidence,coverage:result.coverage,question:snapshot.question,model:snapshot.model,history,signal:controller.signal,generate:async input=>{check();const text=await this.options.generate(input);check();return text;}});
+    const {metadata,coverage:metadataCoverage}=selectedMeetingMetadata(this.options.catalog.describe(retrieval));
+    const history=this.history(thread,snapshot,retrieval),evidence=await this.options.retriever.materialize(result,controller.signal),generate=()=>answerMeetingQuestion({evidence,metadata,metadataCoverage,coverage:result.coverage,question:snapshot.question,model:snapshot.model,history,signal:controller.signal,generate:async input=>{check();const text=await this.options.generate(input);check();return text;}});
     answer=this.options.inference?await this.options.inference.runtime.local('library-chat',snapshot.model,controller.signal,generate):await generate();snapshot.provenance={provider:'ollama',model:snapshot.model};
    }
    check();await this.options.retriever.materialize(result,controller.signal);check();if(plan)this.options.inference!.planner.assertCurrent(plan);

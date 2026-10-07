@@ -3,7 +3,7 @@ import type {Session,TranscriptEvidence} from '@heed/shared';
 import type {RetrievalResult,RetrievalSnapshot,RetrievalHit,RetrievalSourceStamp} from '../../shared/types/retrieval';
 import {sourceRevision} from '../../shared/lib/transcript-source';
 import {RetrievalCatalog} from './retrieval-catalog';
-import {RetrievalIndex} from './retrieval-index';
+import {RetrievalIndex,tokenizeTranscriptEvidence} from './retrieval-index';
 import type {RetrievalPolicy} from './retrieval-policy';
 import {SessionTags} from './session-tags';
 import {iterateTranscriptEvidence} from './meeting-chat';
@@ -36,7 +36,7 @@ export class MeetingRetriever {
  }
  async retrieve(snapshot:RetrievalSnapshot,question:string,signal?:AbortSignal):Promise<RetrievalResult>{
   this.check(snapshot,signal);if(!this.options.index.available())throw new RetrievalUnavailableError();if(this.retrieving)throw new RetrievalUnavailableError();let terms:string[],capabilityUnavailable=false;try{terms=normalizeRetrievalQuery(question,this.options.policy);}catch(error){if(!(error instanceof RetrievalUnavailableError))throw error;terms=[];capabilityUnavailable=true;}const description=this.options.index.describe(snapshot);
-  const key=createHash('sha256').update(JSON.stringify({capabilityUnavailable,snapshot:snapshot.key,terms,generation:description.generationId,sources:description.sources.map(s=>[s.sessionId,s.sourceRevision,s.transcriptVersion,s.epoch,s.current,s.indexedPrefix,s.reason??null]),ranker:'distinct100-cap3-v1',policy:this.options.policy})).digest('hex');
+  const key=createHash('sha256').update(JSON.stringify({capabilityUnavailable,snapshot:snapshot.key,terms,generation:description.generationId,sources:description.sources.map(s=>[s.sessionId,s.sourceRevision,s.transcriptVersion,s.epoch,s.current,s.indexedPrefix,s.reason??null]),ranker:'distinct100-cap3-speaker-v1',policy:this.options.policy})).digest('hex');
   const entry=this.cache.get(key);
   if(entry&&entry.expires>this.options.now()){
    this.guardHits(entry.result.hits);this.check(snapshot,signal);this.cache.delete(key);this.cache.set(key,entry);return {...structuredClone(entry.result),snapshot};
@@ -74,7 +74,7 @@ export class MeetingRetriever {
      const next=iterator.next();if(next.done)break;const evidence=next.value;
      if(ordinal<from){ordinal++;if(ordinal%policy.evidenceSlice===0){await Bun.sleep(0);this.check(result.snapshot,signal);if(!this.options.index.available()||this.options.now()>=deadline){limited=true;break;}}continue;}
      if(!this.options.index.available()||examined>=policy.fallbackEvidence||this.options.now()>=deadline){limited=true;break;}
-     const frequencies=scratch?.tokenize(evidence.quote)??[],matched=frequencies.filter(row=>terms.includes(row.term)),score=matched.length*100+matched.reduce((n,row)=>n+Math.min(row.frequency,3),0);
+     const frequencies=scratch?tokenizeTranscriptEvidence(scratch,evidence):[],matched=frequencies.filter(row=>terms.includes(row.term)),score=matched.length*100+matched.reduce((n,row)=>n+Math.min(row.frequency,3),0);
      ids.set(`${source.sessionId}:${ordinal}`,evidence.id);to=ordinal+1;examined++;if(coverage.searchedEvidence!==null)coverage.searchedEvidence++;
      if(score>0){coverage.matchedEvidence++;ranking.add({...stamp,evidenceOrdinal:ordinal,evidenceId:evidence.id,score});}
      else if(!terms.length)ranking.add({...stamp,evidenceOrdinal:ordinal,evidenceId:evidence.id,score:0});

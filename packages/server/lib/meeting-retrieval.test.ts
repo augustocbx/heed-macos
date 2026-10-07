@@ -23,3 +23,28 @@ test('accepted source/version changes reject materialization and old captured sc
  f.store.commitSource(original.id,transcriptGuard(original),current=>({...current!,transcript:'Changed delivery'}));f.store.commitSource(original.id,transcriptGuard(f.store.read(original.id)!),current=>({...current!,transcript:original.transcript}));
  await expect(f.retriever.materialize(result)).rejects.toThrow();await expect(f.retriever.retrieve(snapshot,'delivery')).rejects.toThrow();const next=await f.retriever.retrieve(f.snapshot(),'delivery');expect(next.hits[0].transcriptVersion).toBe(3);
 });
+test('indexed search finds an accepted speaker name with accent folding and leaves quotes exact',async()=>{
+ const f=await retrievalFixture();
+ for(const [id,tags,speaker] of [['included',['Work'],'Brunô'],['excluded',['Other'],'Brunô']] as const){
+  const source=f.add(id,'The deployment was approved.',[...tags]);
+  f.store.commitSource(id,transcriptGuard(source),current=>({...current!,segments:[{speaker,text:'The deployment was approved.',start:0,end:1}],speakers:[speaker]}));
+ }
+ await f.index.tick();
+ const snapshot=f.snapshot({kind:'library',scope:{mode:'labels',labels:['Work'],match:'any'}});
+ const result=await f.retriever.retrieve(snapshot,'bruno');
+ expect(result.hits.map(hit=>hit.sessionId)).toEqual(['included']);
+ expect(result.coverage).toMatchObject({strategy:'lexical',selectedMeetings:1,matchedEvidence:1,lookupComplete:true});
+ expect(await f.retriever.materialize(result)).toMatchObject([{speaker:'Brunô',quote:'The deployment was approved.'}]);
+});
+test('fallback finds only examined speaker evidence within its source and evidence limits',async()=>{
+ const f=await retrievalFixture({fallbackSources:1,fallbackEvidence:1});
+ for(const id of ['first','second']){
+  const source=f.add(id,'The deployment was approved.');
+  f.store.commitSource(id,transcriptGuard(source),current=>({...current!,segments:[{speaker:'Brunô',text:'The deployment was approved.',start:0,end:1}],speakers:['Brunô']}));
+ }
+ const result=await f.retriever.retrieve(f.snapshot(),'bruno');
+ expect(result.coverage).toMatchObject({strategy:'fallback',searchedMeetings:1,searchedEvidence:1,matchedEvidence:1,lookupComplete:false});
+ expect(result.coverage.partialReasons).toContain('fallback-limit');
+ expect(result.hits.map(hit=>hit.sessionId)).toEqual(['first']);
+ expect(await f.retriever.materialize(result)).toMatchObject([{speaker:'Brunô',quote:'The deployment was approved.'}]);
+});

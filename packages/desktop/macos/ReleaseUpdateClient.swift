@@ -127,7 +127,7 @@ final class ReleaseUpdateClient {
         let endpoints = endpoints()
         build = InstalledMenuBuild.load(root: endpoints?.checkoutRoot)
         let build = build, home = home, qaRoot = qaRoot, instanceID = instanceID
-        if command == "check" {snapshot.state = "checking"; onChange?(snapshot)}
+        if command == "check" {snapshot.state = "checking"; snapshot.phase = nil; onChange?(snapshot)}
         queue.async { [weak self] in
             var result = UpdateSnapshot()
             do {

@@ -22,6 +22,13 @@ function meeting(extra: Partial<Session> = {}): Partial<Session> {
 function job(session: Session) { return Object.values(session.notesJobs || {})[0]!; }
 function deferred() { let resolve!: (value: string) => void; const promise = new Promise<string>(r => { resolve = r; }); return { promise, resolve }; }
 
+test('a local generation deadline leaves saved notes untouched and reports a retryable timeout',async()=>{
+ const {service}=fixture({generate:async()=>{throw new Error('generation-timeout');}});
+ const session=service.create(meeting());await service.tick();
+ expect(service.get(session.id)!.aiNotes).toBe('');
+ expect(job(service.get(session.id)!)).toMatchObject({status:'failed',reason:'generation-timeout',retryable:true});
+});
+
 function transcriptionDiagnostics(): TranscriptionDiagnostics {
  return {version:1,channels:{mic:{rawRms:0.03,rawPeak:2000,cleanedRms:0.02,asrSegments:2,diarizationSegments:0,usableEmbeddings:0,retainedSegments:2,discardedSegments:0,discardReasons:{},fallbackSegments:2,diarizationFailed:true}},aecApplied:true,warnings:["microphone-attribution-fallback"]};
 }
