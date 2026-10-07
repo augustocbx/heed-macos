@@ -10,7 +10,8 @@ const path = {engine:"mlx", model:"base", modelIdentity:"mlx:mlx-community/whisp
 export const capabilities = (): LanguageCapabilities => structuredClone({schemaVersion:1,capabilityKey:"a".repeat(64),live:path,final:{...path,engine:"parakeet",model:"parakeet-v3",modelIdentity:"parakeet:FluidAudio/parakeet-tdt-0.6b-v3",mode:"full",adaptiveModels:[]}}) as unknown as LanguageCapabilities;
 test("language defaults independently from interface locale and rejects unsupported new writes", () => {
  expect(language.configuredLiveSpeechLanguage({ui_locale:"pt-BR"})).toBe("en");
- expect(language.configuredLiveSpeechLanguage({live_speech_language:"fr"})).toBe("en");
+ const unsupportedLegacy={live_speech_language:"fr"} as unknown as Parameters<typeof language.configuredLiveSpeechLanguage>[0];
+ expect(language.configuredLiveSpeechLanguage(unsupportedLegacy)).toBe("en");
  expect(language.configuredLiveSpeechLanguage({live_speech_language:"pt",ui_locale:"de"})).toBe("pt");
  expect(language.recordingSettingsPatch({liveLanguage:"pt",enabled:false})).toEqual({live_speech_language:"pt",real_time_transcription:false});
  for(const body of [{}, {liveLanguage:"auto"},{liveLanguage:"pt-BR"},{enabled:1},{liveLanguage:"pt",language:"en"}])expect(()=>language.recordingSettingsPatch(body)).toThrow();

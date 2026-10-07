@@ -32,7 +32,7 @@ setInterval(()=>{if(existsSync(join(process.env.HEED_APP_DIR,'fail-capture')))pr
  const lease=Bun.serve({hostname:'127.0.0.1',port:0,fetch:()=>new Response()});const base=`http://127.0.0.1:${lease.port}`;lease.stop(true);
  const request=async(path:string,body?:unknown)=>{const response=await fetch(base+path,{method:body===undefined?'GET':'POST',headers:{'content-type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});return {status:response.status,body:await response.json()};};
  try{
-  const env={...process.env,PATH:'/opt/homebrew/bin:'+process.env.PATH,PORT:base.split(':').at(-1)!,HEED_APP_DIR:root,HEED_RECORDINGS_DIR:join(root,'media'),HEED_TRANSCRIPTION_URL:`http://127.0.0.1:${sidecar.port}`,OLLAMA_HOST:`http://127.0.0.1:${sidecar.port}`};
+  const env:Record<string,string|undefined>={...process.env,PATH:'/opt/homebrew/bin:'+process.env.PATH,PORT:base.split(':').at(-1)!,HEED_APP_DIR:root,HEED_RECORDINGS_DIR:join(root,'media'),HEED_TRANSCRIPTION_URL:`http://127.0.0.1:${sidecar.port}`,OLLAMA_HOST:`http://127.0.0.1:${sidecar.port}`};
   for(const name of ['HEED_API_PORT','HEED_UI_PORT','HEED_TRANSCRIPTION_PORT','HEED_SERVICE_CONFIG_ROOT'])delete env[name];
   app=Bun.spawn([process.execPath,join(source,'packages/server/server.ts')],{cwd:source,env,stdout:'ignore',stderr:'ignore'});
   const deadline=Date.now()+8000;while(Date.now()<deadline){try{if((await fetch(base+'/api/sessions')).ok)break;}catch{}await Bun.sleep(25);}
