@@ -79,3 +79,21 @@ test('view navigation uses the equal-version accepted cache including independen
  useSessionsStore.setState({sessions:[current],viewing:null});useSessionsStore.getState().view(old);
  expect(useSessionsStore.getState().viewing).toBe(current);expect(useSessionsStore.getState().sessions[0]).toBe(current);
 });
+
+test('opening a higher source version synchronizes the list before later old acceptance and polling',async()=>{
+ const old={...meeting(2),title:'Renamed',aiNotes:'Old notes'};useSessionsStore.setState({sessions:[old],viewing:old});
+ const incoming={...meeting(3),title:'Old response title',transcript:'Corrected',aiNotes:'Current notes'};
+ useSessionsStore.getState().view(incoming);
+ expect(useSessionsStore.getState().sessions[0]).toMatchObject({transcriptVersion:3,title:'Renamed',transcript:'Corrected'});
+ useSessionsStore.getState().accept(old);
+ vi.mocked(tagsApi.list).mockResolvedValue({sessions:[old],tags:[],revision:'old'});await useSessionsStore.getState().load(true);
+ expect(useSessionsStore.getState().viewing).toMatchObject({transcriptVersion:3,transcript:'Corrected',aiNotes:'Current notes'});
+});
+
+test('an already split cache selects the newer viewed source and keeps independently owned list metadata',()=>{
+ const listed={...meeting(2),title:'Renamed'};
+ const viewed={...meeting(3),title:'Old source title',transcript:'Corrected'};
+ useSessionsStore.setState({sessions:[listed],viewing:viewed});useSessionsStore.getState().accept(listed);
+ expect(useSessionsStore.getState().sessions[0]).toMatchObject({transcriptVersion:3,transcript:'Corrected',title:'Renamed'});
+ expect(useSessionsStore.getState().viewing).toEqual(useSessionsStore.getState().sessions[0]);
+});

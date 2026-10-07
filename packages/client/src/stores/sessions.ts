@@ -23,6 +23,14 @@ interface SessionsState {
   remove: (id: string) => Promise<void>;
   view: (session: Session | null) => void;
 }
+/** Read the newest accepted source from either cache, retaining list-owned metadata. */
+function cachedSession(state: Pick<SessionsState, "sessions" | "viewing">, id: string): Session | null {
+  const listed = state.sessions.find(session => session.id === id);
+  const viewed = state.viewing?.id === id ? state.viewing : null;
+  if (!listed) return viewed;
+  if (!viewed || sessionVersion(listed) >= sessionVersion(viewed)) return listed;
+  return { ...viewed, title: listed.title, pinned: listed.pinned, tags: listed.tags, tagsRevision: listed.tagsRevision };
+}
 let generation = 0;
 let tagGeneration = 0;
 let loadSequence = 0;
@@ -51,7 +59,7 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
     const source = preserveMembership ? state.sessions : snapshot.sessions;
     const sessions = source.map(entry => {
       const saved = snapshot.sessions.find(s => s.id === entry.id);
-      const current = state.sessions.find(s => s.id === entry.id) ?? (state.viewing?.id === entry.id ? state.viewing : null);
+      const current = cachedSession(state, entry.id);
       return !saved ? entry : full ? current ? mergeAcceptedSession(current, saved) : saved : !current ? saved : { ...current, tags: saved.tags, tagsRevision: saved.tagsRevision };
     });
     const membershipChanged = preserveMembership && (sessions.length !== snapshot.sessions.length || sessions.some(s => !snapshot.sessions.some(saved => saved.id === s.id)));
@@ -77,7 +85,7 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
     tagCatalog: [], tagRevision: "", tagsBusy: false, tagsError: "", lastTagChange: null,
     load: (silent = false) => refresh(true, silent),
     accept: (session, requestOrder) => {
-      const current = get().sessions.find(existing => existing.id === session.id) ?? (get().viewing?.id === session.id ? get().viewing : null);
+      const current = cachedSession(get(), session.id);
       const order = requestOrder ?? beginSessionRequest(session.id);
       if (current && order < (appliedRequests.get(session.id) ?? 0) && sessionVersion(session) <= sessionVersion(current)) return current;
       appliedRequests.set(session.id, Math.max(order, appliedRequests.get(session.id) ?? 0));
@@ -85,7 +93,7 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
       notesGenerations.set(session.id, (notesGenerations.get(session.id) ?? 0) + 1);
       set(state => {
         const listed = state.sessions.some(existing => existing.id === session.id);
-        const current = state.sessions.find(existing => existing.id === session.id) ?? (state.viewing?.id === session.id ? state.viewing : null);
+        const current = cachedSession(state, session.id);
         // Transcript and notes responses do not own independent meeting metadata.
         const saved = current ? { ...mergeAcceptedSession(current, session), title: current.title, pinned: current.pinned, tags: current.tags, tagsRevision: current.tagsRevision } : session;
         const sessions = listed ? state.sessions.map(existing => existing.id === session.id ? saved : existing) : [saved, ...state.sessions];
@@ -127,7 +135,7 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
     update: async (id, patch) => {
       const changesSource = acceptedSourceKeys.some(key => Object.hasOwn(patch, key));
       const changesNotes = changesSource || notesFields.some(key => Object.hasOwn(patch, key));
-      const current = get().sessions.find(s => s.id === id) ?? (get().viewing?.id === id ? get().viewing : null);
+      const current = cachedSession(get(), id);
       let payload = patch.tags === undefined ? patch : { ...patch, tagsRevision: current?.tagsRevision };
       // Reject incomplete guards before changing request ownership or busy state.
       if (changesSource || Object.hasOwn(patch, "aiNotes")) {
@@ -197,9 +205,14 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
         return { sessions, tagCatalog: catalogFor(sessions, state.tagCatalog), viewing: state.viewing?.id === id ? null : state.viewing, tagRevision: "" };
       });
     },
-    view: session => set(state => {
-      const current = state.sessions.find(saved => saved.id === session?.id);
-      return { viewing: session && current && sessionVersion(session) <= sessionVersion(current) ? current : session };
-    }),
+    view: session => {
+      if (!session) { set({ viewing: null }); return; }
+      const current = cachedSession(get(), session.id);
+      const selected = current && sessionVersion(session) <= sessionVersion(current) ? current : session;
+      const listed = get().sessions.find(saved => saved.id === session.id);
+      // Navigation cannot split a newer viewed source from the accepted list.
+      const saved = listed && sessionVersion(selected) <= sessionVersion(listed) ? listed : get().accept(selected);
+      set({ viewing: saved });
+    },
   };
 });
