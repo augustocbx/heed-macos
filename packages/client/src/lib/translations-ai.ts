@@ -152,7 +152,7 @@ export const AI_TRANSLATIONS: Record<string, Record<'pt-BR' | 'fr' | 'de', strin
  "Saving…": {
   "pt-BR": "Salvando…",
   "fr": "Enregistrement…",
-  "de": "Speichern…"
+  "de": "Wird gespeichert…"
  },
  "Free quota, promotional credit, and paid API usage are different. Eligibility, region, expiry, privacy conditions, and rate limits depend on your account. Consumer chat subscriptions provide no API credit.": {
   "pt-BR": "Cota gratuita, crédito promocional e uso pago de API são diferentes. Elegibilidade, região, validade, condições de privacidade e limites de uso dependem da sua conta. Assinaturas de chat para consumidores não fornecem crédito de API.",
@@ -200,8 +200,8 @@ export const AI_TRANSLATIONS: Record<string, Record<'pt-BR' | 'fr' | 'de', strin
   "de": "Aufgaben"
  },
  "Meeting chat": {
-  "pt-BR": "Chat da reunião",
-  "fr": "Chat de réunion",
+  "pt-BR": "Conversa sobre a reunião",
+  "fr": "Discussion sur la réunion",
   "de": "Besprechungschat"
  },
  "Library chat": {
