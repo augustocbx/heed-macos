@@ -1,3 +1,5 @@
+import {AiPlanError, aiErrorCode, aiFingerprint, remoteBinding, type AiDomainInference, type AiJobDraft} from './inference/planning';
+import {notesPrompt} from './inference/prompts';
 import {validateVocabularyRun} from '../../shared/lib/vocabulary';
 import type { AiWaitingReason } from "@heed/shared";
 import { existsSync, mkdirSync } from "node:fs";
@@ -22,6 +24,7 @@ export interface NotesGenerationInput {
 }
 export interface AutomaticNotesOptions {
  sessionsDir: string;
+ inference?: AiDomainInference;
  sessionStore?: SessionTags;
  getSettings: () => AutomaticNotesSettings;
  loadTemplate: (id: string) => Template | undefined;
@@ -156,7 +159,11 @@ export class AutomaticNotesService {
   try { template = this.options.loadTemplate(settings.templateId); } catch { /* A removed or malformed template becomes a durable job failure. */ }
   const job: NotesJob = { id: old?.id || `notes-${session.transcriptRevision}`, sourceRevision: session.transcriptRevision!, status: "queued", templateId: settings.templateId, templateName: template?.name || settings.templateId, templateHash: notesHash(template?.prompt || ""), templatePrompt: template?.prompt || "", model: settings.model || "", language: settings.language === "meeting" ? session.language : settings.language, attempts: old?.attempts || 0, generatedCharacters: 0, retryable: true, updatedAt: this.timestamp(), expectedNotesHash: notesHash(session.aiNotes), replaceExisting: !!retry.replaceExisting };
   job.sourceVersion = session.transcriptVersion ?? 0;
-  const reason = !template?.prompt?.trim() ? "template-missing" : !settings.model?.trim() ? "model-missing" : !renderNotesTranscript(session).trim() ? "transcript-empty" : !allowedLanguages.has(job.language) || !allowedLanguages.has(session.language) ? "language-unsupported" : session.aiNotes.trim() && !retry.replaceExisting ? "existing-notes" : undefined;
+  if(this.options.inference) {
+   try{const selection=this.options.inference.planner.selection('notes',job.model);job.ai={selection,commandRevision:randomUUID()};job.model=selection.model??job.model;}
+   catch{job.status='failed';job.reason='settings-recovery';return job;}
+  }
+  const reason = !template?.prompt?.trim() ? "template-missing" : !job.model.trim() ? "model-missing" : !renderNotesTranscript(session).trim() ? "transcript-empty" : !allowedLanguages.has(job.language) || !allowedLanguages.has(session.language) ? "language-unsupported" : session.aiNotes.trim() && !retry.replaceExisting ? "existing-notes" : undefined;
   if (reason) { job.status = "failed"; job.reason = reason; }
   return job;
  }
@@ -170,7 +177,7 @@ export class AutomaticNotesService {
  private recoverRunning(sessions: Session[]): void {
   for (const session of sessions) {
    let changed = false;
-   for (const job of Object.values(session.notesJobs || {})) if (job.status === "running") { job.status = "waiting"; job.reason = "interrupted"; job.generatedCharacters = 0; job.updatedAt = this.timestamp(); changed = true; }
+   for (const job of Object.values(session.notesJobs || {})) if (job.status === "running") { job.status = remoteBinding(job) ? "failed" : "waiting"; job.reason = remoteBinding(job) ? "remote-attempt-uncertain" : "interrupted"; job.generatedCharacters = 0; job.updatedAt = this.timestamp(); changed = true; }
    if (changed) this.save(session);
   }
  }
@@ -189,6 +196,10 @@ export class AutomaticNotesService {
   const session = this.require(sessionId); const old = this.findJob(session, options.jobId);
   if (!session.transcriptFinalized || old.sourceRevision !== session.transcriptRevision) throw new Error("Transcript changed; retry the current revision");
   if (old.status === "running") throw new Error("Notes generation is already running");
+  if (["queued","waiting"].includes(old.status)) {
+   const settings=this.options.getSettings(),selection=this.options.inference?.planner.selection('notes',settings.model??'');
+   if((!selection||aiFingerprint(selection)===aiFingerprint(old.ai?.selection))&&old.templateId===settings.templateId&&old.templateHash===notesHash(this.options.loadTemplate(settings.templateId)?.prompt??'')&&old.language===(settings.language==='meeting'?session.language:settings.language)&&old.model===(selection?.model??settings.model))return session;
+  }
   if (session.aiNotes.trim()) {
    if (!options.replaceExisting) throw new Error("Existing notes require explicit replacement");
    if (options.expectedNotesHash !== notesHash(session.aiNotes)) throw new Error("Notes changed; reload before replacing notes");
@@ -196,11 +207,29 @@ export class AutomaticNotesService {
   session.notesJobs![old.id] = this.snapshot(session, old, options);
   return this.save(session);
  }
+ /** Resolve the existing durable command; preparing a preview never enqueues or retries it. */
+ async prepareAi(sessionId:string,jobId?:string):Promise<AiJobDraft> {
+  const session=this.require(sessionId),job=this.findJob(session,jobId),inference=this.options.inference;
+  if(!inference||!remoteBinding(job)||!['queued','waiting'].includes(job.status))throw new AiPlanError('job-not-reviewable');
+  const identity=aiFingerprint({...job,status:undefined,reason:undefined,waitingReason:undefined,updatedAt:undefined,ai:{selection:job.ai!.selection,commandRevision:job.ai!.commandRevision}});
+  const settings=aiFingerprint(this.options.getSettings());
+  const validate=()=>{
+   const current=this.require(sessionId),live=this.findJob(current,job.id);
+   if(!['queued','waiting','running'].includes(live.status)||live.attempts!==job.attempts+(live.status==='running'?1:0)||!current.transcriptFinalized||current.transcriptRevision!==job.sourceRevision||(current.transcriptVersion??0)!==job.sourceVersion||notesHash(current.aiNotes)!==job.expectedNotesHash)throw new AiPlanError('source-changed');
+   if(aiFingerprint(this.options.getSettings())!==settings||notesHash(this.options.loadTemplate(job.templateId)?.prompt??'')!==job.templateHash)throw new AiPlanError('settings-changed');
+   const comparable={...live,status:undefined,reason:undefined,waitingReason:undefined,updatedAt:undefined,attempts:job.attempts,generatedCharacters:job.generatedCharacters,ai:{selection:live.ai?.selection,commandRevision:live.ai?.commandRevision}};
+   if(aiFingerprint(comparable)!==identity)throw new AiPlanError('review-invalidated');
+  };
+  const selection=job.ai!.selection;
+  return {jobId:`notes:${sessionId}:${job.id}`,feature:'notes',selection,calls:[{id:'notes',...notesPrompt({language:job.language,templatePrompt:job.templatePrompt,transcript:renderNotesTranscript(session)}),contextTokens:8192,maxOutputTokens:1800}],sources:[{sessionId,sourceRevision:job.sourceRevision,sourceVersion:job.sourceVersion,expectedNotesHash:job.expectedNotesHash}],validate,
+   attach:plan=>{validate();const current=this.require(sessionId),live=this.findJob(current,job.id);live.ai={selection,commandRevision:job.ai!.commandRevision,planId:plan.id};this.save(current);},
+   dispatched:()=>{const current=this.require(sessionId),live=this.findJob(current,job.id);live.ai!.dispatched=true;this.save(current);}};
+ }
  get busy(): boolean { return !!this.active; }
  async preempt(): Promise<void> {
   const active = this.active; if (!active) return;
   const session = this.get(active.sessionId); const job = session?.notesJobs?.[active.jobId];
-  if (session && job?.status === "running") { job.status = "waiting"; job.reason = "resources-busy"; job.generatedCharacters = 0; job.updatedAt = this.timestamp(); this.save(session); }
+  if (session && job?.status === "running") { job.status = remoteBinding(job) ? "failed" : "waiting"; job.reason = remoteBinding(job) ? "remote-attempt-uncertain" : "resources-busy"; job.generatedCharacters = 0; job.updatedAt = this.timestamp(); this.save(session); }
   active.controller.abort(); await active.done;
  }
  async tick(): Promise<void> {
@@ -208,7 +237,13 @@ export class AutomaticNotesService {
   // An idle worker may follow a failed storage read; recover its durable running job.
   const sessions = this.list();
   this.recoverRunning(sessions);
-  const candidate = sessions.reverse().flatMap(session => Object.values(session.notesJobs || {}).map(job => ({ session, job }))).find(({ job }) => job.status === "queued" || job.status === "waiting");
+  const candidate = sessions.reverse().flatMap(session => Object.values(session.notesJobs || {}).map(job => ({ session, job }))).find(({session,job})=>{
+   if(!['queued','waiting'].includes(job.status))return false;
+   if(!session.transcriptFinalized||session.transcriptRevision!==job.sourceRevision||job.sourceVersion!==undefined&&job.sourceVersion!==session.transcriptVersion){job.status='superseded';job.reason='transcript-changed';this.save(session);return false;}
+   if(!remoteBinding(job))return true;
+   try{if(!job.ai?.planId||!this.options.inference)throw new AiPlanError('authorization-required');this.options.inference.authorizations.assert(this.options.inference.planner.get(job.ai.planId));return true;}
+   catch(error){const reason=error instanceof AiPlanError?error.code:'review-invalidated';if(job.status!=='waiting'||job.reason!==reason){job.status='waiting';job.reason=reason;this.save(session);}return false;}
+  });
   if (!candidate) return;
   const { session, job } = candidate;
   if (!this.options.getSettings().enabled || this.options.isBusy()) { job.status = "waiting"; job.reason = this.options.getSettings().enabled ? "resources-busy" : "disabled"; job.updatedAt = this.timestamp(); this.save(session); return; }
@@ -224,21 +259,26 @@ export class AutomaticNotesService {
  private async execute(snapshot: Session, expected: NotesJob, controller: AbortController): Promise<void> {
   try {
    let lastProgressAt = 0;
-   const text = await this.options.generate({ session: snapshot, job: expected, signal: controller.signal, onProgress: characters => {
+   const generate = () => this.options.generate({ session: snapshot, job: expected, signal: controller.signal, onProgress: characters => {
     const now = Date.now(); if (now - lastProgressAt < 500) return; lastProgressAt = now;
     const session = this.get(snapshot.id); const job = session?.notesJobs?.[expected.id];
     if (session && job?.status === "running" && job.attempts === expected.attempts && session.transcriptVersion === expected.sourceVersion && !controller.signal.aborted) { job.generatedCharacters = Math.max(0, characters); job.updatedAt = this.timestamp(); this.save(session); }
    } });
+   const inference=this.options.inference;
+   const plan=remoteBinding(expected)?inference!.planner.get(expected.ai!.planId!):undefined;
+   const results=plan?await inference!.runtime.execute(plan,controller.signal):undefined;
+   const text=results?results[0]!.text:inference?await inference.runtime.local('notes',expected.model,controller.signal,generate):await generate();
+   if(plan)inference!.planner.assertCurrent(plan);
    const session = this.get(snapshot.id); const job = session?.notesJobs?.[expected.id];
    if (!session || !job || job.status !== "running" || job.attempts !== expected.attempts || controller.signal.aborted) return;
    if (session.transcriptRevision !== expected.sourceRevision || session.transcriptVersion !== expected.sourceVersion || !session.transcriptFinalized || notesHash(session.aiNotes) !== expected.expectedNotesHash || (session.aiNotes.trim() && !expected.replaceExisting)) { job.status = "superseded"; job.reason = "transcript-changed"; this.save(session); return; }
    if (!text.trim()) throw new Error("incomplete-output");
-   session.aiNotes = text; session.notesMetadata = { origin: "automatic", sourceRevision: expected.sourceRevision, sourceIdentity: transcriptSourceIdentity(session), templateId: expected.templateId, templateName: expected.templateName, templateHash: expected.templateHash, model: expected.model, language: expected.language, generatedAt: this.timestamp(), stale: false };
+   session.aiNotes = text; session.notesMetadata = { origin: "automatic", sourceRevision: expected.sourceRevision, sourceIdentity: transcriptSourceIdentity(session), templateId: expected.templateId, templateName: expected.templateName, templateHash: expected.templateHash, model: expected.model, language: expected.language, generatedAt: this.timestamp(), stale: false, provenance:results?.[0]?.provenance??{provider:'ollama',model:expected.model} };
    job.status = "completed"; job.retryable = false; job.generatedCharacters = text.length; job.updatedAt = this.timestamp(); delete job.reason; this.save(session);
   } catch (error) {
    const session = this.get(snapshot.id); const job = session?.notesJobs?.[expected.id];
    if (!session || !job || job.status !== "running" || job.attempts !== expected.attempts) return;
-   job.status = controller.signal.aborted ? "waiting" : "failed"; job.reason = controller.signal.aborted ? "interrupted" : failureReasons.has((error as Error).message) ? (error as Error).message : "generation-failed"; job.retryable = true; job.generatedCharacters = 0; job.updatedAt = this.timestamp(); this.save(session);
+   job.status = controller.signal.aborted && !remoteBinding(job) ? "waiting" : "failed"; job.reason = controller.signal.aborted ? remoteBinding(job) ? "remote-attempt-uncertain" : "interrupted" : aiErrorCode(error) ?? (failureReasons.has((error as Error).message) ? (error as Error).message : "generation-failed"); job.retryable = true; job.generatedCharacters = 0; job.updatedAt = this.timestamp(); this.save(session);
   }
  }
 }

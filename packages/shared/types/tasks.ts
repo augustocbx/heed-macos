@@ -21,6 +21,10 @@ export interface TaskSuggestion extends TaskFields {
  acceptedTaskId?: string;
 }
 export interface TaskReview {
+ ai?: import("./ai").AiJobBinding;
+ provenance?: import("./ai").AiProvenance;
+ attemptId?: string;
+ sourceVersion?: number;
  sessionId: string;
  sourceRevision: string;
  status: 'queued' | 'running' | 'waiting' | 'ready' | 'failed' | 'superseded';
@@ -29,6 +33,7 @@ export interface TaskReview {
  updatedAt: string;
 }
 export interface MeetingTask extends TaskFields {
+ provenance?: import("./ai").AiProvenance;
  id: string;
  revision: string;
  sessionId: string;

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AiWaitingReason, Session } from "@heed/shared";
 import { sourceRevision } from "./automatic-notes";
-import { MeetingChatService, chatFailure, transcriptEvidence, meetingMetadataEvidence, answerMeetingQuestion as answerRetrieved } from "./meeting-chat";
+import { MeetingChatService, prepareMeetingQuestion, completeMeetingQuestion, chatFailure, transcriptEvidence, meetingMetadataEvidence, answerMeetingQuestion as answerRetrieved } from "./meeting-chat";
 import {controlledChatRetrieval,testCoverage} from './chat-retrieval-test-utils';
 const answerMeetingQuestion=({sessions,...input}:any)=>{const evidence=sessions.flatMap(transcriptEvidence).slice(0,32);return answerRetrieved({...input,evidence,coverage:testCoverage(evidence)});};
 const dirs: string[] = [];
@@ -46,7 +46,7 @@ test("recorded start is distinct, revision-qualified metadata and missing dates 
  const evidence=transcriptEvidence(s),coverage=testCoverage(evidence);
  await expect(answerRetrieved({evidence,metadata:[metadata!],coverage,question:'When was the meeting?',history:[],model:'local',generate:async()=>result(evidence[0]!.id).replace('The budget was not approved.','The meeting was on October 5, 2026.')})).rejects.toThrow('invalid-evidence');
  const answer=await answerRetrieved({evidence,metadata:[metadata!],coverage:testCoverage(evidence),question:'When was the meeting?',history:[],model:'local',generate:async input=>JSON.stringify({claims:[{text:'The meeting was on October 5, 2026.',evidenceIds:[input.metadata[0]!.id]}],notFound:false})});
- expect(answer.claims[0]!.citations[0]).toEqual(metadata);
+ expect(answer.claims[0]!.citations[0]).toEqual(metadata!);
  expect(answer.coverage.retrieval!.citedEvidence).toBe(0);
 });
 
@@ -234,4 +234,36 @@ test('stale pending chat fails and releases admission for background work',async
  service.command(s.id,{action:'send',requestId:'stale-pending',question:'Budget?',model:'local',expectedSourceRevision:s.transcriptRevision!});
  expect(service.pending).toBe(true);s={...s,transcript:'Changed source'};busy=false;
  await service.tick();expect(service.get(s.id).turns[0]).toMatchObject({status:'failed',reason:'source-changed'});expect(service.pending).toBe(false);
+});
+
+test('pure preparation freezes every bounded chat call before generation and completion validates each batch',async()=>{
+ const api=await import('./meeting-chat');
+ expect(typeof api.prepareMeetingQuestion).toBe('function');
+ const s=meeting();s.segments=Array.from({length:32},(_,i)=>({speaker:'Ana',start:i,end:i+1,text:`Selected excerpt ${i}. `+'context '.repeat(130)}));
+ const evidence=transcriptEvidence(s).slice(0,32),coverage=testCoverage(evidence);
+ const prepared=api.prepareMeetingQuestion({evidence,coverage,question:'Context?',history:[],model:'local'});
+ const calls=api.chatPlanCalls(prepared);expect(calls).toHaveLength(4);expect(Object.isFrozen(prepared.requests[0]!.data)).toBe(true);
+ for(const call of calls){expect(Buffer.byteLength(call.system)+Buffer.byteLength(JSON.stringify(call.data))).toBeLessThanOrEqual(5500);expect(call.contextTokens).toBe(8192);expect(call.maxOutputTokens).toBe(1800);}
+ const outputs=calls.map(()=>JSON.stringify({claims:[],notFound:true}));
+ expect(api.completeMeetingQuestion(prepared,outputs).coverage.reviewedChunks).toBe(4);
+ expect(()=>api.completeMeetingQuestion(prepared,outputs.slice(1))).toThrow('invalid-answer');
+ expect(()=>api.completeMeetingQuestion(prepared,outputs.map((text,index)=>index===0?result('unselected'):text))).toThrow('invalid-evidence');
+});
+
+test('local batched chat still stops at its first invalid answer',async()=>{
+ const s=meeting();s.segments=Array.from({length:12},(_,i)=>({speaker:'Ana',start:i,end:i+1,text:'Evidence '.repeat(130)}));let calls=0;
+ await expect(answerMeetingQuestion({sessions:[s],question:'Evidence?',history:[],model:'local',generate:async()=>{calls++;return result('invented');}})).rejects.toThrow('invalid-evidence');expect(calls).toBe(1);
+});
+
+test('prepared provider completion preserves date, accepted-speaker, scope and metadata citation guards',()=>{
+ const session=meeting(),evidence=transcriptEvidence(session),metadata=meetingMetadataEvidence(session)!;
+ const prepare=(complete=true)=>prepareMeetingQuestion({evidence,metadata:[metadata],metadataCoverage:{selectedMeetings:complete?1:9,suppliedMeetings:1,complete},coverage:testCoverage(evidence),question:'When was the latest meeting with Ana?',history:[],model:'fixture'});
+ const output=(ids:string[])=>[JSON.stringify({claims:[{text:'The latest meeting was on 2026-10-05.',evidenceIds:ids}],notFound:false})];
+ const prepared=prepare();
+ expect(()=>completeMeetingQuestion(prepared,output([evidence[0]!.id]))).toThrow('invalid-evidence');
+ expect(()=>completeMeetingQuestion(prepared,output([metadata.id]))).toThrow('invalid-evidence');
+ expect(()=>completeMeetingQuestion(prepared,output([metadata.id,evidence[1]!.id]))).toThrow('invalid-evidence');
+ expect(()=>completeMeetingQuestion(prepared,output(['excluded:meeting-metadata:forged',evidence[0]!.id]))).toThrow('invalid-evidence');
+ expect(()=>completeMeetingQuestion(prepare(false),output([metadata.id,evidence[0]!.id]))).toThrow('invalid-evidence');
+ expect(completeMeetingQuestion(prepared,output([metadata.id,evidence[0]!.id])).claims[0]!.citations).toEqual([metadata,evidence[0]!]);
 });

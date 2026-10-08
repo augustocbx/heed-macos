@@ -98,7 +98,8 @@ export function validatePortableTranscript(source: SourceState, history: unknown
   }
  }
  if(metadata!==undefined){
-  fields(metadata,['origin','sourceRevision','stale','unverifiedSourceRevision','sourceIdentity','templateId','templateName','templateHash','model','language','generatedAt']);
+  fields(metadata,['origin','sourceRevision','stale','unverifiedSourceRevision','sourceIdentity','templateId','templateName','templateHash','model','language','generatedAt','provenance']);
+  if(metadata.provenance!==undefined){fields(metadata.provenance,['provider','model']);if(!['ollama','openai','anthropic','deepseek','xai','compatible'].includes(metadata.provenance.provider)||!portableText(metadata.provenance.model,200)||!metadata.provenance.model.trim())fail('Invalid portable AI provenance');}
   if(!['manual','automatic'].includes(metadata.origin)||typeof metadata.stale!=='boolean')fail('Invalid portable notes provenance');
   if(metadata.sourceIdentity!==undefined){identity(metadata.sourceIdentity);if(metadata.sourceRevision===null)fail('Invalid portable notes source witness');const witnessed=states.some(node=>{const state=materialize(node);return topology(transcriptSourceIdentity(state),metadata.sourceIdentity)&&sourceRevision(withIdentity(state,metadata.sourceIdentity))===metadata.sourceRevision;});if(!witnessed)fail('Invalid portable notes source witness');revisions.add(metadata.sourceRevision);}
   if(!(metadata.sourceRevision===null||typeof metadata.sourceRevision==='string'&&hash.test(metadata.sourceRevision)&&revisions.has(metadata.sourceRevision)))fail('Invalid portable notes provenance');
@@ -112,6 +113,9 @@ export function validatePortableTranscript(source: SourceState, history: unknown
 }
 /** Explicitly preserve an irrecoverable old recorded hash as unverified/unknown. */
 export function portableNotesMetadata(source:SourceState,history:unknown,metadata:NotesMetadata):NotesMetadata {
+ // Reconstruct allowed metadata; never spread device-local AI or future private fields.
+ const {origin,sourceRevision:revision,stale,unverifiedSourceRevision,sourceIdentity,templateId,templateName,templateHash,model,language,generatedAt,provenance}=metadata;
+ metadata={origin,sourceRevision:revision,stale,...(unverifiedSourceRevision!==undefined?{unverifiedSourceRevision}:{}),...(sourceIdentity?{sourceIdentity}:{}),...(templateId!==undefined?{templateId}:{}),...(templateName!==undefined?{templateName}:{}),...(templateHash!==undefined?{templateHash}:{}),...(model!==undefined?{model}:{}),...(language!==undefined?{language}:{}),...(generatedAt!==undefined?{generatedAt}:{}),...(provenance?{provenance:{provider:provenance.provider,model:provenance.model}}:{})};
  const verified=validatePortableTranscript(source,history,undefined);
  if(metadata.sourceRevision!==null&&!metadata.sourceIdentity&&!verified.has(metadata.sourceRevision)){const {sourceRevision,...rest}=metadata;return {...rest,sourceRevision:null,unverifiedSourceRevision:sourceRevision,stale:true};}
  return metadata;

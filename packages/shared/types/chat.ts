@@ -1,3 +1,4 @@
+import type {AiJobBinding,AiProvenance} from './ai';
 import type { RetrievalCoverage } from "./retrieval";
 export type AiWaitingReason = "recording" | "transcription" | "notes" | "tasks" | "chat" | "retrieval" | "queued";
 
@@ -31,6 +32,7 @@ export interface ChatTurn {
  id: string; requestId: string; question: string; model: string; initialModel?: string; sourceRevision: string;
  status: "waiting" | "running" | "completed" | "failed" | "cancelled";
  createdAt: string; updatedAt: string; attempts: number; reason?: string;
+ ai?: AiJobBinding; provenance?: AiProvenance;
  answer?: ChatAnswer; stale?: boolean; waitingReason?: AiWaitingReason;
 }
 export interface ChatThread { sessionId: string; revision: string; turns: ChatTurn[]; }

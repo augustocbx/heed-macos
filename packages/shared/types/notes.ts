@@ -13,6 +13,7 @@ export interface AutomaticNotesSettings {
 export type NotesJobStatus = "queued" | "waiting" | "running" | "completed" | "failed" | "cancelled" | "superseded";
 
 export interface NotesJob {
+ ai?: import("./ai").AiJobBinding;
  id: string;
  sourceRevision: string;
  /** Device-local accepted version bound when queued/admitted; excluded from portable records. */
@@ -35,6 +36,7 @@ export interface NotesJob {
 }
 
 export interface NotesMetadata {
+ provenance?: import("./ai").AiProvenance;
  /** Null is unknown legacy/unguarded provenance, never verified against current text. */
  sourceRevision: string | null;
  /** Preserved historical identity whose missing witness cannot be verified. Requires null/stale. */
