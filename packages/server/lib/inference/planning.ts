@@ -1,3 +1,5 @@
+import {AiBudgetError,type AiBudget} from './budget';
+import type {AiBudgetPlan,AiBudgetReview} from '../../../shared/types/ai-budget';
 import {validateCallBytes,featureWireBytes} from './limits';
 import {createHash,randomUUID} from 'node:crypto';
 import type {AiCapabilities,AiFeature,AiSelection} from '../../../shared/types/ai';
@@ -6,16 +8,18 @@ import {AiConnectionError,type AiConnections,type AiConnectionCheckpoint} from '
 import type {AiAuthorizations} from './authorization';
 import type {AiRuntime} from './runtime';
 export class AiPlanError extends Error {constructor(readonly code:string){super(code);this.name='AiPlanError';}}
-export function aiErrorCode(error:unknown):string|undefined{return error instanceof AiPlanError||error instanceof AiConnectionError||error instanceof AiInferenceError?error.code:undefined;}
+export function aiErrorCode(error:unknown):string|undefined{return error instanceof AiBudgetError||error instanceof AiPlanError||error instanceof AiConnectionError||error instanceof AiInferenceError?error.code:undefined;}
 export interface AiSourceGuard {sessionId:string;sourceRevision:string;sourceVersion?:number;expectedNotesHash?:string;}
 export interface AiPlanCommand {feature:AiFeature;sessionId?:string;jobId?:string;turnId?:string;scope?:unknown;}
 export interface AiJobPlan {
  id:string;jobId:string;feature:AiFeature;selection:AiSelection;calls:AiCall[];sources:AiSourceGuard[];
  settingsVersion:number;connectionGeneration:number;credentialGeneration:number;trustGeneration:number;
- payloadHash:string;expiresAt:number;capabilities?:AiCapabilities;
+ payloadHash:string;expiresAt:number;capabilities?:AiCapabilities;costReview?:AiBudgetReview;
 }
 export interface AiJobDraft {
  jobId:string;feature:AiFeature;selection:AiSelection;calls:AiCall[];sources:AiSourceGuard[];
+ /** Only persisted by an explicit domain retry; never accepted from HTTP plan input. */
+ supersededPlanId?:string;
  /** Synchronous guards also run immediately before persistence. Never compare status-only thread revisions. */
  validate:()=>void;attach:(plan:AiJobPlan)=>void;dispatched:()=>void;
 }
@@ -27,7 +31,7 @@ export function remoteBinding(value:{ai?:{selection:AiSelection}}):boolean{retur
 export class AiPlanner {
  private entries=new Map<string,{plan:AiJobPlan;draft:AiJobDraft;timer:ReturnType<typeof setTimeout>}>();
  private preparers=new Map<AiFeature,(command:AiPlanCommand)=>Promise<AiJobDraft>>();
- constructor(readonly connections:AiConnections,private now:()=>number=Date.now){}
+ constructor(readonly connections:AiConnections,private now:()=>number=Date.now,private budget?:AiBudget|null){}
  selection(feature:AiFeature,localModel:string):AiSelection {const snapshot=this.connections.snapshot();if(snapshot.unavailable)throw new AiPlanError('settings-recovery');const selection=snapshot.selections[feature];return structuredClone({...selection,model:selection.model??localModel});}
  register(feature:AiFeature,prepare:(command:AiPlanCommand)=>Promise<AiJobDraft>):void{this.preparers.set(feature,prepare);}
  async prepare(command:AiPlanCommand):Promise<AiJobPlan>{
@@ -39,6 +43,7 @@ export class AiPlanner {
   const configured=snapshot.selections[draft.feature];
   if(configured.provider!==draft.selection.provider||configured.connectionId!==draft.selection.connectionId||configured.model!==null&&configured.model!==draft.selection.model)throw new AiPlanError('settings-changed');
   if(draft.selection.provider!=='ollama'){
+   if(this.budget===null)throw new AiPlanError('budget-unavailable');
    if(!connection||connection.provider!==draft.selection.provider||connection.model!==draft.selection.model||connection.validation!=='validated')throw new AiPlanError('connection-unvalidated');
    if(!connection.capabilities?.features.includes(draft.feature))throw new AiPlanError('unsupported-capability');
   }
@@ -46,11 +51,15 @@ export class AiPlanner {
   for(const call of draft.calls){if(connection?.capabilities&&(call.contextTokens>connection.capabilities.contextTokens||call.maxOutputTokens>connection.capabilities.maxOutputTokens||call.schema&&connection.capabilities.structuredOutput==='none'))throw new AiPlanError('unsupported-capability');}
   const calls=draft.calls.map(call=>{if(draft.selection.provider==='ollama')return call;validateCallBytes(call,draft.feature);return {...call,maxRequestBytes:featureWireBytes(draft.feature)};});
   const content={jobId:draft.jobId,feature:draft.feature,selection:draft.selection,calls,sources:draft.sources,settingsVersion:snapshot.version,connectionGeneration:connection?.connectionGeneration??0,credentialGeneration:connection?.credentialGeneration??0,trustGeneration:connection?.trustVersion??0,...(connection?.capabilities?{capabilities:connection.capabilities}:{})};
-  const plan=freeze(structuredClone({...content,id:randomUUID(),expiresAt:this.now()+600000,payloadHash:aiFingerprint(content)}));
+  const id=randomUUID(),base={...content,id,payloadHash:aiFingerprint(content)};
+  const costReview=draft.selection.provider!=='ollama'&&this.budget?this.budget.review(aiBudgetMetadata(base)):undefined;
+  const reviewed={...content,...(costReview?{costReview}:{})};
+  const plan=freeze(structuredClone({...reviewed,id,expiresAt:this.now()+600000,payloadHash:aiFingerprint(reviewed)}));
   draft.validate();
+  if(draft.supersededPlanId&&this.budget)this.budget.cancelSupersededPlan(draft.supersededPlanId,draft.feature,draft.jobId);
   // A second preview replaces the same command's old review, never its durable job.
   for(const [id,entry] of this.entries)if(entry.plan.expiresAt<=this.now()||entry.plan.jobId===plan.jobId&&entry.plan.feature===plan.feature)this.forget(id);
-  draft.attach(plan);const id=plan.id,timer=setTimeout(()=>this.forget(id),600000);timer.unref();this.entries.set(id,{plan,draft,timer});return plan;
+  draft.attach(plan);const timer=setTimeout(()=>this.forget(id),600000);timer.unref();this.entries.set(id,{plan,draft,timer});return plan;
  }
  private forget(id:string):void{const entry=this.entries.get(id);if(entry)clearTimeout(entry.timer);this.entries.delete(id);}
  get(id:string):AiJobPlan{const entry=this.entries.get(id);if(!entry)throw new AiPlanError('plan-not-found');if(entry.plan.expiresAt<=this.now()){this.forget(id);throw new AiPlanError('authorization-expired');}return entry.plan;}
@@ -61,4 +70,9 @@ export class AiPlanner {
   this.connections.assertCurrent(this.checkpoint(plan));this.entries.get(plan.id)!.draft.validate();
  }
  dispatched(plan:AiJobPlan):void{this.assertCurrent(plan);this.entries.get(plan.id)!.draft.dispatched();}
+}
+
+/** A content-free projection shared by review and actual reservation. One review authorizes one round. */
+export function aiBudgetMetadata(plan:Pick<AiJobPlan,'id'|'jobId'|'feature'|'selection'|'payloadHash'|'calls'|'capabilities'>):AiBudgetPlan {
+ return {planId:plan.id,jobId:plan.jobId,feature:plan.feature,selection:plan.selection,payloadHash:plan.payloadHash,attempts:1,calls:plan.calls.map(call=>({id:call.id,inputBytes:Buffer.byteLength(call.system)+Buffer.byteLength(JSON.stringify(call.data))+Buffer.byteLength(JSON.stringify(call.schema??{})),contextTokens:call.contextTokens,maxOutputTokens:call.maxOutputTokens})),...(plan.capabilities?{capabilities:plan.capabilities}:{})};
 }

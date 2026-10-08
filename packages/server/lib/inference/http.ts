@@ -1,3 +1,5 @@
+import {AiBudgetError,type AiBudget} from './budget';
+import type {AiBudgetPolicy} from '../../../shared/types/ai-budget';
 import {readChatCommand,ChatError} from '../meeting-chat';
 import {normalizeChatScope} from '../library-chat';
 import {RetrievalCatalogError} from '../retrieval-catalog';
@@ -6,16 +8,24 @@ import {desktopRequestAllowed} from '../desktop-permissions';
 import {AiConnectionError, type AiConnections} from './connections';
 import type {AiConnectionInput} from '../../../shared/types/ai';
 const headers={'Cache-Control':'no-store'};
-function error(code:string,status:number):Response{return Response.json({code,error:code==='settings-recovery'?'AI settings require recovery. Preserve private configuration.':code==='credential-unavailable'?'Protected credentials are unavailable. Unlock Keychain or register the key again.':code==='stale-connection'?'AI settings changed. Refresh before continuing.':'AI configuration request could not be completed.'},{status,headers});}
+function error(code:string,status:number):Response{return Response.json({code,error:code==='budget-period-not-started'?'The budget period has not started. Check the device clock or choose a current or earlier period start.':code==='budget-unavailable'?'AI spending records are unavailable. Preserve the private ledger; local operation remains available.':code==='settings-recovery'?'AI settings require recovery. Preserve private configuration.':code==='credential-unavailable'?'Protected credentials are unavailable. Unlock Keychain or register the key again.':code==='stale-connection'?'AI settings changed. Refresh before continuing.':'AI configuration request could not be completed.'},{status,headers});}
 async function body(request:Request):Promise<Record<string,any>>{
  const reader=request.body?.getReader();if(!reader)throw Error();const chunks:Uint8Array[]=[];let bytes=0;
  try{while(true){const part=await reader.read();if(part.done)break;bytes+=part.value.byteLength;if(bytes>65536)throw Error();chunks.push(part.value);}const parsed=JSON.parse(Buffer.concat(chunks).toString('utf8'));if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw Error();return parsed;}
  finally{void reader.cancel().catch(()=>{});reader.releaseLock();}
 }
 /** Write-only keys, safe snapshots, and the established desktop Origin policy. */
-export async function aiResponse(request:Request,runtime:AiConnections|undefined,allowed:boolean):Promise<Response|null>{
- const url=new URL(request.url);if(!['/api/ai/settings','/api/ai/connections'].includes(url.pathname))return null;
+export async function aiResponse(request:Request,runtime:AiConnections|undefined,allowed:boolean,budget?:AiBudget):Promise<Response|null>{
+ const url=new URL(request.url);if(!['/api/ai/settings','/api/ai/connections','/api/ai/usage','/api/ai/budget'].includes(url.pathname))return null;
  if(!allowed||!desktopRequestAllowed(request,url.port))return new Response(null,{status:403,headers});
+ if(url.pathname==='/api/ai/usage'||url.pathname==='/api/ai/budget'){
+  if(request.method!==(url.pathname.endsWith('/usage')?'GET':'POST'))return new Response(null,{status:405,headers});
+  if(!budget)return error('budget-unavailable',503);
+  try{
+   if(url.pathname.endsWith('/budget')){let policy:Record<string,any>;try{policy=await body(request);}catch{return error('invalid-request',400);}budget.configure(policy as AiBudgetPolicy);}
+   return Response.json(budget.snapshot(),{headers});
+  }catch(failure){const code=failure instanceof AiBudgetError?failure.code:'budget-unavailable';return error(code,code==='invalid-budget-policy'?400:503);}
+ }
  if(!runtime||runtime.snapshot().unavailable)return error('settings-recovery',503);
  if(url.pathname==='/api/ai/settings'&&request.method==='GET')return Response.json(runtime.snapshot(),{headers});
  if(request.method!=='POST')return new Response(null,{status:405,headers});
@@ -55,5 +65,5 @@ export async function aiPlansResponse(request:Request,inference:import('./planni
   if(Object.keys(command).sort().join(',')!=='decision,planId'||typeof command.planId!=='string'||command.planId.length>160||!command.decision||typeof command.decision!=='object'||Array.isArray(command.decision))return error('invalid-request',400);
   const grant=inference.authorizations.authorize(command.planId,command.decision);
   return Response.json({planId:grant.planId,payloadHash:grant.payloadHash,expiresAt:grant.expiresAt},{headers});
- }catch(failure){const code=aiErrorCode(failure)??(failure instanceof ChatError?failure.message:failure instanceof RetrievalCatalogError?failure.reason:'plan-unavailable');return error(code,['invalid-command','invalid-scope','invalid-request'].includes(code)?400:code==='settings-recovery'?503:409);}
+ }catch(failure){const code=aiErrorCode(failure)??(failure instanceof ChatError?failure.message:failure instanceof RetrievalCatalogError?failure.reason:'plan-unavailable');return error(code,['invalid-command','invalid-scope','invalid-request'].includes(code)?400:['settings-recovery','budget-unavailable','budget-period-not-started'].includes(code)?503:409);}
 }

@@ -50,6 +50,8 @@ export class AiConnections {
  private readonly path:string;private readonly localEndpoint:string;
  private mutation:Promise<unknown>=Promise.resolve();private listeners=new Set<()=>void>();
  private pendingStore?:PendingStore;
+ /** Internal private-state root; never included in browser snapshots. */
+ get appDir():string{return this.options.appDir;}
  constructor(private readonly options:AiConnectionsOptions){
   this.path=join(options.appDir,'ai','connections.json');this.localEndpoint=localServiceUrl(options.localEndpoint??AI_ENDPOINTS.ollama,'Local Ollama');
   try{

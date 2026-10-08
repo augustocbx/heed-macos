@@ -1,3 +1,4 @@
+import type {AiBudgetReview,AiReportedCharge} from './ai-budget';
 export type AiProviderId = 'ollama' | 'openai' | 'anthropic' | 'deepseek' | 'xai' | 'compatible';
 export type AiFeature = 'notes' | 'tasks' | 'chat' | 'library-chat';
 export interface AiSelection { provider: AiProviderId; connectionId: string | null; model: string | null; }
@@ -19,7 +20,7 @@ export interface AiUsage {
  outputTokens?: number; reasoningTokens?: number; supported: boolean;
 }
 export interface AiProvenance { provider: AiProviderId; model: string; }
-export interface AiResult { text: string; usage: AiUsage; finish: 'completed'; provenance: AiProvenance; }
+export interface AiResult { text: string; usage: AiUsage; finish: 'completed'; provenance: AiProvenance; reportedCharge?: AiReportedCharge; }
 export type AiConnectionValidation = 'unvalidated' | 'validated' | 'failed' | 'credential-unavailable';
 /** Device-local configuration summary. No secret references or stored keys. */
 export interface AiConnectionSnapshot {
@@ -42,13 +43,13 @@ export interface AiConnectionInput {
  capabilities?: AiCapabilities;
 }
 /** Safe device-local command binding. Exporters must allowlist provenance instead. */
-export interface AiJobBinding {selection:AiSelection;commandRevision?:string;planId?:string;dispatched?:boolean;}
+export interface AiJobBinding {selection:AiSelection;commandRevision?:string;planId?:string;dispatched?:boolean;supersededPlanId?:string;}
 export interface AiAuthorizationDecision {allowRemote:true;expectedPayloadHash:string;allowUnknownCost?:true;}
 export interface AiPreview {
  id:string;jobId:string;feature:AiFeature;selection:AiSelection;payloadHash:string;expiresAt:number;
  calls:Array<{id:string;system:string;data:unknown;schema?:Record<string,unknown>;contextTokens:number;maxOutputTokens:number;maxRequestBytes?:number}>;
  sources:Array<{sessionId:string;sourceRevision:string;sourceVersion?:number;expectedNotesHash?:string}>;
- excluded:string[];costStatus:'unknown';
+ excluded:string[];costStatus:'unknown';costReview?:AiBudgetReview;
 }
 /** Existing durable command identity only. The server resolves all source text and settings. */
 export type AiPlanRequest =

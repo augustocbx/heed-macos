@@ -129,7 +129,9 @@ export class MeetingTasksService {
    const selection=this.options.inference?.planner.selection('tasks',this.options.getModel?.()??'');
    if(['queued','waiting'].includes(old.status)&&(!selection||aiFingerprint(selection)===aiFingerprint(old.ai?.selection)))return;
   }
-  store.reviews[id]=this.newReview(meeting);this.save(store);
+  const next=this.newReview(meeting),supersededPlanId=old?.ai?.planId??old?.ai?.supersededPlanId;
+  if(next.ai&&old?.sourceRevision===revision&&supersededPlanId)next.ai.supersededPlanId=supersededPlanId;
+  store.reviews[id]=next;this.save(store);
  }
  private newReview(session:Session):TaskReview {
   const review:TaskReview={sessionId:session.id,sourceRevision:sourceRevision(session),sourceVersion:session.transcriptVersion??0,attemptId:randomUUID(),status:'queued',suggestions:[],updatedAt:this.now()};
@@ -146,7 +148,7 @@ export class MeetingTasksService {
    if(!live||!['queued','waiting','running'].includes(live.status)||!current.transcriptFinalized||sourceRevision(current)!==review.sourceRevision||(current.transcriptVersion??0)!==review.sourceVersion||aiFingerprint(live.ai?.selection)!==aiFingerprint(selection))throw new AiPlanError('source-changed');
    if(live.attemptId!==attemptId)throw new AiPlanError('review-invalidated');
   };
-  return {jobId:`tasks:${sessionId}:${review.sourceRevision}`,feature:'tasks',selection,calls:[{id:'tasks',...taskPrompt(session.language,taskSegments(session)),schema:taskResponseSchema(),contextTokens:8192,maxOutputTokens:1800}],sources:[{sessionId,sourceRevision:review.sourceRevision,sourceVersion:review.sourceVersion}],validate,
+  return {jobId:`tasks:${sessionId}:${review.sourceRevision}`,feature:'tasks',supersededPlanId:review.ai?.supersededPlanId,selection,calls:[{id:'tasks',...taskPrompt(session.language,taskSegments(session)),schema:taskResponseSchema(),contextTokens:8192,maxOutputTokens:1800}],sources:[{sessionId,sourceRevision:review.sourceRevision,sourceVersion:review.sourceVersion}],validate,
    attach:plan=>{validate();const store=this.read();store.reviews[sessionId]!.ai={selection,planId:plan.id};this.save(store);},
    dispatched:()=>{const store=this.read();store.reviews[sessionId]!.ai!.dispatched=true;this.save(store);}};
  }

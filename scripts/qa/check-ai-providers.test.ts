@@ -53,7 +53,7 @@ test('remote opt-in and consent cannot bypass actual production default-deny pol
  expect(preview.code).toBe('synthetic-remote-opt-in-required');
  const consent=await runSyntheticCheck({...options,allowSyntheticRemote:true},f.manager,{fetch:http.fetcher});expect(consent.code).toBe('scope-review-required');
  const denied=await runSyntheticCheck({...options,allowSyntheticRemote:true,acceptedPayloadHash:consent.preview!.payloadHash,allowUnknownCost:true},f.manager,{fetch:http.fetcher});
- expect(denied).toMatchObject({exitCode:1,code:'budget-unavailable',transport:'not-started'});expect(reads).toBe(0);expect(http.bodies).toHaveLength(0);expect(JSON.stringify(denied)).not.toContain('synthetic-secret');
+ expect(denied).toMatchObject({exitCode:1,code:'budget-disabled',transport:'not-started'});expect(reads).toBe(0);expect(http.bodies).toHaveLength(0);expect(JSON.stringify(denied)).not.toContain('synthetic-secret');
 });
 test('missing registered key or supported capability fails without uploading',async()=>{
  for(const model of ['gpt-6-luna','unverified-model']){
@@ -115,4 +115,21 @@ for(const provider of ['openai','anthropic','deepseek','xai','compatible'] as co
  const result=await getAiAdapter(provider).generate(request);expect(checkerOutcome('en',result)).toMatchObject({exitCode:0,transport:'completed',sourceGrounding:'passed',factualQuality:'not-reviewed'});
  let failure:unknown;try{await getAiAdapter(provider).generate({...request,fetch:(async()=>Response.json({error:'PRIVATE_BODY'},{status:429})) as unknown as typeof fetch});}catch(error){failure=error;}
  expect(failure).toBeInstanceOf(AiInferenceError);const report=checkerOutcome('en',failure);expect(report).toMatchObject({exitCode:1,transport:'rate-limited'});expect(JSON.stringify(report)).not.toContain('PRIVATE_BODY');
+});
+
+test('checker two-run review uses shared real policy and retained fixture counters without a resource bypass',async()=>{
+ const f=fixture(),c=await f.manager.register({provider:'openai',model:'gpt-6-luna',key:'synthetic-secret'});await f.manager.validate(c.id);f.manager.saveSelection('notes',{provider:c.provider,model:c.model,connectionId:c.id});
+ const {AiBudget}=await import('../../packages/server/lib/inference/budget'),{aiBudgetMetadata}=await import('../../packages/server/lib/inference/planning');const budget=new AiBudget({appDir:f.root});
+ try{
+  budget.configure({...budget.snapshot().policy,jobLimitMicroUsd:100000000,periodLimitMicroUsd:1000000000,unknownCost:'explicit'});
+  const options={provider:c.provider,model:c.model,connectionId:c.id,language:'en' as const,allowSyntheticRemote:true},http=localFetch();let reads=0;f.vault.get=async()=>{reads++;throw Error('unreachable-secret');};
+  const first=await runSyntheticCheck(options,f.manager,{fetch:http.fetcher}),second=await runSyntheticCheck(options,f.manager,{fetch:http.fetcher});expect(first.preview!.payloadHash).toBe(second.preview!.payloadHash);expect(first.preview?.costReview?.identity).toBeDefined();expect(budget.snapshot().entries).toHaveLength(0);
+  for(let i=0;i<2;i++){const denied=await runSyntheticCheck({...options,acceptedPayloadHash:first.preview!.payloadHash,allowUnknownCost:true},f.manager,{fetch:http.fetcher});expect(denied.code).toBe('resources-unavailable');}
+  expect(budget.snapshot().entries).toHaveLength(2);expect(budget.snapshot().entries.every(e=>e.state==='released')).toBe(true);
+  const metadata=aiBudgetMetadata({id:'previous-fixture-run',jobId:'qa-synthetic-en',feature:'notes',selection:{provider:c.provider,model:c.model,connectionId:c.id},payloadHash:first.preview!.payloadHash,calls:first.preview!.calls,capabilities:c.capabilities??undefined});
+  const review=budget.review(metadata),receipt=budget.reserve(metadata,review,{planId:metadata.planId,expectedPayloadHash:metadata.payloadHash,reviewIdentity:review.identity,allowUnknownCost:true}),attempt=receipt.attempts[0]!;
+  budget.dispatch(receipt.id,attempt.callId,attempt.id);budget.settle(attempt.id,{status:'timeout'});budget.cancelUnsubmitted(receipt.id);
+  const limited=await runSyntheticCheck({...options,acceptedPayloadHash:first.preview!.payloadHash,allowUnknownCost:true},f.manager,{fetch:http.fetcher});expect(limited.code).toBe('remote-attempt-limit');expect(budget.snapshot().unknownLiabilityCount).toBe(1);expect(reads).toBe(0);expect(http.bodies).toHaveLength(0);
+  budget.configure({...budget.snapshot().policy,maxRemoteAttempts:2});const stale=await runSyntheticCheck({...options,acceptedPayloadHash:first.preview!.payloadHash,allowUnknownCost:true},f.manager,{fetch:http.fetcher});expect(stale.code).toBe('payload-changed');expect(stale.preview!.payloadHash).not.toBe(first.preview!.payloadHash);
+ }finally{budget.close();}
 });

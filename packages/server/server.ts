@@ -21,9 +21,7 @@ import {OneDriveConnections} from './lib/connectors/onedrive-connections';
 import {oneDriveResponse} from './lib/connectors/onedrive-http';
 import {createKeychainVault} from './lib/connectors/keychain-vault';
 import {AiConnections} from './lib/inference/connections';
-import {AiPlanner} from './lib/inference/planning';
-import {AiAuthorizations} from './lib/inference/authorization';
-import {AiRuntime} from './lib/inference/runtime';
+import {createAiInference} from './lib/inference/production';
 import {aiResponse,aiPlansResponse} from './lib/inference/http';
 import {ICloudConnections,icloudResponse} from './lib/connectors/icloud-connections.ts';
 import {SmbConnections,SMB_SETTINGS_RECOVERY_NOTICE} from './lib/smb-connections.ts';
@@ -2575,9 +2573,8 @@ setInterval(async () => {
  finally{retentionBusy=false;}
 },1000);
 
-const aiPlanner=new AiPlanner(aiConnections),aiAuthorizations=new AiAuthorizations(aiPlanner);
-// Hosted dispatch remains unavailable until spending and resource admission are installed.
-const aiInference={planner:aiPlanner,authorizations:aiAuthorizations,runtime:new AiRuntime({planner:aiPlanner,authorizations:aiAuthorizations,connections:aiConnections})};
+const aiInference=createAiInference(aiConnections),aiPlanner=aiInference.planner;
+// Hosted dispatch still requires issue #67 resource admission.
 const notesService: AutomaticNotesService = new AutomaticNotesService({
  inference:aiInference,
  sessionsDir:SESSIONS_DIR,
@@ -2778,7 +2775,7 @@ const server = Bun.serve({
   if(url.pathname === "/.well-known/heed-services")return desktopRequestAllowed(req)&&method==='GET'?Response.json(await serviceDiagnostics.get(url.searchParams.get('refresh')==='1'),{headers:{'Cache-Control':'no-store'}}):new Response(null,{status:403});
   const aiPlanResponse=await aiPlansResponse(req,aiInference,desktopRequestAllowed(req));
   if(aiPlanResponse)return aiPlanResponse;
-  const aiSettingsResponse=await aiResponse(req,aiConnections,desktopRequestAllowed(req));
+  const aiSettingsResponse=await aiResponse(req,aiConnections,desktopRequestAllowed(req),aiInference.budget);
   if(aiSettingsResponse)return aiSettingsResponse;
   if(url.pathname.startsWith('/api/media/imports')&&mediaImportUnavailable)return Response.json({error:'Media imports require recovery. Preserve the library and its pending recordings.'},{status:503});
   if(mediaImports){const imported=await mediaImportResponse(req,mediaImports,desktopRequestAllowed(req));if(imported)return imported;}

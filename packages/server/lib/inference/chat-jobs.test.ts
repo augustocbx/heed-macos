@@ -1,3 +1,5 @@
+import {AiBudget} from './budget';
+const ledgers:AiBudget[]=[];
 import {afterEach,expect,test} from 'bun:test';
 import {readFileSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
@@ -11,15 +13,16 @@ import {AiPlanner} from './planning';
 import {AiAuthorizations} from './authorization';
 import {AiRuntime} from './runtime';
 import {getAiAdapter} from './adapters';
-afterEach(cleanupFixtures);
+afterEach(()=>{for(const budget of ledgers.splice(0))budget.close();cleanupFixtures();});
 const scope={mode:'labels' as const,labels:['selected'],match:'any' as const};
-async function setup(kind:'chat'|'library-chat'){
+async function setup(kind:'chat'|'library-chat',maxRemoteAttempts?:number){
  const f=fixture(),connection=await f.manager.register({provider:'openai',model:'gpt-6-luna',key:'SECRET_KEY'});await f.manager.validate(connection.id);f.manager.saveSelection(kind,{provider:'openai',connectionId:connection.id,model:connection.model});
  const session={id:'selected',title:'Selected',language:'pt',createdAt:'2026-10-07',transcript:'',segments:Array.from({length:12},(_,i)=>({speaker:'Ana',start:i,end:i+1,text:`SELECTED_${i} revisão orçamento `+'a'.repeat(1000)})),speakers:['Ana'],aiNotes:'NOTES_EXCLUDED',summary:'CALENDAR_EXCLUDED',files:{wav:'AUDIO_EXCLUDED'},tags:['selected'],pinned:false,duration:12,transcriptFinalized:true,transcriptVersion:1} as Session;
  session.transcriptRevision=sourceRevision(session);const excluded={...session,id:'excluded',tags:['excluded'],segments:[{speaker:'Other',start:0,end:1,text:'EXCLUDED_SECRET'}]};
  const sessions=[session,excluded],retrieval=controlledChatRetrieval(()=>sessions);let retrievals=0,localCalls=0,busy=true,hold:Promise<void>|undefined;
- const planner=new AiPlanner(f.manager),authorizations=new AiAuthorizations(planner),requests:any[]=[],reservations:number[]=[];
- const runtime=new AiRuntime({planner,authorizations,connections:f.manager,hooks:{reserve:async summary=>{reservations.push(summary.calls.length);return {dispatch:async()=>{},outcome:async()=>{},finish:async()=>{}};},acquire:async()=>({release:()=>{}})},generate:input=>getAiAdapter(input.selection.provider).generate({...input,fetch:(async(_url,init)=>{const body=JSON.parse(String(init?.body));requests.push(body);await hold;const data=JSON.parse(body.input);return Response.json({status:'completed',output:[{type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:JSON.stringify({claims:[{text:'Supported',evidenceIds:[data.evidence[0].id]}],notFound:false})}]}]});}) as typeof fetch})});
+ const budget=maxRemoteAttempts?new AiBudget({appDir:f.root}):undefined;if(budget){ledgers.push(budget);budget.configure({...budget.snapshot().policy,jobLimitMicroUsd:100000000,periodLimitMicroUsd:1000000000,maxRemoteAttempts:maxRemoteAttempts!,unknownCost:'explicit'});}
+ const planner=new AiPlanner(f.manager,Date.now,budget),authorizations=new AiAuthorizations(planner),requests:any[]=[],reservations:number[]=[];
+ const runtime=new AiRuntime({planner,authorizations,connections:f.manager,budget,hooks:{reserve:async summary=>{reservations.push(summary.calls.length);return {dispatch:async()=>{},outcome:async()=>{},finish:async()=>{}};},acquire:async()=>({release:()=>{}})},generate:input=>getAiAdapter(input.selection.provider).generate({...input,fetch:(async(_url,init)=>{const body=JSON.parse(String(init?.body));requests.push(body);await hold;const data=JSON.parse(body.input);return Response.json({status:'completed',output:[{type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:JSON.stringify({claims:[{text:'Supported',evidenceIds:[data.evidence[0].id]}],notFound:false})}]}]});}) as typeof fetch})});
  const inference={planner,authorizations,runtime};const options={...retrieval,retriever:{...retrieval.retriever,retrieve:async(...args:Parameters<typeof retrieval.retriever.retrieve>)=>{retrievals++;return retrieval.retriever.retrieve(...args);}},directory:join(f.root,kind),getSession:(id:string)=>sessions.find(s=>s.id===id)??null,isBusy:()=>busy,inference,generate:async()=>{localCalls++;return '{"claims":[],"notFound":true}';}};
  const service=kind==='chat'?new MeetingChatService(options):new LibraryChatService(options);
  const get=()=>kind==='chat'?(service as MeetingChatService).get(session.id):(service as LibraryChatService).get(scope).thread;
@@ -27,8 +30,8 @@ async function setup(kind:'chat'|'library-chat'){
  planner.register(kind,command=>kind==='chat'?(service as MeetingChatService).prepareAi(command.sessionId!,command.turnId!):(service as LibraryChatService).prepareAi(command.scope as typeof scope,command.turnId!));
  const send=(requestId='request')=>command({action:'send',requestId,question:'What about orçamento?',model:connection.model,expectedSourceRevision:kind==='chat'?session.transcriptRevision:(service as LibraryChatService).preview(scope).snapshot.key});
  const prepare=(turnId=get().turns.at(-1)!.id)=>planner.prepare({feature:kind,sessionId:kind==='chat'?session.id:undefined,scope:kind==='library-chat'?scope:undefined,turnId});
- const consent=async()=>{const plan=await prepare();authorizations.authorize(plan.id,{allowRemote:true,expectedPayloadHash:plan.payloadHash});return plan;};
- return {...f,kind,session,sessions,service,options,get,command,send,prepare,consent,planner,authorizations,inference,requests,reservations,retrievals:()=>retrievals,localCalls:()=>localCalls,release:()=>busy=false,hold:(value:Promise<void>|undefined)=>hold=value,file:()=>join(options.directory,`${kind==='chat'?session.id:(get() as any).id}.json`)};
+ const consent=async()=>{const plan=await prepare();authorizations.authorize(plan.id,{allowRemote:true,expectedPayloadHash:plan.payloadHash,...(budget?{allowUnknownCost:true as const}:{})});return plan;};
+ return {...f,budget,kind,session,sessions,service,options,get,command,send,prepare,consent,planner,authorizations,inference,requests,reservations,retrievals:()=>retrievals,localCalls:()=>localCalls,release:()=>busy=false,hold:(value:Promise<void>|undefined)=>hold=value,file:()=>join(options.directory,`${kind==='chat'?session.id:(get() as any).id}.json`)};
 }
 for(const kind of ['chat','library-chat'] as const){
  test(`${kind}: durable consent reserves the complete exact reviewed call set and excludes unrelated inputs`,async()=>{
@@ -161,4 +164,25 @@ for(const kind of ['chat','library-chat'] as const)test(`${kind}: metadata chang
  try{for(let i=0;i<100&&!entered;i++)await Bun.sleep(1);expect(entered).toBe(true);f.session.createdAt='2026-10-08T15:00:00.000Z';}
  finally{release();await running;}
  expect(f.requests).toHaveLength(0);expect(f.get().turns[0]?.answer).toBeUndefined();expect(JSON.stringify(plan.calls)).toBe(reviewed);
+});
+
+for(const kind of ['chat','library-chat'] as const)for(const max of [1,2,3])test(`${kind}: real cumulative ${max}-round budget survives explicit retry with the stable turn root`,async()=>{
+ const f=await setup(kind,max);f.send();f.release();const {AiInferenceError}=await import('./contracts');let calls=0,root='';
+ f.inference.runtime=new AiRuntime({planner:f.planner,authorizations:f.authorizations,connections:f.manager,budget:f.budget,hooks:{acquire:async()=>({release:()=>{}})},generate:async()=>{calls++;throw new AiInferenceError('rate-limited');}});
+ for(let round=1;round<=max;round++){
+  const plan=await f.consent();if(root)expect(plan.jobId).toBe(root);root=plan.jobId;await f.service.tick();expect(calls).toBe(round);await f.service.tick();expect(calls).toBe(round);
+  expect(f.budget!.snapshot().entries.filter(e=>e.state==='uncertain')).toHaveLength(round);
+  if(kind==='chat'){f.session.transcriptVersion!++;f.session.segments[0]!.text+=' changed';f.session.transcriptRevision=sourceRevision(f.session);}
+  f.command({action:'retry',turnId:f.get().turns[0]!.id});
+ }
+ await f.consent();await f.service.tick();expect(calls).toBe(max);expect(f.get().turns[0]?.reason).toBe('remote-attempt-limit');
+});
+
+for(const kind of ['chat','library-chat'] as const)test(`${kind}: explicit retry revokes a crash-held previous plan without changing the turn root`,async()=>{
+ const f=await setup(kind,2);f.send();const plan=await f.consent(),{aiBudgetMetadata}=await import('./planning');const held=f.budget!.reserve(aiBudgetMetadata(plan),plan.costReview!,{planId:plan.id,expectedPayloadHash:plan.payloadHash,reviewIdentity:plan.costReview!.identity,allowUnknownCost:true});
+ const store=JSON.parse(readFileSync(f.file(),'utf8'));store.turns[0].status='running';writeFileSync(f.file(),JSON.stringify(store));
+ const restarted=kind==='chat'?new MeetingChatService(f.options):new LibraryChatService(f.options);expect(f.budget!.snapshot().entries.every(e=>e.state==='held')).toBe(true);
+ const id=f.get().turns[0]!.id;if(kind==='chat')(restarted as MeetingChatService).command(f.session.id,{action:'retry',turnId:id});else(restarted as LibraryChatService).command(scope,{action:'retry',turnId:id});
+ f.planner.register(kind,command=>kind==='chat'?(restarted as MeetingChatService).prepareAi(command.sessionId!,command.turnId!):(restarted as LibraryChatService).prepareAi(command.scope as typeof scope,command.turnId!));
+ const next=await f.consent();expect(next.jobId).toBe(plan.jobId);expect(f.budget!.snapshot().entries.every(e=>e.state==='released')).toBe(true);expect(()=>f.budget!.dispatch(held.id,held.attempts[0]!.callId,held.attempts[0]!.id)).toThrow('reservation-finished');f.release();await restarted.tick();expect(f.requests.length).toBe(next.calls.length);
 });

@@ -192,3 +192,14 @@ test('transport bounds exact serialized UTF-8 wire bytes before fetch without tr
 for(const provider of remoteProviders)test(`${provider} enforces bounded source/schema and the reviewed final wire cap`,async()=>{
  for(const mode of ['source','schema','wire'] as const){const fake=fixture(responseBody(provider)),request=input(provider,fake.fetch);if(mode==='source')request.call={...request.call,data:{text:'é'.repeat(40000)}};if(mode==='schema')request.call={...request.call,schema:{...schema,description:'😀'.repeat(5000)}};if(mode==='wire')request.call={...request.call,maxRequestBytes:128} as typeof request.call;await expect(getAiAdapter(provider).generate(request)).rejects.toThrow('request-too-large');expect(fake.requests).toHaveLength(0);}
 });
+
+test('xAI exposes strict request charge separately from normalized tokens without a synthetic rejection fee',async()=>{
+ const body=responseBody('xai') as any;body.usage.cost_in_usd_ticks=12345;
+ const result=await getAiAdapter('xai').generate(input('xai',fixture(body).fetch));
+ expect(result.reportedCharge).toEqual({basis:'provider-reported-request-charge',provider:'xai',currency:'USD',source:'cost_in_usd_ticks',ticks:'12345',amountMicroUsd:2});expect(result.usage.outputTokens).toBe(8);
+ for(const value of ['12345',-1,0.5,Number.MAX_SAFE_INTEGER+1,null]){body.usage.cost_in_usd_ticks=value;expect((await getAiAdapter('xai').generate(input('xai',fixture(body).fetch))).reportedCharge).toBeUndefined();}
+ for(const invalid of [{total_tokens:2},{input_tokens_details:{cached_tokens:-1}},{output_tokens_details:{reasoning_tokens:'2'}}]){
+  const contradictory=responseBody('xai') as any;Object.assign(contradictory.usage,{cost_in_usd_ticks:12345},invalid);
+  expect((await getAiAdapter('xai').generate(input('xai',fixture(contradictory).fetch))).reportedCharge).toBeUndefined();
+ }
+});
