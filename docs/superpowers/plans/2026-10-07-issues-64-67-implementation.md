@@ -13,7 +13,9 @@ Execution uses one focused issue implementer at a time and independent review, w
 | 3 | [#67 resource policy](2026-10-07-issue-67-resource-policy.md) | `.claude/worktrees/issue-67-ai-resources`, `feat/issue-67-ai-resources` | Validated #66 HEAD |
 | 4 | [#64 selection/disclosure](2026-10-07-issue-64-selection-disclosure.md) | `.claude/worktrees/issue-64-ai-selection`, `feat/issue-64-ai-selection` | Validated #67 HEAD |
 
-Create each worktree before changing its issue files or starting development services. Do not expose remote inference as complete until all four deliverables are integrated. A final coordinated PR may include the dependency commits; preserve each issue branch and its validation evidence.
+Create each worktree before changing its issue files or starting development services. The user authorized one pull request per issue and sequential merges on 2026-10-08. Preserve each issue branch and its validation evidence. Do not expose remote inference as complete or close cross-issue acceptance until all four deliverables are integrated.
+
+Merge dependency foundations only after reviewing and validating their exact cumulative trees. Preserve the existing local path while hosted admission is incomplete. Stage production resource activation with the final selection/disclosure controls when necessary to keep intermediate commits usable; retain the strict resource policy, actual reservations and all final integration tests. No permissive runtime flag, dummy lease or automatic unmeasured opt-in substitutes for the completed integration.
 
 ## Execution prerequisites
 

@@ -46,6 +46,13 @@ func updateSelfTests() throws {
 }
 
 private func updateMenuStateSelfTests() {
+    let fixtureHome = FileManager.default.temporaryDirectory.appendingPathComponent("heed-update-menu-" + UUID().uuidString)
+    let previousHome = ProcessInfo.processInfo.environment["HEED_HOME"]
+    setenv("HEED_HOME", fixtureHome.path, 1)
+    defer {
+        if let previousHome = previousHome { setenv("HEED_HOME", previousHome, 1) }
+        else { unsetenv("HEED_HOME") }
+    }
     let root = NSMenu()
     let updates = UpdateMenu()
     root.addItem(updates.item)
@@ -92,9 +99,12 @@ private func updateMenuStateSelfTests() {
     snapshot.phase = "failed"
     snapshot.errorCode = "installation-failed"
     snapshot.release = SelectedUpdateRelease(manifest: UpdateManifest(version: "1.0.2", tag: "v1.0.2"), notesURL: "https://github.com/augustocbx/heed-macos/releases/tag/v1.0.2")
-    snapshot.logPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".heed/updates/fixture/update.log").path
+    snapshot.logPath = fixtureHome.appendingPathComponent("updates/fixture/update.log").path
     updates.render(snapshot, build: build, locale: "en")
     precondition(action("Retry update")?.isEnabled == true && action("View update log…")?.isEnabled == true)
+    snapshot.logPath = fixtureHome.deletingLastPathComponent().appendingPathComponent("outside-updates/update.log").path
+    updates.render(snapshot, build: build, locale: "en")
+    precondition(action("View update log…") == nil, "Logs outside the configured Heed home must remain unavailable")
     snapshot.recovery = "recoveryRequired"
     updates.render(snapshot, build: build, locale: "en")
     precondition(action("Retry recovery")?.isEnabled == true && action("Retry update") == nil)
